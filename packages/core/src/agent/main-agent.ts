@@ -26,6 +26,18 @@ import type {
 import { buildSystemPrompt, type PromptContext } from './prompt-builder.js';
 import { createLogger } from '../logging/logger.js';
 
+// Memory integration
+import { HindsightClient } from '@orionomega/hindsight';
+import {
+  BankManager,
+  SessionBootstrap,
+  RetentionEngine,
+  MentalModelManager,
+  SessionSummarizer,
+  CompactionFlush,
+} from '../memory/index.js';
+import type { OrionOmegaConfig } from '../config/types.js';
+
 const log = createLogger('main-agent');
 
 // ── Configuration ──────────────────────────────────────────────────────────
@@ -46,6 +58,8 @@ export interface MainAgentConfig {
   workerTimeout: number;
   /** Maximum retries per worker node. */
   maxRetries: number;
+  /** Hindsight configuration (optional — memory features disabled when absent). */
+  hindsight?: OrionOmegaConfig['hindsight'];
 }
 
 // ── Callbacks ──────────────────────────────────────────────────────────────
@@ -140,6 +154,19 @@ export class MainAgent {
   /** Cached system prompt (built lazily on first message). */
   private cachedSystemPrompt: string | null = null;
 
+  // ── Memory integration ─────────────────────────────────────────────────
+  private hindsightClient: HindsightClient | null = null;
+  private bankManager: BankManager | null = null;
+  private sessionBootstrap: SessionBootstrap | null = null;
+  private retentionEngine: RetentionEngine | null = null;
+  private mentalModelManager: MentalModelManager | null = null;
+  private sessionSummarizer: SessionSummarizer | null = null;
+  private compactionFlush: CompactionFlush | null = null;
+  /** Active project bank for the current session. */
+  private activeProjectBank: string | null = null;
+  /** Whether memory subsystem has been initialised. */
+  private memoryInitialised = false;
+
   /** The plan currently awaiting user approval. */
   private pendingPlan: PlannerOutput | null = null;
   /** ID of the pending plan (workflow graph ID). */
@@ -171,6 +198,116 @@ export class MainAgent {
     log.info('MainAgent initialised', { model: config.model });
   }
 
+  // ── Memory lifecycle ───────────────────────────────────────────────────
+
+  /**
+   * Initialise the Hindsight memory subsystem.
+   *
+   * Creates all memory components, bootstraps context from Hindsight,
+   * appends it to the system prompt, and starts the retention engine.
+   * Safe to call multiple times — subsequent calls are no-ops.
+   * If hindsight config is absent, this is a no-op.
+   */
+  async init(): Promise<void> {
+    if (this.memoryInitialised) return;
+
+    const hsCfg = this.config.hindsight;
+    if (!hsCfg?.url) {
+      log.info('Hindsight not configured — memory features disabled');
+      return;
+    }
+
+    try {
+      this.hindsightClient = new HindsightClient(hsCfg.url);
+      this.bankManager = new BankManager(this.hindsightClient);
+      this.sessionBootstrap = new SessionBootstrap(this.hindsightClient);
+      this.mentalModelManager = new MentalModelManager(this.hindsightClient);
+
+      this.retentionEngine = new RetentionEngine(
+        this.hindsightClient,
+        this.eventBus,
+        {
+          retainOnComplete: hsCfg.retainOnComplete,
+          retainOnError: hsCfg.retainOnError,
+        },
+      );
+
+      this.sessionSummarizer = new SessionSummarizer(
+        this.hindsightClient,
+        this.anthropic,
+        this.config.model,
+      );
+
+      this.compactionFlush = new CompactionFlush(
+        this.hindsightClient,
+        this.anthropic,
+        this.config.model, // ideally a cheap model; caller can set to haiku
+      );
+
+      // Bootstrap context
+      const ctx = await this.sessionBootstrap.bootstrap(this.activeProjectBank ?? undefined);
+      const contextBlock = this.sessionBootstrap.buildContextBlock(ctx);
+      if (contextBlock) {
+        // Append to existing system prompt or set it
+        if (this.config.systemPrompt) {
+          this.config.systemPrompt += contextBlock;
+        } else {
+          this.config.systemPrompt = contextBlock;
+        }
+        // Invalidate cached prompt so it picks up the new content
+        this.cachedSystemPrompt = null;
+      }
+
+      // Start listening for events
+      this.retentionEngine.start();
+
+      this.memoryInitialised = true;
+      log.info('Memory subsystem initialised', { url: hsCfg.url });
+    } catch (err) {
+      log.warn('Memory subsystem init failed — continuing without memory', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  /**
+   * Flush conversation context to Hindsight before compaction.
+   * Extracts all noteworthy information from the current conversation.
+   */
+  async flushMemory(): Promise<void> {
+    if (!this.compactionFlush) return;
+
+    const bankId = this.activeProjectBank ?? this.config.hindsight?.defaultBank ?? 'core';
+    const messages = this.history.map((h) => ({ role: h.role, content: h.content }));
+
+    try {
+      const result = await this.compactionFlush.flush(messages, bankId);
+      log.info('Memory flushed before compaction', { itemsRetained: result.itemsRetained });
+    } catch (err) {
+      log.warn('Memory flush failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  /**
+   * Summarize the current session and retain the summary to Hindsight.
+   */
+  async summarizeSession(): Promise<void> {
+    if (!this.sessionSummarizer) return;
+
+    const messages = this.history.map((h) => ({ role: h.role, content: h.content }));
+
+    try {
+      await this.sessionSummarizer.summarize(messages, this.activeProjectBank ?? undefined);
+      log.info('Session summarised');
+    } catch (err) {
+      log.warn('Session summary failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   // ── Public API ─────────────────────────────────────────────────────────
 
   /**
@@ -193,6 +330,13 @@ export class MainAgent {
 
     // Record in history
     this.pushHistory({ role: 'user', content: trimmed });
+
+    // Evaluate user message for preference/decision patterns (fire-and-forget)
+    if (this.retentionEngine) {
+      this.retentionEngine
+        .evaluateUserMessage(trimmed, this.activeProjectBank ?? undefined)
+        .catch(() => {});
+    }
 
     try {
       // 1. Slash command?
@@ -257,6 +401,14 @@ export class MainAgent {
 
       switch (action) {
         case 'approve':
+          // Ensure project bank exists for this task
+          if (this.bankManager && this.pendingPlanTask) {
+            try {
+              this.activeProjectBank = await this.bankManager.ensureProjectBank(this.pendingPlanTask);
+            } catch {
+              // Non-fatal — continue without project bank
+            }
+          }
           await this.executePlan(this.pendingPlan);
           break;
 
@@ -513,6 +665,21 @@ export class MainAgent {
    * Called when the executor finishes (success, error, or stopped).
    */
   private onExecutionComplete(result: ExecutionResult): void {
+    // Retain workflow outcome to Hindsight (fire-and-forget)
+    if (this.retentionEngine && this.activeProjectBank) {
+      this.retentionEngine.retainWorkflowOutcome({
+        bankId: this.activeProjectBank,
+        taskSummary: result.taskSummary,
+        workerCount: result.workerCount,
+        durationSec: result.durationSec,
+        outputPaths: result.outputPaths,
+        decisions: result.decisions,
+        findings: result.findings,
+        errors: result.errors,
+        infraChanges: result.infraChanges,
+      }).catch(() => {});
+    }
+
     const { status, durationSec, workerCount, findings, errors } = result;
 
     const lines: string[] = [];

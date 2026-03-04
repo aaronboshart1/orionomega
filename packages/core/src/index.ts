@@ -82,3 +82,14 @@ export type {
 // Agent
 export type { MainAgentConfig, MainAgentCallbacks, PromptContext } from './agent/index.js';
 export { MainAgent, buildSystemPrompt } from './agent/index.js';
+
+// Memory
+export type { BootstrapContext, RetentionConfig, WorkflowOutcome, FlushResult } from './memory/index.js';
+export {
+  BankManager,
+  SessionBootstrap,
+  RetentionEngine,
+  MentalModelManager,
+  SessionSummarizer,
+  CompactionFlush,
+} from './memory/index.js';
