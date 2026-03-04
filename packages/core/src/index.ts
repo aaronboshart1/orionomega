@@ -63,3 +63,22 @@ export { OrchestratorCommands } from './orchestration/index.js';
 // Logging
 export type { Logger, LogLevel } from './logging/index.js';
 export { createLogger, setGlobalLogLevel, getGlobalLogLevel } from './logging/index.js';
+
+// Anthropic API integration
+export { AnthropicClient, getBuiltInTools, runAgentLoop } from './anthropic/index.js';
+export type {
+  AnthropicMessage,
+  ContentBlock,
+  ToolDefinition,
+  AnthropicStreamEvent,
+  CreateMessageOptions,
+  MessageResponse,
+  BuiltInTool,
+  ToolContext,
+  AgentLoopOptions,
+  AgentLoopResult,
+} from './anthropic/index.js';
+
+// Agent
+export type { MainAgentConfig, MainAgentCallbacks, PromptContext } from './agent/index.js';
+export { MainAgent, buildSystemPrompt } from './agent/index.js';

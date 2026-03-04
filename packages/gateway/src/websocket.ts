@@ -13,6 +13,7 @@ import { randomBytes } from 'node:crypto';
 import { URL } from 'node:url';
 
 import type { ClientConnection, ClientMessage, ServerMessage, GatewayConfig } from './types.js';
+import type { MainAgent } from '@orionomega/core';
 import { validateToken } from './auth.js';
 import { SessionManager } from './sessions.js';
 import { CommandHandler } from './commands.js';
@@ -28,6 +29,8 @@ export class WebSocketHandler {
   private connections: Map<string, ClientConnection> = new Map();
   private pingTimer: ReturnType<typeof setInterval> | null = null;
 
+  private mainAgent: MainAgent | null = null;
+
   constructor(
     private config: GatewayConfig,
     private sessionManager: SessionManager,
@@ -35,6 +38,16 @@ export class WebSocketHandler {
     private eventStreamer: EventStreamer,
   ) {
     this.wss = new WebSocketServer({ noServer: true });
+  }
+
+  /**
+   * Bind the MainAgent so that chat/command/plan_response messages are
+   * routed to it rather than returning placeholder responses.
+   *
+   * @param agent - The MainAgent instance to wire up.
+   */
+  setMainAgent(agent: MainAgent): void {
+    this.mainAgent = agent;
   }
 
   /**
@@ -212,7 +225,7 @@ export class WebSocketHandler {
     }
   }
 
-  /** Handle a chat message — store it and acknowledge. */
+  /** Handle a chat message — store it, acknowledge, and route to MainAgent. */
   private handleChat(conn: ClientConnection, session: ReturnType<SessionManager['getSession']> & object, msg: ClientMessage): void {
     this.sessionManager.addMessage(conn.sessionId, {
       id: msg.id,
@@ -229,18 +242,44 @@ export class WebSocketHandler {
       content: msg.id,
     });
 
-    // TODO: route to orchestration engine for processing
-    // For now, echo a placeholder response
-    this.send(conn.ws, {
-      id: randomBytes(8).toString('hex'),
-      type: 'text',
-      content: 'Message received. Orchestration engine not yet connected.',
-    });
+    // Route to MainAgent if available
+    if (this.mainAgent) {
+      this.mainAgent.handleMessage(msg.content ?? '').catch((err) => {
+        console.error('[gateway] MainAgent.handleMessage error:', err);
+        this.send(conn.ws, {
+          id: randomBytes(8).toString('hex'),
+          type: 'error',
+          error: 'Internal agent error',
+        });
+      });
+    } else {
+      this.send(conn.ws, {
+        id: randomBytes(8).toString('hex'),
+        type: 'text',
+        content: 'Message received. Orchestration engine not yet connected.',
+      });
+    }
   }
 
-  /** Handle a slash command. */
+  /** Handle a slash command — route through MainAgent if available, else fallback. */
   private async handleCommand(conn: ClientConnection, session: ReturnType<SessionManager['getSession']> & object, msg: ClientMessage): Promise<void> {
     const command = msg.command ?? msg.content ?? '';
+
+    if (this.mainAgent) {
+      try {
+        await this.mainAgent.handleCommand(command);
+      } catch (err) {
+        console.error('[gateway] MainAgent.handleCommand error:', err);
+        this.send(conn.ws, {
+          id: randomBytes(8).toString('hex'),
+          type: 'error',
+          error: 'Internal command error',
+        });
+      }
+      return;
+    }
+
+    // Fallback to gateway-level CommandHandler
     const result = await this.commandHandler.handle(command, session as any);
 
     this.sessionManager.addMessage(conn.sessionId, {
@@ -259,14 +298,26 @@ export class WebSocketHandler {
     });
   }
 
-  /** Handle a plan approval/rejection/modification. */
+  /** Handle a plan approval/rejection/modification — route to MainAgent. */
   private handlePlanResponse(conn: ClientConnection, _session: object, msg: ClientMessage): void {
-    // TODO: forward to planner once orchestration engine is connected
-    this.send(conn.ws, {
-      id: randomBytes(8).toString('hex'),
-      type: 'ack',
-      content: `Plan response (${msg.action}) for ${msg.planId} received. Orchestration engine not yet connected.`,
-    });
+    if (this.mainAgent && msg.planId && msg.action) {
+      this.mainAgent
+        .handlePlanResponse(msg.planId, msg.action, msg.modification)
+        .catch((err) => {
+          console.error('[gateway] MainAgent.handlePlanResponse error:', err);
+          this.send(conn.ws, {
+            id: randomBytes(8).toString('hex'),
+            type: 'error',
+            error: 'Internal plan-response error',
+          });
+        });
+    } else {
+      this.send(conn.ws, {
+        id: randomBytes(8).toString('hex'),
+        type: 'ack',
+        content: `Plan response (${msg.action}) for ${msg.planId} received. Orchestration engine not yet connected.`,
+      });
+    }
   }
 
   /** Handle a workflow subscription request. */
@@ -298,6 +349,17 @@ export class WebSocketHandler {
         }
       }
     }, PING_INTERVAL_MS);
+  }
+
+  /**
+   * Broadcast a ServerMessage to all connected clients.
+   *
+   * @param message - The message to send.
+   */
+  broadcast(message: ServerMessage): void {
+    for (const conn of this.connections.values()) {
+      this.send(conn.ws, message);
+    }
   }
 
   /** Safely send a ServerMessage over a WebSocket. */

@@ -7,8 +7,10 @@
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { readConfig } from '@orionomega/core';
-import type { GatewayConfig } from './types.js';
+import { randomBytes } from 'node:crypto';
+import { readConfig, MainAgent } from '@orionomega/core';
+import type { MainAgentConfig, MainAgentCallbacks } from '@orionomega/core';
+import type { GatewayConfig, ServerMessage } from './types.js';
 import { SessionManager } from './sessions.js';
 import { CommandHandler } from './commands.js';
 import { EventStreamer } from './events.js';
@@ -50,6 +52,100 @@ const sessionManager = new SessionManager();
 const commandHandler = new CommandHandler(sessionManager);
 const eventStreamer = new EventStreamer();
 const wsHandler = new WebSocketHandler(config, sessionManager, commandHandler, eventStreamer);
+
+// ---------------------------------------------------------------------------
+// Main Agent Integration
+// ---------------------------------------------------------------------------
+
+let fullConfig: ReturnType<typeof readConfig> | undefined;
+try {
+  fullConfig = readConfig();
+} catch {
+  // already handled above — fullConfig stays undefined
+}
+
+/**
+ * Wire the MainAgent into the gateway.
+ * Callbacks broadcast ServerMessages to all connected WebSocket clients.
+ */
+function initMainAgent(): void {
+  const apiKey = fullConfig?.models?.apiKey ?? process.env.ANTHROPIC_API_KEY ?? '';
+  if (!apiKey) {
+    console.warn('[gateway] No Anthropic API key — MainAgent will not be available');
+    return;
+  }
+
+  const agentConfig: MainAgentConfig = {
+    model: fullConfig?.models?.default ?? 'claude-sonnet-4-20250514',
+    apiKey,
+    systemPrompt: '',
+    workspaceDir: fullConfig?.workspace?.path ?? '',
+    checkpointDir: fullConfig?.workspace?.path
+      ? fullConfig.workspace.path + '/checkpoints'
+      : '/tmp/orionomega-checkpoints',
+    workerTimeout: fullConfig?.orchestration?.workerTimeout ?? 300,
+    maxRetries: fullConfig?.orchestration?.maxRetries ?? 2,
+  };
+
+  const callbacks: MainAgentCallbacks = {
+    onText(text, streaming, done) {
+      wsHandler.broadcast({
+        id: randomBytes(8).toString('hex'),
+        type: 'text',
+        content: text,
+        streaming,
+        done,
+      });
+    },
+    onThinking(text, streaming, done) {
+      wsHandler.broadcast({
+        id: randomBytes(8).toString('hex'),
+        type: 'thinking',
+        thinking: text,
+        streaming,
+        done,
+      });
+    },
+    onPlan(plan) {
+      wsHandler.broadcast({
+        id: randomBytes(8).toString('hex'),
+        type: 'plan',
+        plan,
+      });
+    },
+    onEvent(event) {
+      wsHandler.broadcast({
+        id: randomBytes(8).toString('hex'),
+        type: 'event',
+        event,
+      });
+    },
+    onGraphState(state) {
+      wsHandler.broadcast({
+        id: randomBytes(8).toString('hex'),
+        type: 'status',
+        graphState: state,
+      });
+    },
+    onCommandResult(result) {
+      wsHandler.broadcast({
+        id: randomBytes(8).toString('hex'),
+        type: 'command_result',
+        commandResult: result,
+      });
+    },
+  };
+
+  try {
+    const mainAgent = new MainAgent(agentConfig, callbacks);
+    wsHandler.setMainAgent(mainAgent);
+    console.log('[gateway] MainAgent connected');
+  } catch (err) {
+    console.error('[gateway] Failed to initialise MainAgent:', err);
+  }
+}
+
+initMainAgent();
 
 // ---------------------------------------------------------------------------
 // CORS Helpers

@@ -1,14 +1,18 @@
 /**
  * @module orchestration/planner
- * Task decomposition and workflow graph generation.
+ * Task decomposition and workflow graph generation via the Anthropic API.
  *
- * Currently a stub — the LLM planner integration is not yet connected.
- * The `buildPlannerPrompt()` method contains the full prompt that will be
- * sent to the Anthropic API when the planner is wired up.
+ * Sends the task description to the planner LLM, parses the returned JSON
+ * into a WorkflowGraph, and falls back to a single-node plan on failure.
  */
 
 import type { PlannerOutput, WorkflowNode } from './types.js';
 import { buildGraph } from './graph.js';
+import { AnthropicClient } from '../anthropic/client.js';
+import { readConfig } from '../config/loader.js';
+import { createLogger } from '../logging/logger.js';
+
+const log = createLogger('planner');
 
 /** Configuration for the planner. */
 export interface PlannerConfig {
@@ -19,12 +23,11 @@ export interface PlannerConfig {
 }
 
 /**
- * Decomposes a task description into a workflow graph.
+ * Decomposes a task description into a workflow graph using the Anthropic API.
  *
- * In its current stub form, every task is planned as a single AGENT node.
- * When the Anthropic API integration is connected, `plan()` will call
- * the LLM with the prompt from `buildPlannerPrompt()` and parse the
- * response into a full multi-node WorkflowGraph.
+ * Sends the planning prompt to the configured planner model, parses the JSON
+ * response into WorkflowNodes, and builds a WorkflowGraph. Falls back to a
+ * single AGENT node if parsing fails.
  */
 export class Planner {
   private readonly config: PlannerConfig;
@@ -48,49 +51,153 @@ export class Planner {
       workspaceFiles?: string[];
     },
   ): Promise<PlannerOutput> {
-    // TODO: Replace with actual LLM call using this.config.model
-    // For now, build a single-node graph as a sensible default.
+    const appConfig = readConfig();
+    const apiKey = appConfig.models.apiKey;
+    const model = appConfig.models.planner || this.config.model;
 
-    const node: WorkflowNode = {
-      id: 'worker-1',
-      type: 'AGENT',
-      label: 'Primary Worker',
-      agent: {
-        model: this.config.model,
-        task,
-        tools: context?.availableSkills,
-      },
-      dependsOn: [],
-      status: 'pending',
-    };
+    if (!apiKey) {
+      log.warn('No API key configured — falling back to single-node plan');
+      return this.fallbackPlan(task, 'No API key configured');
+    }
 
-    const graph = buildGraph([node], task.slice(0, 80));
+    const client = new AnthropicClient(apiKey);
+    const systemPrompt = this.buildPlannerPrompt(task, context);
 
-    return {
-      graph,
-      reasoning: 'Single-worker plan (LLM planner not yet connected)',
-      estimatedCost: 0,
-      estimatedTime: 0,
-      summary: `Execute task with one agent worker: "${task.slice(0, 120)}"`,
-    };
+    try {
+      log.info(`Planning task with model ${model}: "${task.slice(0, 80)}..."`);
+
+      const response = await client.createMessage({
+        model,
+        messages: [{ role: 'user', content: task }],
+        system: systemPrompt,
+        maxTokens: 4096,
+        temperature: 0.2,
+      });
+
+      // Extract text content from response
+      const responseText = response.content
+        .filter((b) => b.type === 'text' && b.text)
+        .map((b) => b.text!)
+        .join('');
+
+      if (!responseText) {
+        log.warn('Empty response from planner LLM');
+        return this.fallbackPlan(task, 'Empty LLM response');
+      }
+
+      // Parse the JSON from the response
+      const parsed = this.extractJson(responseText);
+      if (!parsed) {
+        log.warn('Failed to parse JSON from planner response');
+        return this.fallbackPlan(
+          task,
+          `Failed to parse planner JSON. Raw response:\n${responseText.slice(0, 500)}`,
+        );
+      }
+
+      // Extract plan metadata
+      const reasoning = String(parsed.reasoning ?? 'No reasoning provided');
+      const estimatedCost = Number(parsed.estimatedCost ?? 0);
+      const estimatedTime = Number(parsed.estimatedTime ?? 0);
+      const summary = String(parsed.summary ?? task.slice(0, 120));
+
+      // Build WorkflowNodes from the parsed nodes array
+      const rawNodes = parsed.nodes;
+      if (!Array.isArray(rawNodes) || rawNodes.length === 0) {
+        log.warn('Planner returned no nodes');
+        return this.fallbackPlan(task, `Planner returned no nodes. Reasoning: ${reasoning}`);
+      }
+
+      const nodes: WorkflowNode[] = rawNodes.map(
+        (n: Record<string, unknown>) => ({
+          id: String(n.id ?? `node-${Math.random().toString(36).slice(2, 8)}`),
+          type: String(n.type ?? 'AGENT') as WorkflowNode['type'],
+          label: String(n.label ?? 'Unlabelled Node'),
+          dependsOn: Array.isArray(n.dependsOn)
+            ? (n.dependsOn as string[]).map(String)
+            : [],
+          status: 'pending' as const,
+          timeout: n.timeout ? Number(n.timeout) : undefined,
+          retries: n.retries ? Number(n.retries) : undefined,
+          fallbackNodeId: n.fallbackNodeId
+            ? String(n.fallbackNodeId)
+            : undefined,
+          agent: n.agent
+            ? {
+                model: String(
+                  (n.agent as Record<string, unknown>).model ?? model,
+                ),
+                task: String(
+                  (n.agent as Record<string, unknown>).task ?? '',
+                ),
+                tools: Array.isArray(
+                  (n.agent as Record<string, unknown>).tools,
+                )
+                  ? ((n.agent as Record<string, unknown>).tools as string[])
+                  : undefined,
+                skillIds: Array.isArray(
+                  (n.agent as Record<string, unknown>).skillIds,
+                )
+                  ? ((n.agent as Record<string, unknown>).skillIds as string[])
+                  : undefined,
+              }
+            : undefined,
+          tool: n.tool
+            ? {
+                name: String(
+                  (n.tool as Record<string, unknown>).name ?? '',
+                ),
+                params: ((n.tool as Record<string, unknown>)
+                  .params as Record<string, unknown>) ?? {},
+              }
+            : undefined,
+          router: n.router
+            ? {
+                condition: String(
+                  (n.router as Record<string, unknown>).condition ?? '',
+                ),
+                routes: ((n.router as Record<string, unknown>)
+                  .routes as Record<string, string>) ?? {},
+              }
+            : undefined,
+        }),
+      );
+
+      const graph = buildGraph(nodes, summary.slice(0, 80));
+
+      log.info(
+        `Plan generated: ${nodes.length} nodes, ${graph.layers.length} layers`,
+      );
+
+      return {
+        graph,
+        reasoning,
+        estimatedCost,
+        estimatedTime,
+        summary,
+      };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log.error(`Planner failed: ${msg}`);
+      return this.fallbackPlan(task, `Planner error: ${msg}`);
+    }
   }
 
   /**
    * Builds the full system prompt for the planner LLM.
-   *
-   * This prompt instructs the model to decompose a task into a WorkflowGraph
-   * with parallel execution, tool nodes, router nodes, and model assignments.
    *
    * @param task - The task description.
    * @param context - Optional additional context (memories, skills, files).
    * @returns The complete system prompt string.
    */
   buildPlannerPrompt(task: string, context?: object): string {
-    const ctx = context as {
-      memories?: string[];
-      availableSkills?: string[];
-      workspaceFiles?: string[];
-    } | undefined;
+    const ctx = context as
+      | {
+          memories?: string[];
+          availableSkills?: string[];
+          workspaceFiles?: string[];
+        }
+      | undefined;
 
     const skillsList = ctx?.availableSkills?.length
       ? `\n\nAvailable skills:\n${ctx.availableSkills.map((s) => `- ${s}`).join('\n')}`
@@ -171,5 +278,72 @@ ${skillsList}${memoriesList}${filesList}
 ${task}
 
 Respond ONLY with the JSON object. No markdown fences, no commentary.`;
+  }
+
+  // ── Private helpers ──────────────────────────────────────────────
+
+  /**
+   * Extracts a JSON object from the LLM response text.
+   * Tries: fenced ```json blocks, then the entire response as JSON.
+   */
+  private extractJson(text: string): Record<string, unknown> | null {
+    // Try fenced JSON block
+    const fencedMatch = text.match(/```json\s*\n?([\s\S]*?)\n?```/);
+    if (fencedMatch?.[1]) {
+      try {
+        return JSON.parse(fencedMatch[1]) as Record<string, unknown>;
+      } catch {
+        // Fall through
+      }
+    }
+
+    // Try the entire response as JSON
+    try {
+      return JSON.parse(text.trim()) as Record<string, unknown>;
+    } catch {
+      // Fall through
+    }
+
+    // Try to find a JSON object in the response (first { to last })
+    const firstBrace = text.indexOf('{');
+    const lastBrace = text.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace > firstBrace) {
+      try {
+        return JSON.parse(
+          text.slice(firstBrace, lastBrace + 1),
+        ) as Record<string, unknown>;
+      } catch {
+        // Give up
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Builds a single-node fallback plan when the LLM planner fails.
+   */
+  private fallbackPlan(task: string, reason: string): PlannerOutput {
+    const node: WorkflowNode = {
+      id: 'worker-1',
+      type: 'AGENT',
+      label: 'Primary Worker',
+      agent: {
+        model: this.config.model,
+        task,
+      },
+      dependsOn: [],
+      status: 'pending',
+    };
+
+    const graph = buildGraph([node], task.slice(0, 80));
+
+    return {
+      graph,
+      reasoning: `Single-worker fallback plan. Reason: ${reason}`,
+      estimatedCost: 0,
+      estimatedTime: 0,
+      summary: `Execute task with one agent worker: "${task.slice(0, 120)}"`,
+    };
   }
 }
