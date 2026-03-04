@@ -1,0 +1,191 @@
+/**
+ * @module config/loader
+ * Configuration loading, writing, and default generation for OrionOmega.
+ */
+
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join, dirname } from 'node:path';
+import type { OrionOmegaConfig } from './types.js';
+
+/**
+ * Returns the default configuration path: `~/.orionomega/config.yaml`.
+ */
+export function getConfigPath(): string {
+  return join(homedir(), '.orionomega', 'config.yaml');
+}
+
+/**
+ * Returns a complete configuration object with sensible defaults.
+ */
+export function getDefaultConfig(): OrionOmegaConfig {
+  return {
+    gateway: {
+      port: 7800,
+      bind: '127.0.0.1',
+      auth: {
+        mode: 'none',
+      },
+      cors: {
+        origins: ['http://localhost:*'],
+      },
+    },
+    hindsight: {
+      url: 'http://localhost:8888',
+      defaultBank: 'default',
+      retainOnComplete: true,
+      retainOnError: true,
+    },
+    models: {
+      provider: 'anthropic',
+      apiKey: '',
+      default: 'claude-sonnet-4-20250514',
+      planner: 'claude-sonnet-4-20250514',
+      workers: {
+        research: 'claude-haiku-4-20250414',
+        code: 'claude-sonnet-4-20250514',
+        writing: 'claude-sonnet-4-20250514',
+        analysis: 'claude-haiku-4-20250414',
+        data: 'claude-haiku-4-20250414',
+      },
+    },
+    orchestration: {
+      maxSpawnDepth: 3,
+      workerTimeout: 300,
+      maxRetries: 2,
+      planFirst: true,
+      checkpointInterval: 30,
+      eventBatching: {
+        tuiIntervalMs: 250,
+        webIntervalMs: 1000,
+        immediateTypes: ['error', 'done', 'finding'],
+      },
+    },
+    workspace: {
+      path: join(homedir(), '.orionomega', 'workspace'),
+      maxOutputSize: '10MB',
+    },
+    logging: {
+      level: 'info',
+      file: join(homedir(), '.orionomega', 'logs', 'orionomega.log'),
+      maxSize: '50MB',
+      maxFiles: 5,
+      console: true,
+    },
+    skills: {
+      directory: join(homedir(), '.orionomega', 'skills'),
+      autoLoad: true,
+    },
+  };
+}
+
+/**
+ * Deep-merges a partial config onto defaults, returning a complete config.
+ * Only overrides leaf values that are explicitly present in the partial.
+ */
+function deepMerge(
+  defaults: Record<string, unknown>,
+  overrides: Record<string, unknown>,
+): Record<string, unknown> {
+  const result: Record<string, unknown> = { ...defaults };
+  for (const key of Object.keys(overrides)) {
+    const val = overrides[key];
+    const def = defaults[key];
+    if (
+      val !== null &&
+      val !== undefined &&
+      typeof val === 'object' &&
+      !Array.isArray(val) &&
+      def !== null &&
+      def !== undefined &&
+      typeof def === 'object' &&
+      !Array.isArray(def)
+    ) {
+      result[key] = deepMerge(
+        def as Record<string, unknown>,
+        val as Record<string, unknown>,
+      );
+    } else if (val !== undefined) {
+      result[key] = val;
+    }
+  }
+  return result;
+}
+
+/**
+ * Reads and parses the YAML configuration file, merging with defaults.
+ * If the file does not exist, returns the default configuration.
+ *
+ * @param configPath - Path to the YAML config file. Defaults to `getConfigPath()`.
+ * @returns The fully-resolved configuration.
+ */
+export function readConfig(configPath?: string): OrionOmegaConfig {
+  const filePath = configPath ?? getConfigPath();
+  const defaults = getDefaultConfig();
+
+  if (!existsSync(filePath)) {
+    return defaults;
+  }
+
+  const raw = readFileSync(filePath, 'utf-8');
+
+  // Dynamic import would require async; use require-style for js-yaml
+  // since it's a CJS package with ESM interop.
+  let yaml: typeof import('js-yaml');
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    yaml = require('js-yaml') as typeof import('js-yaml');
+  } catch {
+    throw new Error(
+      'js-yaml is required but not installed. Run: npm install js-yaml',
+    );
+  }
+
+  const parsed = yaml.load(raw);
+  if (parsed === null || parsed === undefined || typeof parsed !== 'object') {
+    return defaults;
+  }
+
+  return deepMerge(
+    defaults as unknown as Record<string, unknown>,
+    parsed as Record<string, unknown>,
+  ) as unknown as OrionOmegaConfig;
+}
+
+/**
+ * Writes the configuration to a YAML file.
+ * Creates parent directories if they don't exist.
+ *
+ * @param config - The configuration to write.
+ * @param configPath - Path to the YAML config file. Defaults to `getConfigPath()`.
+ */
+export function writeConfig(
+  config: OrionOmegaConfig,
+  configPath?: string,
+): void {
+  const filePath = configPath ?? getConfigPath();
+
+  let yaml: typeof import('js-yaml');
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    yaml = require('js-yaml') as typeof import('js-yaml');
+  } catch {
+    throw new Error(
+      'js-yaml is required but not installed. Run: npm install js-yaml',
+    );
+  }
+
+  const content = yaml.dump(config, {
+    indent: 2,
+    lineWidth: 120,
+    noRefs: true,
+    sortKeys: false,
+  });
+
+  const dir = dirname(filePath);
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
+  }
+
+  writeFileSync(filePath, content, 'utf-8');
+}

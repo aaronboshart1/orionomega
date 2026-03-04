@@ -1,0 +1,393 @@
+/**
+ * @module commands/setup
+ * Interactive setup wizard for OrionOmega.
+ * Uses Node's built-in readline — no external prompt libraries.
+ */
+
+import * as readline from 'node:readline';
+import { createHash } from 'node:crypto';
+import { mkdirSync, existsSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
+import { readConfig, writeConfig, getConfigPath, getDefaultConfig } from '../config/index.js';
+import type { OrionOmegaConfig } from '../config/index.js';
+
+// ── Colour helpers ──────────────────────────────────────────────
+
+const GREEN = '\x1b[32m';
+const RED = '\x1b[31m';
+const YELLOW = '\x1b[33m';
+const BLUE = '\x1b[34m';
+const BOLD = '\x1b[1m';
+const DIM = '\x1b[2m';
+const RESET = '\x1b[0m';
+
+function print(msg: string): void { process.stdout.write(msg); }
+function println(msg: string = ''): void { process.stdout.write(msg + '\n'); }
+function success(msg: string): void { println(`${GREEN}✓${RESET} ${msg}`); }
+function fail(msg: string): void { println(`${RED}✗${RESET} ${msg}`); }
+function warn(msg: string): void { println(`${YELLOW}⚠${RESET} ${msg}`); }
+function heading(msg: string): void { println(`\n${BOLD}${BLUE}${msg}${RESET}\n`); }
+
+// ── Readline helpers ────────────────────────────────────────────
+
+let rl: readline.Interface;
+
+function initRL(): void {
+  rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+}
+
+function closeRL(): void {
+  rl.close();
+}
+
+/**
+ * Prompt for text input. Supports masked input for passwords.
+ */
+function ask(question: string, opts?: { mask?: boolean; default?: string }): Promise<string> {
+  return new Promise((resolve) => {
+    const suffix = opts?.default ? ` ${DIM}(${opts.default})${RESET}` : '';
+    const prompt = `${question}${suffix}: `;
+
+    if (opts?.mask) {
+      // Masked input: temporarily disable output, capture raw keystrokes
+      print(prompt);
+      const stdin = process.stdin;
+      const wasRaw = stdin.isRaw;
+      if (stdin.isTTY) stdin.setRawMode(true);
+      let buf = '';
+      const onData = (ch: Buffer): void => {
+        const c = ch.toString('utf-8');
+        if (c === '\n' || c === '\r') {
+          if (stdin.isTTY) stdin.setRawMode(wasRaw ?? false);
+          stdin.removeListener('data', onData);
+          println();
+          resolve(buf);
+        } else if (c === '\x7f' || c === '\b') {
+          if (buf.length > 0) {
+            buf = buf.slice(0, -1);
+            print('\b \b');
+          }
+        } else if (c === '\x03') {
+          // Ctrl+C
+          println();
+          process.exit(130);
+        } else if (c.charCodeAt(0) >= 32) {
+          buf += c;
+          print('•');
+        }
+      };
+      stdin.on('data', onData);
+    } else {
+      rl.question(prompt, (answer: string) => {
+        const val = answer.trim() || opts?.default || '';
+        resolve(val);
+      });
+    }
+  });
+}
+
+/**
+ * Prompt user to select from a numbered list.
+ */
+function choose(question: string, options: { label: string; value: string }[]): Promise<string> {
+  return new Promise((resolve) => {
+    println(question);
+    for (let i = 0; i < options.length; i++) {
+      println(`  ${BOLD}${i + 1}${RESET}) ${options[i].label}`);
+    }
+    rl.question(`\nChoice [1-${options.length}]: `, (answer: string) => {
+      const idx = parseInt(answer.trim(), 10) - 1;
+      if (idx >= 0 && idx < options.length) {
+        resolve(options[idx].value);
+      } else {
+        // Default to first option
+        resolve(options[0].value);
+      }
+    });
+  });
+}
+
+/**
+ * Yes/No confirmation.
+ */
+function confirm(question: string, defaultYes: boolean = true): Promise<boolean> {
+  return new Promise((resolve) => {
+    const hint = defaultYes ? 'Y/n' : 'y/N';
+    rl.question(`${question} [${hint}]: `, (answer: string) => {
+      const a = answer.trim().toLowerCase();
+      if (a === '') resolve(defaultYes);
+      else resolve(a === 'y' || a === 'yes');
+    });
+  });
+}
+
+// ── Steps ───────────────────────────────────────────────────────
+
+async function stepApiKey(config: OrionOmegaConfig): Promise<void> {
+  heading('Step 1/5 — Anthropic API Key');
+
+  const key = await ask('Enter your Anthropic API key', { mask: true });
+
+  if (!key.startsWith('sk-ant-')) {
+    fail('Key must start with "sk-ant-". Skipping validation.');
+    config.models.apiKey = key; // store anyway
+    return;
+  }
+
+  config.models.apiKey = key;
+  print(`  Testing key... `);
+
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': key,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-20250414',
+        max_tokens: 10,
+        messages: [{ role: 'user', content: 'ping' }],
+      }),
+    });
+
+    if (res.ok) {
+      success('API key is valid!');
+    } else {
+      const body = await res.text();
+      fail(`API returned ${res.status}: ${body.slice(0, 120)}`);
+    }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    fail(`Network error: ${msg}`);
+  }
+}
+
+async function stepModel(config: OrionOmegaConfig): Promise<void> {
+  heading('Step 2/5 — Default Model');
+
+  const model = await choose('Select your default model:', [
+    { label: `Claude Sonnet 4 ${DIM}(recommended)${RESET}`, value: 'claude-sonnet-4-20250514' },
+    { label: 'Claude Opus 4', value: 'claude-opus-4-20250514' },
+    { label: 'Claude Haiku 4', value: 'claude-haiku-4-20250414' },
+  ]);
+
+  config.models.default = model;
+  config.models.planner = model;
+  success(`Default model: ${model}`);
+}
+
+async function stepGatewaySecurity(config: OrionOmegaConfig): Promise<void> {
+  heading('Step 3/5 — Gateway Security');
+
+  const mode = await choose('Authentication mode for the gateway:', [
+    { label: 'API Key authentication', value: 'api-key' },
+    { label: `No authentication ${DIM}(local use only)${RESET}`, value: 'none' },
+  ]);
+
+  config.gateway.auth.mode = mode as 'api-key' | 'none';
+
+  if (mode === 'api-key') {
+    let password = '';
+    while (password.length < 8) {
+      password = await ask('Enter a gateway API key (min 8 characters)', { mask: true });
+      if (password.length < 8) {
+        warn('Key must be at least 8 characters. Try again.');
+      }
+    }
+
+    const hash = createHash('sha256').update(password).digest('hex');
+    config.gateway.auth.keyHash = hash;
+    println();
+    println(`  ${BOLD}Your gateway API key:${RESET} ${password}`);
+    println(`  ${DIM}Save this somewhere safe — it's hashed in config.${RESET}`);
+    success('Gateway auth configured.');
+  } else {
+    success('No authentication. Ensure the gateway is not exposed publicly.');
+  }
+}
+
+async function stepHindsight(config: OrionOmegaConfig): Promise<void> {
+  heading('Step 4/5 — Hindsight Memory');
+
+  const mode = await choose('Hindsight server:', [
+    { label: `Local ${DIM}(localhost:8888)${RESET}`, value: 'local' },
+    { label: 'Remote (custom URL)', value: 'remote' },
+  ]);
+
+  let url = 'http://localhost:8888';
+  if (mode === 'remote') {
+    url = await ask('Hindsight URL', { default: 'http://localhost:8888' });
+  }
+  config.hindsight.url = url;
+
+  print('  Testing connection... ');
+  try {
+    const res = await fetch(`${url}/v1/health`, { signal: AbortSignal.timeout(5000) });
+    if (res.ok) {
+      success('Hindsight is reachable!');
+
+      // Create default memory bank
+      print('  Creating default memory bank... ');
+      try {
+        const bankRes = await fetch(`${url}/v1/default/banks`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ bank_id: config.hindsight.defaultBank }),
+        });
+        if (bankRes.ok || bankRes.status === 409) {
+          success('Memory bank ready.');
+        } else {
+          warn(`Bank creation returned ${bankRes.status} — may already exist.`);
+        }
+      } catch {
+        warn('Could not create memory bank. You can do this later.');
+      }
+    } else {
+      fail(`Hindsight returned ${res.status}. You can configure it later.`);
+    }
+  } catch {
+    fail('Hindsight is not reachable. You can start it later.');
+  }
+}
+
+async function stepWorkspace(config: OrionOmegaConfig): Promise<void> {
+  heading('Step 5/5 — Workspace');
+
+  const defaultPath = join(homedir(), '.orionomega', 'workspace');
+  const wsPath = await ask('Workspace directory', { default: defaultPath });
+  config.workspace.path = wsPath;
+
+  // Create directory structure
+  const dirs = ['', 'output', 'memory', 'progress', 'orchestration'];
+  for (const d of dirs) {
+    const p = join(wsPath, d);
+    if (!existsSync(p)) {
+      mkdirSync(p, { recursive: true });
+    }
+  }
+  success('Workspace directories created.');
+
+  // Write template files (only if they don't already exist)
+  const templates: Record<string, string> = {
+    'SOUL.md': SOUL_TEMPLATE,
+    'USER.md': USER_TEMPLATE,
+    'TOOLS.md': TOOLS_TEMPLATE,
+  };
+
+  for (const [name, content] of Object.entries(templates)) {
+    const filePath = join(wsPath, name);
+    if (!existsSync(filePath)) {
+      writeFileSync(filePath, content, 'utf-8');
+      println(`  ${DIM}Created ${name}${RESET}`);
+    } else {
+      println(`  ${DIM}${name} already exists — skipped${RESET}`);
+    }
+  }
+}
+
+// ── Template content ────────────────────────────────────────────
+
+const SOUL_TEMPLATE = `# SOUL.md — Agent Personality
+
+Define how your OrionOmega agent speaks and behaves.
+
+## Name
+<!-- Give your agent a name -->
+
+## Tone
+<!-- Examples: dry wit, warm and friendly, all business, playful -->
+
+## Style
+<!-- Concise? Verbose? Technical? Casual? -->
+
+## Rules
+<!-- What should the agent always/never do? -->
+
+---
+Edit this file to make the agent yours.
+`;
+
+const USER_TEMPLATE = `# USER.md — About You
+
+Help your agent understand who you are.
+
+- **Name:**
+- **Timezone:**
+- **Preferences:**
+
+## Context
+<!-- What are you working on? What matters to you? -->
+`;
+
+const TOOLS_TEMPLATE = `# TOOLS.md — Environment Notes
+
+Your personal cheat sheet for environment-specific details.
+
+## SSH Hosts
+<!-- - server-name → IP, user, notes -->
+
+## API Keys
+<!-- - service → key location or notes -->
+
+## Custom Notes
+<!-- Anything that helps your agent help you -->
+`;
+
+// ── Main ────────────────────────────────────────────────────────
+
+/**
+ * Run the interactive setup wizard.
+ */
+export async function runSetup(): Promise<void> {
+  println();
+  println(`${BOLD}╔══════════════════════════════════════╗${RESET}`);
+  println(`${BOLD}║     OrionOmega — Setup Wizard        ║${RESET}`);
+  println(`${BOLD}╚══════════════════════════════════════╝${RESET}`);
+
+  const config = getDefaultConfig();
+
+  initRL();
+
+  try {
+    await stepApiKey(config);
+    await stepModel(config);
+    await stepGatewaySecurity(config);
+    await stepHindsight(config);
+    await stepWorkspace(config);
+
+    // Also ensure skills & logs directories exist
+    if (!existsSync(config.skills.directory)) {
+      mkdirSync(config.skills.directory, { recursive: true });
+    }
+    const logDir = join(homedir(), '.orionomega', 'logs');
+    if (!existsSync(logDir)) {
+      mkdirSync(logDir, { recursive: true });
+    }
+
+    // Save config
+    writeConfig(config);
+
+    heading('Setup Complete!');
+    success(`Config saved to ${getConfigPath()}`);
+    println();
+    println(`  ${BOLD}Next steps:${RESET}`);
+    println(`  1. Start the gateway:  ${BLUE}orionomega gateway start${RESET}`);
+    println(`  2. Check health:       ${BLUE}orionomega status${RESET}`);
+    println(`  3. Launch the TUI:     ${BLUE}orionomega${RESET}`);
+    println(`  4. Or the web UI:      ${BLUE}orionomega ui${RESET}`);
+    println();
+    println(`  Edit your workspace files to personalize the agent:`);
+    println(`  ${DIM}${config.workspace.path}/SOUL.md${RESET}`);
+    println(`  ${DIM}${config.workspace.path}/USER.md${RESET}`);
+    println(`  ${DIM}${config.workspace.path}/TOOLS.md${RESET}`);
+    println();
+  } finally {
+    closeRL();
+  }
+}

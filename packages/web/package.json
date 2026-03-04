@@ -1,0 +1,29 @@
+{
+  "name": "@orionomega/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "next": "^15",
+    "react": "^18",
+    "react-dom": "^18",
+    "zustand": "^5",
+    "@xyflow/react": "^12",
+    "lucide-react": "^0.460",
+    "reconnecting-websocket": "^4",
+    "tailwindcss": "^4",
+    "@tailwindcss/postcss": "^4"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "@types/react": "^18",
+    "@types/react-dom": "^18",
+    "typescript": "^5",
+    "postcss": "^8"
+  }
+}
