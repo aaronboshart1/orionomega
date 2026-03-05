@@ -47,7 +47,7 @@ export async function runStatus(): Promise<void> {
 
   // Hindsight
   try {
-    const res = await fetch(`${config.hindsight.url}/v1/health`, {
+    const res = await fetch(`${config.hindsight.url}/v1/default/banks`, {
       signal: AbortSignal.timeout(3000),
     });
     if (res.ok) {

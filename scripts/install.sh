@@ -327,12 +327,65 @@ ok "Workspace initialized"
 step "Hindsight (Memory System)"
 
 if curl -sf http://localhost:8888/v1/default/banks &>/dev/null 2>&1; then
-    ok "Hindsight running on localhost:8888"
+    ok "Hindsight already running on localhost:8888"
 else
-    info "Hindsight not detected on localhost:8888"
-    info "OrionOmega works without Hindsight, but memory features won't be available."
-    info "To install Hindsight: https://github.com/aaronboshart1/hindsight"
-    info "Or point to an existing instance in $CONFIG_DIR/config.yaml"
+    info "Installing Hindsight via Docker..."
+
+    # Install Docker if missing
+    if ! command -v docker &>/dev/null; then
+        info "Installing Docker..."
+        if command -v apt-get &>/dev/null; then
+            $SUDO install -m 0755 -d /etc/apt/keyrings
+            curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
+            $SUDO chmod a+r /etc/apt/keyrings/docker.asc
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable" | \
+                $SUDO tee /etc/apt/sources.list.d/docker.list >/dev/null
+            $SUDO apt-get update -qq 2>/dev/null
+            $SUDO apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-compose-plugin 2>/dev/null
+        elif command -v dnf &>/dev/null || command -v yum &>/dev/null; then
+            curl -fsSL https://get.docker.com | $SUDO sh 2>/dev/null
+        else
+            warn "Could not auto-install Docker. Install manually: https://docs.docker.com/engine/install/"
+        fi
+        $SUDO systemctl enable --now docker 2>/dev/null || true
+    fi
+
+    if command -v docker &>/dev/null; then
+        info "Pulling Hindsight image..."
+        $SUDO docker pull ghcr.io/vectorize-io/hindsight:latest 2>&1 | tail -2
+
+        info "Starting Hindsight container..."
+        $SUDO docker run -d \
+            --name hindsight \
+            --restart unless-stopped \
+            -p 8888:8888 \
+            -p 9999:9999 \
+            -e HINDSIGHT_ENABLE_CP=true \
+            -e HINDSIGHT_ENABLE_API=true \
+            -e HINDSIGHT_API_HOST=0.0.0.0 \
+            -e HINDSIGHT_API_PORT=8888 \
+            -e HINDSIGHT_API_LOG_LEVEL=info \
+            -v hindsight-data:/opt/hindsight-data \
+            ghcr.io/vectorize-io/hindsight:latest >/dev/null 2>&1
+
+        # Wait for Hindsight to initialize (embedded Postgres + migrations)
+        info "Waiting for Hindsight to initialize..."
+        for i in $(seq 1 30); do
+            if curl -sf http://localhost:8888/v1/default/banks &>/dev/null 2>&1; then
+                ok "Hindsight running on localhost:8888"
+                ok "Control plane at http://localhost:9999"
+                break
+            fi
+            sleep 2
+        done
+
+        if ! curl -sf http://localhost:8888/v1/default/banks &>/dev/null 2>&1; then
+            warn "Hindsight container started but API not yet responding. Check: docker logs hindsight"
+        fi
+    else
+        warn "Docker not available — Hindsight not installed"
+        info "Install Docker and re-run, or point to an external instance in $CONFIG_DIR/config.yaml"
+    fi
 fi
 
 # ═══════════════════════════════════════════════════════════════
