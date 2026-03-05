@@ -168,14 +168,74 @@ async function stepApiKey(config: OrionOmegaConfig): Promise<void> {
   }
 }
 
+async function fetchAnthropicModels(apiKey: string): Promise<{ label: string; value: string }[]> {
+  try {
+    print(`  Fetching available models... `);
+    const res = await fetch('https://api.anthropic.com/v1/models?limit=100', {
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      signal: AbortSignal.timeout(10000),
+    });
+
+    if (!res.ok) {
+      println(`${YELLOW}(could not fetch: ${res.status})${RESET}`);
+      return [];
+    }
+
+    const data = (await res.json()) as { data?: { id: string; display_name?: string; created_at?: string }[] };
+    const models = data.data ?? [];
+
+    if (models.length === 0) {
+      println(`${YELLOW}(no models returned)${RESET}`);
+      return [];
+    }
+
+    // Sort by creation date descending (newest first), then alphabetically
+    models.sort((a, b) => {
+      const da = a.created_at ?? '';
+      const db = b.created_at ?? '';
+      if (da !== db) return db.localeCompare(da);
+      return a.id.localeCompare(b.id);
+    });
+
+    println(`${GREEN}found ${models.length} models${RESET}`);
+
+    return models.map((m) => {
+      const name = m.display_name || m.id;
+      // Tag recommended models
+      let suffix = '';
+      if (m.id.includes('sonnet')) suffix = ` ${DIM}(recommended)${RESET}`;
+      return { label: `${name}${suffix}`, value: m.id };
+    });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    println(`${YELLOW}(error: ${msg})${RESET}`);
+    return [];
+  }
+}
+
 async function stepModel(config: OrionOmegaConfig): Promise<void> {
   heading('Step 2/5 — Default Model');
 
-  const model = await choose('Select your default model:', [
-    { label: `Claude Sonnet 4 ${DIM}(recommended)${RESET}`, value: 'claude-sonnet-4-20250514' },
-    { label: 'Claude Opus 4', value: 'claude-opus-4-20250514' },
-    { label: 'Claude Haiku 4', value: 'claude-haiku-4-20250414' },
-  ]);
+  // Try to fetch real models from the API
+  let options: { label: string; value: string }[] = [];
+  if (config.models.apiKey) {
+    options = await fetchAnthropicModels(config.models.apiKey);
+  }
+
+  // Fallback to hardcoded if API fetch fails
+  if (options.length === 0) {
+    warn('Could not fetch models from API. Showing known models:');
+    options = [
+      { label: `Claude Sonnet 4 ${DIM}(recommended)${RESET}`, value: 'claude-sonnet-4-20250514' },
+      { label: 'Claude Opus 4', value: 'claude-opus-4-20250514' },
+      { label: 'Claude Haiku 4', value: 'claude-haiku-4-20250414' },
+    ];
+  }
+
+  const model = await choose('Select your default model:', options);
 
   config.models.default = model;
   config.models.planner = model;
@@ -228,7 +288,7 @@ async function stepHindsight(config: OrionOmegaConfig): Promise<void> {
 
   print('  Testing connection... ');
   try {
-    const res = await fetch(`${url}/v1/health`, { signal: AbortSignal.timeout(5000) });
+    const res = await fetch(`${url}/v1/default/banks`, { signal: AbortSignal.timeout(5000) });
     if (res.ok) {
       success('Hindsight is reachable!');
 
