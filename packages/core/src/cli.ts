@@ -6,10 +6,34 @@
  */
 
 import { createLogger } from './logging/index.js';
+import { createRequire } from 'node:module';
 
 const log = createLogger('cli');
 
+/**
+ * Dynamically import @orionomega/tui, resolving from this package's context
+ * rather than the global scope (which the Function() trick would use).
+ */
+async function launchTUI(): Promise<void> {
+  const require = createRequire(import.meta.url);
+  const tuiPath = require.resolve('@orionomega/tui');
+  const tui = await import(tuiPath) as Record<string, unknown>;
+  if (typeof tui.start === 'function') {
+    await (tui.start as () => Promise<void>)();
+  } else {
+    throw new Error('TUI package loaded but no start() export found.');
+  }
+}
+
 const COMMANDS: Record<string, () => Promise<void>> = {
+  tui: async () => {
+    try {
+      await launchTUI();
+    } catch {
+      log.error('Failed to launch TUI. Is @orionomega/tui built? Try: cd /opt/orionomega && pnpm -r build');
+      process.exitCode = 1;
+    }
+  },
   setup: async () => (await import('./commands/setup.js')).runSetup(),
   status: async () => (await import('./commands/status.js')).runStatus(),
   doctor: async () => (await import('./commands/doctor.js')).runDoctor(),
@@ -28,20 +52,9 @@ const COMMANDS: Record<string, () => Promise<void>> = {
 async function main(): Promise<void> {
   const subcommand = process.argv[2];
 
-  // No args → launch TUI
+  // No args → launch TUI (default command)
   if (!subcommand) {
-    try {
-      // Dynamic import — @orionomega/tui is optional
-      const tui = await (Function('return import("@orionomega/tui")')() as Promise<Record<string, unknown>>);
-      if (typeof tui.start === 'function') {
-        await (tui.start as () => Promise<void>)();
-      } else {
-        log.info('TUI package loaded but no start() export found. Use "orionomega help" for commands.');
-      }
-    } catch {
-      log.warn('TUI package not available. Use "orionomega help" for available commands.');
-      await COMMANDS.help();
-    }
+    await COMMANDS.tui();
     return;
   }
 
