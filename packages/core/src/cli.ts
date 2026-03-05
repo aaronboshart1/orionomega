@@ -6,6 +6,7 @@
  */
 
 import { createLogger } from './logging/index.js';
+import { createRequire } from 'node:module';
 
 const log = createLogger('cli');
 
@@ -23,6 +24,16 @@ const COMMANDS: Record<string, () => Promise<void>> = {
 };
 
 /**
+ * Dynamically import @orionomega/tui, resolving from this package's context
+ * rather than the global scope (which the Function() trick would use).
+ */
+async function importTUI(): Promise<Record<string, unknown>> {
+  const require = createRequire(import.meta.url);
+  const tuiPath = require.resolve('@orionomega/tui');
+  return import(tuiPath) as Promise<Record<string, unknown>>;
+}
+
+/**
  * Main entry — parse argv and route to the appropriate command handler.
  */
 async function main(): Promise<void> {
@@ -31,15 +42,14 @@ async function main(): Promise<void> {
   // No args → launch TUI
   if (!subcommand) {
     try {
-      // Dynamic import — @orionomega/tui is optional
-      const tui = await (Function('return import("@orionomega/tui")')() as Promise<Record<string, unknown>>);
+      const tui = await importTUI();
       if (typeof tui.start === 'function') {
         await (tui.start as () => Promise<void>)();
       } else {
-        log.info('TUI package loaded but no start() export found. Use "orionomega help" for commands.');
+        log.info('TUI package loaded but no start() export found. Use orionomega help for commands.');
       }
     } catch {
-      log.warn('TUI package not available. Use "orionomega help" for available commands.');
+      log.warn('TUI package not available. Use orionomega help for available commands.');
       await COMMANDS.help();
     }
     return;
