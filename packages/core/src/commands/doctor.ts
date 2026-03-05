@@ -4,8 +4,11 @@
  */
 
 import { existsSync, accessSync, constants, readdirSync, readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { execSync } from 'node:child_process';
 import { readConfig, getConfigPath } from '../config/index.js';
+
+const require = createRequire(import.meta.url);
 
 const GREEN = '\x1b[32m';
 const RED = '\x1b[31m';

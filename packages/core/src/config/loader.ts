@@ -4,9 +4,12 @@
  */
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import type { OrionOmegaConfig } from './types.js';
+
+const require = createRequire(import.meta.url);
 
 /**
  * Returns the default configuration path: `~/.orionomega/config.yaml`.
