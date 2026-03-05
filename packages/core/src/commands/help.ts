@@ -9,7 +9,7 @@ const DIM = '\x1b[2m';
 const RESET = '\x1b[0m';
 
 const COMMANDS: [string, string][] = [
-  ['', 'Launch the terminal UI (default)'],
+  ['tui', 'Open the terminal UI (default when no command given)'],
   ['setup', 'Run the interactive setup wizard'],
   ['status', 'Quick system health check'],
   ['doctor', 'Full diagnostic scan'],
@@ -36,8 +36,7 @@ export async function runHelp(): Promise<void> {
   process.stdout.write(`${BOLD}Commands:${RESET}\n\n`);
 
   for (const [cmd, desc] of COMMANDS) {
-    const label = cmd === '' ? `${DIM}(no command)${RESET}` : `${BLUE}${cmd}${RESET}`;
-    process.stdout.write(`  ${label.padEnd(cmd === '' ? 42 : 38)}${desc}\n`);
+    process.stdout.write(`  ${BLUE}${cmd}${RESET}${''.padEnd(Math.max(2, 30 - cmd.length))}${desc}\n`);
   }
 
   process.stdout.write(`\n${DIM}Run "orionomega setup" to get started.${RESET}\n\n`);
