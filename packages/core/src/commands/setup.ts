@@ -229,13 +229,25 @@ async function stepModel(config: OrionOmegaConfig): Promise<void> {
   if (options.length === 0) {
     warn('Could not fetch models from API. Showing known models:');
     options = [
-      { label: `Claude Sonnet 4 ${DIM}(recommended)${RESET}`, value: 'claude-sonnet-4-20250514' },
+      { label: `Claude Sonnet 4.6 ${DIM}(recommended)${RESET}`, value: 'claude-sonnet-4-6' },
+      { label: 'Claude Opus 4.6', value: 'claude-opus-4-6' },
+      { label: 'Claude Sonnet 4.5', value: 'claude-sonnet-4-5-20250929' },
+      { label: 'Claude Opus 4.5', value: 'claude-opus-4-5-20251101' },
+      { label: 'Claude Haiku 4.5', value: 'claude-haiku-4-5-20251001' },
+      { label: 'Claude Sonnet 4', value: 'claude-sonnet-4-20250514' },
       { label: 'Claude Opus 4', value: 'claude-opus-4-20250514' },
       { label: 'Claude Haiku 4', value: 'claude-haiku-4-20250414' },
     ];
   }
 
-  const model = await choose('Select your default model:', options);
+  // Also allow manual entry
+  options.push({ label: `${DIM}Enter a model ID manually${RESET}`, value: '__custom__' });
+
+  let model = await choose('Select your default model:', options);
+
+  if (model === '__custom__') {
+    model = await ask('Enter model ID (e.g. claude-sonnet-4-6)');
+  }
 
   config.models.default = model;
   config.models.planner = model;
