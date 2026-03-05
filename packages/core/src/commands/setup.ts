@@ -65,27 +65,29 @@ function ask(question: string, opts?: { mask?: boolean; default?: string }): Pro
       stdin.resume();
       let buf = '';
       const onData = (ch: Buffer): void => {
-        const c = ch.toString('utf-8');
-        if (c === '\n' || c === '\r') {
-          if (stdin.isTTY) stdin.setRawMode(wasRaw ?? false);
-          stdin.removeListener('data', onData);
-          println();
-          // Re-attach readline
-          rl.resume();
-          resolve(buf);
-        } else if (c === '\x7f' || c === '\b') {
-          if (buf.length > 0) {
-            buf = buf.slice(0, -1);
-            print('\b \b');
+        const str = ch.toString('utf-8');
+        // Process each character individually (handles paste)
+        for (const c of str) {
+          if (c === '\n' || c === '\r') {
+            if (stdin.isTTY) stdin.setRawMode(wasRaw ?? false);
+            stdin.removeListener('data', onData);
+            println();
+            rl.resume();
+            resolve(buf);
+            return;
+          } else if (c === '\x7f' || c === '\b') {
+            if (buf.length > 0) {
+              buf = buf.slice(0, -1);
+              print('\b \b');
+            }
+          } else if (c === '\x03') {
+            if (stdin.isTTY) stdin.setRawMode(wasRaw ?? false);
+            println();
+            process.exit(130);
+          } else if (c.charCodeAt(0) >= 32) {
+            buf += c;
+            print('•');
           }
-        } else if (c === '\x03') {
-          // Ctrl+C
-          if (stdin.isTTY) stdin.setRawMode(wasRaw ?? false);
-          println();
-          process.exit(130);
-        } else if (c.charCodeAt(0) >= 32) {
-          buf += c;
-          print('•');
         }
       };
       stdin.on('data', onData);
