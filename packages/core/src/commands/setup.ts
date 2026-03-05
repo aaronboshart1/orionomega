@@ -54,11 +54,9 @@ function ask(question: string, opts?: { mask?: boolean; default?: string }): Pro
 
     if (opts?.mask) {
       // Masked input: pause readline, capture raw keystrokes
-      // Close rl temporarily to prevent it from echoing characters
-      rl.pause();
+      // Close readline entirely to prevent echo during masked input
+      rl.close();
       const stdin = process.stdin;
-      // Detach stdin from readline so we get raw control
-      stdin.removeAllListeners('keypress');
       print(prompt);
       const wasRaw = stdin.isRaw;
       if (stdin.isTTY) stdin.setRawMode(true);
@@ -66,13 +64,13 @@ function ask(question: string, opts?: { mask?: boolean; default?: string }): Pro
       let buf = '';
       const onData = (ch: Buffer): void => {
         const str = ch.toString('utf-8');
-        // Process each character individually (handles paste)
         for (const c of str) {
           if (c === '\n' || c === '\r') {
             if (stdin.isTTY) stdin.setRawMode(wasRaw ?? false);
             stdin.removeListener('data', onData);
             println();
-            rl.resume();
+            // Recreate readline for subsequent prompts
+            initRL();
             resolve(buf);
             return;
           } else if (c === '\x7f' || c === '\b') {
