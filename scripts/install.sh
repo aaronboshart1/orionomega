@@ -159,8 +159,9 @@ else
     ok "Cloned to $INSTALL_DIR"
 fi
 
-# Fix ownership
+# Fix ownership and git safe.directory
 [[ -n "${SUDO:-}" ]] && $SUDO chown -R "$(id -u):$(id -g)" "$INSTALL_DIR"
+git config --global --add safe.directory "$INSTALL_DIR" 2>/dev/null || true
 
 cd "$INSTALL_DIR"
 
