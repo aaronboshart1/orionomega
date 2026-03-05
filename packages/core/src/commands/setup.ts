@@ -5,6 +5,7 @@
  */
 
 import * as readline from 'node:readline';
+import { Writable } from 'node:stream';
 import { createHash } from 'node:crypto';
 import { mkdirSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -46,6 +47,8 @@ function closeRL(): void {
 
 /**
  * Prompt for text input. Supports masked input for passwords.
+ * For masked input, temporarily swaps rl.output to a muted stream
+ * and intercepts line events to show dots.
  */
 function ask(question: string, opts?: { mask?: boolean; default?: string }): Promise<string> {
   return new Promise((resolve) => {
@@ -53,42 +56,33 @@ function ask(question: string, opts?: { mask?: boolean; default?: string }): Pro
     const prompt = `${question}${suffix}: `;
 
     if (opts?.mask) {
-      // Masked input: pause readline, capture raw keystrokes
-      // Close readline entirely to prevent echo during masked input
-      rl.close();
-      const stdin = process.stdin;
+      // Swap the rl output to a muted stream to suppress echo
+      const realOutput = (rl as unknown as { output: NodeJS.WritableStream }).output;
+      const muted = new Writable({
+        write(_chunk: unknown, _encoding: unknown, callback: () => void) { callback(); },
+      });
+      (rl as unknown as { output: NodeJS.WritableStream }).output = muted;
+
+      // Print prompt manually
       print(prompt);
-      const wasRaw = stdin.isRaw;
-      if (stdin.isTTY) stdin.setRawMode(true);
-      stdin.resume();
-      let buf = '';
-      const onData = (ch: Buffer): void => {
-        const str = ch.toString('utf-8');
-        for (const c of str) {
-          if (c === '\n' || c === '\r') {
-            if (stdin.isTTY) stdin.setRawMode(wasRaw ?? false);
-            stdin.removeListener('data', onData);
-            println();
-            // Recreate readline for subsequent prompts
-            initRL();
-            resolve(buf);
-            return;
-          } else if (c === '\x7f' || c === '\b') {
-            if (buf.length > 0) {
-              buf = buf.slice(0, -1);
-              print('\b \b');
-            }
-          } else if (c === '\x03') {
-            if (stdin.isTTY) stdin.setRawMode(wasRaw ?? false);
-            println();
-            process.exit(130);
-          } else if (c.charCodeAt(0) >= 32) {
-            buf += c;
-            print('•');
-          }
+
+      // Track dots via 'line' on stdin for keypress feedback
+      let charCount = 0;
+      const onKeypress = (_ch: string | undefined): void => {
+        if (_ch && _ch.length === 1 && _ch.charCodeAt(0) >= 32) {
+          charCount++;
+          print('•');
         }
       };
-      stdin.on('data', onData);
+      process.stdin.on('keypress', onKeypress);
+
+      rl.question('', (answer: string) => {
+        // Restore output
+        process.stdin.removeListener('keypress', onKeypress);
+        (rl as unknown as { output: NodeJS.WritableStream }).output = realOutput;
+        println(); // newline after the dots
+        resolve(answer.trim());
+      });
     } else {
       rl.question(prompt, (answer: string) => {
         const val = answer.trim() || opts?.default || '';
@@ -158,7 +152,7 @@ async function stepApiKey(config: OrionOmegaConfig): Promise<void> {
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-        model: 'claude-haiku-4-20250414',
+        model: 'claude-sonnet-4-6',
         max_tokens: 10,
         messages: [{ role: 'user', content: 'ping' }],
       }),
