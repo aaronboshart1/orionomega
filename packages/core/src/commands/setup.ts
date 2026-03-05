@@ -152,7 +152,7 @@ function confirm(question: string, defaultYes: boolean = true): Promise<boolean>
 async function stepApiKey(config: OrionOmegaConfig): Promise<void> {
   heading('Step 1/5 — Anthropic API Key');
 
-  const key = await ask('Enter your Anthropic API key', { mask: true });
+  const key = await ask('Enter your Anthropic API key');
 
   if (!key.startsWith('sk-ant-')) {
     fail('Key must start with "sk-ant-". Skipping validation.');
