@@ -5,7 +5,7 @@
  */
 
 import * as readline from 'node:readline';
-import { Writable } from 'node:stream';
+
 import { createHash } from 'node:crypto';
 import { mkdirSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -56,33 +56,53 @@ function ask(question: string, opts?: { mask?: boolean; default?: string }): Pro
     const prompt = `${question}${suffix}: `;
 
     if (opts?.mask) {
-      // Swap the rl output to a muted stream to suppress echo
-      const realOutput = (rl as unknown as { output: NodeJS.WritableStream }).output;
-      const muted = new Writable({
-        write(_chunk: unknown, _encoding: unknown, callback: () => void) { callback(); },
-      });
-      (rl as unknown as { output: NodeJS.WritableStream }).output = muted;
-
-      // Print prompt manually
+      // Use raw mode to read input character-by-character.
+      // This handles both typed and pasted input correctly.
       print(prompt);
 
-      // Track dots via 'line' on stdin for keypress feedback
-      let charCount = 0;
-      const onKeypress = (_ch: string | undefined): void => {
-        if (_ch && _ch.length === 1 && _ch.charCodeAt(0) >= 32) {
-          charCount++;
-          print('•');
+      const wasRaw = process.stdin.isRaw;
+      if (process.stdin.isTTY) {
+        process.stdin.setRawMode(true);
+      }
+      process.stdin.resume();
+
+      let input = '';
+      const onData = (buf: Buffer): void => {
+        for (const byte of buf) {
+          // Enter (CR or LF)
+          if (byte === 13 || byte === 10) {
+            process.stdin.removeListener('data', onData);
+            if (process.stdin.isTTY) {
+              process.stdin.setRawMode(wasRaw ?? false);
+            }
+            println(); // newline after input
+            if (input.length > 0) {
+              println(`  ${DIM}(${input.length} characters received)${RESET}`);
+            }
+            resolve(input.trim());
+            return;
+          }
+          // Backspace (127 or 8)
+          if (byte === 127 || byte === 8) {
+            if (input.length > 0) {
+              input = input.slice(0, -1);
+              print('\b \b');
+            }
+            continue;
+          }
+          // Ctrl+C
+          if (byte === 3) {
+            println();
+            process.exit(1);
+          }
+          // Printable characters
+          if (byte >= 32) {
+            input += String.fromCharCode(byte);
+            print('\u2022');
+          }
         }
       };
-      process.stdin.on('keypress', onKeypress);
-
-      rl.question('', (answer: string) => {
-        // Restore output
-        process.stdin.removeListener('keypress', onKeypress);
-        (rl as unknown as { output: NodeJS.WritableStream }).output = realOutput;
-        println(); // newline after the dots
-        resolve(answer.trim());
-      });
+      process.stdin.on('data', onData);
     } else {
       rl.question(prompt, (answer: string) => {
         const val = answer.trim() || opts?.default || '';
