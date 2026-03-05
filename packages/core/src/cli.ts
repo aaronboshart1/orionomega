@@ -52,9 +52,9 @@ const COMMANDS: Record<string, () => Promise<void>> = {
 async function main(): Promise<void> {
   const subcommand = process.argv[2];
 
-  // No args → launch TUI (default command)
+  // No args → show help
   if (!subcommand) {
-    await COMMANDS.tui();
+    await COMMANDS.help();
     return;
   }
 
