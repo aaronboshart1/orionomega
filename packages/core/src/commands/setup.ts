@@ -53,11 +53,16 @@ function ask(question: string, opts?: { mask?: boolean; default?: string }): Pro
     const prompt = `${question}${suffix}: `;
 
     if (opts?.mask) {
-      // Masked input: temporarily disable output, capture raw keystrokes
-      print(prompt);
+      // Masked input: pause readline, capture raw keystrokes
+      // Close rl temporarily to prevent it from echoing characters
+      rl.pause();
       const stdin = process.stdin;
+      // Detach stdin from readline so we get raw control
+      stdin.removeAllListeners('keypress');
+      print(prompt);
       const wasRaw = stdin.isRaw;
       if (stdin.isTTY) stdin.setRawMode(true);
+      stdin.resume();
       let buf = '';
       const onData = (ch: Buffer): void => {
         const c = ch.toString('utf-8');
@@ -65,6 +70,8 @@ function ask(question: string, opts?: { mask?: boolean; default?: string }): Pro
           if (stdin.isTTY) stdin.setRawMode(wasRaw ?? false);
           stdin.removeListener('data', onData);
           println();
+          // Re-attach readline
+          rl.resume();
           resolve(buf);
         } else if (c === '\x7f' || c === '\b') {
           if (buf.length > 0) {
@@ -73,6 +80,7 @@ function ask(question: string, opts?: { mask?: boolean; default?: string }): Pro
           }
         } else if (c === '\x03') {
           // Ctrl+C
+          if (stdin.isTTY) stdin.setRawMode(wasRaw ?? false);
           println();
           process.exit(130);
         } else if (c.charCodeAt(0) >= 32) {
