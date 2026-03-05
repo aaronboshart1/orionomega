@@ -1,10 +1,10 @@
 /**
  * @module auth
- * Lightweight authentication helpers — HMAC-SHA256 signed JSON tokens and bcrypt password hashing.
+ * Lightweight authentication helpers — HMAC-SHA256 signed JSON tokens and SHA-256 password hashing.
+ * Zero native dependencies — uses Node's built-in crypto only.
  */
 
-import { createHmac, randomBytes } from 'node:crypto';
-import bcrypt from 'bcrypt';
+import { createHmac, createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 
 const TOKEN_VERSION = 1;
 const DEFAULT_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hours
@@ -18,10 +18,6 @@ interface TokenPayload {
 
 /**
  * Generate an HMAC-SHA256 signed token containing the given payload.
- * @param payload - Arbitrary data to embed in the token.
- * @param secret - Signing secret (typically the hashed API key).
- * @param expiryMs - Token lifetime in milliseconds. Defaults to 24 hours.
- * @returns A base64url-encoded `payload.signature` token string.
  */
 export function generateToken(
   payload: Record<string, unknown>,
@@ -43,9 +39,6 @@ export function generateToken(
 
 /**
  * Validate an HMAC-SHA256 signed token and return its embedded data.
- * @param token - The token string to validate.
- * @param secret - The signing secret used at generation time.
- * @returns An object with `valid` flag and optional decoded `payload`.
  */
 export function validateToken(
   token: string,
@@ -83,20 +76,21 @@ export function validateToken(
 }
 
 /**
- * Hash a password using bcrypt.
- * @param password - The plaintext password.
- * @returns The bcrypt hash string.
+ * Hash a password using SHA-256 (hex output).
+ * For gateway API key authentication — not for user passwords.
  */
-export async function hashPassword(password: string): Promise<string> {
-  return bcrypt.hash(password, 12);
+export function hashPassword(password: string): string {
+  return createHash('sha256').update(password).digest('hex');
 }
 
 /**
- * Verify a password against a bcrypt hash.
- * @param password - The plaintext password.
- * @param hash - The bcrypt hash to compare against.
- * @returns `true` if the password matches.
+ * Verify a password against a SHA-256 hash using timing-safe comparison.
  */
-export async function verifyPassword(password: string, hash: string): Promise<boolean> {
-  return bcrypt.compare(password, hash);
+export function verifyPassword(password: string, hash: string): boolean {
+  const computed = createHash('sha256').update(password).digest('hex');
+  try {
+    return timingSafeEqual(Buffer.from(computed), Buffer.from(hash));
+  } catch {
+    return false;
+  }
 }

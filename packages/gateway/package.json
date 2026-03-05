@@ -13,13 +13,11 @@
   "dependencies": {
     "@orionomega/core": "workspace:*",
     "@orionomega/hindsight": "workspace:*",
-    "ws": "^8.18.0",
-    "bcrypt": "^5.1.1"
+    "ws": "^8.18.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/ws": "^8.5.13",
-    "@types/bcrypt": "^5.0.2",
     "typescript": "^5.7.0",
     "tsx": "^4.0.0"
   }
