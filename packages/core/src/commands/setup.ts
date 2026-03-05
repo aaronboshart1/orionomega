@@ -241,16 +241,7 @@ async function fetchAnthropicModels(apiKey: string): Promise<{ label: string; va
 async function stepModel(config: OrionOmegaConfig): Promise<void> {
   heading('Step 2/5 — Default Model');
 
-  // Try to fetch real models from the API
-  let options: { label: string; value: string }[] = [];
-  if (config.models.apiKey) {
-    options = await fetchAnthropicModels(config.models.apiKey);
-  }
-
-  // Fallback to hardcoded if API fetch fails
-  if (options.length === 0) {
-    warn('Could not fetch models from API. Showing known models:');
-    options = [
+  const options: { label: string; value: string }[] = [
       { label: `Claude Sonnet 4.6 ${DIM}(recommended)${RESET}`, value: 'claude-sonnet-4-6' },
       { label: 'Claude Opus 4.6', value: 'claude-opus-4-6' },
       { label: 'Claude Sonnet 4.5', value: 'claude-sonnet-4-5-20250929' },
@@ -260,7 +251,6 @@ async function stepModel(config: OrionOmegaConfig): Promise<void> {
       { label: 'Claude Opus 4', value: 'claude-opus-4-20250514' },
       { label: 'Claude Haiku 4', value: 'claude-haiku-4-20250414' },
     ];
-  }
 
   // Also allow manual entry
   options.push({ label: `${DIM}Enter a model ID manually${RESET}`, value: '__custom__' });
