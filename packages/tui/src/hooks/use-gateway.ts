@@ -257,24 +257,11 @@ export function useGateway(options: UseGatewayOptions): UseGatewayReturn {
               emoji: eventEmoji[event.type] ?? '📊',
             }]);
           } else if (event.type === 'tool_call' && event.tool) {
-            // Show tool calls as subtle system messages
-            const toolMsg = `[${event.nodeId}] ${event.tool.name}${event.tool.action ? '.' + event.tool.action : ''}${event.tool.summary ? ' — ' + event.tool.summary : ''}`;
-            setMessages(prev => [...prev, {
-              id: nextId(),
-              role: 'system',
-              content: toolMsg,
-              timestamp: event.timestamp,
-              emoji: '🔧',
-            }]);
+            // Show tool calls in thinking indicator (non-intrusive, won't break streaming text)
+            setThinking(`${event.nodeId}: ${event.tool.name}${event.tool.summary ? ' — ' + event.tool.summary : ''}`);
           } else if (event.type === 'status' && event.message) {
-            // Show status updates
-            setMessages(prev => [...prev, {
-              id: nextId(),
-              role: 'system',
-              content: `[${event.nodeId}] ${event.message}`,
-              timestamp: event.timestamp,
-              emoji: '📊',
-            }]);
+            // Show status in thinking indicator
+            setThinking(`${event.nodeId}: ${event.message}`);
           }
 
           // Update thinking with latest worker activity

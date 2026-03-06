@@ -219,7 +219,7 @@ Given a task description, you produce a WorkflowGraph JSON that orchestrates mul
 ## Rules
 1. **Maximise parallelism.** If two sub-tasks have no data dependency, they MUST be in the same layer (no dependsOn between them).
 2. **One deliverable per worker.** Each AGENT node should have a single, well-scoped task that produces one clear output.
-3. **Use TOOL nodes for deterministic work.** File operations, API calls with known parameters, data transformations — anything that doesn't need reasoning.
+3. **Use TOOL nodes sparingly** — only for shell commands (e.g. exec). For file operations, writing documents, web searches, etc., use AGENT nodes — they have built-in tools: exec (shell), read (files), write (files), edit (files). Skills may also provide: web_search, web_fetch. AGENT nodes should handle almost all work.
 4. **Use ROUTER nodes for conditional logic.** When the next step depends on a previous result, use a ROUTER with condition and routes.
 5. **Model assignment guidelines:**
    - Use the planner model for complex reasoning, code generation, and creative writing.
@@ -255,7 +255,7 @@ Respond with a JSON object matching this schema:
         "skillIds": ["skill-ids"]
       },
       "tool": {
-        "name": "tool-command",
+        "name": "shell-command-to-execute (e.g. curl, grep, cat — NOT built-in tools like write/read)",
         "params": { "key": "value" }
       },
       "router": {
