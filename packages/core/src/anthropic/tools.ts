@@ -314,5 +314,84 @@ export function getBuiltInTools(): BuiltInTool[] {
         }
       },
     },
+
+    {
+      name: 'web_search',
+      description:
+        'Search the web using DuckDuckGo and return formatted results with title, URL, and snippet.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          query: {
+            type: 'string',
+            description: 'The search query.',
+          },
+          count: {
+            type: 'number',
+            description: 'Number of results to return. Defaults to 5.',
+          },
+        },
+        required: ['query'],
+      },
+      execute: async (
+        params: Record<string, unknown>,
+      ): Promise<string> => {
+        const query = String(params.query ?? '');
+        const count = Math.min(Number(params.count ?? 5), 20);
+
+        if (!query) return 'Error: query is required';
+
+        const encoded = encodeURIComponent(query);
+        const url = `https://html.duckduckgo.com/html/?q=${encoded}`;
+
+        try {
+          const response = await fetch(url, {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (compatible; OrionOmega/0.1)',
+              Accept: 'text/html,*/*',
+            },
+            signal: AbortSignal.timeout(30_000),
+          });
+
+          if (!response.ok) {
+            return `HTTP ${response.status}: ${response.statusText}`;
+          }
+
+          const html = await response.text();
+
+          // Extract result blocks from DuckDuckGo HTML
+          const results: string[] = [];
+          const resultRegex = /<a[^>]+class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<a[^>]+class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g;
+          let match: RegExpExecArray | null;
+
+          while ((match = resultRegex.exec(html)) !== null && results.length < count) {
+            const href = match[1] ?? '';
+            const title = stripHtml(match[2] ?? '').trim();
+            const snippet = stripHtml(match[3] ?? '').trim();
+
+            // DuckDuckGo wraps URLs; try to extract the uddg param
+            let finalUrl = href;
+            try {
+              const uddg = new URL(href, 'https://duckduckgo.com').searchParams.get('uddg');
+              if (uddg) finalUrl = decodeURIComponent(uddg);
+            } catch {
+              // keep original href
+            }
+
+            if (title && finalUrl) {
+              results.push(`${results.length + 1}. **${title}**\n   URL: ${finalUrl}\n   ${snippet}`);
+            }
+          }
+
+          if (results.length === 0) {
+            return `No results found for: ${query}`;
+          }
+
+          return `Search results for "${query}":\n\n` + results.join('\n\n');
+        } catch (err) {
+          return `Error searching: ${err instanceof Error ? err.message : String(err)}`;
+        }
+      },
+    },
   ];
 }
