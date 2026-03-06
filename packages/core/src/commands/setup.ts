@@ -7,9 +7,10 @@
 import * as readline from 'node:readline';
 
 import { createHash } from 'node:crypto';
-import { mkdirSync, existsSync, writeFileSync } from 'node:fs';
+import { mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { execSync } from 'node:child_process';
 import { readConfig, writeConfig, getConfigPath, getDefaultConfig } from '../config/index.js';
 import type { OrionOmegaConfig } from '../config/index.js';
 
@@ -456,6 +457,29 @@ export async function runSetup(): Promise<void> {
 
     // Save config
     writeConfig(config);
+
+    // Auto-restart gateway if it's running so it picks up the new config
+    try {
+      const out = execSync('systemctl is-active orionomega 2>/dev/null', { encoding: 'utf-8' }).trim();
+      if (out === 'active') {
+        print('  Restarting gateway to apply new config... ');
+        execSync('systemctl restart orionomega', { stdio: 'ignore' });
+        println(`${GREEN}✓${RESET} Gateway restarted`);
+      }
+    } catch {
+      // Gateway not running via systemd — check dev mode PID
+      try {
+        const pidFile = join(homedir(), '.orionomega', 'gateway.pid');
+        if (existsSync(pidFile)) {
+          print('  Restarting gateway to apply new config... ');
+          const pid = parseInt(readFileSync(pidFile, 'utf-8').trim(), 10);
+          if (!isNaN(pid)) {
+            try { process.kill(pid, 'SIGTERM'); } catch {}
+          }
+          println(`${YELLOW}⚠${RESET} Gateway was stopped. Run: orionomega gateway start`);
+        }
+      } catch {}
+    }
 
     heading('Setup Complete!');
     success(`Config saved to ${getConfigPath()}`);
