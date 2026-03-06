@@ -10,6 +10,17 @@ import type { PlannerOutput } from '@orionomega/core';
 import { MessageBubble } from './MessageBubble.js';
 import { PlanPrompt } from './PlanPrompt.js';
 
+/** Available slash commands with descriptions. */
+const SLASH_COMMANDS: { cmd: string; desc: string }[] = [
+  { cmd: '/help', desc: 'Show available commands' },
+  { cmd: '/status', desc: 'Session and system status' },
+  { cmd: '/reset', desc: 'Clear history and detach workflow' },
+  { cmd: '/stop', desc: 'Stop the active workflow' },
+  { cmd: '/restart', desc: 'Restart the active workflow' },
+  { cmd: '/plan', desc: 'Show the current execution plan' },
+  { cmd: '/workers', desc: 'List active workers' },
+];
+
 /** Props for the ChatView component. */
 interface ChatViewProps {
   /** Chat messages to display. */
@@ -39,14 +50,51 @@ export function ChatView({
   onPlanRespond,
 }: ChatViewProps): React.ReactElement {
   const [input, setInput] = useState('');
+  const [selectedCmd, setSelectedCmd] = useState(0);
+
+  // Determine if we're in slash-command mode and filter matches
+  const isSlashMode = input.startsWith('/');
+  const slashFilter = isSlashMode ? input.toLowerCase() : '';
+  const filteredCommands = isSlashMode
+    ? SLASH_COMMANDS.filter(c => c.cmd.startsWith(slashFilter))
+    : [];
 
   // Only capture input when there's no active plan (PlanPrompt handles its own input)
   useInput((ch, key) => {
     if (activePlan) return;
 
+    // Tab-complete in slash mode
+    if (key.tab && isSlashMode && filteredCommands.length > 0) {
+      const idx = selectedCmd < filteredCommands.length ? selectedCmd : 0;
+      setInput(filteredCommands[idx].cmd);
+      setSelectedCmd(0);
+      return;
+    }
+
+    // Arrow keys to navigate command suggestions
+    if (isSlashMode && filteredCommands.length > 0) {
+      if (key.upArrow) {
+        setSelectedCmd(prev => Math.max(0, prev - 1));
+        return;
+      }
+      if (key.downArrow) {
+        setSelectedCmd(prev => Math.min(filteredCommands.length - 1, prev + 1));
+        return;
+      }
+    }
+
     if (key.return) {
       const trimmed = input.trim();
       if (!trimmed) return;
+
+      // If in slash mode with a selected suggestion and input is partial, complete it
+      if (isSlashMode && filteredCommands.length > 0 && !SLASH_COMMANDS.some(c => c.cmd === trimmed)) {
+        const idx = selectedCmd < filteredCommands.length ? selectedCmd : 0;
+        onCommand(filteredCommands[idx].cmd.slice(1));
+        setInput('');
+        setSelectedCmd(0);
+        return;
+      }
 
       if (trimmed.startsWith('/')) {
         onCommand(trimmed.slice(1));
@@ -54,11 +102,20 @@ export function ChatView({
         onSend(trimmed);
       }
       setInput('');
+      setSelectedCmd(0);
       return;
     }
 
     if (key.backspace || key.delete) {
       setInput(prev => prev.slice(0, -1));
+      setSelectedCmd(0);
+      return;
+    }
+
+    // Escape to clear input
+    if (key.escape) {
+      setInput('');
+      setSelectedCmd(0);
       return;
     }
 
@@ -67,6 +124,7 @@ export function ChatView({
 
     if (ch) {
       setInput(prev => prev + ch);
+      setSelectedCmd(0);
     }
   });
 
@@ -97,10 +155,31 @@ export function ChatView({
         <PlanPrompt plan={activePlan} onRespond={onPlanRespond} />
       )}
 
+      {/* Slash command suggestions */}
+      {isSlashMode && filteredCommands.length > 0 && (
+        <Box flexDirection="column" paddingX={1} marginBottom={0}>
+          {filteredCommands.map((c, i) => (
+            <Box key={c.cmd}>
+              <Text color={i === selectedCmd ? 'cyan' : 'gray'} bold={i === selectedCmd}>
+                {i === selectedCmd ? '▸ ' : '  '}
+              </Text>
+              <Text color={i === selectedCmd ? 'yellow' : 'gray'} bold={i === selectedCmd}>
+                {c.cmd}
+              </Text>
+              <Text dimColor>  {c.desc}</Text>
+            </Box>
+          ))}
+        </Box>
+      )}
+
       {/* Input line */}
-      <Box borderStyle="single" borderColor="gray" paddingX={1}>
+      <Box borderStyle="single" borderColor={isSlashMode ? 'yellow' : 'gray'} paddingX={1}>
         <Text color="cyan" bold>{'> '}</Text>
-        <Text>{input}</Text>
+        {isSlashMode ? (
+          <Text color="yellow" bold>{input}</Text>
+        ) : (
+          <Text>{input}</Text>
+        )}
         <Text dimColor>▋</Text>
       </Box>
     </Box>
