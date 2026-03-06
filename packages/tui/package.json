@@ -11,18 +11,20 @@
     "dev": "tsc --watch"
   },
   "dependencies": {
+    "@orionomega/core": "workspace:*",
+    "@orionomega/gateway": "workspace:*",
     "ink": "^5.1.0",
     "ink-text-input": "^6.0.0",
+    "marked": "^15.0.12",
+    "marked-terminal": "^7.3.0",
     "react": "^18.3.1",
-    "ws": "^8.18.0",
-    "@orionomega/core": "workspace:*",
-    "@orionomega/gateway": "workspace:*"
+    "ws": "^8.18.0"
   },
   "devDependencies": {
+    "@tsconfig/strictest": "^2.0.0",
     "@types/node": "^22.0.0",
-    "@types/ws": "^8.5.0",
     "@types/react": "^18.3.0",
-    "typescript": "^5.7.0",
-    "@tsconfig/strictest": "^2.0.0"
+    "@types/ws": "^8.5.0",
+    "typescript": "^5.7.0"
   }
 }

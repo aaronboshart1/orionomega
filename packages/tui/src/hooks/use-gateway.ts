@@ -113,6 +113,11 @@ export function useGateway(options: UseGatewayOptions): UseGatewayReturn {
   const [graphState, setGraphState] = useState<GraphState | null>(null);
   const [recentEvents, setRecentEvents] = useState<WorkerEvent[]>([]);
 
+  // Ref to accumulate streaming content without nested setState
+  const streamingAccRef = useRef<{ id: string; content: string } | null>(null);
+  // Track message IDs already in the messages array (dedup safety)
+  const seenIdsRef = useRef<Set<string>>(new Set());
+
   const wsRef = useRef<import('ws').WebSocket | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pingTimer = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -179,44 +184,53 @@ export function useGateway(options: UseGatewayOptions): UseGatewayReturn {
     switch (msg.type) {
       case 'text': {
         if (msg.streaming && !msg.done) {
-          // Streaming text — update streamingMessage (dynamic section)
-          setStreamingMessage(prev => {
-            if (prev && prev.id === msg.id) {
-              return { ...prev, content: prev.content + (msg.content ?? '') };
-            }
-            return {
+          // Streaming text — accumulate in ref and update display
+          const acc = streamingAccRef.current;
+          if (acc && acc.id === msg.id) {
+            acc.content += msg.content ?? '';
+          } else {
+            streamingAccRef.current = { id: msg.id, content: msg.content ?? '' };
+          }
+          const current = streamingAccRef.current!;
+          setStreamingMessage({
+            id: current.id,
+            role: 'assistant',
+            content: current.content,
+            timestamp: new Date().toISOString(),
+          });
+        } else if (msg.done) {
+          // Streaming complete — move accumulated content to scrollback
+          setThinking('');
+          setStreamingMessage(null);
+
+          const acc = streamingAccRef.current;
+          const finalId = acc?.id ?? msg.id;
+
+          // Dedup: skip if already added
+          if (seenIdsRef.current.has(finalId)) break;
+
+          const finalContent = msg.content || acc?.content || '';
+          if (finalContent) {
+            seenIdsRef.current.add(finalId);
+            setMessages(prev => [...prev, {
+              id: finalId,
+              role: 'assistant',
+              content: finalContent,
+              timestamp: new Date().toISOString(),
+            }]);
+          }
+          streamingAccRef.current = null;
+        } else {
+          // Non-streaming text — goes directly to scrollback
+          if (!seenIdsRef.current.has(msg.id)) {
+            seenIdsRef.current.add(msg.id);
+            setMessages(prev => [...prev, {
               id: msg.id,
               role: 'assistant',
               content: msg.content ?? '',
               timestamp: new Date().toISOString(),
-            };
-          });
-        } else if (msg.done) {
-          // Streaming complete — move to completed messages (scrollback)
-          setThinking('');
-          setStreamingMessage(prev => {
-            if (prev) {
-              // Finalize: add to completed messages
-              const finalContent = msg.content || prev.content;
-              setMessages(msgs => [...msgs, { ...prev, content: finalContent }]);
-            } else if (msg.content) {
-              setMessages(msgs => [...msgs, {
-                id: msg.id,
-                role: 'assistant',
-                content: msg.content!,
-                timestamp: new Date().toISOString(),
-              }]);
-            }
-            return null; // Clear streaming
-          });
-        } else {
-          // Non-streaming text — goes directly to scrollback
-          setMessages(prev => [...prev, {
-            id: msg.id,
-            role: 'assistant',
-            content: msg.content ?? '',
-            timestamp: new Date().toISOString(),
-          }]);
+            }]);
+          }
         }
         break;
       }
