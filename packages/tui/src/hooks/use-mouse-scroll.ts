@@ -1,17 +1,13 @@
 /**
  * @module hooks/use-mouse-scroll
- * Enables terminal mouse wheel scrolling via ANSI escape sequences.
- * Intercepts stdin to strip mouse events before Ink processes them.
+ * Terminal mouse wheel scrolling for Ink apps.
+ *
+ * Strategy: Enable SGR mouse mode, then intercept raw stdin data events
+ * BEFORE Ink reads them. We replace process.stdin.read to filter mouse bytes.
  */
 
 import { useEffect, useRef } from 'react';
 
-type EmitFn = (event: string | symbol, ...args: unknown[]) => boolean;
-
-/**
- * Hook that enables mouse wheel scrolling in the terminal.
- * Overrides process.stdin.emit to filter mouse sequences before Ink sees them.
- */
 export function useMouseScroll(
   onScrollUp: () => void,
   onScrollDown: () => void,
@@ -22,53 +18,49 @@ export function useMouseScroll(
   downRef.current = onScrollDown;
 
   useEffect(() => {
-    // Enable mouse tracking (SGR mode for wide terminal support)
+    // Enable SGR extended mouse mode
     process.stdout.write('\x1b[?1000h');
     process.stdout.write('\x1b[?1006h');
 
-    // SGR mouse pattern: ESC [ < Btn ; X ; Y M/m
-    const sgrRegex = /\x1b\[<(\d+);\d+;\d+[Mm]/g;
-    // Legacy mouse pattern: ESC [ M followed by 3 bytes
-    const legacyRegex = /\x1b\[M[\s\S]{3}/g;
+    // Intercept stdin data at the lowest level
+    const listeners = process.stdin.rawListeners('data') as Array<(chunk: Buffer) => void>;
+    // Remove all existing data listeners (Ink's)
+    process.stdin.removeAllListeners('data');
 
-    // Override stdin.emit to intercept mouse events before Ink
-    const originalEmit: EmitFn = process.stdin.emit.bind(process.stdin);
+    // Our filter handler
+    const filterHandler = (chunk: Buffer) => {
+      let str = chunk.toString('utf8');
 
-    (process.stdin as unknown as { emit: EmitFn }).emit = (
-      event: string | symbol,
-      ...args: unknown[]
-    ): boolean => {
-      if (event === 'data' && args[0]) {
-        const buf = args[0] as Buffer;
-        const str = typeof buf === 'string' ? buf : buf.toString('utf8');
-
-        // Parse mouse wheel events
-        let match: RegExpExecArray | null;
-        sgrRegex.lastIndex = 0;
-        while ((match = sgrRegex.exec(str)) !== null) {
-          const btn = parseInt(match[1], 10);
-          if (btn === 64) upRef.current();
-          else if (btn === 65) downRef.current();
-        }
-
-        // Strip all mouse sequences from the data
-        const cleaned = str
-          .replace(/\x1b\[<\d+;\d+;\d+[Mm]/g, '')
-          .replace(/\x1b\[M[\s\S]{3}/g, '');
-
-        // If nothing left after stripping, don't emit (pure mouse data)
-        if (cleaned.length === 0) return false;
-
-        // Pass cleaned data to Ink
-        return originalEmit(event, Buffer.from(cleaned, 'utf8'));
+      // Parse SGR mouse wheel events: ESC [ < Btn ; X ; Y M
+      const sgrRegex = /\x1b\[<(\d+);\d+;\d+[Mm]/g;
+      let match;
+      while ((match = sgrRegex.exec(str)) !== null) {
+        const btn = parseInt(match[1], 10);
+        if (btn === 64) upRef.current();
+        else if (btn === 65) downRef.current();
       }
 
-      return originalEmit(event, ...args);
+      // Strip ALL mouse sequences
+      const cleaned = str.replace(/\x1b\[<\d+;\d+;\d+[Mm]/g, '');
+
+      if (cleaned.length === 0) return; // Pure mouse data, don't forward
+
+      // Forward cleaned data to all original listeners
+      const cleanBuf = Buffer.from(cleaned, 'utf8');
+      for (const listener of listeners) {
+        listener(cleanBuf);
+      }
     };
 
+    process.stdin.on('data', filterHandler);
+
     return () => {
-      // Restore original emit
-      (process.stdin as unknown as { emit: EmitFn }).emit = originalEmit;
+      // Remove our handler
+      process.stdin.removeListener('data', filterHandler);
+      // Restore original listeners
+      for (const listener of listeners) {
+        process.stdin.on('data', listener);
+      }
       // Disable mouse tracking
       process.stdout.write('\x1b[?1006l');
       process.stdout.write('\x1b[?1000l');
