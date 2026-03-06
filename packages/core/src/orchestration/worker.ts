@@ -13,6 +13,7 @@ import { AnthropicClient } from '../anthropic/client.js';
 import { runAgentLoop } from '../anthropic/agent-loop.js';
 import { getBuiltInTools } from '../anthropic/tools.js';
 import { readConfig } from '../config/loader.js';
+import { SkillLoader } from '@orionomega/skills-sdk';
 import { createLogger } from '../logging/logger.js';
 
 const log = createLogger('worker');
@@ -49,16 +50,18 @@ export class WorkerProcess {
   private currentProgress = 0;
   private lastEvent: WorkerEvent | undefined;
   private readonly events: WorkerEvent[] = [];
+  private readonly context: string | undefined;
 
   constructor(
     node: WorkflowNode,
     eventBus: EventBus,
-    options: { workspaceDir: string; timeout: number },
+    options: { workspaceDir: string; timeout: number; context?: string },
   ) {
     this.node = node;
     this.eventBus = eventBus;
     this.workspaceDir = options.workspaceDir;
     this.timeout = options.timeout;
+    this.context = options.context;
   }
 
   /**
@@ -235,7 +238,7 @@ export class WorkerProcess {
     const tools = getBuiltInTools();
 
     // Build the system prompt
-    const systemPrompt = this.buildWorkerSystemPrompt(agentConfig);
+    const systemPrompt = await this.buildWorkerSystemPrompt(agentConfig);
 
     this.emitEvent({
       type: 'status',
@@ -352,20 +355,61 @@ export class WorkerProcess {
 
   /**
    * Builds the system prompt for a worker agent.
+   *
+   * Loads SKILL.md documentation for any skillIds assigned to the node
+   * and prepends it to the prompt so the worker has full tool context.
    */
-  private buildWorkerSystemPrompt(agentConfig: {
+  private async buildWorkerSystemPrompt(agentConfig: {
     task: string;
     systemPrompt?: string;
     skillIds?: string[];
-  }): string {
+  }): Promise<string> {
     // If there's an explicit system prompt override, use it
     if (agentConfig.systemPrompt) {
       return agentConfig.systemPrompt;
     }
 
+    // Load SKILL.md content for any assigned skills
+    let skillDocs = '';
+    if (agentConfig.skillIds?.length) {
+      const config = readConfig();
+      const skillsDir = config.skills?.directory;
+      if (skillsDir) {
+        try {
+          const loader = new SkillLoader(skillsDir);
+          const docs: string[] = [];
+          for (const skillId of agentConfig.skillIds) {
+            try {
+              const loaded = await loader.load(skillId);
+              // Prefer prompts/worker.md over SKILL.md for workers
+              const doc = loaded.workerPrompt || loaded.skillDoc;
+              if (doc) {
+                docs.push(`## Skill: ${skillId}\n${doc}`);
+              }
+            } catch (err) {
+              log.warn(`Failed to load skill "${skillId}" for worker prompt`, {
+                error: err instanceof Error ? err.message : String(err),
+              });
+            }
+          }
+          if (docs.length) {
+            skillDocs = `\n\n# Skill Documentation\n${docs.join('\n\n')}`;
+          }
+        } catch (err) {
+          log.warn('Failed to initialise SkillLoader for worker', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+    }
+
+    const contextSection = this.context
+      ? `## Relevant Context\n${this.context}\n\n`
+      : '';
+
     return `You are a focused worker agent in the OrionOmega orchestration system.
 
-## Your Task
+${contextSection}## Your Task
 ${agentConfig.task}
 
 ## Rules
@@ -377,7 +421,7 @@ ${agentConfig.task}
 
 ## Working Directory
 All relative paths are resolved against the workspace directory.
-Use absolute paths when referencing files outside the workspace.`;
+Use absolute paths when referencing files outside the workspace.${skillDocs}`;
   }
 
   /**

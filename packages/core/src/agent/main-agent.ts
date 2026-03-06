@@ -26,6 +26,9 @@ import type {
 import { buildSystemPrompt, type PromptContext } from './prompt-builder.js';
 import { createLogger } from '../logging/logger.js';
 
+// Skills SDK
+import { SkillLoader } from '@orionomega/skills-sdk';
+
 // Memory integration
 import { HindsightClient } from '@orionomega/hindsight';
 import {
@@ -58,6 +61,8 @@ export interface MainAgentConfig {
   workerTimeout: number;
   /** Maximum retries per worker node. */
   maxRetries: number;
+  /** Path to the skills directory (optional — skill discovery disabled when absent). */
+  skillsDir?: string;
   /** Hindsight configuration (optional — memory features disabled when absent). */
   hindsight?: OrionOmegaConfig['hindsight'];
 }
@@ -167,6 +172,11 @@ export class MainAgent {
   /** Whether memory subsystem has been initialised. */
   private memoryInitialised = false;
 
+  /** Skills loader for discovering available skills. */
+  private skillLoader: SkillLoader | null = null;
+  /** Discovered skills (name: description) passed to the planner. */
+  private availableSkills: string[] = [];
+
   /** The plan currently awaiting user approval. */
   private pendingPlan: PlannerOutput | null = null;
   /** ID of the pending plan (workflow graph ID). */
@@ -267,6 +277,20 @@ export class MainAgent {
       log.warn('Memory subsystem init failed — continuing without memory', {
         error: err instanceof Error ? err.message : String(err),
       });
+    }
+
+    // Initialise skills loader and discover available skills
+    if (this.config.skillsDir) {
+      try {
+        this.skillLoader = new SkillLoader(this.config.skillsDir);
+        const manifests = await this.skillLoader.discoverAll();
+        this.availableSkills = manifests.map((m) => `${m.name}: ${m.description}`);
+        log.info('Skills discovered', { count: manifests.length });
+      } catch (err) {
+        log.warn('Skills discovery failed — continuing without skills', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
   }
 
@@ -562,7 +586,28 @@ export class MainAgent {
     this.callbacks.onThinking('Analysing your request and building an execution plan…', true, false);
 
     try {
-      const plan = await this.planner.plan(task);
+    // Recall relevant context from Hindsight before planning
+    const memories: string[] = [];
+    if (this.hindsightClient) {
+      try {
+        const result = await this.hindsightClient.recall('jarvis-core', task, { maxTokens: 1024 });
+        if (result?.memories?.length) {
+          memories.push(result.memories.map((m) => m.content).join('\n\n'));
+        }
+      } catch {}
+      if (this.activeProjectBank) {
+        try {
+          const result = await this.hindsightClient.recall(this.activeProjectBank, task, { maxTokens: 2048 });
+          if (result?.memories?.length) {
+            memories.push(result.memories.map((m) => m.content).join('\n\n'));
+          }
+        } catch {}
+      }
+    }
+      const plan = await this.planner.plan(task, {
+        ...(memories.length ? { memories } : {}),
+        ...(this.availableSkills.length ? { availableSkills: this.availableSkills } : {}),
+      });
 
       this.pendingPlan = plan;
       this.pendingPlanId = plan.graph.id;
@@ -588,7 +633,28 @@ export class MainAgent {
     this.callbacks.onThinking('Planning and executing immediately…', true, false);
 
     try {
-      const plan = await this.planner.plan(task);
+    // Recall relevant context from Hindsight before planning
+    const memories: string[] = [];
+    if (this.hindsightClient) {
+      try {
+        const result = await this.hindsightClient.recall('jarvis-core', task, { maxTokens: 1024 });
+        if (result?.memories?.length) {
+          memories.push(result.memories.map((m) => m.content).join('\n\n'));
+        }
+      } catch {}
+      if (this.activeProjectBank) {
+        try {
+          const result = await this.hindsightClient.recall(this.activeProjectBank, task, { maxTokens: 2048 });
+          if (result?.memories?.length) {
+            memories.push(result.memories.map((m) => m.content).join('\n\n'));
+          }
+        } catch {}
+      }
+    }
+      const plan = await this.planner.plan(task, {
+        ...(memories.length ? { memories } : {}),
+        ...(this.availableSkills.length ? { availableSkills: this.availableSkills } : {}),
+      });
       this.callbacks.onThinking('', true, true);
       this.callbacks.onPlan(plan);
       this.pushHistory({

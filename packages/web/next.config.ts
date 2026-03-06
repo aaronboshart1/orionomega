@@ -1,7 +1,8 @@
 import type { NextConfig } from 'next';
 
 const nextConfig: NextConfig = {
-  output: 'standalone',
+  // standalone removed: not needed for pnpm dev/start usage and causes
+  // copyfile errors with monorepo layouts in some Next.js 15 versions
 };
 
 export default nextConfig;

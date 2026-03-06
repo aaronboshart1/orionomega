@@ -85,6 +85,7 @@ function initMainAgent(): void {
       : '/tmp/orionomega-checkpoints',
     workerTimeout: fullConfig?.orchestration?.workerTimeout ?? 300,
     maxRetries: fullConfig?.orchestration?.maxRetries ?? 2,
+    skillsDir: fullConfig?.skills?.directory,
   };
 
   // Stable IDs for streaming — each new response starts a fresh ID,

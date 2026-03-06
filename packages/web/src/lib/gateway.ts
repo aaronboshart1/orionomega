@@ -5,7 +5,8 @@ import ReconnectingWebSocket from 'reconnecting-websocket';
 import { useOrchestrationStore } from '@/stores/orchestration';
 import { useChatStore } from '@/stores/chat';
 
-export function useGateway(url: string = 'ws://127.0.0.1:18790/ws') {
+// Gateway port matches core config default (7800)
+export function useGateway(url: string = 'ws://127.0.0.1:7800/ws') {
   const wsRef = useRef<ReconnectingWebSocket | null>(null);
   const orchStore = useOrchestrationStore();
   const chatStore = useChatStore();
@@ -33,16 +34,39 @@ export function useGateway(url: string = 'ws://127.0.0.1:18790/ws') {
           if (msg.event) orchStore.addEvent(msg.event);
           if (msg.graphState) orchStore.setGraphState(msg.graphState);
           break;
+        case 'status':
+          // Gateway status updates (connected, workflow active/idle, etc.)
+          if (msg.graphState) orchStore.setGraphState(msg.graphState);
+          break;
         case 'command_result':
           chatStore.addMessage({
             id: crypto.randomUUID(),
             role: 'system',
-            content: msg.commandResult?.message || '',
+            content: msg.commandResult?.message || msg.message || '',
             timestamp: new Date().toISOString(),
             type: 'command-result',
           });
           break;
+        case 'error':
+          chatStore.addMessage({
+            id: crypto.randomUUID(),
+            role: 'system',
+            content: `Error: ${msg.message || 'Unknown error'}`,
+            timestamp: new Date().toISOString(),
+            type: 'command-result',
+          });
+          chatStore.setStreaming(false);
+          break;
+        case 'ack':
+          // Server acknowledged receipt — no UI action needed
+          break;
+        default:
+          console.debug('[gateway] unhandled message type:', msg.type, msg);
       }
+    };
+
+    ws.onerror = (err) => {
+      console.error('[gateway] WebSocket error', err);
     };
 
     return () => ws.close();
