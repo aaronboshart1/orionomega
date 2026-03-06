@@ -3,7 +3,7 @@
  * Main chat display with scrollable message list, text input, and plan prompts.
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Box, Text, useInput, useStdout } from 'ink';
 import type { DisplayMessage } from '../hooks/use-gateway.js';
 import type { PlannerOutput } from '@orionomega/core';
@@ -69,6 +69,52 @@ export function ChatView({
   const [input, setInput] = useState('');
   const [selectedCmd, setSelectedCmd] = useState(0);
   const [scrollOffset, setScrollOffset] = useState(0); // 0 = bottom (latest)
+
+  // Paste detection state
+  const pasteBufferRef = useRef('');
+  const pasteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isPastingRef = useRef(false);
+  const [pastedContent, setPastedContent] = useState<string | null>(null);
+
+  // Detect paste via stdin data chunk size — fires BEFORE Ink's useInput
+  useEffect(() => {
+    const handler = (data: Buffer) => {
+      const str = data.toString('utf8');
+      // Normal keystrokes: 1-6 bytes. Paste: much larger, often with newlines.
+      const isPaste = str.length > 15 || (str.includes('\n') && str.length > 5);
+      if (isPaste) {
+        isPastingRef.current = true;
+        pasteBufferRef.current += str;
+
+        // Debounce: finalize after 100ms of no new data
+        if (pasteTimerRef.current) clearTimeout(pasteTimerRef.current);
+        pasteTimerRef.current = setTimeout(() => {
+          const text = pasteBufferRef.current;
+          pasteBufferRef.current = '';
+          isPastingRef.current = false;
+          pasteTimerRef.current = null;
+
+          // Clean up: remove bracketed paste markers if present
+          const cleaned = text
+            .replace(/\x1b\[200~/g, '')
+            .replace(/\x1b\[201~/g, '')
+            .replace(/\r\n/g, '\n')
+            .replace(/\r/g, '\n');
+
+          const lineCount = cleaned.split('\n').filter(l => l.length > 0).length;
+          setPastedContent(cleaned);
+          setInput(`[paste ${lineCount} line${lineCount !== 1 ? 's' : ''}]`);
+        }, 100);
+      }
+    };
+
+    // prepend ensures we detect paste BEFORE Ink processes the chars
+    process.stdin.prependListener('data', handler);
+    return () => {
+      process.stdin.removeListener('data', handler);
+      if (pasteTimerRef.current) clearTimeout(pasteTimerRef.current);
+    };
+  }, []);
   const { stdout } = useStdout();
 
   const termRows = stdout?.rows ?? 24;
@@ -122,6 +168,9 @@ export function ChatView({
 
   useInput((ch, key) => {
     if (activePlan) return;
+
+    // Skip character processing during paste — stdin handler captures it
+    if (isPastingRef.current) return;
 
     // Scroll: PgUp, PgDn, Shift+Arrow, Ctrl+U/D, or [ / ] when input is empty
     if (key.pageUp) {
@@ -188,6 +237,15 @@ export function ChatView({
     }
 
     if (key.return) {
+      // If we have pasted content, send the full paste
+      if (pastedContent) {
+        setScrollOffset(0);
+        onSend(pastedContent);
+        setPastedContent(null);
+        setInput('');
+        return;
+      }
+
       const trimmed = input.trim();
       if (!trimmed) return;
 
@@ -231,10 +289,12 @@ export function ChatView({
       return;
     }
 
-    // Escape to clear input
+    // Escape to clear input (and any buffered paste)
     if (key.escape) {
       setInput('');
       setSelectedCmd(0);
+      setPastedContent(null);
+      pasteBufferRef.current = '';
       return;
     }
 
@@ -303,9 +363,11 @@ export function ChatView({
       )}
 
       {/* Input line */}
-      <Box borderStyle="single" borderColor={isSlashMode ? 'yellow' : 'gray'} paddingX={1}>
+      <Box borderStyle="single" borderColor={pastedContent ? 'magenta' : isSlashMode ? 'yellow' : 'gray'} paddingX={1}>
         <Text color="cyan" bold>{'> '}</Text>
-        {isSlashMode ? (
+        {pastedContent ? (
+          <Text color="magenta" bold>{input}</Text>
+        ) : isSlashMode ? (
           <Text color="yellow" bold>{input}</Text>
         ) : (
           <Text>{input}</Text>
