@@ -10,6 +10,9 @@ import type { PlannerOutput } from '@orionomega/core';
 import { MessageBubble } from './MessageBubble.js';
 import { PlanPrompt } from './PlanPrompt.js';
 
+/** Client-side commands handled by the TUI itself (not sent to gateway). */
+const CLIENT_COMMANDS = new Set(['/exit', '/quit', '/q']);
+
 /** Available slash commands with descriptions. */
 const SLASH_COMMANDS: { cmd: string; desc: string }[] = [
   { cmd: '/help', desc: 'Show available commands' },
@@ -19,6 +22,7 @@ const SLASH_COMMANDS: { cmd: string; desc: string }[] = [
   { cmd: '/restart', desc: 'Restart the active workflow' },
   { cmd: '/plan', desc: 'Show the current execution plan' },
   { cmd: '/workers', desc: 'List active workers' },
+  { cmd: '/exit', desc: 'Exit the TUI' },
 ];
 
 /** Rough estimate of lines a message takes (content lines + 1 for the prefix line). */
@@ -42,6 +46,8 @@ interface ChatViewProps {
   onSend: (content: string) => void;
   /** Callback to send a slash command. */
   onCommand: (command: string) => void;
+  /** Callback to exit the TUI. */
+  onExit: () => void;
   /** Callback to respond to a plan prompt. */
   onPlanRespond: (action: 'approve' | 'reject' | 'modify', modification?: string) => void;
 }
@@ -57,6 +63,7 @@ export function ChatView({
   activePlan,
   onSend,
   onCommand,
+  onExit,
   onPlanRespond,
 }: ChatViewProps): React.ReactElement {
   const [input, setInput] = useState('');
@@ -156,6 +163,12 @@ export function ChatView({
       }
     }
 
+    // Ctrl+C to exit
+    if (key.ctrl && ch === 'c') {
+      onExit();
+      return;
+    }
+
     if (key.return) {
       const trimmed = input.trim();
       if (!trimmed) return;
@@ -163,10 +176,22 @@ export function ChatView({
       // Auto-scroll to bottom on send
       setScrollOffset(0);
 
+      // Client-side commands — handle without sending to gateway
+      if (CLIENT_COMMANDS.has(trimmed.toLowerCase())) {
+        onExit();
+        return;
+      }
+
       // If in slash mode with a selected suggestion and input is partial, complete it
       if (isSlashMode && filteredCommands.length > 0 && !SLASH_COMMANDS.some(c => c.cmd === trimmed)) {
         const idx = selectedCmd < filteredCommands.length ? selectedCmd : 0;
-        onCommand(filteredCommands[idx].cmd.slice(1));
+        const selected = filteredCommands[idx].cmd;
+        // Check if the selected suggestion is a client-side command
+        if (CLIENT_COMMANDS.has(selected)) {
+          onExit();
+          return;
+        }
+        onCommand(selected.slice(1));
         setInput('');
         setSelectedCmd(0);
         return;
