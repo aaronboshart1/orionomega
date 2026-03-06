@@ -1,0 +1,49 @@
+{
+  "name": "web-fetch",
+  "version": "0.1.0",
+  "description": "Fetch the content of any URL and return it as readable text. HTML tags are stripped for clarity.",
+  "author": "OrionOmega",
+  "license": "MIT",
+  "orionomega": ">=0.1.0",
+  "requires": {
+    "commands": [],
+    "skills": [],
+    "env": []
+  },
+  "triggers": {
+    "keywords": ["fetch url", "open url", "read page", "scrape", "get content from"],
+    "commands": ["/fetch"]
+  },
+  "tools": [
+    {
+      "name": "web_fetch",
+      "description": "Fetch a URL and return its text content. HTML tags are stripped for readability.",
+      "handler": "handlers/web_fetch.js",
+      "timeout": 30000,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "The URL to fetch"
+          },
+          "maxChars": {
+            "type": "number",
+            "description": "Maximum characters to return. Defaults to 10000."
+          },
+          "extractMode": {
+            "type": "string",
+            "description": "Extraction mode: 'text' (default) or 'raw' for unstripped content",
+            "enum": ["text", "raw"]
+          }
+        },
+        "required": ["url"]
+      }
+    }
+  ],
+  "workerProfile": {
+    "model": "claude-haiku-4-5-20251001",
+    "tools": ["web_fetch"],
+    "maxTimeout": 60000
+  }
+}

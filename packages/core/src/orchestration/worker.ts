@@ -237,6 +237,50 @@ export class WorkerProcess {
     const agentConfig = this.node.agent!;
     const tools = getBuiltInTools();
 
+    // Load skill tools for any assigned skillIds
+    if (agentConfig.skillIds?.length) {
+      const config = readConfig();
+      const skillsDir = config.skills?.directory;
+      if (skillsDir) {
+        try {
+          const skillLoader = new SkillLoader(skillsDir);
+          for (const skillId of agentConfig.skillIds) {
+            try {
+              const loaded = await skillLoader.load(skillId);
+              for (const skillTool of loaded.tools) {
+                // Convert RegisteredTool to BuiltInTool format
+                tools.push({
+                  name: skillTool.name,
+                  description: skillTool.description,
+                  inputSchema: skillTool.inputSchema,
+                  execute: async (params: Record<string, unknown>): Promise<string> => {
+                    const result = await skillTool.execute(params);
+                    if (typeof result === "string") return result;
+                    if (result && typeof result === "object" && "result" in result) {
+                      return String((result as { result: unknown }).result);
+                    }
+                    if (result && typeof result === "object" && "error" in result) {
+                      return `Error: ${String((result as { error: unknown }).error)}`;
+                    }
+                    return JSON.stringify(result);
+                  },
+                });
+              }
+            } catch (err) {
+              log.warn(`Failed to load skill tools for "${skillId}"`, {
+                error: err instanceof Error ? err.message : String(err),
+              });
+            }
+          }
+        } catch (err) {
+          log.warn("Failed to initialise SkillLoader for skill tools", {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+    }
+
+
     // Build the system prompt
     const systemPrompt = await this.buildWorkerSystemPrompt(agentConfig);
 
@@ -414,7 +458,7 @@ ${agentConfig.task}
 
 ## Rules
 1. Complete the task thoroughly and deliver clear output.
-2. Use the available tools (exec, read, write, edit, web_fetch) as needed.
+2. Use the available tools (exec, read, write, edit) and any skill tools as needed.
 3. Be efficient — avoid unnecessary tool calls.
 4. If you encounter an error, try to recover or work around it.
 5. When done, provide a clear summary of what you accomplished and any notable findings.

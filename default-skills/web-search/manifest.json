@@ -1,0 +1,44 @@
+{
+  "name": "web-search",
+  "version": "0.1.0",
+  "description": "Search the web using DuckDuckGo and return formatted results with titles, URLs, and snippets",
+  "author": "OrionOmega",
+  "license": "MIT",
+  "orionomega": ">=0.1.0",
+  "requires": {
+    "commands": [],
+    "skills": [],
+    "env": []
+  },
+  "triggers": {
+    "keywords": ["search the web", "web search", "look up", "find information about", "google"],
+    "commands": ["/search"]
+  },
+  "tools": [
+    {
+      "name": "web_search",
+      "description": "Search the web for information. Returns titles, URLs, and snippets.",
+      "handler": "handlers/web_search.js",
+      "timeout": 30000,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Search query string"
+          },
+          "count": {
+            "type": "number",
+            "description": "Number of results to return (1-20, default 5)"
+          }
+        },
+        "required": ["query"]
+      }
+    }
+  ],
+  "workerProfile": {
+    "model": "claude-haiku-4-5-20251001",
+    "tools": ["web_search"],
+    "maxTimeout": 60000
+  }
+}

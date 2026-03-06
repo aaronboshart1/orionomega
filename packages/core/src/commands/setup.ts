@@ -450,6 +450,33 @@ export async function runSetup(): Promise<void> {
     if (!existsSync(config.skills.directory)) {
       mkdirSync(config.skills.directory, { recursive: true });
     }
+
+    // Install default skills (web-search, web-fetch, etc.) if not already present
+    try {
+      const defaultSkillsBase = join(homedir(), '.orionomega', 'skills');
+      const repoRoot = new URL('../../../../', import.meta.url).pathname;
+      const defaultSkillsDir = join(repoRoot, 'default-skills');
+      if (existsSync(defaultSkillsDir)) {
+        const { readdirSync, cpSync } = await import('node:fs');
+        const skillNames = readdirSync(defaultSkillsDir);
+        let installed = 0;
+        for (const skillName of skillNames) {
+          const src = join(defaultSkillsDir, skillName);
+          const dest = join(config.skills.directory, skillName);
+          if (!existsSync(dest)) {
+            cpSync(src, dest, { recursive: true });
+            execSync('find ' + dest + '/handlers -name "*.js" -exec chmod +x {} ; 2>/dev/null || true');
+            println('  ${DIM}Installed default skill: ' + skillName + '${RESET}');
+            installed++;
+          }
+        }
+        if (installed > 0) {
+          success('Installed ' + installed + ' default skill(s): ' + skillNames.filter(n => existsSync(join(config.skills.directory, n))).join(', '));
+        }
+      }
+    } catch (err) {
+      warn('Could not install default skills: ' + (err instanceof Error ? err.message : String(err)));
+    }
     const logDir = join(homedir(), '.orionomega', 'logs');
     if (!existsSync(logDir)) {
       mkdirSync(logDir, { recursive: true });
