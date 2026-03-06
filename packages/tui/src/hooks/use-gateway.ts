@@ -66,8 +66,10 @@ export interface UseGatewayOptions {
 export interface UseGatewayReturn {
   /** Whether the WebSocket is currently connected. */
   connected: boolean;
-  /** Accumulated chat messages. */
+  /** Completed chat messages (for terminal scrollback). */
   messages: DisplayMessage[];
+  /** Currently streaming message (rendered dynamically). */
+  streamingMessage: DisplayMessage | null;
   /** Current streaming thinking content (empty when not thinking). */
   thinking: string;
   /** Current plan awaiting approval, or null. */
@@ -104,6 +106,7 @@ export function useGateway(options: UseGatewayOptions): UseGatewayReturn {
 
   const [connected, setConnected] = useState(false);
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
+  const [streamingMessage, setStreamingMessage] = useState<DisplayMessage | null>(null);
   const [thinking, setThinking] = useState('');
   const [activePlan, setActivePlan] = useState<PlannerOutput | null>(null);
   const [activePlanId, setActivePlanId] = useState<string | null>(null);
@@ -176,38 +179,38 @@ export function useGateway(options: UseGatewayOptions): UseGatewayReturn {
     switch (msg.type) {
       case 'text': {
         if (msg.streaming && !msg.done) {
-          // Streaming text — update the last assistant message or create one
-          setMessages(prev => {
-            const last = prev[prev.length - 1];
-            if (last?.role === 'assistant' && last.id === msg.id) {
-              return [...prev.slice(0, -1), { ...last, content: last.content + (msg.content ?? '') }];
+          // Streaming text — update streamingMessage (dynamic section)
+          setStreamingMessage(prev => {
+            if (prev && prev.id === msg.id) {
+              return { ...prev, content: prev.content + (msg.content ?? '') };
             }
-            return [...prev, {
+            return {
               id: msg.id,
               role: 'assistant',
               content: msg.content ?? '',
               timestamp: new Date().toISOString(),
-            }];
+            };
           });
         } else if (msg.done) {
-          // Streaming complete — finalise last assistant message
+          // Streaming complete — move to completed messages (scrollback)
           setThinking('');
-          if (msg.content) {
-            setMessages(prev => {
-              const last = prev[prev.length - 1];
-              if (last?.role === 'assistant' && last.id === msg.id) {
-                return [...prev.slice(0, -1), { ...last, content: msg.content! }];
-              }
-              return [...prev, {
+          setStreamingMessage(prev => {
+            if (prev) {
+              // Finalize: add to completed messages
+              const finalContent = msg.content || prev.content;
+              setMessages(msgs => [...msgs, { ...prev, content: finalContent }]);
+            } else if (msg.content) {
+              setMessages(msgs => [...msgs, {
                 id: msg.id,
                 role: 'assistant',
                 content: msg.content!,
                 timestamp: new Date().toISOString(),
-              }];
-            });
-          }
+              }]);
+            }
+            return null; // Clear streaming
+          });
         } else {
-          // Non-streaming text
+          // Non-streaming text — goes directly to scrollback
           setMessages(prev => [...prev, {
             id: msg.id,
             role: 'assistant',
@@ -381,6 +384,7 @@ export function useGateway(options: UseGatewayOptions): UseGatewayReturn {
   return {
     connected,
     messages,
+    streamingMessage,
     thinking,
     activePlan,
     activePlanId,
