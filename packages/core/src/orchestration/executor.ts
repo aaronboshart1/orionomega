@@ -15,6 +15,8 @@ import type { EventBus } from './event-bus.js';
 import { WorkflowState } from './state.js';
 import { WorkerProcess, type WorkerResult } from './worker.js';
 import { createLogger } from '../logging/logger.js';
+import { readConfig } from '../config/loader.js';
+import { HindsightClient } from '@orionomega/hindsight';
 
 const log = createLogger('executor');
 
@@ -328,9 +330,16 @@ export class GraphExecutor {
     switch (node.type) {
       case 'AGENT':
       case 'TOOL': {
+        // For AGENT nodes, recall relevant memories from Hindsight and inject as context
+        let injectedContext: string | undefined;
+        if (node.type === 'AGENT' && node.agent?.task) {
+          injectedContext = await this.recallContext(node.agent.task);
+        }
+
         const worker = new WorkerProcess(node, this.eventBus, {
           workspaceDir: this.config.workspaceDir,
           timeout: node.timeout ?? this.config.workerTimeout,
+          context: injectedContext,
         });
         this.activeWorkers.set(node.id, worker);
 
@@ -487,6 +496,38 @@ export class GraphExecutor {
       message,
       data,
     });
+  }
+
+  /**
+   * Recalls relevant memories from Hindsight for a given task query.
+   * Returns the recalled text, or undefined if Hindsight is unavailable or no memories found.
+   */
+  private async recallContext(task: string): Promise<string | undefined> {
+    try {
+      const config = readConfig();
+      const hindsightUrl = config.hindsight?.url;
+      const bankId = config.hindsight?.defaultBank ?? 'default';
+
+      if (!hindsightUrl) {
+        log.debug('Hindsight URL not configured; skipping memory injection');
+        return undefined;
+      }
+
+      const client = new HindsightClient(hindsightUrl);
+      const result = await client.recall(bankId, task, { maxTokens: 2048, budget: 'mid' });
+
+      if (result?.memories && result.memories.length > 0) {
+        const text = result.memories
+          .map((m) => m.content)
+          .join('\n\n');
+        log.debug(`Injecting ${result.memories.length} memories (${text.length} chars) into worker`);
+        return text.trim();
+      }
+    } catch (err) {
+      // Non-fatal: workers proceed without context if Hindsight is unavailable
+      log.warn(`Hindsight recall failed (proceeding without context): ${err instanceof Error ? err.message : String(err)}`);
+    }
+    return undefined;
   }
 
   /** Builds the final ExecutionResult. */

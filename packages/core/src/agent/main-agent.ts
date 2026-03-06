@@ -562,7 +562,25 @@ export class MainAgent {
     this.callbacks.onThinking('Analysing your request and building an execution plan…', true, false);
 
     try {
-      const plan = await this.planner.plan(task);
+    // Recall relevant context from Hindsight before planning
+    const memories: string[] = [];
+    if (this.hindsightClient) {
+      try {
+        const result = await this.hindsightClient.recall('jarvis-core', task, { maxTokens: 1024 });
+        if (result?.memories?.length) {
+          memories.push(result.memories.map((m) => m.content).join('\n\n'));
+        }
+      } catch {}
+      if (this.activeProjectBank) {
+        try {
+          const result = await this.hindsightClient.recall(this.activeProjectBank, task, { maxTokens: 2048 });
+          if (result?.memories?.length) {
+            memories.push(result.memories.map((m) => m.content).join('\n\n'));
+          }
+        } catch {}
+      }
+    }
+      const plan = await this.planner.plan(task, memories.length ? { memories } : undefined);
 
       this.pendingPlan = plan;
       this.pendingPlanId = plan.graph.id;
@@ -588,7 +606,25 @@ export class MainAgent {
     this.callbacks.onThinking('Planning and executing immediately…', true, false);
 
     try {
-      const plan = await this.planner.plan(task);
+    // Recall relevant context from Hindsight before planning
+    const memories: string[] = [];
+    if (this.hindsightClient) {
+      try {
+        const result = await this.hindsightClient.recall('jarvis-core', task, { maxTokens: 1024 });
+        if (result?.memories?.length) {
+          memories.push(result.memories.map((m) => m.content).join('\n\n'));
+        }
+      } catch {}
+      if (this.activeProjectBank) {
+        try {
+          const result = await this.hindsightClient.recall(this.activeProjectBank, task, { maxTokens: 2048 });
+          if (result?.memories?.length) {
+            memories.push(result.memories.map((m) => m.content).join('\n\n'));
+          }
+        } catch {}
+      }
+    }
+      const plan = await this.planner.plan(task, memories.length ? { memories } : undefined);
       this.callbacks.onThinking('', true, true);
       this.callbacks.onPlan(plan);
       this.pushHistory({

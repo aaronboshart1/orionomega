@@ -13,6 +13,7 @@ import { AnthropicClient } from '../anthropic/client.js';
 import { runAgentLoop } from '../anthropic/agent-loop.js';
 import { getBuiltInTools } from '../anthropic/tools.js';
 import { readConfig } from '../config/loader.js';
+import { SkillLoader } from '@orionomega/skills-sdk';
 import { createLogger } from '../logging/logger.js';
 
 const log = createLogger('worker');
@@ -49,16 +50,18 @@ export class WorkerProcess {
   private currentProgress = 0;
   private lastEvent: WorkerEvent | undefined;
   private readonly events: WorkerEvent[] = [];
+  private readonly context: string | undefined;
 
   constructor(
     node: WorkflowNode,
     eventBus: EventBus,
-    options: { workspaceDir: string; timeout: number },
+    options: { workspaceDir: string; timeout: number; context?: string },
   ) {
     this.node = node;
     this.eventBus = eventBus;
     this.workspaceDir = options.workspaceDir;
     this.timeout = options.timeout;
+    this.context = options.context;
   }
 
   /**
@@ -235,7 +238,7 @@ export class WorkerProcess {
     const tools = getBuiltInTools();
 
     // Build the system prompt
-    const systemPrompt = this.buildWorkerSystemPrompt(agentConfig);
+    const systemPrompt = await this.buildWorkerSystemPrompt(agentConfig);
 
     this.emitEvent({
       type: 'status',
@@ -363,9 +366,13 @@ export class WorkerProcess {
       return agentConfig.systemPrompt;
     }
 
+    const contextSection = this.context
+      ? `## Relevant Context\n${this.context}\n\n`
+      : '';
+
     return `You are a focused worker agent in the OrionOmega orchestration system.
 
-## Your Task
+${contextSection}## Your Task
 ${agentConfig.task}
 
 ## Rules
