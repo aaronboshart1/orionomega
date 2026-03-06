@@ -559,7 +559,7 @@ export class MainAgent {
    * Creates a plan and presents it to the user without executing.
    */
   private async planOnly(task: string): Promise<void> {
-    this.callbacks.onText('Analysing your request and building an execution plan…', true, true);
+    this.callbacks.onThinking('Analysing your request and building an execution plan…', true, false);
 
     try {
       const plan = await this.planner.plan(task);
@@ -568,6 +568,7 @@ export class MainAgent {
       this.pendingPlanId = plan.graph.id;
       this.pendingPlanTask = task;
 
+      this.callbacks.onThinking('', true, true);
       this.callbacks.onPlan(plan);
       this.pushHistory({
         role: 'assistant',
@@ -584,10 +585,11 @@ export class MainAgent {
    * Creates a plan and immediately executes it (for "do it" / "run it" messages).
    */
   private async planAndExecute(task: string): Promise<void> {
-    this.callbacks.onText('Planning and executing immediately…', true, true);
+    this.callbacks.onThinking('Planning and executing immediately…', true, false);
 
     try {
       const plan = await this.planner.plan(task);
+      this.callbacks.onThinking('', true, true);
       this.callbacks.onPlan(plan);
       this.pushHistory({
         role: 'assistant',
