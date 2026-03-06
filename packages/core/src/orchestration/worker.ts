@@ -169,9 +169,36 @@ export class WorkerProcess {
     const config = readConfig();
     const agentConfig = this.node.agent;
 
-    // If the node has an explicit model, use it
+    // If the node has an explicit model, resolve aliases first
     if (agentConfig?.model) {
-      return agentConfig.model;
+      const model = agentConfig.model;
+
+      // Resolve well-known aliases from config
+      const aliases: Record<string, string> = {
+        'planner': config.models.planner || config.models.default,
+        'default': config.models.default,
+        'research': config.models.workers?.research || config.models.default,
+        'code': config.models.workers?.code || config.models.default,
+        'writing': config.models.workers?.writing || config.models.default,
+        'analysis': config.models.workers?.analysis || config.models.default,
+        'data': config.models.workers?.data || config.models.default,
+      };
+
+      // Check if it's an alias
+      if (aliases[model]) {
+        return aliases[model];
+      }
+
+      // Check if it looks like a real model ID (contains a hyphen and digits)
+      if (model.includes('-') && /\d/.test(model)) {
+        return model;
+      }
+
+      // Unknown string — check workers map, then fall back to default
+      const workerModel = config.models.workers?.[model];
+      if (workerModel) return workerModel;
+
+      return config.models.default;
     }
 
     // Try to find a profile-based model

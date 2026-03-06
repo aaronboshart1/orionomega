@@ -123,23 +123,41 @@ export function ChatView({
   useInput((ch, key) => {
     if (activePlan) return;
 
-    // Scroll: Page Up / Page Down
-    if (key.pageUp || (key.shift && key.upArrow)) {
+    // Scroll: PgUp, PgDn, Shift+Arrow, Ctrl+U/D, or [ / ] when input is empty
+    if (key.pageUp) {
       setScrollOffset(prev => Math.min(prev + 5, Math.max(0, allMessages.length - 1)));
       return;
     }
-    if (key.pageDown || (key.shift && key.downArrow)) {
+    if (key.pageDown) {
       setScrollOffset(prev => Math.max(0, prev - 5));
       return;
     }
+    if (key.shift && key.upArrow) {
+      setScrollOffset(prev => Math.min(prev + 3, Math.max(0, allMessages.length - 1)));
+      return;
+    }
+    if (key.shift && key.downArrow) {
+      setScrollOffset(prev => Math.max(0, prev - 3));
+      return;
+    }
 
-    // Home = scroll to top, End = scroll to bottom
+    // Ctrl+U = scroll to top, Ctrl+D = scroll to bottom
     if (key.ctrl && ch === 'u') {
       setScrollOffset(Math.max(0, allMessages.length - 1));
       return;
     }
     if (key.ctrl && ch === 'd') {
       setScrollOffset(0);
+      return;
+    }
+
+    // [ and ] to scroll when input is empty (most reliable in all terminals)
+    if (!input && ch === '[') {
+      setScrollOffset(prev => Math.min(prev + 3, Math.max(0, allMessages.length - 1)));
+      return;
+    }
+    if (!input && ch === ']') {
+      setScrollOffset(prev => Math.max(0, prev - 3));
       return;
     }
 
