@@ -6,7 +6,16 @@ import { useOrchestrationStore } from '@/stores/orchestration';
 import { useChatStore } from '@/stores/chat';
 
 // Gateway port matches core config default (7800)
-export function useGateway(url: string = 'ws://127.0.0.1:7800/ws') {
+// Auto-detect gateway URL from current browser location
+function defaultGatewayUrl(): string {
+  if (typeof window !== 'undefined') {
+    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${proto}//${window.location.hostname}:7800/ws`;
+  }
+  return 'ws://127.0.0.1:7800/ws';
+}
+
+export function useGateway(url: string = defaultGatewayUrl()) {
   const wsRef = useRef<ReconnectingWebSocket | null>(null);
   const orchStore = useOrchestrationStore();
   const chatStore = useChatStore();
