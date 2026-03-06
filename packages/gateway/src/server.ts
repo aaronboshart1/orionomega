@@ -120,8 +120,13 @@ function initMainAgent(): void {
       }
     },
     onPlan(plan) {
+      // Use graph.id as the message ID so the TUI can send it back
+      // in plan_response and the MainAgent can match it to pendingPlanId.
+      const planId = (plan as unknown as Record<string, unknown>).graph
+        ? ((plan as unknown as Record<string, unknown>).graph as Record<string, unknown>).id as string
+        : randomBytes(8).toString('hex');
       wsHandler.broadcast({
-        id: randomBytes(8).toString('hex'),
+        id: planId || randomBytes(8).toString('hex'),
         type: 'plan',
         plan,
       });
