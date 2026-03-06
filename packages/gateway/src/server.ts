@@ -87,24 +87,37 @@ function initMainAgent(): void {
     maxRetries: fullConfig?.orchestration?.maxRetries ?? 2,
   };
 
+  // Stable IDs for streaming — each new response starts a fresh ID,
+  // but all chunks within the same stream share it so the TUI can
+  // assemble them into a single message bubble.
+  let currentTextId = randomBytes(8).toString('hex');
+  let currentThinkingId = randomBytes(8).toString('hex');
+
   const callbacks: MainAgentCallbacks = {
     onText(text, streaming, done) {
       wsHandler.broadcast({
-        id: randomBytes(8).toString('hex'),
+        id: currentTextId,
         type: 'text',
         content: text,
         streaming,
         done,
       });
+      // Rotate ID when this stream is complete, ready for the next response
+      if (done || !streaming) {
+        currentTextId = randomBytes(8).toString('hex');
+      }
     },
     onThinking(text, streaming, done) {
       wsHandler.broadcast({
-        id: randomBytes(8).toString('hex'),
+        id: currentThinkingId,
         type: 'thinking',
         thinking: text,
         streaming,
         done,
       });
+      if (done || !streaming) {
+        currentThinkingId = randomBytes(8).toString('hex');
+      }
     },
     onPlan(plan) {
       wsHandler.broadcast({
