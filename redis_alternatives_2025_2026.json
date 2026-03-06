@@ -1,0 +1,14 @@
+[
+  {
+    "name": "Dragonfly",
+    "description": "A modern replacement for Redis and Memcached built with C++. Dragonfly offers exceptional performance with multi-threaded architecture, full Redis API compatibility, and significantly better memory efficiency. It's designed from the ground up for modern multi-core systems and provides superior throughput compared to Redis while maintaining the same API. Active development with 30,112 GitHub stars and strong community adoption make it the top choice for high-performance caching in 2025-2026."
+  },
+  {
+    "name": "Valkey",
+    "description": "A flexible distributed key-value database optimized for caching and real-time workloads. Valkey emerged as a Redis fork from the Linux Foundation, ensuring long-term open-source sustainability. It maintains full Redis compatibility while adding enterprise features and improved performance optimizations. With 25,029 GitHub stars and backing from major cloud providers, Valkey represents the community-driven future of Redis-compatible caching, making it highly relevant for organizations seeking Redis alternatives without vendor lock-in."
+  },
+  {
+    "name": "Microsoft Garnet",
+    "description": "A remote cache-store from Microsoft Research offering strong performance, scalability, and storage features with Redis client compatibility. Built in C# and leveraging .NET's performance improvements, Garnet provides excellent throughput and latency characteristics while supporting cluster sharding, key migration, and replication. With 11,764 GitHub stars and active Microsoft backing, Garnet is particularly attractive for .NET ecosystems and offers unique advantages like larger-than-memory datasets and advanced recovery features for enterprise caching scenarios."
+  }
+]

@@ -104,12 +104,11 @@ const IMMEDIATE_PATTERNS = [
   /\bjust\s*do\s*it\b/i,
 ];
 
-/** Conversational patterns that don't need orchestration. */
-const CONVERSATIONAL_PATTERNS = [
+/** Quick-match conversational patterns (no LLM call needed). */
+const CONVERSATIONAL_FAST = [
   /^(hi|hello|hey|yo|sup|howdy|greetings)\b/i,
   /^(thanks|thank\s*you|cheers|ta)\b/i,
   /^(good\s*(morning|afternoon|evening|night))\b/i,
-  /^what\s+can\s+you\s+do/i,
   /^who\s+are\s+you/i,
   /^how\s+are\s+you/i,
   /^help\b/i,
@@ -117,8 +116,24 @@ const CONVERSATIONAL_PATTERNS = [
   /^(yes|no|yep|nope|yeah|nah)\b/i,
 ];
 
-const MAX_CONVERSATIONAL_WORDS = 20;
+/** Quick-match patterns that almost certainly need orchestration. */
+const TASK_FAST = [
+  /\b(research|investigate|analyze|compare|build|create|write|generate|deploy|set\s*up|install|configure)\b.*\b(and|then|also|plus|save|output|file)\b/i,
+  /\bstep[- ]by[- ]step\b/i,
+  /\bmulti[- ]?step\b/i,
+];
+
 const MAX_HISTORY = 50;
+
+/** The LLM-based intent classification prompt. */
+const CLASSIFY_PROMPT = `You are an intent classifier for an AI orchestration system.
+Given a user message, classify it as one of:
+- CHAT: Conversational, simple questions, greetings, opinions, single-step answers the assistant can give directly. Examples: "what is 2+2?", "explain quantum computing", "what's the weather?", "tell me a joke", "what do you think about X?"
+- TASK: Multi-step work requiring research, file operations, code generation, comparisons, or coordinated effort. Examples: "research X and write a report", "build a landing page", "compare A, B, and C with benchmarks", "deploy X to production"
+
+Bias: When in doubt, prefer CHAT. Only classify as TASK when the request clearly needs multiple coordinated steps, external research, file creation, or multi-agent work.
+
+Respond with ONLY the word CHAT or TASK.`;
 
 /**
  * Determines if a message should be treated as immediate execution.
@@ -128,12 +143,25 @@ function isImmediateExecution(content: string): boolean {
 }
 
 /**
- * Determines if a message is purely conversational (no orchestration needed).
+ * Fast-path conversational check (no LLM needed).
+ * Returns true for obvious greetings/acks, false otherwise.
  */
-function isConversational(content: string): boolean {
-  const wordCount = content.trim().split(/\s+/).length;
-  if (wordCount > MAX_CONVERSATIONAL_WORDS) return false;
-  return CONVERSATIONAL_PATTERNS.some((p) => p.test(content.trim()));
+function isFastConversational(content: string): boolean {
+  const trimmed = content.trim();
+  const wordCount = trimmed.split(/\s+/).length;
+  // Very short messages (1-3 words) that match greeting patterns
+  if (wordCount <= 3 && CONVERSATIONAL_FAST.some((p) => p.test(trimmed))) return true;
+  // Any fast-match pattern with <=8 words
+  if (wordCount <= 8 && CONVERSATIONAL_FAST.some((p) => p.test(trimmed))) return true;
+  return false;
+}
+
+/**
+ * Fast-path task check (no LLM needed).
+ * Returns true for messages that obviously need orchestration.
+ */
+function isFastTask(content: string): boolean {
+  return TASK_FAST.some((p) => p.test(content.trim()));
 }
 
 // ── MainAgent ──────────────────────────────────────────────────────────────
@@ -369,8 +397,8 @@ export class MainAgent {
         return;
       }
 
-      // 2. Conversational?
-      if (isConversational(trimmed)) {
+      // 2. Fast-path conversational (greetings, acks — no LLM call needed)
+      if (isFastConversational(trimmed)) {
         await this.respondConversationally(trimmed);
         return;
       }
@@ -388,8 +416,19 @@ export class MainAgent {
         return;
       }
 
-      // 5. Default — plan first
-      await this.planOnly(trimmed);
+      // 5. Fast-path task detection (obviously multi-step requests)
+      if (isFastTask(trimmed)) {
+        await this.planOnly(trimmed);
+        return;
+      }
+
+      // 6. Ambiguous — use LLM classifier to decide
+      const intent = await this.classifyIntent(trimmed);
+      if (intent === 'TASK') {
+        await this.planOnly(trimmed);
+      } else {
+        await this.respondConversationally(trimmed);
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       log.error('handleMessage error', { error: msg });
@@ -577,7 +616,36 @@ export class MainAgent {
     }
   }
 
-  // ── Internal: Planning ───────────────────────────────────────────────────
+  // ── Internal: Intent classification ───────────────────────────────────────
+
+  /**
+   * Uses a fast LLM call to classify ambiguous messages as CHAT or TASK.
+   * Falls back to CHAT on error (conversational is the safe default).
+   */
+  private async classifyIntent(message: string): Promise<'CHAT' | 'TASK'> {
+    try {
+      const response = await this.anthropic.createMessage({
+        model: this.config.model,
+        system: CLASSIFY_PROMPT,
+        messages: [{ role: 'user', content: message }],
+        maxTokens: 8,
+        temperature: 0,
+      });
+
+      const text = response.content?.[0]?.text?.trim().toUpperCase() ?? 'CHAT';
+      log.info('Intent classified', { message: message.slice(0, 80), intent: text });
+
+      if (text.includes('TASK')) return 'TASK';
+      return 'CHAT';
+    } catch (err) {
+      log.warn('Intent classification failed, defaulting to CHAT', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return 'CHAT';
+    }
+  }
+
+    // ── Internal: Planning ───────────────────────────────────────────────────
 
   /**
    * Creates a plan and presents it to the user without executing.
