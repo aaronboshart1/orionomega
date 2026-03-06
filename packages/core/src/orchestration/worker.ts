@@ -355,15 +355,52 @@ export class WorkerProcess {
 
   /**
    * Builds the system prompt for a worker agent.
+   *
+   * Loads SKILL.md documentation for any skillIds assigned to the node
+   * and prepends it to the prompt so the worker has full tool context.
    */
-  private buildWorkerSystemPrompt(agentConfig: {
+  private async buildWorkerSystemPrompt(agentConfig: {
     task: string;
     systemPrompt?: string;
     skillIds?: string[];
-  }): string {
+  }): Promise<string> {
     // If there's an explicit system prompt override, use it
     if (agentConfig.systemPrompt) {
       return agentConfig.systemPrompt;
+    }
+
+    // Load SKILL.md content for any assigned skills
+    let skillDocs = '';
+    if (agentConfig.skillIds?.length) {
+      const config = readConfig();
+      const skillsDir = config.skills?.directory;
+      if (skillsDir) {
+        try {
+          const loader = new SkillLoader(skillsDir);
+          const docs: string[] = [];
+          for (const skillId of agentConfig.skillIds) {
+            try {
+              const loaded = await loader.load(skillId);
+              // Prefer prompts/worker.md over SKILL.md for workers
+              const doc = loaded.workerPrompt || loaded.skillDoc;
+              if (doc) {
+                docs.push(`## Skill: ${skillId}\n${doc}`);
+              }
+            } catch (err) {
+              log.warn(`Failed to load skill "${skillId}" for worker prompt`, {
+                error: err instanceof Error ? err.message : String(err),
+              });
+            }
+          }
+          if (docs.length) {
+            skillDocs = `\n\n# Skill Documentation\n${docs.join('\n\n')}`;
+          }
+        } catch (err) {
+          log.warn('Failed to initialise SkillLoader for worker', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
     }
 
     const contextSection = this.context
@@ -384,7 +421,7 @@ ${agentConfig.task}
 
 ## Working Directory
 All relative paths are resolved against the workspace directory.
-Use absolute paths when referencing files outside the workspace.`;
+Use absolute paths when referencing files outside the workspace.${skillDocs}`;
   }
 
   /**

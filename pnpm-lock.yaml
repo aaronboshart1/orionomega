@@ -45,6 +45,9 @@ importers:
       '@orionomega/hindsight':
         specifier: workspace:*
         version: link:../hindsight
+      '@orionomega/skills-sdk':
+        specifier: workspace:*
+        version: link:../skills-sdk
       js-yaml:
         specifier: ^4.1.0
         version: 4.1.1
