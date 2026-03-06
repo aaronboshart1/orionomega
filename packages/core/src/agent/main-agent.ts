@@ -41,6 +41,13 @@ import {
 } from '../memory/index.js';
 import type { OrionOmegaConfig } from '../config/types.js';
 
+import { readFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { exec as execCb } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const execAsync = promisify(execCb);
+
 const log = createLogger('main-agent');
 
 // ── Configuration ──────────────────────────────────────────────────────────
@@ -124,6 +131,90 @@ const TASK_FAST = [
 ];
 
 const MAX_HISTORY = 50;
+
+/** Tools available to the main agent for conversational responses. */
+const MAIN_AGENT_TOOLS = [
+  {
+    name: 'read_file',
+    description: 'Read the contents of a file at the given path. Returns the file text content.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        path: { type: 'string', description: 'Absolute or workspace-relative file path' },
+      },
+      required: ['path'],
+    },
+  },
+  {
+    name: 'exec',
+    description: 'Execute a shell command and return stdout/stderr. Use for listing files, checking status, reading configs, etc.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        command: { type: 'string', description: 'Shell command to execute' },
+      },
+      required: ['command'],
+    },
+  },
+  {
+    name: 'write_file',
+    description: 'Write content to a file at the given path. Creates parent directories if needed.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        path: { type: 'string', description: 'File path to write to' },
+        content: { type: 'string', description: 'Content to write' },
+      },
+      required: ['path', 'content'],
+    },
+  },
+];
+
+/** Execute a tool call from the main agent. */
+async function executeMainTool(name: string, input: Record<string, unknown>, workspaceDir: string): Promise<string> {
+  switch (name) {
+    case 'read_file': {
+      const filePath = String(input.path ?? '');
+      // Resolve relative paths against workspace
+      const resolved = filePath.startsWith('/') ? filePath : `${workspaceDir}/${filePath}`;
+      if (!existsSync(resolved)) return `Error: File not found: ${resolved}`;
+      const data = await readFile(resolved, 'utf-8');
+      // Truncate very large files
+      if (data.length > 30_000) return data.slice(0, 30_000) + '\n... [truncated at 30KB]';
+      return data;
+    }
+    case 'exec': {
+      const command = String(input.command ?? '');
+      try {
+        const { stdout, stderr } = await execAsync(command, {
+          cwd: workspaceDir,
+          timeout: 30_000,
+          maxBuffer: 1024 * 1024,
+        });
+        let result = stdout || '';
+        if (stderr) result += (result ? '\n' : '') + stderr;
+        if (result.length > 30_000) return result.slice(0, 30_000) + '\n... [truncated]';
+        return result || '(no output)';
+      } catch (err: unknown) {
+        const e = err as { message?: string; stdout?: string; stderr?: string };
+        return `Error: ${e.message ?? String(err)}\n${e.stdout ?? ''}\n${e.stderr ?? ''}`.trim();
+      }
+    }
+    case 'write_file': {
+      const filePath = String(input.path ?? '');
+      const fileContent = String(input.content ?? '');
+      const resolved = filePath.startsWith('/') ? filePath : `${workspaceDir}/${filePath}`;
+      const { mkdir } = await import('node:fs/promises');
+      const { dirname } = await import('node:path');
+      await mkdir(dirname(resolved), { recursive: true });
+      const { writeFile: wf } = await import('node:fs/promises');
+      await wf(resolved, fileContent, 'utf-8');
+      return `File written: ${resolved}`;
+    }
+    default:
+      return `Unknown tool: ${name}`;
+  }
+}
 
 /** The LLM-based intent classification prompt. */
 const CLASSIFY_PROMPT = `You are an intent classifier for an AI orchestration system.
@@ -579,40 +670,119 @@ export class MainAgent {
   // ── Internal: Conversational response ────────────────────────────────────
 
   /**
-   * Generates a streaming conversational response via the Anthropic API.
+   * Generates a conversational response via the Anthropic API.
+   * Supports tool use (read_file, exec, write_file) so the agent can read files,
+   * run commands, and answer questions that require local access.
    */
   private async respondConversationally(userMessage: string): Promise<void> {
     const systemPrompt = await this.getSystemPrompt();
-    const messages: AnthropicMessage[] = this.buildAnthropicMessages();
-
+    let messages: AnthropicMessage[] = this.buildAnthropicMessages();
     let fullText = '';
+    const maxToolRounds = 10;
 
     try {
-      const stream = this.anthropic.streamMessage({
-        model: this.config.model,
-        system: systemPrompt,
-        messages,
-        maxTokens: 1024,
-        temperature: 0.7,
-      });
+      for (let round = 0; round <= maxToolRounds; round++) {
+        // Stream the response
+        const stream = this.anthropic.streamMessage({
+          model: this.config.model,
+          system: systemPrompt,
+          messages,
+          maxTokens: 4096,
+          temperature: 0.7,
+          tools: MAIN_AGENT_TOOLS,
+        });
 
-      for await (const event of stream) {
-        const text = this.extractTextDelta(event);
-        if (text) {
-          fullText += text;
-          this.callbacks.onText(text, true, false);
+        let roundText = '';
+        let stopReason = '';
+        const toolCalls: Array<{ id: string; name: string; input: Record<string, unknown> }> = [];
+        let currentToolId = '';
+        let currentToolName = '';
+        let currentToolInput = '';
+
+        for await (const event of stream) {
+          // Text deltas — stream to user
+          const text = this.extractTextDelta(event);
+          if (text) {
+            roundText += text;
+            fullText += text;
+            this.callbacks.onText(text, true, false);
+          }
+
+          // Tool use detection
+          if (event.type === 'content_block_start') {
+            const block = (event as Record<string, unknown>).content_block as Record<string, unknown> | undefined;
+            if (block?.type === 'tool_use') {
+              currentToolId = String(block.id ?? '');
+              currentToolName = String(block.name ?? '');
+              currentToolInput = '';
+            }
+          }
+
+          if (event.type === 'content_block_delta') {
+            const delta = (event as Record<string, unknown>).delta as Record<string, unknown> | undefined;
+            if (delta?.type === 'input_json_delta' && typeof delta.partial_json === 'string') {
+              currentToolInput += delta.partial_json;
+            }
+          }
+
+          if (event.type === 'content_block_stop' && currentToolId) {
+            try {
+              const input = JSON.parse(currentToolInput || '{}');
+              toolCalls.push({ id: currentToolId, name: currentToolName, input });
+            } catch {
+              toolCalls.push({ id: currentToolId, name: currentToolName, input: {} });
+            }
+            currentToolId = '';
+            currentToolName = '';
+            currentToolInput = '';
+          }
+
+          // Stop reason
+          if (event.type === 'message_delta') {
+            const delta = (event as Record<string, unknown>).delta as Record<string, unknown> | undefined;
+            if (delta?.stop_reason) {
+              stopReason = String(delta.stop_reason);
+            }
+          }
         }
+
+        // If no tool use, we're done
+        if (stopReason !== 'tool_use' || toolCalls.length === 0) {
+          this.callbacks.onText('', true, true);
+          this.pushHistory({ role: 'assistant', content: fullText });
+          return;
+        }
+
+        // Execute tools and continue
+        // Build assistant message with text + tool_use blocks
+        const assistantContent: unknown[] = [];
+        if (roundText) {
+          assistantContent.push({ type: 'text', text: roundText });
+        }
+        for (const tc of toolCalls) {
+          assistantContent.push({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.input });
+        }
+        messages = [...messages, { role: 'assistant', content: assistantContent as unknown as string }];
+
+        // Execute each tool and build tool results
+        const toolResults: unknown[] = [];
+        for (const tc of toolCalls) {
+          log.info('Main agent tool call', { tool: tc.name, input: tc.input });
+          const result = await executeMainTool(tc.name, tc.input, this.config.workspaceDir);
+          toolResults.push({ type: 'tool_result', tool_use_id: tc.id, content: result });
+        }
+        messages = [...messages, { role: 'user', content: toolResults as unknown as string }];
       }
 
-      // Signal done
+      // If we exhausted tool rounds
       this.callbacks.onText('', true, true);
       this.pushHistory({ role: 'assistant', content: fullText });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       log.error('Conversational response error', { error: msg });
       const fallback = 'I seem to be having trouble reaching my language centre. Give me a moment.';
-      this.callbacks.onText(fallback, false, true);
-      this.pushHistory({ role: 'assistant', content: fallback });
+      this.callbacks.onText(fullText || fallback, false, true);
+      this.pushHistory({ role: 'assistant', content: fullText || fallback });
     }
   }
 
@@ -803,7 +973,7 @@ export class MainAgent {
   /**
    * Called when the executor finishes (success, error, or stopped).
    */
-  private onExecutionComplete(result: ExecutionResult): void {
+  private async onExecutionComplete(result: ExecutionResult): Promise<void> {
     // Retain workflow outcome to Hindsight (fire-and-forget)
     if (this.retentionEngine && this.activeProjectBank) {
       this.retentionEngine.retainWorkflowOutcome({
@@ -858,12 +1028,27 @@ export class MainAgent {
       }
     }
 
-    // Output files
+    // Output files — read contents and include them
     if (outputPaths.length > 0) {
       lines.push('');
       lines.push('Output files:');
       for (const p of outputPaths) {
         lines.push(`  📄 ${p}`);
+        try {
+          const resolved = p.startsWith('/') ? p : `${this.config.workspaceDir}/${p}`;
+          if (existsSync(resolved)) {
+            const fileContent = await readFile(resolved, 'utf-8');
+            const preview = fileContent.length > 2000
+              ? fileContent.slice(0, 2000) + '\n... [truncated]'
+              : fileContent;
+            lines.push('');
+            lines.push('```');
+            lines.push(preview);
+            lines.push('```');
+          }
+        } catch {
+          // Non-fatal — just show the path
+        }
       }
     }
 
