@@ -119,7 +119,7 @@ export function ChatView({
   const { stdout } = useStdout();
 
   // Mouse wheel scrolling
-  useMouseScroll(
+  const { handleInput: handleMouseInput } = useMouseScroll(
     () => setScrollOffset(prev => Math.min(prev + 3, Math.max(0, messages.length - 1))),
     () => setScrollOffset(prev => Math.max(0, prev - 3)),
   );
@@ -176,6 +176,9 @@ export function ChatView({
   }
 
   useInput((ch, key) => {
+    // Consume mouse escape sequences before any other processing
+    if (handleMouseInput(ch, key)) return;
+
     if (activePlan) return;
 
     // Skip character processing during paste — stdin handler captures it
