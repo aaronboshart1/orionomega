@@ -9,7 +9,6 @@ import type { DisplayMessage } from '../hooks/use-gateway.js';
 import type { PlannerOutput } from '@orionomega/core';
 import { MessageBubble } from './MessageBubble.js';
 import { PlanPrompt } from './PlanPrompt.js';
-import { useMouseScroll } from '../hooks/use-mouse-scroll.js';
 
 /** Client-side commands handled by the TUI itself (not sent to gateway). */
 const CLIENT_COMMANDS = new Set(['/exit', '/quit', '/q']);
@@ -117,12 +116,6 @@ export function ChatView({
     };
   }, []);
   const { stdout } = useStdout();
-
-  // Mouse wheel scrolling
-  useMouseScroll(
-    () => setScrollOffset(prev => Math.min(prev + 3, Math.max(0, messages.length - 1))),
-    () => setScrollOffset(prev => Math.max(0, prev - 3)),
-  );
 
   const termRows = stdout?.rows ?? 24;
   const termCols = stdout?.columns ?? 80;
@@ -321,7 +314,7 @@ export function ChatView({
       {/* Scroll indicator — top */}
       {canScrollUp && (
         <Box justifyContent="center">
-          <Text dimColor>▲ scroll up (mouse wheel, Shift+↑, PgUp) ({allMessages.length - visibleMessages.length - scrollOffset} more above)</Text>
+          <Text dimColor>▲ Shift+↑ or PgUp to scroll up ({allMessages.length - visibleMessages.length - scrollOffset} more above)</Text>
         </Box>
       )}
 
@@ -345,7 +338,7 @@ export function ChatView({
       {/* Scroll indicator — bottom */}
       {canScrollDown && (
         <Box justifyContent="center">
-          <Text dimColor>▼ scroll down (mouse wheel, Shift+↓, PgDn) ({scrollOffset} more below)</Text>
+          <Text dimColor>▼ Shift+↓ or PgDn to scroll down ({scrollOffset} more below)</Text>
         </Box>
       )}
 
