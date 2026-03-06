@@ -1,15 +1,16 @@
 /**
  * @module hooks/use-mouse-scroll
  * Enables terminal mouse wheel scrolling via ANSI escape sequences.
- * Sends \x1b[?1000h (basic mouse tracking) and \x1b[?1006h (SGR extended)
- * on mount, and parses wheel events from stdin.
+ * Intercepts stdin to strip mouse events before Ink processes them.
  */
 
 import { useEffect, useRef } from 'react';
 
+type EmitFn = (event: string | symbol, ...args: unknown[]) => boolean;
+
 /**
  * Hook that enables mouse wheel scrolling in the terminal.
- * Calls onScrollUp/onScrollDown when the user scrolls.
+ * Overrides process.stdin.emit to filter mouse sequences before Ink sees them.
  */
 export function useMouseScroll(
   onScrollUp: () => void,
@@ -22,46 +23,55 @@ export function useMouseScroll(
 
   useEffect(() => {
     // Enable mouse tracking (SGR mode for wide terminal support)
-    process.stdout.write('\x1b[?1000h'); // basic mouse events
-    process.stdout.write('\x1b[?1006h'); // SGR extended mouse mode
+    process.stdout.write('\x1b[?1000h');
+    process.stdout.write('\x1b[?1006h');
 
-    let buffer = '';
+    // SGR mouse pattern: ESC [ < Btn ; X ; Y M/m
+    const sgrRegex = /\x1b\[<(\d+);\d+;\d+[Mm]/g;
+    // Legacy mouse pattern: ESC [ M followed by 3 bytes
+    const legacyRegex = /\x1b\[M[\s\S]{3}/g;
 
-    const handler = (data: Buffer) => {
-      const str = data.toString('utf8');
-      buffer += str;
+    // Override stdin.emit to intercept mouse events before Ink
+    const originalEmit: EmitFn = process.stdin.emit.bind(process.stdin);
 
-      // SGR mouse format: \x1b[<Btn;X;Y[Mm]
-      // Btn 64 = wheel up, Btn 65 = wheel down
-      const sgrPattern = /\x1b\[<(\d+);\d+;\d+[Mm]/g;
-      let match;
-      while ((match = sgrPattern.exec(buffer)) !== null) {
-        const btn = parseInt(match[1], 10);
-        if (btn === 64) upRef.current();
-        else if (btn === 65) downRef.current();
+    (process.stdin as unknown as { emit: EmitFn }).emit = (
+      event: string | symbol,
+      ...args: unknown[]
+    ): boolean => {
+      if (event === 'data' && args[0]) {
+        const buf = args[0] as Buffer;
+        const str = typeof buf === 'string' ? buf : buf.toString('utf8');
+
+        // Parse mouse wheel events
+        let match: RegExpExecArray | null;
+        sgrRegex.lastIndex = 0;
+        while ((match = sgrRegex.exec(str)) !== null) {
+          const btn = parseInt(match[1], 10);
+          if (btn === 64) upRef.current();
+          else if (btn === 65) downRef.current();
+        }
+
+        // Strip all mouse sequences from the data
+        const cleaned = str
+          .replace(/\x1b\[<\d+;\d+;\d+[Mm]/g, '')
+          .replace(/\x1b\[M[\s\S]{3}/g, '');
+
+        // If nothing left after stripping, don't emit (pure mouse data)
+        if (cleaned.length === 0) return false;
+
+        // Pass cleaned data to Ink
+        return originalEmit(event, Buffer.from(cleaned, 'utf8'));
       }
 
-      // Legacy mouse format: \x1b[M followed by 3 bytes
-      // Byte 0: 32 + button (96 = wheel up, 97 = wheel down)
-      const legacyIdx = buffer.indexOf('\x1b[M');
-      if (legacyIdx >= 0 && buffer.length >= legacyIdx + 6) {
-        const btn = buffer.charCodeAt(legacyIdx + 3);
-        if (btn === 96) upRef.current();
-        else if (btn === 97) downRef.current();
-      }
-
-      // Keep only recent buffer to prevent memory leak
-      if (buffer.length > 256) buffer = buffer.slice(-64);
+      return originalEmit(event, ...args);
     };
 
-    // Prepend so we see mouse events before Ink processes them
-    process.stdin.prependListener('data', handler);
-
     return () => {
-      // Disable mouse tracking on cleanup
+      // Restore original emit
+      (process.stdin as unknown as { emit: EmitFn }).emit = originalEmit;
+      // Disable mouse tracking
       process.stdout.write('\x1b[?1006l');
       process.stdout.write('\x1b[?1000l');
-      process.stdin.removeListener('data', handler);
     };
   }, []);
 }
