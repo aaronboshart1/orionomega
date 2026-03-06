@@ -3,8 +3,8 @@
  * Main chat display with scrollable message list, text input, and plan prompts.
  */
 
-import React, { useState } from 'react';
-import { Box, Text, useInput } from 'ink';
+import React, { useState, useEffect } from 'react';
+import { Box, Text, useInput, useStdout } from 'ink';
 import type { DisplayMessage } from '../hooks/use-gateway.js';
 import type { PlannerOutput } from '@orionomega/core';
 import { MessageBubble } from './MessageBubble.js';
@@ -20,6 +20,15 @@ const SLASH_COMMANDS: { cmd: string; desc: string }[] = [
   { cmd: '/plan', desc: 'Show the current execution plan' },
   { cmd: '/workers', desc: 'List active workers' },
 ];
+
+/** Rough estimate of lines a message takes (content lines + 1 for the prefix line). */
+function estimateLines(msg: DisplayMessage, cols: number): number {
+  const prefix = msg.role === 'user' ? 'You: ' : msg.role === 'assistant' ? 'Jarvis: ' : '⚙️ ';
+  const totalChars = prefix.length + msg.content.length;
+  const wrappedLines = Math.ceil(totalChars / Math.max(cols - 4, 40));
+  const newlines = (msg.content.match(/\n/g) ?? []).length;
+  return Math.max(1, wrappedLines + newlines);
+}
 
 /** Props for the ChatView component. */
 interface ChatViewProps {
@@ -40,6 +49,7 @@ interface ChatViewProps {
 /**
  * Main chat view component.
  * Displays messages, thinking indicator, plan prompts, and a text input.
+ * Supports scrolling with Page Up/Down and auto-follows new messages.
  */
 export function ChatView({
   messages,
@@ -51,6 +61,14 @@ export function ChatView({
 }: ChatViewProps): React.ReactElement {
   const [input, setInput] = useState('');
   const [selectedCmd, setSelectedCmd] = useState(0);
+  const [scrollOffset, setScrollOffset] = useState(0); // 0 = bottom (latest)
+  const { stdout } = useStdout();
+
+  const termRows = stdout?.rows ?? 24;
+  const termCols = stdout?.columns ?? 80;
+  // Reserve rows for: input box (3), status bar (3), slash suggestions (variable), thinking (1)
+  const reservedRows = 7 + (activePlan ? 6 : 0);
+  const chatRows = Math.max(5, termRows - reservedRows);
 
   // Determine if we're in slash-command mode and filter matches
   const isSlashMode = input.startsWith('/');
@@ -59,9 +77,64 @@ export function ChatView({
     ? SLASH_COMMANDS.filter(c => c.cmd.startsWith(slashFilter))
     : [];
 
-  // Only capture input when there's no active plan (PlanPrompt handles its own input)
+  // Auto-scroll to bottom when new messages arrive (if already at bottom)
+  const prevMsgCount = React.useRef(messages.length);
+  useEffect(() => {
+    if (messages.length > prevMsgCount.current && scrollOffset === 0) {
+      // Already at bottom, stay there
+    }
+    prevMsgCount.current = messages.length;
+  }, [messages.length, scrollOffset]);
+
+  // Compute visible window of messages
+  // We walk backwards from the end, accounting for scroll offset
+  const allMessages = messages;
+  let visibleMessages: DisplayMessage[];
+  let canScrollUp = false;
+  let canScrollDown = false;
+
+  if (allMessages.length === 0) {
+    visibleMessages = [];
+  } else {
+    // Start from the end minus scrollOffset, fill up chatRows
+    const endIdx = allMessages.length - scrollOffset;
+    let linesUsed = 0;
+    let startIdx = endIdx;
+
+    for (let i = endIdx - 1; i >= 0; i--) {
+      const lines = estimateLines(allMessages[i], termCols);
+      if (linesUsed + lines > chatRows) break;
+      linesUsed += lines;
+      startIdx = i;
+    }
+
+    visibleMessages = allMessages.slice(Math.max(0, startIdx), endIdx);
+    canScrollUp = startIdx > 0;
+    canScrollDown = scrollOffset > 0;
+  }
+
   useInput((ch, key) => {
     if (activePlan) return;
+
+    // Scroll: Page Up / Page Down
+    if (key.pageUp || (key.shift && key.upArrow)) {
+      setScrollOffset(prev => Math.min(prev + 5, Math.max(0, allMessages.length - 1)));
+      return;
+    }
+    if (key.pageDown || (key.shift && key.downArrow)) {
+      setScrollOffset(prev => Math.max(0, prev - 5));
+      return;
+    }
+
+    // Home = scroll to top, End = scroll to bottom
+    if (key.ctrl && ch === 'u') {
+      setScrollOffset(Math.max(0, allMessages.length - 1));
+      return;
+    }
+    if (key.ctrl && ch === 'd') {
+      setScrollOffset(0);
+      return;
+    }
 
     // Tab-complete in slash mode
     if (key.tab && isSlashMode && filteredCommands.length > 0) {
@@ -86,6 +159,9 @@ export function ChatView({
     if (key.return) {
       const trimmed = input.trim();
       if (!trimmed) return;
+
+      // Auto-scroll to bottom on send
+      setScrollOffset(0);
 
       // If in slash mode with a selected suggestion and input is partial, complete it
       if (isSlashMode && filteredCommands.length > 0 && !SLASH_COMMANDS.some(c => c.cmd === trimmed)) {
@@ -119,7 +195,7 @@ export function ChatView({
       return;
     }
 
-    // Ignore control sequences
+    // Ignore other control sequences
     if (key.ctrl || key.meta) return;
 
     if (ch) {
@@ -128,14 +204,18 @@ export function ChatView({
     }
   });
 
-  // Show the last N messages to keep things manageable
-  const visibleMessages = messages.slice(-50);
-
   return (
     <Box flexDirection="column" flexGrow={1}>
+      {/* Scroll indicator — top */}
+      {canScrollUp && (
+        <Box justifyContent="center">
+          <Text dimColor>▲ Shift+↑ or PgUp to scroll up ({allMessages.length - visibleMessages.length - scrollOffset} more above)</Text>
+        </Box>
+      )}
+
       {/* Message list */}
       <Box flexDirection="column" flexGrow={1}>
-        {visibleMessages.length === 0 && (
+        {allMessages.length === 0 && (
           <Text dimColor>No messages yet. Type something to begin.</Text>
         )}
         {visibleMessages.map(msg => (
@@ -149,6 +229,13 @@ export function ChatView({
           </Box>
         )}
       </Box>
+
+      {/* Scroll indicator — bottom */}
+      {canScrollDown && (
+        <Box justifyContent="center">
+          <Text dimColor>▼ Shift+↓ or PgDn to scroll down ({scrollOffset} more below)</Text>
+        </Box>
+      )}
 
       {/* Plan prompt */}
       {activePlan && (
