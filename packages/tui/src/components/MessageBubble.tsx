@@ -23,6 +23,20 @@ export function MessageBubble({ message }: MessageBubbleProps): React.ReactEleme
   const { role, content, emoji } = message;
 
   if (role === 'user') {
+    const lines = content.split('\n');
+    const isLongPaste = lines.length > 5 || content.length > 400;
+
+    if (isLongPaste) {
+      const preview = lines[0].slice(0, 60) + (lines[0].length > 60 ? '…' : '');
+      return (
+        <Box marginBottom={0}>
+          <Text bold color="cyan">You: </Text>
+          <Text color="magenta">[paste {lines.length} lines] </Text>
+          <Text dimColor>{preview}</Text>
+        </Box>
+      );
+    }
+
     return (
       <Box marginBottom={0}>
         <Text bold color="cyan">You: </Text>
