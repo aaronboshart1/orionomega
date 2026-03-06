@@ -30,6 +30,8 @@ export interface WorkerResult {
   toolCallCount: number;
   /** Notable findings discovered during execution. */
   findings: string[];
+  /** Paths to files written by this worker. */
+  outputPaths: string[];
 }
 
 /**
@@ -92,6 +94,7 @@ export class WorkerProcess {
             durationMs: Date.now() - start,
             toolCallCount: 0,
             findings: [],
+            outputPaths: [],
           };
           break;
       }
@@ -296,6 +299,7 @@ export class WorkerProcess {
 
     let progressEstimate = 5;
     const findings: string[] = [];
+    const outputPaths: string[] = [];
 
     const result = await runAgentLoop({
       client,
@@ -328,6 +332,11 @@ export class WorkerProcess {
 
       onToolCall: (name: string, input: Record<string, unknown>) => {
         progressEstimate = Math.min(progressEstimate + 5, 90);
+
+        // Track file writes for output reporting
+        if (name === 'write' && input.path) {
+          outputPaths.push(String(input.path));
+        }
 
         // Build a concise summary of tool params
         let summary = name;
@@ -394,6 +403,7 @@ export class WorkerProcess {
       durationMs: 0, // filled by run()
       toolCallCount: result.toolCalls,
       findings,
+      outputPaths,
     };
   }
 
@@ -534,6 +544,7 @@ Use absolute paths when referencing files outside the workspace.${skillDocs}`;
       durationMs: 0,
       toolCallCount: 1,
       findings: [],
+      outputPaths: [],
     };
   }
 
@@ -545,6 +556,7 @@ Use absolute paths when referencing files outside the workspace.${skillDocs}`;
       durationMs: 0,
       toolCallCount: 0,
       findings: [],
+      outputPaths: [],
     };
   }
 }

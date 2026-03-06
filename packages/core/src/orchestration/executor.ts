@@ -53,6 +53,7 @@ export class GraphExecutor {
   private readonly skippedNodes = new Set<string>();
   private readonly decisions: string[] = [];
   private readonly findings: string[] = [];
+  private readonly outputPaths: string[] = [];
   private readonly errors: { worker: string; message: string; resolution?: string }[] = [];
   private completedLayers = 0;
 
@@ -141,6 +142,7 @@ export class GraphExecutor {
             this.nodeResults.set(nodeId, result.value);
             this.state.setNodeOutput(nodeId, result.value.output);
             this.findings.push(...result.value.findings);
+            if (result.value.outputPaths?.length) this.outputPaths.push(...result.value.outputPaths);
           } else {
             const errorMsg = result.reason instanceof Error
               ? result.reason.message
@@ -275,7 +277,7 @@ export class GraphExecutor {
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       if (this.stopRequested) {
-        return { nodeId, output: null, durationMs: 0, toolCallCount: 0, findings: [] };
+        return { nodeId, output: null, durationMs: 0, toolCallCount: 0, findings: [], outputPaths: [] };
       }
 
       try {
@@ -361,7 +363,7 @@ export class GraphExecutor {
           output: null,
           durationMs: 0,
           toolCallCount: 0,
-          findings: [],
+          findings: [], outputPaths: [],
         };
 
       case 'JOIN':
@@ -405,7 +407,7 @@ export class GraphExecutor {
       output: { route: selectedRoute, target: targetNodeId },
       durationMs: 0,
       toolCallCount: 0,
-      findings: [],
+      findings: [], outputPaths: [],
     };
   }
 
@@ -424,7 +426,7 @@ export class GraphExecutor {
       output: upstreamOutputs,
       durationMs: 0,
       toolCallCount: 0,
-      findings: [],
+      findings: [], outputPaths: [],
     };
   }
 
@@ -539,7 +541,7 @@ export class GraphExecutor {
       workflowId: this.graph.id,
       status: terminalStatus,
       taskSummary: this.graph.name,
-      outputPaths: [],
+      outputPaths: [...new Set(this.outputPaths)],
       durationSec: (Date.now() - startTime) / 1000,
       workerCount: this.nodeResults.size,
       estimatedCost: 0,

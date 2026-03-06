@@ -819,7 +819,10 @@ export class MainAgent {
       }).catch(() => {});
     }
 
-    const { status, durationSec, workerCount, findings, errors } = result;
+    const {
+      status, durationSec, workerCount, findings, errors,
+      taskSummary, outputPaths, decisions,
+    } = result;
 
     const lines: string[] = [];
 
@@ -831,15 +834,51 @@ export class MainAgent {
       lines.push('🛑 Workflow stopped.');
     }
 
-    lines.push(`Duration: ${durationSec.toFixed(1)}s | Workers: ${workerCount}`);
+    // Task summary
+    if (taskSummary) {
+      lines.push('');
+      lines.push(taskSummary);
+    }
 
+    // Key findings
     if (findings.length > 0) {
-      lines.push(`Findings: ${findings.slice(0, 5).join('; ')}`);
+      lines.push('');
+      lines.push('Key findings:');
+      for (const f of findings.slice(0, 8)) {
+        lines.push(`  • ${f}`);
+      }
     }
 
-    if (errors.length > 0) {
-      lines.push(`Errors: ${errors.slice(0, 3).map((e) => `${e.worker}: ${e.message}`).join('; ')}`);
+    // Key decisions
+    if (decisions.length > 0) {
+      lines.push('');
+      lines.push('Decisions:');
+      for (const d of decisions.slice(0, 5)) {
+        lines.push(`  • ${d}`);
+      }
     }
+
+    // Output files
+    if (outputPaths.length > 0) {
+      lines.push('');
+      lines.push('Output files:');
+      for (const p of outputPaths) {
+        lines.push(`  📄 ${p}`);
+      }
+    }
+
+    // Errors
+    if (errors.length > 0) {
+      lines.push('');
+      lines.push('Errors:');
+      for (const e of errors.slice(0, 5)) {
+        lines.push(`  ❌ ${e.worker}: ${e.message}`);
+      }
+    }
+
+    // Stats line
+    lines.push('');
+    lines.push(`⏱️ ${durationSec.toFixed(1)}s | ${workerCount} workers`);
 
     const summary = lines.join('\n');
     this.callbacks.onText(summary, false, true);
