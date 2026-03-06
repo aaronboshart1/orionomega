@@ -38,7 +38,7 @@ try {
     port: 7800,
     bind: '127.0.0.1',
     auth: { mode: 'none' },
-    cors: { origins: ['http://localhost:*'] },
+    cors: { origins: ['http://*:*', 'http://localhost:*'] },
   };
   hindsightUrl = 'http://localhost:8888';
   console.warn('[gateway] Could not load config from @orionomega/core — using defaults');

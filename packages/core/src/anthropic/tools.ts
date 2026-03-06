@@ -1,6 +1,10 @@
 /**
  * @module anthropic/tools
  * Built-in tool definitions and executor bridge for Anthropic tool_use responses.
+ *
+ * These are truly universal tools available to all workers regardless of skills.
+ * Web-specific tools (web_search, web_fetch) are provided as Skills SDK skills
+ * in the default-skills/ directory and installed to ~/.orionomega/skills/.
  */
 
 import { execSync } from 'node:child_process';
@@ -41,27 +45,10 @@ function truncate(text: string, max: number = MAX_OUTPUT_CHARS): string {
 }
 
 /**
- * Strips HTML tags for basic readability.
- */
-function stripHtml(html: string): string {
-  return html
-    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
-    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-/**
  * Returns the set of built-in tools available to all worker agents.
  *
- * Tools: exec, read, write, edit, web_fetch.
+ * Tools: exec, read, write, edit.
+ * Note: web_search and web_fetch are provided as Skills SDK skills.
  */
 export function getBuiltInTools(): BuiltInTool[] {
   return [
@@ -257,139 +244,6 @@ export function getBuiltInTools(): BuiltInTool[] {
           return `Successfully edited ${filePath}`;
         } catch (err) {
           return `Error editing file: ${err instanceof Error ? err.message : String(err)}`;
-        }
-      },
-    },
-
-    {
-      name: 'web_fetch',
-      description:
-        'Fetch a URL and return its text content. HTML tags are stripped for readability.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          url: {
-            type: 'string',
-            description: 'The URL to fetch.',
-          },
-          maxChars: {
-            type: 'number',
-            description:
-              'Maximum characters to return. Defaults to 10000.',
-          },
-        },
-        required: ['url'],
-      },
-      execute: async (
-        params: Record<string, unknown>,
-      ): Promise<string> => {
-        const url = String(params.url ?? '');
-        const maxChars = Number(params.maxChars ?? MAX_OUTPUT_CHARS);
-
-        if (!url) return 'Error: url is required';
-
-        try {
-          const response = await fetch(url, {
-            headers: {
-              'User-Agent': 'OrionOmega/0.1',
-              Accept: 'text/html,application/json,text/plain,*/*',
-            },
-            signal: AbortSignal.timeout(30_000),
-          });
-
-          if (!response.ok) {
-            return `HTTP ${response.status}: ${response.statusText}`;
-          }
-
-          const contentType = response.headers.get('content-type') ?? '';
-          const text = await response.text();
-
-          if (contentType.includes('html')) {
-            return truncate(stripHtml(text), maxChars);
-          }
-
-          return truncate(text, maxChars);
-        } catch (err) {
-          return `Error fetching URL: ${err instanceof Error ? err.message : String(err)}`;
-        }
-      },
-    },
-
-    {
-      name: 'web_search',
-      description:
-        'Search the web using DuckDuckGo and return formatted results with title, URL, and snippet.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          query: {
-            type: 'string',
-            description: 'The search query.',
-          },
-          count: {
-            type: 'number',
-            description: 'Number of results to return. Defaults to 5.',
-          },
-        },
-        required: ['query'],
-      },
-      execute: async (
-        params: Record<string, unknown>,
-      ): Promise<string> => {
-        const query = String(params.query ?? '');
-        const count = Math.min(Number(params.count ?? 5), 20);
-
-        if (!query) return 'Error: query is required';
-
-        const encoded = encodeURIComponent(query);
-        const url = `https://html.duckduckgo.com/html/?q=${encoded}`;
-
-        try {
-          const response = await fetch(url, {
-            headers: {
-              'User-Agent': 'Mozilla/5.0 (compatible; OrionOmega/0.1)',
-              Accept: 'text/html,*/*',
-            },
-            signal: AbortSignal.timeout(30_000),
-          });
-
-          if (!response.ok) {
-            return `HTTP ${response.status}: ${response.statusText}`;
-          }
-
-          const html = await response.text();
-
-          // Extract result blocks from DuckDuckGo HTML
-          const results: string[] = [];
-          const resultRegex = /<a[^>]+class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<a[^>]+class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g;
-          let match: RegExpExecArray | null;
-
-          while ((match = resultRegex.exec(html)) !== null && results.length < count) {
-            const href = match[1] ?? '';
-            const title = stripHtml(match[2] ?? '').trim();
-            const snippet = stripHtml(match[3] ?? '').trim();
-
-            // DuckDuckGo wraps URLs; try to extract the uddg param
-            let finalUrl = href;
-            try {
-              const uddg = new URL(href, 'https://duckduckgo.com').searchParams.get('uddg');
-              if (uddg) finalUrl = decodeURIComponent(uddg);
-            } catch {
-              // keep original href
-            }
-
-            if (title && finalUrl) {
-              results.push(`${results.length + 1}. **${title}**\n   URL: ${finalUrl}\n   ${snippet}`);
-            }
-          }
-
-          if (results.length === 0) {
-            return `No results found for: ${query}`;
-          }
-
-          return `Search results for "${query}":\n\n` + results.join('\n\n');
-        } catch (err) {
-          return `Error searching: ${err instanceof Error ? err.message : String(err)}`;
         }
       },
     },
