@@ -4,7 +4,7 @@
  */
 
 import React from 'react';
-import { Box } from 'ink';
+import { Box, useApp } from 'ink';
 import { ChatView } from './ChatView.js';
 import { StatusBar } from './StatusBar.js';
 import { useGateway } from '../hooks/use-gateway.js';
@@ -23,6 +23,7 @@ interface AppProps {
  */
 export function App({ gatewayUrl, token }: AppProps): React.ReactElement {
   const gw = useGateway({ url: gatewayUrl, token });
+  const { exit } = useApp();
 
   return (
     <Box flexDirection="column" height="100%">
@@ -32,6 +33,7 @@ export function App({ gatewayUrl, token }: AppProps): React.ReactElement {
         activePlan={gw.activePlan}
         onSend={gw.sendChat}
         onCommand={gw.sendCommand}
+        onExit={exit}
         onPlanRespond={(action, modification) => {
           if (gw.activePlanId) {
             gw.respondToPlan(gw.activePlanId, action, modification);
