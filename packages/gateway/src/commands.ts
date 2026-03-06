@@ -25,6 +25,9 @@ export class CommandHandler {
     const cmd = parts[0]?.toLowerCase();
 
     switch (cmd) {
+      case '/help':
+        return this.handleHelp();
+
       case '/status':
         return this.handleStatus(session);
 
@@ -63,7 +66,7 @@ export class CommandHandler {
         return {
           command: trimmed,
           success: false,
-          message: `Unknown command: ${cmd ?? trimmed}. Available: /status, /reset, /stop, /restart, /plan, /workers`,
+          message: `Unknown command: ${cmd ?? trimmed}. Type /help for available commands.`,
         };
     }
   }
@@ -82,6 +85,25 @@ export class CommandHandler {
 
     return {
       command: '/status',
+      success: true,
+      message: lines.join('\n'),
+    };
+  }
+
+  /** List available commands. */
+  private handleHelp(): CommandResult {
+    const lines = [
+      'Available commands:',
+      '  /help      \u2014 Show this help',
+      '  /status    \u2014 Session and system status',
+      '  /reset     \u2014 Clear message history and detach workflow',
+      '  /stop      \u2014 Stop the active workflow',
+      '  /restart   \u2014 Restart the active workflow',
+      '  /plan      \u2014 Show the current execution plan',
+      '  /workers   \u2014 List active workers',
+    ];
+    return {
+      command: '/help',
       success: true,
       message: lines.join('\n'),
     };
