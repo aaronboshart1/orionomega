@@ -29,6 +29,7 @@ export function App({ gatewayUrl, token }: AppProps): React.ReactElement {
     <Box flexDirection="column" height="100%">
       <ChatView
         messages={gw.messages}
+        streamingMessage={gw.streamingMessage}
         thinking={gw.thinking}
         activePlan={gw.activePlan}
         onSend={gw.sendChat}
