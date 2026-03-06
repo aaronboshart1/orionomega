@@ -149,14 +149,16 @@ export function ChatView({
   if (allMessages.length === 0) {
     visibleMessages = [];
   } else {
-    // Start from the end minus scrollOffset, fill up chatRows
+    // Start from the end minus scrollOffset, fill up chatRows.
+    // Always include at least the most recent message even if it exceeds chatRows
+    // (Ink will handle overflow; hiding it entirely is worse).
     const endIdx = allMessages.length - scrollOffset;
     let linesUsed = 0;
     let startIdx = endIdx;
 
     for (let i = endIdx - 1; i >= 0; i--) {
       const lines = estimateLines(allMessages[i], termCols);
-      if (linesUsed + lines > chatRows) break;
+      if (linesUsed + lines > chatRows && i < endIdx - 1) break; // always include last msg
       linesUsed += lines;
       startIdx = i;
     }
