@@ -34,6 +34,14 @@ function defaultGatewayUrl(): string {
  * Launch the TUI. Called by the CLI via "orionomega tui".
  */
 export async function start(): Promise<void> {
+  // Ensure mouse tracking is disabled on any exit
+  const disableMouse = () => {
+    process.stdout.write('[?1006l');
+    process.stdout.write('[?1000l');
+  };
+  process.on('exit', disableMouse);
+  process.on('SIGINT', () => { disableMouse(); process.exit(0); });
+  process.on('SIGTERM', () => { disableMouse(); process.exit(0); });
   // argv[3] when invoked as "orionomega tui [url] [token]"
   // argv[2] when invoked directly as "orionomega-tui [url] [token]"
   const explicitUrl = process.argv.find((a, i) => i >= 2 && a.startsWith('ws'));
