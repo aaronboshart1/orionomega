@@ -219,7 +219,11 @@ export function useGateway(options: UseGatewayOptions): UseGatewayReturn {
       }
 
       case 'thinking': {
-        setThinking(msg.thinking ?? '');
+        if (msg.done) {
+          setThinking('');
+        } else {
+          setThinking(msg.thinking ?? '');
+        }
         break;
       }
 
@@ -232,18 +236,50 @@ export function useGateway(options: UseGatewayOptions): UseGatewayReturn {
       case 'event': {
         const event = msg.event as WorkerEvent;
         if (event) {
-          setRecentEvents(prev => [...prev.slice(-19), event]);
+          setRecentEvents(prev => [...prev.slice(-49), event]);
 
-          // Show findings and errors in chat
+          // Map event types to display
+          const eventEmoji: Record<string, string> = {
+            'finding': '💡',
+            'error': '❌',
+            'done': '✅',
+            'status': '📊',
+            'tool_call': '🔧',
+          };
+
+          // Show key events in chat for visibility
           if (event.type === 'finding' || event.type === 'error' || event.type === 'done') {
-            const emoji = event.type === 'finding' ? '💡' : event.type === 'error' ? '❌' : '✅';
             setMessages(prev => [...prev, {
               id: nextId(),
               role: 'system',
               content: `[${event.nodeId}] ${event.message ?? event.error ?? 'Complete'}`,
               timestamp: event.timestamp,
-              emoji,
+              emoji: eventEmoji[event.type] ?? '📊',
             }]);
+          } else if (event.type === 'tool_call' && event.tool) {
+            // Show tool calls as subtle system messages
+            const toolMsg = `[${event.nodeId}] ${event.tool.name}${event.tool.action ? '.' + event.tool.action : ''}${event.tool.summary ? ' — ' + event.tool.summary : ''}`;
+            setMessages(prev => [...prev, {
+              id: nextId(),
+              role: 'system',
+              content: toolMsg,
+              timestamp: event.timestamp,
+              emoji: '🔧',
+            }]);
+          } else if (event.type === 'status' && event.message) {
+            // Show status updates
+            setMessages(prev => [...prev, {
+              id: nextId(),
+              role: 'system',
+              content: `[${event.nodeId}] ${event.message}`,
+              timestamp: event.timestamp,
+              emoji: '📊',
+            }]);
+          }
+
+          // Update thinking with latest worker activity
+          if (event.type === 'thinking' && event.thinking) {
+            setThinking(event.thinking);
           }
         }
 

@@ -699,7 +699,7 @@ export class MainAgent {
       if (this.activeExecutor) {
         this.callbacks.onGraphState(this.activeExecutor.getState());
       }
-    }, 5_000);
+    }, 2_000);
 
     this.callbacks.onText('Workflow started. I\'ll keep you posted on progress.', false, true);
     this.pushHistory({ role: 'assistant', content: '[Workflow execution started]' });
@@ -720,13 +720,16 @@ export class MainAgent {
    * Handles worker events during execution, filtering for user-relevant ones.
    */
   private handleWorkerEvent(event: WorkerEvent): void {
-    // Immediately relay high-priority events
-    const immediateTypes = new Set(['done', 'error', 'finding']);
-    if (immediateTypes.has(event.type)) {
-      this.callbacks.onEvent(event);
+    // Relay all worker events to the UI for real-time streaming visibility.
+    // The TUI and Web UI filter what they display — let them decide.
+    this.callbacks.onEvent(event);
+
+    // Push graph state on significant events for immediate UI updates
+    if (event.type === 'done' || event.type === 'error' || event.type === 'status') {
+      if (this.activeExecutor) {
+        this.callbacks.onGraphState(this.activeExecutor.getState());
+      }
     }
-    // Other events (thinking, tool_call, status) are available via getState()
-    // and the periodic snapshot — no need to spam the user.
   }
 
   /**
