@@ -243,6 +243,15 @@ export class MainAgent {
     try {
       const cmd = command.trim().toLowerCase();
 
+      // Client-side commands that should never reach the server
+      if (cmd === '/exit' || cmd === '/quit' || cmd === '/q') {
+        this.callbacks.onCommandResult({
+          command: cmd, success: true,
+          message: 'Goodbye.',
+        });
+        return;
+      }
+
       if (cmd === '/help') {
         this.callbacks.onCommandResult({
           command: '/help', success: true,
@@ -273,6 +282,13 @@ export class MainAgent {
         return;
       }
 
+      if (!this.orchestration?.commands) {
+        this.callbacks.onCommandResult({
+          command: cmd, success: false,
+          message: 'Agent not fully initialised. Try again in a moment.',
+        });
+        return;
+      }
       const result = await this.orchestration.commands.handle(cmd);
       this.callbacks.onCommandResult({ command: cmd, success: result.success, message: result.message });
     } catch (err) {

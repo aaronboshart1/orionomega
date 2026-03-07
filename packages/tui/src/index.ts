@@ -190,13 +190,16 @@ export async function start(): Promise<void> {
     editor.setText('');
     editor.addToHistory(value);
 
-    if (CLIENT_COMMANDS.has(value.toLowerCase())) {
+    // Normalize: strip leading extra slashes (e.g. //exit → /exit)
+    const normalized = value.replace(/^\/+/, '/');
+
+    if (CLIENT_COMMANDS.has(normalized.toLowerCase())) {
       cleanup();
       return;
     }
 
-    if (value.startsWith('/')) {
-      client.sendCommand(value.slice(1));
+    if (normalized.startsWith('/')) {
+      client.sendCommand(normalized.slice(1));
     } else {
       client.sendChat(value);
     }
