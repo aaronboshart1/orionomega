@@ -11,6 +11,7 @@
  * and shared state (history, system prompt, callbacks).
  */
 
+import { execSync } from 'node:child_process';
 import { AnthropicClient } from '../anthropic/client.js';
 import type { AnthropicMessage } from '../anthropic/client.js';
 import { buildSystemPrompt, type PromptContext } from './prompt-builder.js';
@@ -266,9 +267,26 @@ export class MainAgent {
             '  /plan    — Show the current plan',
             '  /workers — List active workers',
             '  /reset   — Clear pending plans and history',
+            '  /restart — Restart the gateway service',
             '  /help    — This message',
           ].join('\n'),
         });
+        return;
+      }
+
+      if (cmd === '/restart') {
+        this.callbacks.onCommandResult({
+          command: '/restart', success: true,
+          message: 'Restarting gateway...',
+        });
+        // Give the response time to flush, then restart
+        setTimeout(() => {
+          try {
+            execSync('sudo systemctl restart orionomega', { stdio: 'ignore' });
+          } catch {
+            process.exit(0); // fallback: just exit, systemd will restart
+          }
+        }, 500);
         return;
       }
 
