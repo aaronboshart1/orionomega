@@ -32,10 +32,9 @@ import {
 } from './conversation.js';
 import { MemoryBridge } from './memory-bridge.js';
 import { OrchestrationBridge } from './orchestration-bridge.js';
+import { ContextAssembler } from '../memory/context-assembler.js';
 
 const log = createLogger('main-agent');
-
-const MAX_HISTORY = 50;
 
 // ── Configuration ──────────────────────────────────────────────────────────
 
@@ -89,7 +88,7 @@ export class MainAgent {
   private readonly orchestration: OrchestrationBridge;
   private initPromise: Promise<void> | null = null;
 
-  private history: HistoryEntry[] = [];
+  private context: ContextAssembler;
   private cachedSystemPrompt: string | null = null;
   private availableSkills: string[] = [];
 
@@ -104,6 +103,22 @@ export class MainAgent {
       this.anthropic,
       new EventBus(), // shared event bus — orchestration bridge will use the same one
     );
+
+    // Context assembler — replaces raw history array with hot window + Hindsight recall
+    // Note: memory.client may be null until init() runs; we pass null initially
+    // and the assembler handles it gracefully
+    const hsClient = this.memory.client;
+    this.context = new ContextAssembler(hsClient, {
+      hotWindowSize: 20,
+      recallBudgetTokens: 30_000,
+      maxTurnTokens: 60_000,
+      conversationBank: config.hindsight?.url
+        ? `conversation-${Date.now().toString(36)}`
+        : undefined,
+      additionalBanks: config.hindsight?.url
+        ? ['jarvis-core']
+        : [],
+    });
 
     // We'll initialise orchestration in init() after skills are discovered
     this.orchestration = null!; // set in init()
@@ -131,6 +146,15 @@ export class MainAgent {
         this.config.systemPrompt = contextBlock;
       }
       this.cachedSystemPrompt = null;
+    }
+
+    // 1b. Attach Hindsight client to context assembler (now that memory is initialised)
+    if (this.memory.client) {
+      this.context.setHindsightClient(this.memory.client);
+      // Ensure the conversation bank exists
+      if (!this.context['conversationBank']) {
+        this.context.setConversationBank(`conversation-${Date.now().toString(36)}`);
+      }
     }
 
     // 2. Discover skills
@@ -308,7 +332,7 @@ export class MainAgent {
       if (cmd === '/reset') {
         this.orchestration.clearPendingPlan();
         this.orchestration.stop();
-        this.history = [];
+        this.context.clear();
         this.cachedSystemPrompt = null;
         this.callbacks.onCommandResult({
           command: '/reset', success: true,
@@ -334,12 +358,12 @@ export class MainAgent {
 
   /** Flush memory before compaction. */
   async flushMemory(): Promise<void> {
-    await this.memory.flush(this.history);
+    await this.memory.flush(this.context.getHistory());
   }
 
   /** Summarize the session to Hindsight. */
   async summarizeSession(): Promise<void> {
-    await this.memory.summarize(this.history);
+    await this.memory.summarize(this.context.getHistory());
   }
 
   /** Get the shared event bus. */
@@ -350,8 +374,24 @@ export class MainAgent {
   // ── Private ────────────────────────────────────────────────────────────
 
   private async respondConversationally(userMessage: string): Promise<void> {
-    const systemPrompt = await this.getSystemPrompt();
-    const messages = this.buildAnthropicMessages();
+    // Assemble context: hot window + Hindsight recall (parallel with prompt build)
+    const [systemPrompt, assembled] = await Promise.all([
+      this.getSystemPrompt(),
+      this.context.assemble(userMessage),
+    ]);
+
+    // Build messages: prior context (if any) + hot window
+    const messages: AnthropicMessage[] = [];
+    if (assembled.priorContext) {
+      messages.push({ role: 'user', content: `[PRIOR CONTEXT]\n${assembled.priorContext}` });
+      messages.push({ role: 'assistant', content: 'Understood. I have the prior context.' });
+    }
+    messages.push(
+      ...assembled.hotMessages.map((m) => ({
+        role: m.role as 'user' | 'assistant',
+        content: m.content,
+      })),
+    );
 
     try {
       const fullText = await streamConversation({
@@ -386,14 +426,19 @@ export class MainAgent {
     return this.cachedSystemPrompt;
   }
 
+  /** Build messages from hot window only (sync, for non-conversational paths). */
   private buildAnthropicMessages(): AnthropicMessage[] {
-    return this.history.map((entry) => ({ role: entry.role, content: entry.content }));
+    return this.context.getHistory().map((m) => ({
+      role: m.role as 'user' | 'assistant',
+      content: m.content,
+    }));
   }
 
   private pushHistory(entry: HistoryEntry): void {
-    this.history.push(entry);
-    if (this.history.length > MAX_HISTORY) {
-      this.history = this.history.slice(-MAX_HISTORY);
-    }
+    // Fire-and-forget: push to context assembler (retains to Hindsight + hot window)
+    this.context.push({
+      role: entry.role as 'user' | 'assistant' | 'system',
+      content: entry.content,
+    }).catch(() => {}); // never block on retain
   }
 }

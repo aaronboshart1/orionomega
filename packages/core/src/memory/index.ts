@@ -19,3 +19,7 @@ export { CompactionFlush } from './compaction-flush.js';
 
 // Session Summary (stays in core — needs AnthropicClient)
 export { SessionSummarizer } from './session-summary.js';
+
+// Context Assembler — hot window + Hindsight recall for token-aware context
+export { ContextAssembler } from "./context-assembler.js";
+export type { AssembledContext, ContextAssemblerConfig, ConversationMessage } from "./context-assembler.js";
