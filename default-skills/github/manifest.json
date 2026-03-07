@@ -13,6 +13,47 @@
     "env": [],
     "skills": []
   },
+  "setup": {
+    "required": true,
+    "description": "Authenticate with GitHub to manage repos, issues, PRs, workflows, and more.",
+    "auth": {
+      "methods": [
+        {
+          "type": "oauth",
+          "label": "GitHub OAuth (recommended)",
+          "description": "Sign in with your browser — creates a secure token automatically",
+          "command": "gh auth login --web --git-protocol https",
+          "validateCommand": "gh auth status"
+        },
+        {
+          "type": "pat",
+          "label": "Personal Access Token",
+          "description": "Paste a token from github.com/settings/tokens",
+          "tokenUrl": "https://github.com/settings/tokens/new?scopes=repo,workflow,read:org,read:user",
+          "scopes": ["repo", "workflow", "read:org", "read:user"],
+          "envVar": "GH_TOKEN",
+          "validateCommand": "gh auth status"
+        },
+        {
+          "type": "login",
+          "label": "Interactive gh CLI Login",
+          "description": "Full interactive login — choose SSH or HTTPS, browser or token",
+          "command": "gh auth login",
+          "validateCommand": "gh auth status"
+        }
+      ]
+    },
+    "fields": [
+      {
+        "name": "default_owner",
+        "type": "string",
+        "label": "Default repository owner",
+        "description": "Your GitHub username or org — used when --repo is omitted",
+        "required": false
+      }
+    ],
+    "handler": "hooks/setup.js"
+  },
   "triggers": {
     "keywords": [
       "github", "pull request", "PR", "issue", "repository",
@@ -363,6 +404,7 @@
     "maxTimeout": 120000
   },
   "hooks": {
-    "healthCheck": "hooks/health.js"
+    "healthCheck": "hooks/health.js",
+    "postInstall": "hooks/setup.js"
   }
 }

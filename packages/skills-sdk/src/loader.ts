@@ -16,6 +16,7 @@ import type {
   ValidationResult,
 } from './types.js';
 import { validateManifest } from './validator.js';
+import { readSkillConfig } from './skill-config.js';
 import { SkillExecutor } from './executor.js';
 
 const execFileAsync = promisify(execFile);
@@ -231,6 +232,22 @@ export class SkillLoader {
    * @returns Array of matching skill manifests, ordered by match type
    *          (commands first, then keywords, then patterns).
    */
+  /**
+   * Discover all skills that are ready to use (enabled + configured).
+   * Skills that require setup but haven't been configured are excluded.
+   * Skills explicitly disabled via config are excluded.
+   */
+  async discoverReady(): Promise<SkillManifest[]> {
+    const all = await this.discoverAll();
+    return all.filter((m) => {
+      const config = readSkillConfig(this.skillsDir, m.name);
+      if (!config.enabled) return false;
+      if (m.setup?.required && !config.configured) return false;
+      return true;
+    });
+  }
+
+
   matchSkills(userInput: string): SkillManifest[] {
     const matched = new Map<string, SkillManifest>();
     const input = userInput.trim();

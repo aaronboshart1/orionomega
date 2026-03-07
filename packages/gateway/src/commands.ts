@@ -55,6 +55,9 @@ export class CommandHandler {
           message: 'Command registered, orchestration engine not yet connected.',
         };
 
+      case '/skills':
+        return this.handleSkills(session);
+
       case '/workers':
         return {
           command: '/workers',
@@ -110,6 +113,15 @@ export class CommandHandler {
   }
 
   /** Clear session message history and workflow state. */
+  /** List skills (gateway-level stub — real logic in main-agent). */
+  private handleSkills(_session: Session): CommandResult {
+    return {
+      command: "/skills",
+      success: true,
+      message: "Querying skill state...",
+    };
+  }
+
   private handleReset(session: Session): CommandResult {
     session.messages.length = 0;
     session.activeWorkflow = undefined;
@@ -122,3 +134,6 @@ export class CommandHandler {
     };
   }
 }
+
+// Note: /skills is primarily handled by MainAgent for full skill state.
+// This is the gateway-level fallback.

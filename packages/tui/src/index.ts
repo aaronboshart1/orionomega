@@ -32,6 +32,7 @@ const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/restart', description: 'Restart the active workflow' },
   { name: '/plan', description: 'Show the current execution plan' },
   { name: '/workers', description: 'List active workers' },
+  { name: '/skills', description: 'View, enable/disable, configure skills' },
   { name: '/exit', description: 'Exit the TUI' },
 ];
 

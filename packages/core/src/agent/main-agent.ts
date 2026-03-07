@@ -16,7 +16,7 @@ import { AnthropicClient } from '../anthropic/client.js';
 import type { AnthropicMessage } from '../anthropic/client.js';
 import { buildSystemPrompt, type PromptContext } from './prompt-builder.js';
 import { createLogger } from '../logging/logger.js';
-import { SkillLoader } from '@orionomega/skills-sdk';
+import { SkillLoader, readSkillConfig, writeSkillConfig } from '@orionomega/skills-sdk';
 import type { OrionOmegaConfig } from '../config/types.js';
 
 import type { PlannerOutput, WorkerEvent, GraphState } from '../orchestration/types.js';
@@ -307,6 +307,7 @@ export class MainAgent {
             '  /workers — List active workers',
             '  /reset   — Clear pending plans and history',
             '  /restart — Restart the gateway service',
+            '  /skills  — View, enable/disable, configure skills',
             '  /help    — This message',
           ].join('\n'),
         });
@@ -326,6 +327,11 @@ export class MainAgent {
             process.exit(0); // fallback: just exit, systemd will restart
           }
         }, 500);
+        return;
+      }
+
+      if (cmd === "/skills" || cmd.startsWith("/skills ")) {
+        await this.handleSkillsCommand(cmd);
         return;
       }
 
@@ -369,6 +375,74 @@ export class MainAgent {
   /** Get the shared event bus. */
   getEventBus(): EventBus {
     return this.orchestration.eventBus;
+  }
+
+  /**
+   * Handle /skills command — list, enable, disable, setup.
+   * Subcommands: /skills, /skills enable <name>, /skills disable <name>, /skills setup <name>
+   */
+  private async handleSkillsCommand(cmd: string): Promise<void> {
+    const parts = cmd.trim().split(/\s+/);
+    const sub = parts[1];
+    const name = parts[2];
+
+    if (!sub || sub === "list") {
+      // List all skills with status
+      if (!this.config.skillsDir) {
+        this.callbacks.onCommandResult({ command: "/skills", success: true, message: "No skills directory configured." });
+        return;
+      }
+      try {
+        const loader = new SkillLoader(this.config.skillsDir);
+        const manifests = await loader.discoverAll();
+        if (manifests.length === 0) {
+          this.callbacks.onCommandResult({ command: "/skills", success: true, message: "No skills installed." });
+          return;
+        }
+        const lines = ["Installed Skills:", ""];
+        for (const m of manifests) {
+          const cfg = readSkillConfig(this.config.skillsDir, m.name);
+          let status = "✅ ready";
+          if (!cfg.enabled) status = "❌ disabled";
+          else if (m.setup?.required && !cfg.configured) status = "⚠️ needs setup";
+          lines.push(
+            "  " + m.name.padEnd(18) + status.padEnd(18) + (m.description ?? "")
+          );
+        }
+        lines.push("", "Commands: /skills enable|disable|setup <name>");
+        this.callbacks.onCommandResult({ command: "/skills", success: true, message: lines.join("\n") });
+      } catch (err) {
+        this.callbacks.onCommandResult({ command: "/skills", success: false, message: "Failed to list skills: " + (err instanceof Error ? err.message : String(err)) });
+      }
+      return;
+    }
+
+    if ((sub === "enable" || sub === "disable") && name) {
+      const cfg = readSkillConfig(this.config.skillsDir!, name);
+      cfg.enabled = sub === "enable";
+      writeSkillConfig(this.config.skillsDir!, cfg);
+      this.callbacks.onCommandResult({
+        command: "/skills",
+        success: true,
+        message: "Skill \"" + name + "\" " + (sub === "enable" ? "enabled" : "disabled") + ".",
+      });
+      return;
+    }
+
+    if (sub === "setup" && name) {
+      this.callbacks.onCommandResult({
+        command: "/skills",
+        success: true,
+        message: "Run skill setup from the CLI: orionomega skill setup " + name,
+      });
+      return;
+    }
+
+    this.callbacks.onCommandResult({
+      command: "/skills",
+      success: false,
+      message: "Usage: /skills [list|enable|disable|setup] [name]",
+    });
   }
 
   // ── Private ────────────────────────────────────────────────────────────

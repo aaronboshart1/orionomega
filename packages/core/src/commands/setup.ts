@@ -13,6 +13,8 @@ import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
 import { readConfig, writeConfig, getConfigPath, getDefaultConfig } from '../config/index.js';
 import type { OrionOmegaConfig } from '../config/index.js';
+import { SkillLoader, readSkillConfig, writeSkillConfig } from '@orionomega/skills-sdk';
+import type { SkillManifest, SkillConfig, SkillAuthMethod, SkillSetupField } from '@orionomega/skills-sdk';
 
 // ── Colour helpers ──────────────────────────────────────────────
 
@@ -151,7 +153,7 @@ function confirm(question: string, defaultYes: boolean = true): Promise<boolean>
 // ── Steps ───────────────────────────────────────────────────────
 
 async function stepApiKey(config: OrionOmegaConfig): Promise<void> {
-  heading('Step 1/6 — Anthropic API Key');
+  heading('Step 1/7 — Anthropic API Key');
 
   const key = await ask('Enter your Anthropic API key');
 
@@ -234,7 +236,7 @@ async function fetchAnthropicModels(apiKey: string): Promise<{ label: string; va
 }
 
 async function stepModel(config: OrionOmegaConfig): Promise<void> {
-  heading('Step 2/6 — Default Model');
+  heading('Step 2/7 — Default Model');
 
   // Always discover models from the API — no hardcoded fallback list
   let options: { label: string; value: string }[] = [];
@@ -287,7 +289,7 @@ async function stepModel(config: OrionOmegaConfig): Promise<void> {
 }
 
 async function stepGatewaySecurity(config: OrionOmegaConfig): Promise<void> {
-  heading('Step 3/6 — Gateway Security');
+  heading('Step 3/7 — Gateway Security');
 
   const mode = await choose('Authentication mode for the gateway:', [
     { label: 'API Key authentication', value: 'api-key' },
@@ -317,7 +319,7 @@ async function stepGatewaySecurity(config: OrionOmegaConfig): Promise<void> {
 }
 
 async function stepHindsight(config: OrionOmegaConfig): Promise<void> {
-  heading('Step 4/6 — Hindsight Memory');
+  heading('Step 4/7 — Hindsight Memory');
 
   const mode = await choose('Hindsight server:', [
     { label: `Local ${DIM}(localhost:8888)${RESET}`, value: 'local' },
@@ -361,7 +363,7 @@ async function stepHindsight(config: OrionOmegaConfig): Promise<void> {
 }
 
 async function stepWorkspace(config: OrionOmegaConfig): Promise<void> {
-  heading('Step 5/6 — Workspace');
+  heading('Step 5/7 — Workspace');
 
   const defaultPath = join(homedir(), '.orionomega', 'workspace');
   const wsPath = await ask('Workspace directory', { default: defaultPath });
@@ -443,10 +445,257 @@ Your personal cheat sheet for environment-specific details.
 <!-- Anything that helps your agent help you -->
 `;
 
+// ── Step 7: Skills ──────────────────────────────────────────────
+
+async function stepSkills(config: OrionOmegaConfig): Promise<void> {
+  heading("Step 7/7 — Skills");
+
+  // Discover all available skills from both default-skills and user skills dir
+  const skillsDirs: string[] = [];
+  const repoRoot = new URL("../../../../", import.meta.url).pathname;
+  const defaultSkillsDir = join(repoRoot, "default-skills");
+  if (existsSync(defaultSkillsDir)) skillsDirs.push(defaultSkillsDir);
+  if (existsSync(config.skills.directory)) skillsDirs.push(config.skills.directory);
+
+  const allManifests: SkillManifest[] = [];
+  const seen = new Set<string>();
+  for (const dir of skillsDirs) {
+    try {
+      const loader = new SkillLoader(dir);
+      const manifests = await loader.discoverAll();
+      for (const m of manifests) {
+        if (!seen.has(m.name)) {
+          seen.add(m.name);
+          allManifests.push(m);
+        }
+      }
+    } catch {}
+  }
+
+  if (allManifests.length === 0) {
+    println("  No skills found. You can install skills later with: orionomega skill install <path>");
+    return;
+  }
+
+  println("  Available skills:");
+  println();
+  for (let i = 0; i < allManifests.length; i++) {
+    const m = allManifests[i];
+    const setupTag = m.setup?.required ? " (requires setup)" : "";
+    println("  " + BOLD + (i + 1) + RESET + ") " + m.name + " — " + m.description + DIM + setupTag + RESET);
+  }
+  println();
+
+  const selection = await ask("Enable which skills? (comma-separated numbers, or 'all')", { default: "all" });
+
+  let selectedIndices: number[];
+  if (selection.toLowerCase() === "all") {
+    selectedIndices = allManifests.map((_, i) => i);
+  } else {
+    selectedIndices = selection.split(",").map(s => parseInt(s.trim(), 10) - 1).filter(i => i >= 0 && i < allManifests.length);
+  }
+
+  if (selectedIndices.length === 0) {
+    warn("No skills selected.");
+    return;
+  }
+
+  const selected = selectedIndices.map(i => allManifests[i]);
+  success("Selected: " + selected.map(m => m.name).join(", "));
+
+  // Install default skills to user directory if not present
+  for (const m of selected) {
+    const dest = join(config.skills.directory, m.name);
+    const src = join(defaultSkillsDir, m.name);
+    if (!existsSync(dest) && existsSync(src)) {
+      const { cpSync } = await import("node:fs");
+      cpSync(src, dest, { recursive: true });
+      println("  " + DIM + "Installed: " + m.name + RESET);
+    }
+  }
+
+  // Disable skills that were NOT selected
+  for (const m of allManifests) {
+    if (!selected.find(s => s.name === m.name)) {
+      const cfg = readSkillConfig(config.skills.directory, m.name);
+      cfg.enabled = false;
+      writeSkillConfig(config.skills.directory, cfg);
+    }
+  }
+
+  // Run setup for each selected skill that requires it
+  for (const m of selected) {
+    const cfg = readSkillConfig(config.skills.directory, m.name);
+    cfg.enabled = true;
+
+    if (m.setup?.required && !cfg.configured) {
+      println();
+      heading("  Skill Setup: " + m.name);
+      if (m.setup.description) println("  " + m.setup.description);
+      println();
+
+      // Auth method selection
+      if (m.setup.auth?.methods?.length) {
+        const authResult = await runAuthSetup(m.setup.auth.methods, config.skills.directory, m.name);
+        if (authResult) {
+          cfg.authMethod = authResult;
+        }
+      }
+
+      // Config fields
+      if (m.setup.fields?.length) {
+        for (const field of m.setup.fields) {
+          const value = await promptField(field);
+          if (value !== undefined && value !== "") {
+            cfg.fields[field.name] = value;
+          }
+        }
+      }
+
+      // Run setup handler if present
+      if (m.setup.handler) {
+        const handlerPath = join(config.skills.directory, m.name, m.setup.handler);
+        if (existsSync(handlerPath)) {
+          print("  Running setup validation... ");
+          try {
+            const result = execSync("node " + handlerPath, {
+              encoding: "utf-8",
+              timeout: 30000,
+              input: JSON.stringify(cfg),
+              env: { ...process.env },
+            }).trim();
+            // Handler can return updated config fields
+            try {
+              const updates = JSON.parse(result);
+              if (updates.fields) Object.assign(cfg.fields, updates.fields);
+              if (updates.authMethod) cfg.authMethod = updates.authMethod;
+            } catch {}
+            success("Validation passed.");
+          } catch (err: unknown) {
+            const msg = err instanceof Error ? err.message : String(err);
+            fail("Setup handler failed: " + msg);
+          }
+        }
+      }
+
+      cfg.configured = true;
+      cfg.configuredAt = new Date().toISOString();
+    } else {
+      cfg.enabled = true;
+      if (!cfg.configured && !m.setup?.required) {
+        cfg.configured = true;
+        cfg.configuredAt = new Date().toISOString();
+      }
+    }
+
+    writeSkillConfig(config.skills.directory, cfg);
+  }
+
+  success("Skills configured.");
+}
+
+/**
+ * Run interactive auth method selection.
+ */
+async function runAuthSetup(methods: SkillAuthMethod[], skillsDir: string, skillName: string): Promise<string | undefined> {
+  if (methods.length === 1) {
+    println("  Auth: " + methods[0].label);
+  }
+
+  const options = methods.map(m => ({ label: m.label + (m.description ? " — " + DIM + m.description + RESET : ""), value: m.type }));
+  const chosen = methods.length === 1 ? methods[0].type : await choose("  Choose authentication method:", options);
+  const method = methods.find(m => m.type === chosen);
+  if (!method) return undefined;
+
+  switch (method.type) {
+    case "oauth":
+    case "login": {
+      if (method.command) {
+        println("  Running: " + BOLD + method.command + RESET);
+        try {
+          execSync(method.command, { stdio: "inherit", timeout: 120000 });
+          success("Authentication complete.");
+        } catch {
+          fail("Authentication command failed. You can retry with: orionomega skill setup " + skillName);
+        }
+      }
+      break;
+    }
+    case "pat":
+    case "api-key": {
+      if (method.tokenUrl) {
+        println("  Generate a token at: " + BLUE + method.tokenUrl + RESET);
+        if (method.scopes?.length) {
+          println("  Required scopes: " + method.scopes.join(", "));
+        }
+      }
+      const token = await ask("  Enter your " + (method.type === "pat" ? "personal access token" : "API key"), { mask: true });
+      if (token && method.envVar) {
+        // Write to skill config fields
+        const cfg = readSkillConfig(skillsDir, skillName);
+        cfg.fields[method.envVar] = token;
+        writeSkillConfig(skillsDir, cfg);
+        println("  " + DIM + "Stored in skill config as " + method.envVar + RESET);
+      }
+      break;
+    }
+    case "env": {
+      if (method.envVar) {
+        if (process.env[method.envVar]) {
+          success(method.envVar + " is already set.");
+        } else {
+          warn(method.envVar + " is not set. Set it in your shell profile.");
+        }
+      }
+      break;
+    }
+    case "ssh-key": {
+      println("  Ensure your SSH key is configured for this service.");
+      break;
+    }
+  }
+
+  // Validate if validateCommand is present
+  if (method.validateCommand) {
+    print("  Validating... ");
+    try {
+      execSync(method.validateCommand, { encoding: "utf-8", timeout: 15000, stdio: "pipe" });
+      success("Auth is valid!");
+    } catch {
+      fail("Validation failed. You can retry with: orionomega skill setup " + skillName);
+    }
+  }
+
+  return method.type;
+}
+
+/**
+ * Prompt for a single config field value.
+ */
+async function promptField(field: SkillSetupField): Promise<string | number | boolean | undefined> {
+  const defaultStr = field.default !== undefined ? String(field.default) : undefined;
+
+  if (field.type === "boolean") {
+    return await confirm("  " + field.label + (field.description ? " (" + field.description + ")" : ""), field.default as boolean ?? true);
+  }
+
+  if (field.type === "select" && field.options?.length) {
+    return await choose("  " + field.label + ":", field.options);
+  }
+
+  const raw = await ask("  " + field.label + (field.description ? " (" + field.description + ")" : ""), {
+    mask: field.mask,
+    default: defaultStr,
+  });
+
+  if (field.type === "number") return parseFloat(raw) || ((field.default as number) ?? 0);
+  return raw;
+}
+
 // ── Main ────────────────────────────────────────────────────────
 
 async function stepAgentSdk(config: OrionOmegaConfig): Promise<void> {
-  heading('Step 6/6 — Claude Agent SDK (Coding Agents)');
+  heading('Step 6/7 — Claude Agent SDK (Coding Agents)');
 
   println(`  The Claude Agent SDK powers coding tasks in workflows.`);
   println(`  It uses the same Anthropic API key configured in Step 1.`);
@@ -512,6 +761,7 @@ export async function runSetup(): Promise<void> {
     await stepHindsight(config);
     await stepWorkspace(config);
     await stepAgentSdk(config);
+    await stepSkills(config);
 
     // Also ensure skills & logs directories exist
     if (!existsSync(config.skills.directory)) {
