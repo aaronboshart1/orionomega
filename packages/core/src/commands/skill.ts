@@ -5,6 +5,7 @@
 
 import { existsSync, cpSync } from 'node:fs';
 import { join, basename } from 'node:path';
+import { createInterface } from 'node:readline';
 import { readConfig } from "../config/index.js";
 import { SkillLoader, readSkillConfig, writeSkillConfig } from "@orionomega/skills-sdk";
 import type { SkillManifest, SkillConfig } from "@orionomega/skills-sdk";
@@ -19,7 +20,6 @@ const RESET = '\x1b[0m';
 /** Prompt the user for input via readline. */
 function prompt(message: string, mask = false): Promise<string> {
   return new Promise((resolve) => {
-    const { createInterface } = require('node:readline') as typeof import('node:readline');
     const rl = createInterface({ input: process.stdin, output: process.stdout });
     if (mask) {
       // Mask input for secrets — write dots instead
