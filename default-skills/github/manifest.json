@@ -1,0 +1,368 @@
+{
+  "name": "github",
+  "version": "1.0.0",
+  "description": "Full-featured GitHub integration via the gh CLI. Manage repositories, issues, pull requests, CI/CD workflows, releases, code search, and the GitHub API. Designed for autonomous orchestration workflows.",
+  "author": "OrionOmega",
+  "license": "MIT",
+  "homepage": "https://github.com/aaronboshart1/orionomega",
+  "repository": "https://github.com/aaronboshart1/orionomega",
+  "orionomega": ">=0.1.0",
+  "os": ["linux", "darwin"],
+  "requires": {
+    "commands": ["gh", "git"],
+    "env": [],
+    "skills": []
+  },
+  "triggers": {
+    "keywords": [
+      "github", "pull request", "PR", "issue", "repository",
+      "merge", "branch", "commit", "CI", "workflow", "release",
+      "code review", "gh"
+    ],
+    "patterns": [
+      "\\b(create|open|close|merge|list|check)\\s+(issue|pr|pull request|release)\\b",
+      "\\bgithub\\b",
+      "\\bgh\\s+\\w+\\b"
+    ],
+    "commands": ["/gh"]
+  },
+  "tools": [
+    {
+      "name": "gh_repo",
+      "description": "Manage GitHub repositories: list, view, clone, create, fork, archive, delete. View repo info, languages, topics, collaborators.",
+      "handler": "handlers/gh_repo.js",
+      "timeout": 30000,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": ["list", "view", "clone", "create", "fork", "archive", "delete", "rename"],
+            "description": "Repository action to perform"
+          },
+          "repo": {
+            "type": "string",
+            "description": "Repository in owner/name format (e.g. 'aaronboshart1/orionomega')"
+          },
+          "name": {
+            "type": "string",
+            "description": "Repository name (for create)"
+          },
+          "description": {
+            "type": "string",
+            "description": "Repository description (for create)"
+          },
+          "private": {
+            "type": "boolean",
+            "description": "Whether the repo should be private (for create)"
+          },
+          "limit": {
+            "type": "number",
+            "description": "Max results to return (default 30)"
+          },
+          "topic": {
+            "type": "string",
+            "description": "Filter by topic"
+          },
+          "language": {
+            "type": "string",
+            "description": "Filter by primary language"
+          }
+        },
+        "required": ["action"]
+      }
+    },
+    {
+      "name": "gh_issue",
+      "description": "Manage GitHub issues: list, view, create, edit, close, reopen, comment, assign, label, search, transfer, pin, lock.",
+      "handler": "handlers/gh_issue.js",
+      "timeout": 30000,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": ["list", "view", "create", "edit", "close", "reopen", "comment", "assign", "label", "search", "transfer", "pin", "lock"],
+            "description": "Issue action to perform"
+          },
+          "repo": {
+            "type": "string",
+            "description": "Repository in owner/name format"
+          },
+          "number": {
+            "type": "number",
+            "description": "Issue number (for view/edit/close/reopen/comment)"
+          },
+          "title": {
+            "type": "string",
+            "description": "Issue title (for create/edit)"
+          },
+          "body": {
+            "type": "string",
+            "description": "Issue body text (for create/edit/comment)"
+          },
+          "labels": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Labels to apply"
+          },
+          "assignees": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Users to assign"
+          },
+          "milestone": {
+            "type": "string",
+            "description": "Milestone name or number"
+          },
+          "state": {
+            "type": "string",
+            "enum": ["open", "closed", "all"],
+            "description": "Filter by state (for list)"
+          },
+          "query": {
+            "type": "string",
+            "description": "Search query (for search action)"
+          },
+          "limit": {
+            "type": "number",
+            "description": "Max results (default 30)"
+          },
+          "sort": {
+            "type": "string",
+            "enum": ["created", "updated", "comments"],
+            "description": "Sort field"
+          }
+        },
+        "required": ["action"]
+      }
+    },
+    {
+      "name": "gh_pr",
+      "description": "Manage pull requests: list, view, create, edit, merge, close, reopen, comment, review, diff, checks, ready, draft.",
+      "handler": "handlers/gh_pr.js",
+      "timeout": 60000,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": ["list", "view", "create", "edit", "merge", "close", "reopen", "comment", "review", "diff", "checks", "ready", "draft"],
+            "description": "PR action to perform"
+          },
+          "repo": {
+            "type": "string",
+            "description": "Repository in owner/name format"
+          },
+          "number": {
+            "type": "number",
+            "description": "PR number"
+          },
+          "title": {
+            "type": "string",
+            "description": "PR title (for create/edit)"
+          },
+          "body": {
+            "type": "string",
+            "description": "PR body (for create/edit/comment/review)"
+          },
+          "base": {
+            "type": "string",
+            "description": "Base branch (for create, default: repo default branch)"
+          },
+          "head": {
+            "type": "string",
+            "description": "Head branch (for create)"
+          },
+          "draft": {
+            "type": "boolean",
+            "description": "Create as draft PR"
+          },
+          "merge_method": {
+            "type": "string",
+            "enum": ["merge", "squash", "rebase"],
+            "description": "Merge method (default: merge)"
+          },
+          "review_event": {
+            "type": "string",
+            "enum": ["APPROVE", "REQUEST_CHANGES", "COMMENT"],
+            "description": "Review event type (for review action)"
+          },
+          "labels": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Labels to apply"
+          },
+          "assignees": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Users to assign"
+          },
+          "reviewers": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Reviewers to request"
+          },
+          "state": {
+            "type": "string",
+            "enum": ["open", "closed", "merged", "all"],
+            "description": "Filter by state"
+          },
+          "limit": {
+            "type": "number",
+            "description": "Max results (default 30)"
+          }
+        },
+        "required": ["action"]
+      }
+    },
+    {
+      "name": "gh_workflow",
+      "description": "Manage GitHub Actions: list workflows, view/trigger/cancel runs, view logs, list artifacts.",
+      "handler": "handlers/gh_workflow.js",
+      "timeout": 30000,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": ["list", "runs", "view", "trigger", "cancel", "rerun", "logs", "artifacts", "download"],
+            "description": "Workflow action to perform"
+          },
+          "repo": {
+            "type": "string",
+            "description": "Repository in owner/name format"
+          },
+          "workflow": {
+            "type": "string",
+            "description": "Workflow filename or ID (for trigger/runs)"
+          },
+          "run_id": {
+            "type": "string",
+            "description": "Run ID (for view/cancel/rerun/logs)"
+          },
+          "ref": {
+            "type": "string",
+            "description": "Git ref for trigger (branch/tag)"
+          },
+          "inputs": {
+            "type": "object",
+            "description": "Workflow dispatch inputs"
+          },
+          "limit": {
+            "type": "number",
+            "description": "Max results (default 10)"
+          }
+        },
+        "required": ["action"]
+      }
+    },
+    {
+      "name": "gh_release",
+      "description": "Manage releases: list, view, create, edit, delete, upload/download assets.",
+      "handler": "handlers/gh_release.js",
+      "timeout": 60000,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": ["list", "view", "create", "edit", "delete", "upload", "download"],
+            "description": "Release action to perform"
+          },
+          "repo": {
+            "type": "string",
+            "description": "Repository in owner/name format"
+          },
+          "tag": {
+            "type": "string",
+            "description": "Release tag (e.g. 'v1.0.0')"
+          },
+          "title": {
+            "type": "string",
+            "description": "Release title"
+          },
+          "notes": {
+            "type": "string",
+            "description": "Release notes"
+          },
+          "draft": {
+            "type": "boolean",
+            "description": "Create as draft"
+          },
+          "prerelease": {
+            "type": "boolean",
+            "description": "Mark as prerelease"
+          },
+          "generate_notes": {
+            "type": "boolean",
+            "description": "Auto-generate release notes"
+          },
+          "files": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "File paths to upload as assets"
+          },
+          "target": {
+            "type": "string",
+            "description": "Target commitish (branch or SHA)"
+          },
+          "limit": {
+            "type": "number",
+            "description": "Max results (default 10)"
+          }
+        },
+        "required": ["action"]
+      }
+    },
+    {
+      "name": "gh_api",
+      "description": "Make raw GitHub API requests. Use for any GitHub API endpoint not covered by other tools. Supports REST and GraphQL.",
+      "handler": "handlers/gh_api.js",
+      "timeout": 30000,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "endpoint": {
+            "type": "string",
+            "description": "REST API path (e.g. '/repos/{owner}/{repo}/branches') or 'graphql' for GraphQL"
+          },
+          "method": {
+            "type": "string",
+            "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+            "description": "HTTP method (default GET)"
+          },
+          "body": {
+            "type": "object",
+            "description": "Request body (for POST/PUT/PATCH)"
+          },
+          "query": {
+            "type": "string",
+            "description": "GraphQL query string (when endpoint is 'graphql')"
+          },
+          "variables": {
+            "type": "object",
+            "description": "GraphQL variables"
+          },
+          "jq": {
+            "type": "string",
+            "description": "jq expression to filter response"
+          },
+          "paginate": {
+            "type": "boolean",
+            "description": "Auto-paginate results"
+          }
+        },
+        "required": ["endpoint"]
+      }
+    }
+  ],
+  "workerProfile": {
+    "tier": "lightweight",
+    "tools": ["gh_repo", "gh_issue", "gh_pr", "gh_workflow", "gh_release", "gh_api"],
+    "maxTimeout": 120000
+  },
+  "hooks": {
+    "healthCheck": "hooks/health.js"
+  }
+}
