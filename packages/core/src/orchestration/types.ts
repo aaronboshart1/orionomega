@@ -38,6 +38,12 @@ export interface AgentConfig {
   tools?: string[];
   /** Skill IDs to load for the agent. */
   skillIds?: string[];
+  /**
+   * Maximum input tokens this worker may consume before being stopped.
+   * At 80% a warning is injected; at 100% the loop halts gracefully.
+   * If unset, defaults are applied by tier: haiku=100K, sonnet=300K, opus=500K.
+   */
+  tokenBudget?: number;
 }
 
 /** Configuration for a tool-type node. */

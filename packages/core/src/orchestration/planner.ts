@@ -76,7 +76,39 @@ export class Planner {
       ? (pickModelByTier(discoveredModels, 'sonnet')?.id ?? appConfig.models.default)
       : appConfig.models.default;
 
-    const systemPrompt = this.buildPlannerPrompt(task, context, discoveredModels, appConfig.models.default);
+    // Pre-planning context recall from Hindsight
+    // This prevents workers from wasting tokens discovering things we already know
+    let infraContext: string | undefined;
+    try {
+      const hindsightUrl = appConfig.hindsight?.url;
+      if (hindsightUrl) {
+        const { HindsightClient } = await import('@orionomega/hindsight');
+        const hsClient = new HindsightClient(hindsightUrl);
+
+        const recalls = await Promise.allSettled([
+          hsClient.recall('infra', task, { maxTokens: 1024, budget: 'low' }),
+          hsClient.recall(appConfig.hindsight?.defaultBank ?? 'default', task, { maxTokens: 1024, budget: 'low' }),
+        ]);
+
+        const parts: string[] = [];
+        for (const r of recalls) {
+          if (r.status === 'fulfilled' && r.value) {
+            const memories = r.value.memories ?? ((r.value as unknown as Record<string, unknown>).results as { content: string }[]) ?? [];
+            for (const m of memories) {
+              if (m.content) parts.push(m.content);
+            }
+          }
+        }
+        if (parts.length > 0) {
+          infraContext = parts.join('\n');
+          log.debug(`Pre-planning context: ${parts.length} memories, ${infraContext.length} chars`);
+        }
+      }
+    } catch (err) {
+      log.debug(`Pre-planning recall failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    const systemPrompt = this.buildPlannerPrompt(task, context, discoveredModels, appConfig.models.default, infraContext);
 
     try {
       log.info(`Planning task with model ${model}: "${task.slice(0, 80)}..."`);
@@ -155,6 +187,9 @@ export class Planner {
                 )
                   ? ((n.agent as Record<string, unknown>).skillIds as string[])
                   : undefined,
+                tokenBudget: (n.agent as Record<string, unknown>).tokenBudget
+                  ? Number((n.agent as Record<string, unknown>).tokenBudget)
+                  : undefined,
               }
             : undefined,
           tool: n.tool
@@ -210,6 +245,7 @@ export class Planner {
     context?: object,
     discoveredModels?: DiscoveredModel[],
     mainModel?: string,
+    infraContext?: string,
   ): string {
     const ctx = context as
       | {
@@ -247,6 +283,33 @@ Given a task description, you produce a WorkflowGraph JSON that orchestrates mul
 8. **Set reasonable timeouts** (in seconds) for each node based on expected duration.
 9. **Set retries** for nodes that might fail transiently (network calls, API requests).
 10. **Set fallbackNodeId** for critical nodes where an alternative approach exists.
+
+## Parallelism — CRITICAL
+The executor runs all nodes in the same layer concurrently. Nodes only wait for nodes listed in their dependsOn.
+
+- WRONG: A → B → C → D (sequential chain when B and C are independent)
+- RIGHT: A, B (parallel, no deps) → C (depends on A and B) → D (depends on C)
+- "Fetch data from source A" and "Fetch data from source B" have ZERO dependencies on each other — they MUST be in the same layer
+- Only add a dependency when a node genuinely requires another node's OUTPUT as INPUT
+- The executor automatically passes upstream outputs to downstream workers — you don't need intermediate "collect results" nodes unless you're doing a JOIN
+
+## Token Budgets
+Each worker has a token budget that limits how many input tokens it can consume. Assign budgets based on task complexity:
+- **Retrieval / lookup tasks** (fetch data, query APIs): 50,000–100,000 tokens. Use lightweight models.
+- **Analysis / writing tasks** (process data, generate reports): 100,000–200,000 tokens. Use midweight models.
+- **Complex reasoning tasks** (architecture, multi-step code): 200,000–400,000 tokens. Use heavyweight models.
+
+Set tokenBudget in the agent config: \`"agent": { "model": "...", "task": "...", "tokenBudget": 100000 }\`
+Workers that exceed their budget are gracefully stopped and asked to produce final output.
+
+## Context Efficiency
+Workers automatically receive:
+- Output from upstream (dependency) workers — no need for "pass-through" or "collect" nodes
+- Relevant memories from the knowledge base (Hindsight)
+- Known infrastructure details from config
+
+DO NOT create "discovery" or "exploration" nodes for things that are already known (see Known Context below).
+Instead, include the known information directly in the worker's task description.
 
 ## Output Format
 Respond with a JSON object matching this schema:
@@ -292,7 +355,7 @@ Only include the relevant config key (agent/tool/router) for each node type.
 Every node must have: id, type, label, dependsOn (array, can be empty).
 
 ## ${discoveredModels?.length ? buildModelGuide(discoveredModels, mainModel ?? this.config.model) : `Available models: Use "${mainModel ?? this.config.model}" for all workers.`}
-${skillsList}${memoriesList}${filesList}
+${skillsList}${memoriesList}${filesList}${infraContext ? `\n\n## Known Context (from memory — DO NOT create discovery nodes for this)\n${infraContext}` : ''}
 
 ## Task
 ${task}

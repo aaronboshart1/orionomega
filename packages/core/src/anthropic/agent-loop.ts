@@ -45,6 +45,11 @@ export interface AgentLoopOptions {
   onToolResult?: (name: string, result: string) => void;
   /** Called to check if the loop should be cancelled. */
   isCancelled?: () => boolean;
+  /**
+   * Maximum cumulative input tokens before the loop is stopped.
+   * At 80% of budget, a warning is injected. At 100%, the loop halts.
+   */
+  maxInputTokens?: number;
 }
 
 /** Result of a completed agent loop. */
@@ -59,6 +64,12 @@ export interface AgentLoopResult {
   inputTokens: number;
   /** Total output tokens consumed across all turns. */
   outputTokens: number;
+  /** Total tokens used to create cache entries. */
+  cacheCreationTokens: number;
+  /** Total tokens read from cache (90% cost reduction). */
+  cacheReadTokens: number;
+  /** Whether the loop was stopped due to token budget. */
+  stoppedByBudget: boolean;
 }
 
 /**
@@ -87,6 +98,7 @@ export async function runAgentLoop(
     onToolCall,
     onToolResult,
     isCancelled,
+    maxInputTokens,
   } = options;
 
   const toolContext: ToolContext = {
@@ -110,11 +122,48 @@ export async function runAgentLoop(
   let totalToolCalls = 0;
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
+  let totalCacheCreationTokens = 0;
+  let totalCacheReadTokens = 0;
   let finalText = '';
+  let budgetWarningInjected = false;
+  let stoppedByBudget = false;
 
   for (let turn = 0; turn < maxTurns; turn++) {
     // Check cancellation
     if (isCancelled?.()) break;
+
+    // Token budget enforcement — hard stop at 100%
+    if (maxInputTokens && totalInputTokens >= maxInputTokens) {
+      stoppedByBudget = true;
+      // Inject a final "wrap up" message and do one last turn
+      conversation.push({
+        role: 'user',
+        content: 'TOKEN BUDGET REACHED. Provide your final summary now. Do not make any more tool calls.',
+      });
+
+      const wrapUp = await streamAssistantTurn(
+        client, model, systemPrompt, conversation, toolDefs, maxTokens, onThinking, onText,
+      );
+      totalInputTokens += wrapUp.usage.inputTokens;
+      totalOutputTokens += wrapUp.usage.outputTokens;
+      totalCacheCreationTokens += wrapUp.usage.cacheCreationTokens;
+      totalCacheReadTokens += wrapUp.usage.cacheReadTokens;
+
+      conversation.push({ role: 'assistant', content: wrapUp.contentBlocks });
+      for (const block of wrapUp.contentBlocks) {
+        if (block.type === 'text' && block.text) finalText = block.text;
+      }
+      break;
+    }
+
+    // Token budget warning at 80%
+    if (maxInputTokens && !budgetWarningInjected && totalInputTokens >= maxInputTokens * 0.8) {
+      budgetWarningInjected = true;
+      conversation.push({
+        role: 'user',
+        content: `[SYSTEM] You have used ${totalInputTokens.toLocaleString()} of your ${maxInputTokens.toLocaleString()} token budget (${Math.round((totalInputTokens / maxInputTokens) * 100)}%). Wrap up your current task efficiently and produce final output soon.`,
+      });
+    }
 
     // Collect the full assistant response from the stream
     const { contentBlocks, stopReason, usage } = await streamAssistantTurn(
@@ -130,6 +179,8 @@ export async function runAgentLoop(
 
     totalInputTokens += usage.inputTokens;
     totalOutputTokens += usage.outputTokens;
+    totalCacheCreationTokens += usage.cacheCreationTokens;
+    totalCacheReadTokens += usage.cacheReadTokens;
 
     // Append assistant message
     conversation.push({
@@ -198,6 +249,9 @@ export async function runAgentLoop(
     toolCalls: totalToolCalls,
     inputTokens: totalInputTokens,
     outputTokens: totalOutputTokens,
+    cacheCreationTokens: totalCacheCreationTokens,
+    cacheReadTokens: totalCacheReadTokens,
+    stoppedByBudget,
   };
 }
 
@@ -206,7 +260,12 @@ export async function runAgentLoop(
 interface TurnResult {
   contentBlocks: ContentBlock[];
   stopReason: string;
-  usage: { inputTokens: number; outputTokens: number };
+  usage: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheCreationTokens: number;
+    cacheReadTokens: number;
+  };
 }
 
 /**
@@ -227,6 +286,8 @@ async function streamAssistantTurn(
   let stopReason = 'end_turn';
   let inputTokens = 0;
   let outputTokens = 0;
+  let cacheCreationTokens = 0;
+  let cacheReadTokens = 0;
 
   // Accumulate partial data for the current block
   const blockAccumulators = new Map<
@@ -248,8 +309,10 @@ async function streamAssistantTurn(
       case 'message_start': {
         const msg = event.message as Record<string, unknown> | undefined;
         const usage_ = msg?.usage as Record<string, number> | undefined;
-        if (usage_?.input_tokens) {
-          inputTokens += usage_.input_tokens;
+        if (usage_) {
+          if (usage_.input_tokens) inputTokens += usage_.input_tokens;
+          if (usage_.cache_creation_input_tokens) cacheCreationTokens += usage_.cache_creation_input_tokens;
+          if (usage_.cache_read_input_tokens) cacheReadTokens += usage_.cache_read_input_tokens;
         }
         break;
       }
@@ -322,8 +385,10 @@ async function streamAssistantTurn(
           stopReason = String(delta.stop_reason);
         }
         const usage_ = event.usage as Record<string, number> | undefined;
-        if (usage_?.output_tokens) {
-          outputTokens += usage_.output_tokens;
+        if (usage_) {
+          if (usage_.output_tokens) outputTokens += usage_.output_tokens;
+          if (usage_.cache_creation_input_tokens) cacheCreationTokens += usage_.cache_creation_input_tokens;
+          if (usage_.cache_read_input_tokens) cacheReadTokens += usage_.cache_read_input_tokens;
         }
         break;
       }
@@ -340,6 +405,6 @@ async function streamAssistantTurn(
   return {
     contentBlocks,
     stopReason,
-    usage: { inputTokens, outputTokens },
+    usage: { inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens },
   };
 }

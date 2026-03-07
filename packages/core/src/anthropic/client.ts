@@ -46,6 +46,14 @@ export interface CreateMessageOptions {
   thinking?: { type: 'enabled'; budget_tokens: number };
 }
 
+/** Token usage statistics from the Anthropic API. */
+export interface TokenUsage {
+  input_tokens: number;
+  output_tokens: number;
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
+}
+
 /** Non-streaming response from the Anthropic API. */
 export interface MessageResponse {
   id: string;
@@ -53,7 +61,7 @@ export interface MessageResponse {
   role: 'assistant';
   content: ContentBlock[];
   stop_reason: 'end_turn' | 'tool_use' | 'max_tokens';
-  usage: { input_tokens: number; output_tokens: number };
+  usage: TokenUsage;
 }
 
 const API_URL = 'https://api.anthropic.com/v1/messages';
@@ -183,6 +191,13 @@ export class AnthropicClient {
 
   /**
    * Builds the JSON request body for the Anthropic API.
+   *
+   * Applies prompt caching via `cache_control` breakpoints:
+   * - System prompt: cached as ephemeral (stable across all turns)
+   * - Last tool definition: cached as ephemeral (tools don't change between turns)
+   *
+   * This dramatically reduces input token costs in multi-turn agent loops
+   * where the system prompt and tools are re-sent on every turn.
    */
   private buildRequestBody(
     options: CreateMessageOptions,
@@ -195,8 +210,29 @@ export class AnthropicClient {
       stream,
     };
 
-    if (options.system) body.system = options.system;
-    if (options.tools && options.tools.length > 0) body.tools = options.tools;
+    // System prompt with cache_control for prompt caching
+    if (options.system) {
+      body.system = [
+        {
+          type: 'text',
+          text: options.system,
+          cache_control: { type: 'ephemeral' },
+        },
+      ];
+    }
+
+    // Tools with cache_control on the last tool definition
+    if (options.tools && options.tools.length > 0) {
+      const tools = options.tools.map((t, i) => {
+        if (i === options.tools!.length - 1) {
+          // Cache breakpoint on the last tool — caches the entire tools block
+          return { ...t, cache_control: { type: 'ephemeral' } };
+        }
+        return t;
+      });
+      body.tools = tools;
+    }
+
     if (options.temperature !== undefined) body.temperature = options.temperature;
     if (options.thinking) body.thinking = options.thinking;
 

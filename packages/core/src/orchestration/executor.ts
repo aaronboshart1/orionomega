@@ -332,14 +332,50 @@ export class GraphExecutor {
     switch (node.type) {
       case 'AGENT':
       case 'TOOL': {
-        // For AGENT nodes, recall relevant memories from Hindsight and inject as context
+        // Build rich context from multiple sources
         let injectedContext: string | undefined;
         if (node.type === 'AGENT' && node.agent?.task) {
-          injectedContext = await this.recallContext(node.agent.task);
+          const contextParts: string[] = [];
+
+          // 1. Upstream worker outputs (from dependencies)
+          if (node.dependsOn.length > 0) {
+            const upstreamOutputs: string[] = [];
+            for (const depId of node.dependsOn) {
+              const depOutput = this.state.getNodeOutput(depId);
+              const depNode = this.graph.nodes.get(depId);
+              if (depOutput && typeof depOutput === 'string') {
+                upstreamOutputs.push(`### ${depNode?.label ?? depId}\n${depOutput}`);
+              }
+            }
+            if (upstreamOutputs.length > 0) {
+              contextParts.push(`## Upstream Results\nOutput from previous workers:\n\n${upstreamOutputs.join('\n\n')}`);
+            }
+          }
+
+          // 2. Hindsight memory recall (multi-bank)
+          const recalled = await this.recallContext(node.agent.task);
+          if (recalled) {
+            contextParts.push(`## Relevant Memories\n${recalled}`);
+          }
+
+          // 3. Known infrastructure from config
+          const config = readConfig();
+          if (config.hindsight?.url) {
+            contextParts.push(`## Known Infrastructure\n- Hindsight API: ${config.hindsight.url}\n- Default bank: ${config.hindsight.defaultBank ?? 'default'}`);
+          }
+
+          if (contextParts.length > 0) {
+            injectedContext = contextParts.join('\n\n');
+          }
         }
 
+        // Each worker gets its own output directory to prevent file pollution
+        const workerOutputDir = `${this.config.workspaceDir}/output/${this.graph.id}/${node.id}`;
+        const { mkdirSync } = await import('node:fs');
+        try { mkdirSync(workerOutputDir, { recursive: true }); } catch { /* may exist */ }
+
         const worker = new WorkerProcess(node, this.eventBus, {
-          workspaceDir: this.config.workspaceDir,
+          workspaceDir: workerOutputDir,
           timeout: node.timeout ?? this.config.workerTimeout,
           context: injectedContext,
         });
@@ -501,14 +537,16 @@ export class GraphExecutor {
   }
 
   /**
-   * Recalls relevant memories from Hindsight for a given task query.
-   * Returns the recalled text, or undefined if Hindsight is unavailable or no memories found.
+   * Recalls relevant memories from Hindsight across multiple banks.
+   * Returns combined text, or undefined if unavailable or no matches.
+   *
+   * Queries the infra bank (always), default bank, and any project-* bank
+   * that seems relevant to the task keywords.
    */
   private async recallContext(task: string): Promise<string | undefined> {
     try {
       const config = readConfig();
       const hindsightUrl = config.hindsight?.url;
-      const bankId = config.hindsight?.defaultBank ?? 'default';
 
       if (!hindsightUrl) {
         log.debug('Hindsight URL not configured; skipping memory injection');
@@ -516,17 +554,56 @@ export class GraphExecutor {
       }
 
       const client = new HindsightClient(hindsightUrl);
-      const result = await client.recall(bankId, task, { maxTokens: 2048, budget: 'mid' });
+      const defaultBank = config.hindsight?.defaultBank ?? 'default';
 
-      if (result?.memories && result.memories.length > 0) {
-        const text = result.memories
-          .map((m) => m.content)
-          .join('\n\n');
-        log.debug(`Injecting ${result.memories.length} memories (${text.length} chars) into worker`);
-        return text.trim();
+      // Determine which banks to query
+      const banks = new Set<string>([defaultBank, 'infra']);
+
+      // Discover project banks that might be relevant
+      try {
+        const res = await fetch(`${hindsightUrl}/v1/default/banks`, {
+          signal: AbortSignal.timeout(5000),
+        });
+        if (res.ok) {
+          const data = await res.json() as { banks?: { id: string }[] };
+          const taskLower = task.toLowerCase();
+          for (const bank of data.banks ?? []) {
+            if (bank.id.startsWith('project-')) {
+              // Check if project name appears in the task
+              const projectName = bank.id.replace('project-', '');
+              if (taskLower.includes(projectName)) {
+                banks.add(bank.id);
+              }
+            }
+          }
+        }
+      } catch {
+        // Non-fatal: proceed with default banks
+      }
+
+      // Recall from all banks concurrently
+      const recallPromises = [...banks].map(async (bankId) => {
+        try {
+          const result = await client.recall(bankId, task, { maxTokens: 1024, budget: 'low' });
+          const memories = result?.memories ?? ((result as unknown as Record<string, unknown>)?.results as { content: string }[]) ?? [];
+          if (memories.length > 0) {
+            const text = memories.map((m: { content: string }) => m.content).join('\n');
+            return `### Bank: ${bankId}\n${text}`;
+          }
+        } catch {
+          // Individual bank failures are non-fatal
+        }
+        return null;
+      });
+
+      const results = (await Promise.all(recallPromises)).filter(Boolean);
+
+      if (results.length > 0) {
+        const combined = results.join('\n\n');
+        log.debug(`Injected context from ${results.length} bank(s) (${combined.length} chars)`);
+        return combined;
       }
     } catch (err) {
-      // Non-fatal: workers proceed without context if Hindsight is unavailable
       log.warn(`Hindsight recall failed (proceeding without context): ${err instanceof Error ? err.message : String(err)}`);
     }
     return undefined;

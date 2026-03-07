@@ -301,6 +301,9 @@ export class WorkerProcess {
     const findings: string[] = [];
     const outputPaths: string[] = [];
 
+    // Determine token budget: explicit > tier-based default
+    const tokenBudget = agentConfig.tokenBudget ?? this.defaultTokenBudget(model);
+
     const result = await runAgentLoop({
       client,
       model,
@@ -308,6 +311,7 @@ export class WorkerProcess {
       tools,
       messages: [{ role: 'user', content: agentConfig.task }],
       maxTokens: 8192,
+      maxInputTokens: tokenBudget,
       workingDir: this.workspaceDir,
       isCancelled: () => this.cancelled,
 
@@ -381,20 +385,30 @@ export class WorkerProcess {
       },
     });
 
+    const cacheHitRate = result.inputTokens > 0
+      ? Math.round((result.cacheReadTokens / result.inputTokens) * 100)
+      : 0;
+
     this.emitEvent({
       type: 'done',
-      message: `Completed: ${this.node.label}`,
+      message: `Completed: ${this.node.label}${result.stoppedByBudget ? ' (budget reached)' : ''}`,
       progress: 100,
       data: {
         toolCalls: result.toolCalls,
         inputTokens: result.inputTokens,
         outputTokens: result.outputTokens,
+        cacheCreationTokens: result.cacheCreationTokens,
+        cacheReadTokens: result.cacheReadTokens,
+        cacheHitRate,
+        stoppedByBudget: result.stoppedByBudget,
       },
     });
 
     log.info(
       `Worker ${this.node.id} completed: ${result.toolCalls} tool calls, ` +
-        `${result.inputTokens}+${result.outputTokens} tokens`,
+        `${result.inputTokens}+${result.outputTokens} tokens ` +
+        `(cache: ${result.cacheReadTokens} read, ${result.cacheCreationTokens} created, ${cacheHitRate}% hit rate)` +
+        `${result.stoppedByBudget ? ' [BUDGET REACHED]' : ''}`,
     );
 
     return {
@@ -546,6 +560,18 @@ Use absolute paths when referencing files outside the workspace.${skillDocs}`;
       findings: [],
       outputPaths: [],
     };
+  }
+
+  /**
+   * Returns a default token budget based on the model tier.
+   * Infers tier from model name — same family-name convention as model-discovery.
+   */
+  private defaultTokenBudget(model: string): number {
+    const lower = model.toLowerCase();
+    if (lower.includes('haiku')) return 100_000;
+    if (lower.includes('opus')) return 500_000;
+    // Sonnet and unknown default to midweight budget
+    return 300_000;
   }
 
   /** Returns a result representing a cancelled worker. */
