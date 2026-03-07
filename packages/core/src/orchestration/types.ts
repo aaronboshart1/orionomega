@@ -1,11 +1,12 @@
 /**
  * @module orchestration/types
  * Type definitions for the OrionOmega orchestration system.
- * Covers workflow graphs, nodes, events, planning output, and execution results.
+ * Covers workflow graphs, nodes, events, planning output, execution results,
+ * loop control, checkpointing, and autonomous mode.
  */
 
 /** The kind of node in a workflow graph. */
-export type NodeType = 'AGENT' | 'TOOL' | 'ROUTER' | 'PARALLEL' | 'JOIN' | 'CODING_AGENT';
+export type NodeType = 'AGENT' | 'TOOL' | 'ROUTER' | 'PARALLEL' | 'JOIN' | 'CODING_AGENT' | 'LOOP';
 
 /** Runtime status of a single workflow node. */
 export type NodeStatus =
@@ -26,136 +27,122 @@ export type WorkflowStatus =
   | 'error'
   | 'stopped';
 
+// ── Node Configs ────────────────────────────────────────────────────────────
+
 /**
  * Configuration for a CODING_AGENT node.
- * Executed via the Claude Agent SDK — gets the full Claude Code toolset
- * (Read, Write, Edit, Bash, Glob, Grep, WebSearch, WebFetch, Task).
+ * Executed via the Claude Agent SDK — gets the full Claude Code toolset.
  */
 export interface CodingAgentNodeConfig {
-  /** The task description for the coding agent. */
   task: string;
-  /** Model to use (overrides default). */
   model?: string;
-  /** Working directory for the agent. */
   cwd?: string;
-  /** Additional directories the agent can access. */
   additionalDirectories?: string[];
-  /** System prompt to append to Claude Code's default prompt. */
   systemPrompt?: string;
-  /** Specific tools to allow (defaults to full coding toolset). */
   allowedTools?: string[];
-  /** Maximum turns for this invocation. */
   maxTurns?: number;
-  /** Maximum budget in USD. */
   maxBudgetUsd?: number;
-  /** Subagent definitions for complex multi-part coding tasks. */
   agents?: Record<string, { description: string; prompt: string; tools?: string[] }>;
 }
 
 /** Configuration for an agent-type node. */
 export interface AgentConfig {
-  /** Model identifier (e.g. 'claude-sonnet-4-20250514'). */
   model: string;
-  /** Optional system prompt override. */
   systemPrompt?: string;
-  /** The task description for the agent. */
   task: string;
-  /** Tool names available to the agent. */
   tools?: string[];
-  /** Skill IDs to load for the agent. */
   skillIds?: string[];
-  /**
-   * Maximum input tokens this worker may consume before being stopped.
-   * At 80% a warning is injected; at 100% the loop halts gracefully.
-   * If unset, defaults are applied by tier: haiku=100K, sonnet=300K, opus=500K.
-   */
   tokenBudget?: number;
 }
 
 /** Configuration for a tool-type node. */
 export interface ToolConfig {
-  /** Tool name. */
   name: string;
-  /** Parameters to pass to the tool. */
   params: Record<string, unknown>;
 }
 
 /** Configuration for a router-type node. */
 export interface RouterConfig {
-  /** Condition expression to evaluate. */
   condition: string;
-  /** Mapping of condition results to target node IDs. */
   routes: Record<string, string>;
 }
 
+/** How the LOOP node decides whether to continue iterating. */
+export interface LoopExitCondition {
+  /**
+   * - 'output_match': exit when the last node's output matches the regex `pattern`.
+   * - 'llm_judge': an LLM evaluates `judgePrompt` against the loop output.
+   * - 'all_pass': exit when every body node completes without error.
+   */
+  type: 'output_match' | 'llm_judge' | 'all_pass';
+  /** Regex pattern (for 'output_match'). */
+  pattern?: string;
+  /** Prompt for the LLM to evaluate (for 'llm_judge'). Receives body output as context. */
+  judgePrompt?: string;
+}
+
+/**
+ * Configuration for a LOOP node.
+ * The body is a mini sub-graph that gets re-executed until the exit condition is met.
+ */
+export interface LoopNodeConfig {
+  /** Nodes that form the loop body (executed per their own dependsOn within the body). */
+  body: WorkflowNode[];
+  /** Maximum iterations before forced exit (safety valve). */
+  maxIterations: number;
+  /** How to decide when to stop looping. */
+  exitCondition: LoopExitCondition;
+  /**
+   * If true, the output of the last body node in iteration N is injected
+   * as upstream context for body nodes in iteration N+1. Default: true.
+   */
+  carryForward?: boolean;
+}
+
+// ── Workflow Node ───────────────────────────────────────────────────────────
+
 /** A single node in the workflow graph. */
 export interface WorkflowNode {
-  /** Unique node identifier. */
   id: string;
-  /** Node type. */
   type: NodeType;
-  /** Human-readable label. */
   label: string;
-  /** Agent configuration (when type is 'AGENT'). */
   agent?: AgentConfig;
-  /** Tool configuration (when type is 'TOOL'). */
   tool?: ToolConfig;
-  /** Router configuration (when type is 'ROUTER'). */
   router?: RouterConfig;
-  /** Coding agent configuration (when type is 'CODING_AGENT'). Uses Claude Agent SDK. */
   codingAgent?: CodingAgentNodeConfig;
-  /** Execution timeout in seconds. */
+  loop?: LoopNodeConfig;
   timeout?: number;
-  /** Maximum retry attempts. */
   retries?: number;
-  /** Node ID to execute if this node fails. */
   fallbackNodeId?: string;
-  /** IDs of nodes that must complete before this one starts. */
   dependsOn: string[];
 
   // Runtime state
-
-  /** Current execution status. */
   status: NodeStatus;
-  /** ISO timestamp when execution started. */
   startedAt?: string;
-  /** ISO timestamp when execution completed. */
   completedAt?: string;
-  /** Node output data. */
   output?: unknown;
-  /** Error message if status is 'error'. */
   error?: string;
-  /** Progress percentage (0–100). */
   progress?: number;
 }
 
-/** The complete workflow graph with topology metadata. */
+// ── Workflow Graph ──────────────────────────────────────────────────────────
+
 export interface WorkflowGraph {
-  /** Unique workflow identifier. */
   id: string;
-  /** Human-readable workflow name. */
   name: string;
-  /** ISO timestamp of graph creation. */
   createdAt: string;
-  /** All nodes keyed by ID. */
   nodes: Map<string, WorkflowNode>;
-  /** Topologically sorted parallel layers (each layer is a list of node IDs). */
   layers: string[][];
-  /** Node IDs with no dependencies (graph entry points). */
   entryNodes: string[];
-  /** Node IDs with no dependents (graph exit points). */
   exitNodes: string[];
 }
 
-/** An event emitted by a worker during execution. */
+// ── Events ──────────────────────────────────────────────────────────────────
+
 export interface WorkerEvent {
-  /** Worker identifier. */
   workerId: string;
-  /** ID of the node being executed. */
   nodeId: string;
-  /** ISO timestamp. */
   timestamp: string;
-  /** Event type. */
   type:
     | 'thinking'
     | 'tool_call'
@@ -163,88 +150,121 @@ export interface WorkerEvent {
     | 'finding'
     | 'status'
     | 'error'
-    | 'done';
-  /** Tool invocation details (for tool_call / tool_result events). */
-  tool?: {
-    name: string;
-    action?: string;
-    file?: string;
-    summary: string;
-  };
-  /** Thinking content. */
+    | 'done'
+    | 'loop_iteration'
+    | 'replan';
+  tool?: { name: string; action?: string; file?: string; summary: string };
   thinking?: string;
-  /** Progress percentage (0–100). */
   progress?: number;
-  /** Human-readable message. */
   message?: string;
-  /** Arbitrary event data. */
   data?: unknown;
-  /** Error message (for error events). */
   error?: string;
 }
 
-/** Snapshot of the current workflow execution state. */
+// ── Graph State ─────────────────────────────────────────────────────────────
+
 export interface GraphState {
-  /** Workflow identifier. */
   workflowId: string;
-  /** Workflow name. */
   name: string;
-  /** Current workflow status. */
   status: WorkflowStatus;
-  /** ISO timestamp of workflow creation. */
   createdAt: string;
-  /** Elapsed time in seconds. */
   elapsed: number;
-  /** All nodes keyed by ID (serialisable record form). */
   nodes: Record<string, WorkflowNode>;
-  /** Recent worker events. */
   recentEvents: WorkerEvent[];
-  /** Number of completed topological layers. */
   completedLayers: number;
-  /** Total number of topological layers. */
   totalLayers: number;
-  /** Estimated cost so far. */
   estimatedCost?: number;
 }
 
-/** Output from the planner phase. */
+// ── Planner Output ──────────────────────────────────────────────────────────
+
 export interface PlannerOutput {
-  /** The generated workflow graph. */
   graph: WorkflowGraph;
-  /** Planner's reasoning for the decomposition. */
   reasoning: string;
-  /** Estimated cost in dollars. */
   estimatedCost: number;
-  /** Estimated execution time in seconds. */
   estimatedTime: number;
-  /** Human-readable plan summary. */
   summary: string;
 }
 
-/** Final result of a workflow execution. */
+// ── Execution Result ────────────────────────────────────────────────────────
+
 export interface ExecutionResult {
-  /** Workflow identifier. */
   workflowId: string;
-  /** Terminal status. */
   status: 'complete' | 'error' | 'stopped';
-  /** Summary of the task that was executed. */
   taskSummary: string;
-  /** Paths to output files. */
   outputPaths: string[];
-  /** Total duration in seconds. */
   durationSec: number;
-  /** Number of workers spawned. */
   workerCount: number;
-  /** Estimated total cost. */
   estimatedCost: number;
-  /** Key decisions made during execution. */
   decisions: string[];
-  /** Notable findings. */
   findings: string[];
-  /** Errors encountered. */
   errors: { worker: string; message: string; resolution?: string }[];
-  /** Output text from each completed node, keyed by node ID. */
   nodeOutputs?: Record<string, string>;
-  /** Infrastructure changes made (if any). */
   infraChanges?: string[];
+}
+
+// ── Checkpointing ───────────────────────────────────────────────────────────
+
+/** Serializable snapshot of a workflow for resume-on-crash. */
+export interface WorkflowCheckpoint {
+  /** Workflow ID. */
+  workflowId: string;
+  /** Original task description. */
+  task: string;
+  /** ISO timestamp of the checkpoint. */
+  timestamp: string;
+  /** Serialized graph (nodes as Record, not Map). */
+  graph: {
+    id: string;
+    name: string;
+    createdAt: string;
+    nodes: Record<string, WorkflowNode>;
+    layers: string[][];
+    entryNodes: string[];
+    exitNodes: string[];
+  };
+  /** Completed node outputs keyed by node ID. */
+  nodeOutputs: Record<string, string>;
+  /** Current layer index. */
+  currentLayer: number;
+  /** Workflow status at checkpoint time. */
+  status: WorkflowStatus;
+  /** Files generated so far. */
+  outputPaths: string[];
+  /** Accumulated decisions/findings. */
+  decisions: string[];
+  findings: string[];
+  errors: { worker: string; message: string; resolution?: string }[];
+}
+
+// ── Autonomous Mode ─────────────────────────────────────────────────────────
+
+/** Actions that require human approval before proceeding. */
+export type HumanGateAction =
+  | 'deploy'
+  | 'merge'
+  | 'delete'
+  | 'publish'
+  | 'send_email'
+  | 'create_vm'
+  | 'destroy_vm'
+  | string;
+
+/** Configuration for autonomous execution mode. */
+export interface AutonomousConfig {
+  /** Whether autonomous mode is active. */
+  enabled: boolean;
+  /** Maximum total spend across the autonomous session (USD). */
+  maxBudgetUsd: number;
+  /** Maximum duration in minutes. */
+  maxDurationMinutes: number;
+  /** How often to emit progress summaries (minutes). */
+  progressIntervalMinutes: number;
+  /** Actions that require human confirmation before executing. */
+  humanGates: HumanGateAction[];
+  /**
+   * If true, on workflow completion the executor checks for queued follow-up tasks
+   * and automatically starts the next one. Default: true.
+   */
+  autoAdvance: boolean;
 }

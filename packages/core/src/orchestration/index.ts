@@ -54,3 +54,7 @@ export { OrchestratorCommands } from './commands.js';
 
 export { executeCodingAgent } from "./agent-sdk-bridge.js";
 export type { CodingAgentResult, CodingAgentConfig } from "./agent-sdk-bridge.js";
+
+// Checkpoint
+export { CheckpointManager } from './checkpoint.js';
+export type { WorkflowCheckpoint, LoopNodeConfig, LoopExitCondition, AutonomousConfig, HumanGateAction } from './types.js';

@@ -73,6 +73,14 @@ export function getDefaultConfig(): OrionOmegaConfig {
       directory: join(homedir(), '.orionomega', 'skills'),
       autoLoad: true,
     },
+    autonomous: {
+      enabled: false,
+      maxBudgetUsd: 50,
+      maxDurationMinutes: 360,
+      progressIntervalMinutes: 15,
+      humanGates: ['deploy', 'merge', 'delete', 'destroy_vm'],
+      autoAdvance: true,
+    },
     agentSdk: {
       enabled: true,
       permissionMode: 'acceptEdits',

@@ -232,6 +232,49 @@ export class Planner {
                 };
               })()
             : undefined,
+          loop: n.loop
+            ? (() => {
+                const lp = n.loop as Record<string, unknown>;
+                const exitCond = lp.exitCondition as Record<string, unknown> | undefined;
+                return {
+                  body: Array.isArray(lp.body)
+                    ? (lp.body as Record<string, unknown>[]).map((b) => ({
+                        id: String(b.id ?? `body-${Math.random().toString(36).slice(2, 8)}`),
+                        type: String(b.type ?? 'AGENT') as WorkflowNode['type'],
+                        label: String(b.label ?? 'Loop body node'),
+                        dependsOn: Array.isArray(b.dependsOn)
+                          ? (b.dependsOn as string[]).map(String)
+                          : [],
+                        status: 'pending' as const,
+                        agent: b.agent
+                          ? {
+                              model: String((b.agent as Record<string, unknown>).model ?? defaultWorkerModel),
+                              task: String((b.agent as Record<string, unknown>).task ?? ''),
+                            }
+                          : undefined,
+                        codingAgent: b.codingAgent
+                          ? {
+                              task: String((b.codingAgent as Record<string, unknown>).task ?? ''),
+                              model: (b.codingAgent as Record<string, unknown>).model
+                                ? String((b.codingAgent as Record<string, unknown>).model)
+                                : undefined,
+                              cwd: (b.codingAgent as Record<string, unknown>).cwd
+                                ? String((b.codingAgent as Record<string, unknown>).cwd)
+                                : undefined,
+                            }
+                          : undefined,
+                      }))
+                    : [],
+                  maxIterations: lp.maxIterations ? Number(lp.maxIterations) : 5,
+                  exitCondition: {
+                    type: String(exitCond?.type ?? 'all_pass') as 'output_match' | 'llm_judge' | 'all_pass',
+                    pattern: exitCond?.pattern ? String(exitCond.pattern) : undefined,
+                    judgePrompt: exitCond?.judgePrompt ? String(exitCond.judgePrompt) : undefined,
+                  },
+                  carryForward: lp.carryForward !== false,
+                };
+              })()
+            : undefined,
         }),
       );
 
@@ -299,13 +342,18 @@ Given a task description, you produce a WorkflowGraph JSON that orchestrates mul
 2. **One deliverable per worker.** Each AGENT node should have a single, well-scoped task that produces one clear output.
 3. **Use TOOL nodes sparingly** — only for shell commands (e.g. exec). For file operations, writing documents, web searches, etc., use AGENT nodes — they have built-in tools: exec (shell), read (files), write (files), edit (files). Skills may also provide: web_search, web_fetch.
 4. **Use CODING_AGENT nodes for coding tasks.** When a task involves writing code, refactoring, debugging, building features, or any software engineering work, use CODING_AGENT instead of AGENT. CODING_AGENT nodes run via the Claude Agent SDK and have access to the full Claude Code toolset: Read, Write, Edit, Bash, Glob, Grep, WebSearch, WebFetch, and Task (subagents). They are significantly more capable at coding than generic AGENT nodes. CODING_AGENT nodes also support subagent definitions for complex multi-part coding tasks.
-5. **Use ROUTER nodes for conditional logic.** When the next step depends on a previous result, use a ROUTER with condition and routes.
-6. **Model assignment:** Pick models from the available models list below. The list is fetched live from the API — only use models that appear in it.
-7. **Maximum ${this.config.maxWorkers ?? 8} concurrent workers** per layer.
-8. **Always include a JOIN node** when multiple paths converge to a single output.
-9. **Set reasonable timeouts** (in seconds) for each node based on expected duration.
-10. **Set retries** for nodes that might fail transiently (network calls, API requests).
-11. **Set fallbackNodeId** for critical nodes where an alternative approach exists.
+5. **Use LOOP nodes for iterative tasks.** When a task requires repeated attempts until success (e.g. "build → test → fix until tests pass", "retry with different approaches"), wrap the iterative portion in a LOOP node. The LOOP node's body contains the nodes to repeat. Set a reasonable maxIterations (default 5), and choose an exitCondition:
+   - "all_pass": exit when all body nodes succeed without error
+   - "output_match": exit when the last body node's output matches a regex pattern (e.g. "PASS|SUCCESS|All tests passed")
+   - "llm_judge": an LLM evaluates a custom prompt against the output to decide whether to continue or exit
+   LOOP nodes are essential for autonomous workflows. Always prefer LOOP over linear retry chains.
+7. **Use ROUTER nodes for conditional logic.** When the next step depends on a previous result, use a ROUTER with condition and routes.
+8. **Model assignment:** Pick models from the available models list below. The list is fetched live from the API — only use models that appear in it.
+9. **Maximum ${this.config.maxWorkers ?? 8} concurrent workers** per layer.
+10. **Always include a JOIN node** when multiple paths converge to a single output.
+11. **Set reasonable timeouts** (in seconds) for each node based on expected duration.
+12. **Set retries** for nodes that might fail transiently (network calls, API requests).
+13. **Set fallbackNodeId** for critical nodes where an alternative approach exists.
 
 ## Parallelism — CRITICAL
 The executor runs all nodes in the same layer concurrently. Nodes only wait for nodes listed in their dependsOn.
@@ -346,7 +394,7 @@ Respond with a JSON object matching this schema:
   "nodes": [
     {
       "id": "unique-id",
-      "type": "AGENT | TOOL | ROUTER | PARALLEL | JOIN | CODING_AGENT",
+      "type": "AGENT | TOOL | ROUTER | PARALLEL | JOIN | CODING_AGENT | LOOP",
       "label": "Human-readable label",
       "dependsOn": ["ids-of-prerequisite-nodes"],
       "timeout": 300,
@@ -384,15 +432,41 @@ Respond with a JSON object matching this schema:
           "value1": "target-node-id",
           "default": "fallback-node-id"
         }
+      },
+      "loop": {
+        "body": [
+          {
+            "id": "body-node-1",
+            "type": "CODING_AGENT",
+            "label": "Implement fix",
+            "dependsOn": [],
+            "codingAgent": { "task": "..." }
+          },
+          {
+            "id": "body-node-2",
+            "type": "AGENT",
+            "label": "Run tests",
+            "dependsOn": ["body-node-1"],
+            "agent": { "task": "Run the test suite and report results", "model": "..." }
+          }
+        ],
+        "maxIterations": 5,
+        "exitCondition": {
+          "type": "output_match | llm_judge | all_pass",
+          "pattern": "All tests passed|PASS (for output_match)",
+          "judgePrompt": "Are all tests passing and the implementation complete? (for llm_judge)"
+        },
+        "carryForward": true
       }
     }
   ]
 }
 \`\`\`
 
-Only include the relevant config key (agent/tool/router/codingAgent) for each node type.
+Only include the relevant config key (agent/tool/router/codingAgent/loop) for each node type.
 Every node must have: id, type, label, dependsOn (array, can be empty).
 For CODING_AGENT nodes, include the "codingAgent" key (not "agent"). CODING_AGENT nodes get the full Claude Code toolset and are the PREFERRED choice for any coding/engineering task.
+For LOOP nodes, include the "loop" key with body (sub-nodes), maxIterations, and exitCondition. LOOP nodes are ESSENTIAL for any "build → test → fix" cycle or iterative refinement task.
 
 ## ${discoveredModels?.length ? buildModelGuide(discoveredModels, mainModel ?? this.config.model) : `Available models: Use "${mainModel ?? this.config.model}" for all workers.`}
 ${skillsList}${memoriesList}${filesList}${infraContext ? `\n\n## Known Context (from memory — DO NOT create discovery nodes for this)\n${infraContext}` : ''}
@@ -472,5 +546,73 @@ Respond ONLY with the JSON object. No markdown fences, no commentary.`;
       estimatedTime: 0,
       summary: `Execute task with one agent worker: "${task.slice(0, 120)}"`,
     };
+  }
+
+  /**
+   * Generate a fix plan for a failed node.
+   * Returns an array of WorkflowNode definitions to execute as a fix,
+   * or null if re-planning isn't feasible.
+   */
+  async generateFixPlan(
+    failedNode: WorkflowNode,
+    error: string,
+    originalTask: string,
+  ): Promise<WorkflowNode[] | null> {
+    try {
+      const prompt = `A workflow node failed. Generate a minimal fix plan.
+
+## Failed Node
+- ID: ${failedNode.id}
+- Type: ${failedNode.type}
+- Label: ${failedNode.label}
+- Task: ${failedNode.agent?.task ?? failedNode.codingAgent?.task ?? 'unknown'}
+
+## Error
+${error}
+
+## Original Workflow Task
+${originalTask}
+
+## Instructions
+Generate 1-3 nodes that will fix the error and complete the failed node's task.
+Use CODING_AGENT for code fixes, AGENT for other tasks.
+Return a JSON array of node objects with: id, type, label, dependsOn (empty array), and the appropriate config (agent or codingAgent).
+Return ONLY the JSON array, no explanation.
+If the error is unfixable (e.g. missing API key, permission denied), return an empty array [].`;
+
+      const apiKey = readConfig().models?.apiKey;
+      if (!apiKey) return null;
+      const client = new AnthropicClient(apiKey);
+
+      const response = await client.createMessage({
+        model: this.config.model,
+        messages: [{ role: 'user', content: prompt }],
+        maxTokens: 2048,
+        temperature: 0,
+      });
+
+      const text = response.content
+        .filter((b: { type: string }) => b.type === 'text')
+        .map((b: { type: string; text?: string }) => b.text ?? '')
+        .join('');
+
+      const jsonStr = text.replace(/^```(?:json)?\n?/m, '').replace(/\n?```$/m, '').trim();
+      const nodes = JSON.parse(jsonStr) as WorkflowNode[];
+
+      if (!Array.isArray(nodes) || nodes.length === 0) return null;
+
+      // Ensure proper status
+      return nodes.map((n) => ({
+        ...n,
+        id: n.id ?? `fix-${Math.random().toString(36).slice(2, 8)}`,
+        status: 'pending' as const,
+        dependsOn: n.dependsOn ?? [],
+      }));
+    } catch (err) {
+      log.warn('Fix plan generation failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
   }
 }

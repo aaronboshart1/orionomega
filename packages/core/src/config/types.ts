@@ -94,6 +94,21 @@ export interface OrionOmegaConfig {
     autoLoad: boolean;
   };
 
+  autonomous: {
+    /** Whether autonomous mode is enabled. */
+    enabled: boolean;
+    /** Maximum total spend in USD across the autonomous session. */
+    maxBudgetUsd: number;
+    /** Maximum duration in minutes. */
+    maxDurationMinutes: number;
+    /** How often to emit progress summaries (minutes). */
+    progressIntervalMinutes: number;
+    /** Actions that require human confirmation before executing. */
+    humanGates: string[];
+    /** If true, auto-start next queued task on workflow completion. */
+    autoAdvance: boolean;
+  };
+
   agentSdk: {
     /** Whether the Claude Agent SDK is enabled. */
     enabled: boolean;

@@ -10,10 +10,13 @@ import type {
   WorkflowStatus,
   ExecutionResult,
   WorkerEvent,
+  LoopNodeConfig,
+  AutonomousConfig,
 } from './types.js';
 import type { EventBus } from './event-bus.js';
 import { WorkflowState } from './state.js';
 import { WorkerProcess, type WorkerResult } from './worker.js';
+import { CheckpointManager } from './checkpoint.js';
 import { createLogger } from '../logging/logger.js';
 import { readConfig } from '../config/loader.js';
 import { HindsightClient } from '@orionomega/hindsight';
@@ -32,6 +35,14 @@ export interface ExecutorConfig {
   maxRetries: number;
   /** Checkpoint state every N layers. */
   checkpointInterval: number;
+  /** Autonomous mode configuration. */
+  autonomous?: AutonomousConfig;
+  /** Callback for re-planning on failure. */
+  replanCallback?: (failedNode: WorkflowNode, error: string, originalTask: string) => Promise<WorkflowNode[] | null>;
+  /** Callback for human gate approval. */
+  humanGateCallback?: (action: string, description: string) => Promise<boolean>;
+  /** Original task description (for re-planning context). */
+  task?: string;
 }
 
 /**
@@ -56,6 +67,10 @@ export class GraphExecutor {
   private readonly outputPaths: string[] = [];
   private readonly errors: { worker: string; message: string; resolution?: string }[] = [];
   private completedLayers = 0;
+  private readonly checkpointMgr: CheckpointManager;
+  private readonly nodeOutputs = new Map<string, string>();
+  private totalCostUsd = 0;
+  private readonly autonomousStartTime = Date.now();
 
   // Control flags
   private pauseRequested = false;
@@ -73,6 +88,7 @@ export class GraphExecutor {
     this.config = config;
     this.startedAt = new Date().toISOString();
     this.state = new WorkflowState(graph.id, config.checkpointDir);
+    this.checkpointMgr = new CheckpointManager(config.checkpointDir);
   }
 
   /**
@@ -141,6 +157,9 @@ export class GraphExecutor {
             node.progress = 100;
             this.nodeResults.set(nodeId, result.value);
             this.state.setNodeOutput(nodeId, result.value.output);
+            if (result.value.output && typeof result.value.output === 'string') {
+              this.nodeOutputs.set(nodeId, result.value.output);
+            }
             this.findings.push(...result.value.findings);
             if (result.value.outputPaths?.length) this.outputPaths.push(...result.value.outputPaths);
           } else {
@@ -169,14 +188,8 @@ export class GraphExecutor {
         this.completedLayers = layerIdx + 1;
         this.state.completedLayers = this.completedLayers;
 
-        // Periodic checkpointing
-        if (
-          this.config.checkpointInterval > 0 &&
-          this.completedLayers % this.config.checkpointInterval === 0
-        ) {
-          await this.state.checkpoint();
-          log.debug(`Checkpointed after layer ${this.completedLayers}`);
-        }
+        // Persistent checkpointing — write after every layer
+        this.saveCheckpoint();
 
         this.emitOrchestrator(
           'status',
@@ -185,12 +198,18 @@ export class GraphExecutor {
         );
       }
 
-      // Final checkpoint
-      await this.state.checkpoint();
-
       const hasErrors = this.errors.length > 0;
       this.status = hasErrors ? 'error' : 'complete';
-      return this.buildResult(hasErrors ? 'error' : 'complete', startTime);
+      const result = this.buildResult(hasErrors ? 'error' : 'complete', startTime);
+
+      // Clean up checkpoint on successful completion
+      if (this.status === 'complete') {
+        this.checkpointMgr.remove(this.graph.id);
+      } else {
+        this.saveCheckpoint(); // Preserve for resume
+      }
+
+      return result;
     } catch (err) {
       this.status = 'error';
       log.error(`Workflow execution failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -321,8 +340,45 @@ export class GraphExecutor {
       }
     }
 
-    // All retries and fallback exhausted
-    throw lastError ?? new Error(`Node '${nodeId}' failed with no retries or fallback`);
+    // All retries and fallback exhausted — attempt re-planning
+    if (this.config.replanCallback) {
+      try {
+        log.info(`Attempting re-plan for failed node '${nodeId}'`);
+        this.emitOrchestrator('replan',
+          `Re-planning for failed node '${node.label}': ${lastError?.message ?? 'unknown error'}`,
+        );
+
+        const fixNodes = await this.config.replanCallback(
+          node,
+          lastError?.message ?? 'unknown error',
+          this.config.task ?? this.graph.name,
+        );
+
+        if (fixNodes && fixNodes.length > 0) {
+          this.decisions.push(`Re-planned: ${nodeId} → ${fixNodes.length} fix node(s)`);
+
+          // Execute fix nodes sequentially
+          let fixOutput: WorkerResult | null = null;
+          for (const fixNode of fixNodes) {
+            fixOutput = await this.executeNodeByType(fixNode);
+          }
+
+          if (fixOutput) {
+            this.errors.push({
+              worker: nodeId,
+              message: lastError?.message ?? 'unknown error',
+              resolution: `Re-planned with ${fixNodes.length} fix node(s)`,
+            });
+            return { ...fixOutput, nodeId };
+          }
+        }
+      } catch (replanErr) {
+        log.warn(`Re-planning also failed: ${replanErr instanceof Error ? replanErr.message : String(replanErr)}`);
+      }
+    }
+
+    // Everything exhausted
+    throw lastError ?? new Error(`Node '${nodeId}' failed with no retries, fallback, or re-plan`);
   }
 
   /**
@@ -470,8 +526,192 @@ export class GraphExecutor {
       case 'JOIN':
         return this.executeJoin(node);
 
+      case 'LOOP':
+        return this.executeLoop(node);
+
       default:
         throw new Error(`Unsupported node type: ${node.type}`);
+    }
+  }
+
+  /**
+   * Executes a LOOP node — runs the body sub-graph repeatedly
+   * until the exit condition is met or maxIterations is reached.
+   */
+  private async executeLoop(node: WorkflowNode): Promise<WorkerResult> {
+    const loopConfig = node.loop;
+    if (!loopConfig) throw new Error(`LOOP node '${node.id}' missing loop configuration`);
+
+    const maxIter = loopConfig.maxIterations ?? 10;
+    const carryForward = loopConfig.carryForward !== false; // default true
+    let iteration = 0;
+    let lastOutput = '';
+    const allFindings: string[] = [];
+    let totalToolCalls = 0;
+    const startMs = Date.now();
+
+    this.emitOrchestrator('loop_iteration', `Loop '${node.label}' starting (max ${maxIter} iterations)`);
+
+    while (iteration < maxIter) {
+      iteration++;
+      if (this.stopRequested) break;
+
+      this.emitOrchestrator('loop_iteration',
+        `Loop '${node.label}' — iteration ${iteration}/${maxIter}`,
+        { iteration, maxIterations: maxIter },
+      );
+
+      // Reset body nodes to pending for this iteration
+      const bodyNodes = this.cloneBodyNodes(loopConfig, iteration);
+
+      // Inject carry-forward context from previous iteration
+      if (carryForward && lastOutput && iteration > 1) {
+        for (const bodyNode of bodyNodes) {
+          if (bodyNode.type === 'AGENT' && bodyNode.agent) {
+            bodyNode.agent.task = `${bodyNode.agent.task}\n\n## Previous iteration output:\n${lastOutput}`;
+          } else if (bodyNode.type === 'CODING_AGENT' && bodyNode.codingAgent) {
+            bodyNode.codingAgent.task = `${bodyNode.codingAgent.task}\n\n## Previous iteration output:\n${lastOutput}`;
+          }
+        }
+      }
+
+      // Execute body nodes sequentially (respecting their internal dependencies)
+      let iterationOutput = '';
+      let iterationFailed = false;
+
+      for (const bodyNode of bodyNodes) {
+        if (this.stopRequested) break;
+
+        try {
+          const result = await this.executeNodeByType(bodyNode);
+          if (result.output && typeof result.output === 'string') {
+            iterationOutput = result.output;
+          }
+          allFindings.push(...result.findings);
+          totalToolCalls += result.toolCallCount;
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          log.warn(`Loop body node '${bodyNode.id}' failed in iteration ${iteration}: ${errMsg}`);
+          iterationOutput = `ERROR: ${errMsg}`;
+          iterationFailed = true;
+
+          // Don't break — the error IS the output for exit condition evaluation
+        }
+      }
+
+      lastOutput = iterationOutput;
+
+      // Check exit condition
+      const shouldExit = await this.checkLoopExit(
+        loopConfig.exitCondition,
+        iterationOutput,
+        iterationFailed,
+        iteration,
+        node.label,
+      );
+
+      if (shouldExit) {
+        this.emitOrchestrator('done',
+          `Loop '${node.label}' exited after ${iteration} iteration(s)`,
+        );
+        break;
+      }
+    }
+
+    if (iteration >= maxIter) {
+      this.emitOrchestrator('status',
+        `Loop '${node.label}' hit max iterations (${maxIter})`,
+      );
+      this.decisions.push(`Loop '${node.label}' forced exit at max iterations (${maxIter})`);
+    }
+
+    return {
+      nodeId: node.id,
+      output: lastOutput,
+      durationMs: Date.now() - startMs,
+      toolCallCount: totalToolCalls,
+      findings: allFindings,
+      outputPaths: [],
+    };
+  }
+
+  /**
+   * Clones the body nodes for a fresh loop iteration.
+   * Each clone gets a unique ID suffix to avoid ID collisions.
+   */
+  private cloneBodyNodes(loopConfig: LoopNodeConfig, iteration: number): WorkflowNode[] {
+    return loopConfig.body.map((n) => ({
+      ...n,
+      id: `${n.id}_iter${iteration}`,
+      status: 'pending' as const,
+      startedAt: undefined,
+      completedAt: undefined,
+      output: undefined,
+      error: undefined,
+      progress: undefined,
+      // Deep-clone agent/codingAgent config
+      agent: n.agent ? { ...n.agent } : undefined,
+      codingAgent: n.codingAgent ? { ...n.codingAgent } : undefined,
+    }));
+  }
+
+  /**
+   * Evaluates the loop exit condition.
+   */
+  private async checkLoopExit(
+    condition: LoopNodeConfig['exitCondition'],
+    output: string,
+    failed: boolean,
+    iteration: number,
+    loopLabel: string,
+  ): Promise<boolean> {
+    switch (condition.type) {
+      case 'all_pass':
+        return !failed;
+
+      case 'output_match':
+        if (!condition.pattern) return !failed;
+        return new RegExp(condition.pattern, 'i').test(output);
+
+      case 'llm_judge': {
+        if (!condition.judgePrompt) return !failed;
+
+        try {
+          const config = readConfig();
+          const apiKey = config.models?.apiKey;
+          if (!apiKey) return !failed;
+
+          // Use a lightweight model for judging
+          const { AnthropicClient } = await import('../anthropic/client.js');
+          const client = new AnthropicClient(apiKey);
+          const response = await client.createMessage({
+            model: 'claude-haiku-4-5-20251001',
+            messages: [{
+              role: 'user',
+              content: `${condition.judgePrompt}\n\n## Loop Output (iteration ${iteration}):\n${output}\n\nRespond with ONLY "CONTINUE" or "EXIT".`,
+            }],
+            maxTokens: 8,
+            temperature: 0,
+          });
+
+          const text = response.content
+            .filter((b) => b.type === 'text')
+            .map((b) => b.text ?? '')
+            .join('')
+            .trim()
+            .toUpperCase();
+
+          const shouldExit = text.includes('EXIT');
+          log.info(`Loop '${loopLabel}' LLM judge: ${text} → ${shouldExit ? 'exit' : 'continue'}`);
+          return shouldExit;
+        } catch (err) {
+          log.warn(`Loop exit judge failed, defaulting to continue: ${err instanceof Error ? err.message : String(err)}`);
+          return false;
+        }
+      }
+
+      default:
+        return !failed;
     }
   }
 
@@ -672,6 +912,72 @@ export class GraphExecutor {
       log.warn(`Hindsight recall failed (proceeding without context): ${err instanceof Error ? err.message : String(err)}`);
     }
     return undefined;
+  }
+
+  /** Saves a checkpoint of current workflow state. */
+  private saveCheckpoint(): void {
+    try {
+      const outputsRecord: Record<string, string> = {};
+      for (const [k, v] of this.nodeOutputs) outputsRecord[k] = v;
+
+      const checkpoint = CheckpointManager.buildCheckpoint(
+        this.graph,
+        this.config.task ?? this.graph.name,
+        outputsRecord,
+        this.completedLayers,
+        this.status,
+        this.outputPaths,
+        this.decisions,
+        this.findings,
+        this.errors,
+      );
+      this.checkpointMgr.save(checkpoint);
+    } catch (err) {
+      log.warn('Failed to save checkpoint', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  /**
+   * Checks autonomous mode budget and duration limits.
+   * Returns true if the workflow should stop.
+   */
+  checkAutonomousLimits(): { shouldStop: boolean; reason?: string } {
+    const auto = this.config.autonomous;
+    if (!auto?.enabled) return { shouldStop: false };
+
+    // Budget check
+    if (auto.maxBudgetUsd > 0 && this.totalCostUsd >= auto.maxBudgetUsd) {
+      return { shouldStop: true, reason: `Budget limit reached: $${this.totalCostUsd.toFixed(2)} >= $${auto.maxBudgetUsd}` };
+    }
+
+    // Duration check
+    const elapsedMin = (Date.now() - this.autonomousStartTime) / 60_000;
+    if (auto.maxDurationMinutes > 0 && elapsedMin >= auto.maxDurationMinutes) {
+      return { shouldStop: true, reason: `Duration limit reached: ${Math.round(elapsedMin)}min >= ${auto.maxDurationMinutes}min` };
+    }
+
+    return { shouldStop: false };
+  }
+
+  /**
+   * Checks if an action requires human gate approval.
+   * Returns true if the action is approved (or no gate required).
+   */
+  async checkHumanGate(action: string, description: string): Promise<boolean> {
+    const auto = this.config.autonomous;
+    if (!auto?.enabled) return true;
+    if (!auto.humanGates.includes(action)) return true;
+
+    if (this.config.humanGateCallback) {
+      this.emitOrchestrator('status', `🚧 Human gate: "${action}" — awaiting approval`, { action, description });
+      return this.config.humanGateCallback(action, description);
+    }
+
+    // No callback configured — deny gated actions by default
+    log.warn(`Human gate '${action}' triggered but no callback configured — denying`);
+    return false;
   }
 
   /** Builds the final ExecutionResult. */
