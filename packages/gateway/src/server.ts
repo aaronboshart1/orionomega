@@ -68,7 +68,7 @@ try {
  * Wire the MainAgent into the gateway.
  * Callbacks broadcast ServerMessages to all connected WebSocket clients.
  */
-function initMainAgent(): void {
+async function initMainAgent(): Promise<void> {
   const apiKey = fullConfig?.models?.apiKey ?? process.env.ANTHROPIC_API_KEY ?? '';
   if (!apiKey) {
     console.warn('[gateway] No Anthropic API key — MainAgent will not be available');
@@ -157,6 +157,7 @@ function initMainAgent(): void {
 
   try {
     const mainAgent = new MainAgent(agentConfig, callbacks);
+    await mainAgent.init();
     wsHandler.setMainAgent(mainAgent);
     console.log('[gateway] MainAgent connected');
   } catch (err) {
