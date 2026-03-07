@@ -190,10 +190,17 @@ export async function start(): Promise<void> {
     editor.setText('');
     editor.addToHistory(value);
 
-    // Normalize: strip leading extra slashes (e.g. //exit → /exit)
-    const normalized = value.replace(/^\/+/, '/');
+    // Normalize: strip leading extra slashes and any stray whitespace
+    const normalized = value.replace(/^\/+/, '/').trim();
 
     if (CLIENT_COMMANDS.has(normalized.toLowerCase())) {
+      cleanup();
+      return;
+    }
+
+    // Also check without slash — some paths strip it
+    const bareCmd = normalized.replace(/^\//, '').toLowerCase();
+    if (bareCmd === 'exit' || bareCmd === 'quit' || bareCmd === 'q') {
       cleanup();
       return;
     }
@@ -211,9 +218,9 @@ export async function start(): Promise<void> {
   // ── Lifecycle ─────────────────────────────────────────────────
 
   const cleanup = () => {
-    clearInterval(footerTimer);
-    client.dispose();
-    tui.stop();
+    try { clearInterval(footerTimer); } catch {}
+    try { client.dispose(); } catch {}
+    try { tui.stop(); } catch {}
     process.exit(0);
   };
 
