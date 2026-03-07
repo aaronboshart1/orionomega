@@ -19,13 +19,13 @@ const log = createLogger('conversation');
 // ── Intent Detection ────────────────────────────────────────────────────
 
 /** Phrases that signal the user wants immediate execution (no planning step). */
+/**
+ * Patterns for immediate execution approval (e.g. "do it", "go ahead").
+ * These must be SHORT confirmations, not task descriptions.
+ * "build it" = approval, "build a CLI tool" = task description.
+ */
 export const IMMEDIATE_PATTERNS = [
-  /\brun\s*it\b/i,
-  /\bdo\s*it\b/i,
-  /\bexecute\b/i,
-  /\bgo\s*ahead\b/i,
-  /\bbuild\s*it\b/i,
-  /\bjust\s*do\s*it\b/i,
+  /^\s*(run\s*it|do\s*it|go\s*ahead|build\s*it|just\s*do\s*it|execute\s*it|ship\s*it|yes|yep|yeah|approved?|lgtm)\s*[.!]?\s*$/i,
 ];
 
 /** Quick-match conversational patterns (no LLM call needed). */
