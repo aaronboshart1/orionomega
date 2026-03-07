@@ -11,12 +11,50 @@ import { createRequire } from 'node:module';
 const log = createLogger('cli');
 
 /**
- * Dynamically import @orionomega/tui, resolving from this package's context
- * rather than the global scope (which the Function() trick would use).
+ * Dynamically import @orionomega/tui.
+ *
+ * Resolution strategy:
+ * 1. Try createRequire from this file (works if tui is a declared dep)
+ * 2. Try createRequire from the workspace root (pnpm workspace sibling)
+ * 3. Fall back to a direct relative path (../tui — monorepo layout)
  */
 async function launchTUI(): Promise<void> {
-  const require = createRequire(import.meta.url);
-  const tuiPath = require.resolve('@orionomega/tui');
+  let tuiPath: string | undefined;
+
+  // Strategy 1: resolve as a dependency of this package
+  try {
+    const req = createRequire(import.meta.url);
+    tuiPath = req.resolve('@orionomega/tui');
+  } catch {
+    // Not a declared dep — try workspace root
+  }
+
+  // Strategy 2: resolve from workspace root (two levels up from packages/core/dist/)
+  if (!tuiPath) {
+    try {
+      const { join } = await import('node:path');
+      const rootDir = join(new URL('.', import.meta.url).pathname, '..', '..', '..');
+      const reqRoot = createRequire(join(rootDir, 'package.json'));
+      tuiPath = reqRoot.resolve('@orionomega/tui');
+    } catch {
+      // Not hoisted at root either
+    }
+  }
+
+  // Strategy 3: direct sibling path (monorepo layout: packages/tui/dist/index.js)
+  if (!tuiPath) {
+    const { join } = await import('node:path');
+    const { existsSync } = await import('node:fs');
+    const direct = join(new URL('.', import.meta.url).pathname, '..', '..', 'tui', 'dist', 'index.js');
+    if (existsSync(direct)) {
+      tuiPath = direct;
+    }
+  }
+
+  if (!tuiPath) {
+    throw new Error('Could not locate @orionomega/tui. Is it built? Try: cd /opt/orionomega && pnpm -r build');
+  }
+
   const tui = await import(tuiPath) as Record<string, unknown>;
   if (typeof tui.start === 'function') {
     await (tui.start as () => Promise<void>)();
