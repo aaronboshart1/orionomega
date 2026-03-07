@@ -1,16 +1,13 @@
 {
   "name": "@orionomega/skills-sdk",
   "version": "0.1.0",
-  "description": "Skills system for OrionOmega — create, install, load, validate, and execute custom agent skills",
+  "description": "Skills system for OrionOmega \u2014 create, install, load, validate, and execute custom agent skills",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc",
     "clean": "rm -rf dist"
-  },
-  "dependencies": {
-    "@orionomega/core": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
