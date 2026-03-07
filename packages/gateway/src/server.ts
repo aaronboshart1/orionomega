@@ -147,6 +147,13 @@ async function initMainAgent(): Promise<void> {
         graphState: state,
       });
     },
+    onSessionStatus(status) {
+      wsHandler.broadcast({
+        id: randomBytes(8).toString("hex"),
+        type: "session_status",
+        sessionStatus: status,
+      });
+    },
     onCommandResult(result) {
       wsHandler.broadcast({
         id: randomBytes(8).toString('hex'),

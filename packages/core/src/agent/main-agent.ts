@@ -61,6 +61,7 @@ export interface MainAgentCallbacks {
   onEvent: (event: WorkerEvent) => void;
   onGraphState: (state: GraphState) => void;
   onCommandResult: (result: { command: string; success: boolean; message: string }) => void;
+  onSessionStatus?: (status: { model: string; inputTokens: number; outputTokens: number; maxContextTokens: number }) => void;
 }
 
 // ── History ────────────────────────────────────────────────────────────────
@@ -90,6 +91,8 @@ export class MainAgent {
 
   private context: ContextAssembler;
   private cachedSystemPrompt: string | null = null;
+  private cumulativeInputTokens = 0;
+  private cumulativeOutputTokens = 0;
   private availableSkills: string[] = [];
 
   constructor(config: MainAgentConfig, callbacks: MainAgentCallbacks) {
@@ -468,7 +471,7 @@ export class MainAgent {
     );
 
     try {
-      const fullText = await streamConversation({
+      const result = await streamConversation({
         client: this.anthropic,
         model: this.config.model,
         systemPrompt,
@@ -476,7 +479,10 @@ export class MainAgent {
         workspaceDir: this.config.workspaceDir,
         onText: this.callbacks.onText,
       });
-      this.pushHistory({ role: 'assistant', content: fullText });
+      this.cumulativeInputTokens += result.inputTokens;
+      this.cumulativeOutputTokens += result.outputTokens;
+      this.pushHistory({ role: "assistant", content: result.text });
+      this.emitSessionStatus();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       log.error('Conversational response error', { error: msg });
@@ -484,6 +490,16 @@ export class MainAgent {
       this.callbacks.onText(fallback, false, true);
       this.pushHistory({ role: 'assistant', content: fallback });
     }
+  }
+
+  /** Emit session status to the TUI/gateway. */
+  private emitSessionStatus(): void {
+    this.callbacks.onSessionStatus?.({
+      model: this.config.model,
+      inputTokens: this.cumulativeInputTokens,
+      outputTokens: this.cumulativeOutputTokens,
+      maxContextTokens: 200000,
+    });
   }
 
   private async getSystemPrompt(): Promise<string> {

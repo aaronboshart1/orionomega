@@ -30,7 +30,7 @@ export interface ClientMessage {
 /** Gateway → Client message envelope. */
 export interface ServerMessage {
   id: string;
-  type: 'text' | 'thinking' | 'plan' | 'event' | 'status' | 'command_result' | 'error' | 'ack';
+  type: 'text' | 'thinking' | 'plan' | 'event' | 'status' | 'command_result' | 'session_status' | 'error' | 'ack';
   content?: string;
   streaming?: boolean;
   done?: boolean;
@@ -40,6 +40,7 @@ export interface ServerMessage {
   graphState?: unknown;
   status?: SystemStatus;
   commandResult?: CommandResult;
+  sessionStatus?: { model: string; inputTokens: number; outputTokens: number; maxContextTokens: number };
   error?: string;
 }
 

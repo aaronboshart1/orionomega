@@ -217,10 +217,12 @@ export async function streamConversation(opts: {
   workspaceDir: string;
   onText: (text: string, streaming: boolean, done: boolean) => void;
   maxToolRounds?: number;
-}): Promise<string> {
+}): Promise<{ text: string; inputTokens: number; outputTokens: number }> {
   const { client, model, systemPrompt, workspaceDir, onText, maxToolRounds = 10 } = opts;
   let messages = [...opts.messages];
   let fullText = '';
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
 
   for (let round = 0; round <= maxToolRounds; round++) {
     const stream = client.streamMessage({
@@ -275,15 +277,22 @@ export async function streamConversation(opts: {
         currentToolInput = '';
       }
 
+      if (event.type === "message_start") {
+        const msg = (event as Record<string, unknown>).message as Record<string, unknown> | undefined;
+        const usage = msg?.usage as Record<string, number> | undefined;
+        if (usage?.input_tokens) totalInputTokens += usage.input_tokens;
+      }
       if (event.type === 'message_delta') {
         const delta = (event as Record<string, unknown>).delta as Record<string, unknown> | undefined;
         if (delta?.stop_reason) stopReason = String(delta.stop_reason);
+        const usage = delta?.usage as Record<string, number> | undefined;
+        if (usage?.output_tokens) totalOutputTokens += usage.output_tokens;
       }
     }
 
     if (stopReason !== 'tool_use' || toolCalls.length === 0) {
       onText('', true, true);
-      return fullText;
+      return { text: fullText, inputTokens: totalInputTokens, outputTokens: totalOutputTokens };
     }
 
     // Execute tools and continue
@@ -304,5 +313,5 @@ export async function streamConversation(opts: {
   }
 
   onText('', true, true);
-  return fullText;
+  return { text: fullText, inputTokens: totalInputTokens, outputTokens: totalOutputTokens };
 }

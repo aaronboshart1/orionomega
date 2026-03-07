@@ -22,7 +22,7 @@ export interface ClientMessage {
 /** Gateway → Client message envelope. */
 interface ServerMessage {
   id: string;
-  type: 'text' | 'thinking' | 'plan' | 'event' | 'status' | 'command_result' | 'error' | 'ack';
+  type: 'text' | 'thinking' | 'plan' | 'event' | 'status' | 'command_result' | 'session_status' | 'error' | 'ack';
   content?: string;
   streaming?: boolean;
   done?: boolean;
@@ -33,6 +33,7 @@ interface ServerMessage {
   status?: unknown;
   commandResult?: { command: string; success: boolean; message: string };
   error?: string;
+  sessionStatus?: { model: string; inputTokens: number; outputTokens: number; maxContextTokens: number };
 }
 
 /** A display-ready message. */
@@ -60,6 +61,7 @@ export interface GatewayClientEvents {
   planCleared: [];
   graphState: [GraphState];
   event: [WorkerEvent];
+  sessionStatus: [{ model: string; inputTokens: number; outputTokens: number; maxContextTokens: number }];
 }
 
 /**
@@ -289,6 +291,12 @@ export class GatewayClient extends EventEmitter<GatewayClientEvents> {
           timestamp: new Date().toISOString(),
           emoji: '⚠️',
         });
+        break;
+
+      case "session_status":
+        if (msg.sessionStatus) {
+          this.emit("sessionStatus", msg.sessionStatus);
+        }
         break;
 
       case 'ack':

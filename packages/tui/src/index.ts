@@ -15,12 +15,14 @@ import {
   type SlashCommand,
 } from '@mariozechner/pi-tui';
 import { readConfig } from '@orionomega/core';
-import type { PlannerOutput } from '@orionomega/core';
+import type { PlannerOutput, GraphState } from '@orionomega/core';
 
 import { GatewayClient } from './gateway-client.js';
 import { ChatLog } from './components/chat-log.js';
 import { CustomEditor } from './components/custom-editor.js';
 import { PlanOverlay } from './components/plan-overlay.js';
+import { StatusBar } from './components/status-bar.js';
+import { WorkflowTracker } from './components/workflow-tracker.js';
 import { editorTheme, theme } from './theme.js';
 
 /** Available slash commands. */
@@ -29,7 +31,7 @@ const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/status', description: 'Session and system status' },
   { name: '/reset', description: 'Clear history and detach workflow' },
   { name: '/stop', description: 'Stop the active workflow' },
-  { name: '/restart', description: 'Restart the active workflow' },
+  { name: '/restart', description: 'Restart the gateway service' },
   { name: '/plan', description: 'Show the current execution plan' },
   { name: '/workers', description: 'List active workers' },
   { name: '/skills', description: 'View, enable/disable, configure skills' },
@@ -54,6 +56,18 @@ function defaultGatewayUrl(): string {
 }
 
 /**
+ * Derive default model from config for initial status bar display.
+ */
+function defaultModel(): string {
+  try {
+    const config = readConfig();
+    return config.models.default ?? '';
+  } catch {
+    return '';
+  }
+}
+
+/**
  * Launch the TUI.
  */
 export async function start(): Promise<void> {
@@ -69,17 +83,22 @@ export async function start(): Promise<void> {
 
   const header = new Text('', 1, 0);
   const chatLog = new ChatLog();
-  const footer = new Text('', 1, 0);
   const editor = new CustomEditor(tui, editorTheme);
+  const statusBar = new StatusBar();
+  const workflowTracker = new WorkflowTracker();
 
   const root = new Container();
   root.addChild(header);
   root.addChild(chatLog);
-  root.addChild(footer);
   root.addChild(editor);
+  root.addChild(statusBar);
 
   tui.addChild(root);
   tui.setFocus(editor);
+
+  // Set initial model display
+  const model = defaultModel();
+  if (model) statusBar.updateStatus({ model });
 
   // Autocomplete for slash commands
   editor.setAutocompleteProvider(
@@ -91,25 +110,14 @@ export async function start(): Promise<void> {
   const client = new GatewayClient(gatewayUrl, token);
   let planOverlayHandle: OverlayHandle | null = null;
   let activePlanId: string | null = null;
+  let workflowActive = false;
 
   const updateHeader = () => {
-    header.setText(theme.header(`orionomega tui — ${gatewayUrl}`));
+    header.setText(theme.header(`  orionomega — ${gatewayUrl}`));
   };
-
-  const updateFooter = () => {
-    const status = client.connected
-      ? theme.statusConnected() + ' Connected'
-      : theme.statusDisconnected() + ' Disconnected';
-    const time = new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
-    footer.setText(`  ${status}${' '.repeat(40)}${theme.dim(time)}`);
-    tui.requestRender();
-  };
-
-  // Periodic footer update (clock)
-  const footerTimer = setInterval(updateFooter, 30_000);
 
   client.on('connected', () => {
-    updateFooter();
+    statusBar.connected = true;
     chatLog.addMessage({
       id: 'sys-connected',
       role: 'system',
@@ -121,33 +129,43 @@ export async function start(): Promise<void> {
   });
 
   client.on('disconnected', () => {
-    updateFooter();
+    statusBar.connected = false;
     tui.requestRender();
   });
 
   client.on('message', (msg) => {
     chatLog.clearStreaming();
+    statusBar.thinking = false;
     chatLog.addMessage(msg);
     tui.requestRender();
   });
 
   client.on('streaming', (msg) => {
+    statusBar.thinking = true;
     chatLog.updateStreaming(msg.content);
     tui.requestRender();
   });
 
   client.on('streamingDone', () => {
+    statusBar.thinking = false;
     chatLog.clearStreaming();
     tui.requestRender();
   });
 
   client.on('thinking', (text) => {
-    chatLog.updateThinking(text);
+    if (text) {
+      statusBar.thinking = true;
+      chatLog.updateThinking(text);
+    } else {
+      statusBar.thinking = false;
+      chatLog.updateThinking('');
+    }
     tui.requestRender();
   });
 
   client.on('plan', (plan: PlannerOutput, planId: string) => {
     activePlanId = planId;
+    statusBar.thinking = false;
 
     // Show plan as an overlay
     const overlay = new PlanOverlay(plan);
@@ -166,7 +184,7 @@ export async function start(): Promise<void> {
 
     planOverlayHandle = tui.showOverlay(overlay, {
       width: '80%',
-      maxHeight: '60%',
+      maxHeight: '70%',
       anchor: 'center',
     });
     tui.setFocus(overlay);
@@ -181,6 +199,66 @@ export async function start(): Promise<void> {
     tui.setFocus(editor);
     tui.requestRender();
   });
+
+  client.on('graphState', (state: GraphState) => {
+    // Track workflow in status bar
+    const nodes = state.nodes ?? {};
+    const nodeList = Object.values(nodes) as any[];
+    const running = nodeList.filter((n: any) => n.status === 'running' || n.status === 'in_progress').length;
+    const complete = nodeList.filter((n: any) => n.status === 'complete' || n.status === 'done').length;
+    const total = nodeList.length;
+
+    statusBar.updateStatus({
+      activeTasks: running > 0 ? 1 : 0,
+      activeWorkers: running,
+      completedTasks: complete,
+      totalTasks: total,
+      estimatedCost: state.estimatedCost,
+    });
+
+    // Initialize or update workflow tracker
+    if (!workflowActive) {
+      workflowActive = true;
+      workflowTracker.initFromGraphState(state);
+      chatLog.addChild(workflowTracker);
+    } else {
+      workflowTracker.updateFromGraphState(state);
+    }
+
+    // Check if workflow completed
+    if (state.status === 'complete' || state.status === 'error' || state.status === 'stopped') {
+      workflowActive = false;
+      statusBar.updateStatus({
+        activeTasks: 0,
+        activeWorkers: 0,
+      });
+    }
+
+    tui.requestRender();
+  });
+
+  client.on("sessionStatus", (status) => {
+    statusBar.updateStatus({
+      model: status.model,
+      inputTokens: status.inputTokens,
+      outputTokens: status.outputTokens,
+      maxContextTokens: status.maxContextTokens,
+    });
+    tui.requestRender();
+  });
+
+  client.on('event', (event) => {
+    // Update workflow tracker with individual events
+    if (workflowActive) {
+      workflowTracker.updateNodeEvent(event.nodeId, event.type, event.message);
+      tui.requestRender();
+    }
+  });
+
+  // ── Handle session_status from gateway ────────────────────────
+
+  // Extend to handle session_status messages if gateway sends them
+  // For now, we derive what we can from events and config
 
   // ── Editor submission ─────────────────────────────────────────
 
@@ -206,6 +284,8 @@ export async function start(): Promise<void> {
       return;
     }
 
+    statusBar.thinking = true;
+
     if (normalized.startsWith('/')) {
       client.sendCommand(normalized.slice(1));
     } else {
@@ -219,7 +299,7 @@ export async function start(): Promise<void> {
   // ── Lifecycle ─────────────────────────────────────────────────
 
   const cleanup = () => {
-    try { clearInterval(footerTimer); } catch {}
+    try { statusBar.dispose(); } catch {}
     try { client.dispose(); } catch {}
     try { tui.stop(); } catch {}
     process.exit(0);
@@ -229,7 +309,6 @@ export async function start(): Promise<void> {
   process.on('SIGTERM', cleanup);
 
   updateHeader();
-  updateFooter();
   tui.start();
 
   await client.connect();
