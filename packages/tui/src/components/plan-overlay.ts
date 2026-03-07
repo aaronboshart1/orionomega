@@ -27,12 +27,18 @@ export class PlanOverlay extends Container implements Focusable {
     this.addChild(new Text(theme.accent(`📋 Execution Plan: ${graph.name}`), 1, 0));
     this.addChild(new Spacer(1));
 
-    // Show nodes
-    for (const [, node] of graph.nodes) {
-      const modelLabel = node.agent?.model ? ` (${node.agent.model})` : '';
-      const depsLabel = node.dependsOn.length > 0 ? ` → after ${node.dependsOn.join(', ')}` : '';
+    // Show nodes — graph.nodes may be a Map (in-process) or plain object (over JSON/WebSocket)
+    const nodes = graph.nodes instanceof Map
+      ? graph.nodes
+      : new Map(Object.entries(graph.nodes as Record<string, typeof graph.nodes extends Map<string, infer V> ? V : never>));
+
+    for (const [, node] of nodes) {
+      const n = node as { label?: string; agent?: { model?: string }; dependsOn?: string[] };
+      const modelLabel = n.agent?.model ? ` (${n.agent.model})` : '';
+      const deps = n.dependsOn ?? [];
+      const depsLabel = deps.length > 0 ? ` → after ${deps.join(', ')}` : '';
       this.addChild(new Text(
-        `  ${theme.accent('•')} ${theme.assistant(node.label)}${theme.dim(modelLabel)}${theme.dim(depsLabel)}`,
+        `  ${theme.accent('•')} ${theme.assistant(n.label ?? 'unnamed')}${theme.dim(modelLabel)}${theme.dim(depsLabel)}`,
         1, 0,
       ));
     }
