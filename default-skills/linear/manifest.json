@@ -1,0 +1,304 @@
+{
+  "name": "linear",
+  "version": "1.0.0",
+  "description": "Full-featured Linear integration via the GraphQL API. Manage issues, projects, teams, cycles, and users. Designed for autonomous orchestration workflows.",
+  "author": "OrionOmega",
+  "license": "MIT",
+  "homepage": "https://github.com/aaronboshart1/orionomega",
+  "repository": "https://github.com/aaronboshart1/orionomega",
+  "orionomega": ">=0.1.0",
+  "os": ["linux", "darwin", "win32"],
+  "requires": {
+    "commands": [],
+    "env": [],
+    "skills": []
+  },
+  "setup": {
+    "required": true,
+    "description": "Authenticate with Linear to manage issues, projects, teams, and more.",
+    "auth": {
+      "methods": [
+        {
+          "type": "api-key",
+          "label": "Personal API Key (recommended)",
+          "description": "Create a key at linear.app/settings → Security & access → Personal API keys",
+          "tokenUrl": "https://linear.app/settings/account/security",
+          "envVar": "LINEAR_API_KEY",
+          "validateCommand": "node -e \"fetch('https://api.linear.app/graphql',{method:'POST',headers:{'Content-Type':'application/json',Authorization:process.env.LINEAR_API_KEY||''},body:JSON.stringify({query:'{viewer{name}}'})}).then(r=>r.json()).then(d=>{if(d.data?.viewer)process.exit(0);else process.exit(1)}).catch(()=>process.exit(1))\""
+        },
+        {
+          "type": "oauth",
+          "label": "OAuth 2.0",
+          "description": "For applications — requires OAuth app registration at linear.app/settings/api",
+          "tokenUrl": "https://linear.app/settings/api"
+        }
+      ]
+    },
+    "fields": [
+      {
+        "name": "default_team",
+        "type": "string",
+        "label": "Default team key",
+        "description": "Team key used when team is omitted (e.g. 'ENG')",
+        "required": false
+      }
+    ],
+    "handler": "hooks/setup.js"
+  },
+  "triggers": {
+    "keywords": [
+      "linear", "issue", "ticket", "project", "cycle", "sprint",
+      "backlog", "triage", "roadmap", "milestone"
+    ],
+    "patterns": [
+      "\\blinear\\b",
+      "\\b[A-Z]+-\\d+\\b",
+      "\\b(create|open|close|assign|list)\\s+(issue|ticket|task)\\b"
+    ],
+    "commands": ["/linear"]
+  },
+  "tools": [
+    {
+      "name": "linear_issue",
+      "description": "Manage Linear issues: list, view, create, update, close, reopen, comment, assign, label, search, archive. Supports filtering by team, state, priority, assignee, project, cycle, and label.",
+      "handler": "handlers/linear_issue.js",
+      "timeout": 30000,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": ["list", "view", "create", "update", "close", "reopen", "comment", "assign", "label", "search", "archive"],
+            "description": "Issue action to perform"
+          },
+          "id": {
+            "type": "string",
+            "description": "Issue identifier (e.g. 'ENG-123' or UUID)"
+          },
+          "title": {
+            "type": "string",
+            "description": "Issue title (for create/update)"
+          },
+          "description": {
+            "type": "string",
+            "description": "Issue description in markdown (for create/update)"
+          },
+          "team": {
+            "type": "string",
+            "description": "Team key (e.g. 'ENG') — resolved to teamId automatically"
+          },
+          "teamId": {
+            "type": "string",
+            "description": "Team UUID (alternative to team key)"
+          },
+          "priority": {
+            "type": "number",
+            "enum": [0, 1, 2, 3, 4],
+            "description": "Priority: 0=none, 1=urgent, 2=high, 3=medium, 4=low"
+          },
+          "stateId": {
+            "type": "string",
+            "description": "Workflow state UUID"
+          },
+          "state": {
+            "type": "string",
+            "description": "Filter by state name (for list)"
+          },
+          "stateType": {
+            "type": "string",
+            "enum": ["triage", "backlog", "unstarted", "started", "completed", "cancelled"],
+            "description": "Filter by state type (for list)"
+          },
+          "assigneeId": {
+            "type": "string",
+            "description": "User UUID to assign"
+          },
+          "assignee": {
+            "type": "string",
+            "description": "Special: '@me' for current user (for list filter)"
+          },
+          "projectId": {
+            "type": "string",
+            "description": "Project UUID"
+          },
+          "cycleId": {
+            "type": "string",
+            "description": "Cycle UUID"
+          },
+          "parentId": {
+            "type": "string",
+            "description": "Parent issue UUID (for sub-issues)"
+          },
+          "labelIds": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Label UUIDs to apply"
+          },
+          "label": {
+            "type": "string",
+            "description": "Filter by label name (for list)"
+          },
+          "estimate": {
+            "type": "number",
+            "description": "Point estimate"
+          },
+          "dueDate": {
+            "type": "string",
+            "description": "Due date (ISO 8601)"
+          },
+          "body": {
+            "type": "string",
+            "description": "Comment body in markdown (for comment action)"
+          },
+          "query": {
+            "type": "string",
+            "description": "Search query text (for search action)"
+          },
+          "limit": {
+            "type": "number",
+            "description": "Max results (default 25)"
+          }
+        },
+        "required": ["action"]
+      }
+    },
+    {
+      "name": "linear_project",
+      "description": "Manage Linear projects: list, view, create, update, archive. View project progress, members, issues, and milestones.",
+      "handler": "handlers/linear_project.js",
+      "timeout": 30000,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": ["list", "view", "create", "update", "archive"],
+            "description": "Project action to perform"
+          },
+          "id": {
+            "type": "string",
+            "description": "Project UUID"
+          },
+          "name": {
+            "type": "string",
+            "description": "Project name (for create/update)"
+          },
+          "description": {
+            "type": "string",
+            "description": "Project description in markdown"
+          },
+          "state": {
+            "type": "string",
+            "enum": ["planned", "started", "paused", "completed", "canceled"],
+            "description": "Project state"
+          },
+          "teamIds": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Team UUIDs (for create)"
+          },
+          "leadId": {
+            "type": "string",
+            "description": "Lead user UUID"
+          },
+          "startDate": {
+            "type": "string",
+            "description": "Start date (YYYY-MM-DD)"
+          },
+          "targetDate": {
+            "type": "string",
+            "description": "Target completion date (YYYY-MM-DD)"
+          },
+          "color": {
+            "type": "string",
+            "description": "Project color (hex)"
+          },
+          "limit": {
+            "type": "number",
+            "description": "Max results (default 20)"
+          }
+        },
+        "required": ["action"]
+      }
+    },
+    {
+      "name": "linear_team",
+      "description": "View Linear teams, members, workflow states, labels, and cycles. Teams are the organizational unit — issues belong to teams.",
+      "handler": "handlers/linear_team.js",
+      "timeout": 30000,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": ["list", "view", "members", "states", "labels", "cycles"],
+            "description": "Team action to perform"
+          },
+          "id": {
+            "type": "string",
+            "description": "Team key (e.g. 'ENG') or UUID"
+          },
+          "limit": {
+            "type": "number",
+            "description": "Max results for cycles (default 5)"
+          }
+        },
+        "required": ["action"]
+      }
+    },
+    {
+      "name": "linear_user",
+      "description": "View Linear users: current user (me), list all users, view assigned issues.",
+      "handler": "handlers/linear_user.js",
+      "timeout": 30000,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": ["me", "list", "assigned"],
+            "description": "User action to perform"
+          },
+          "userId": {
+            "type": "string",
+            "description": "User UUID (for assigned; omit for current user)"
+          },
+          "limit": {
+            "type": "number",
+            "description": "Max results (default 20)"
+          }
+        },
+        "required": ["action"]
+      }
+    },
+    {
+      "name": "linear_graphql",
+      "description": "Execute raw GraphQL queries and mutations against the Linear API. Use for anything not covered by other tools.",
+      "handler": "handlers/linear_graphql.js",
+      "timeout": 30000,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "GraphQL query or mutation string"
+          },
+          "variables": {
+            "type": "object",
+            "description": "GraphQL variables"
+          }
+        },
+        "required": ["query"]
+      }
+    }
+  ],
+  "workerProfile": {
+    "tier": "lightweight",
+    "tools": ["linear_issue", "linear_project", "linear_team", "linear_user", "linear_graphql"],
+    "maxTimeout": 120000
+  },
+  "hooks": {
+    "healthCheck": "hooks/health.js",
+    "postInstall": "hooks/setup.js"
+  }
+}
