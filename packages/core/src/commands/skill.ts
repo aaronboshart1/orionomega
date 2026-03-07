@@ -16,6 +16,63 @@ const BOLD = '\x1b[1m';
 const DIM = '\x1b[2m';
 const RESET = '\x1b[0m';
 
+/** Prompt the user for input via readline. */
+function prompt(message: string, mask = false): Promise<string> {
+  return new Promise((resolve) => {
+    const { createInterface } = require('node:readline') as typeof import('node:readline');
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    if (mask) {
+      // Mask input for secrets — write dots instead
+      process.stdout.write(message);
+      let value = '';
+      const origWrite = process.stdout.write.bind(process.stdout);
+      process.stdin.setRawMode?.(true);
+      process.stdin.resume();
+      process.stdin.setEncoding('utf-8');
+      const onData = (ch: string) => {
+        if (ch === '\r' || ch === '\n') {
+          process.stdin.setRawMode?.(false);
+          process.stdin.removeListener('data', onData);
+          origWrite('\n');
+          rl.close();
+          resolve(value);
+        } else if (ch === '\u0003') {
+          // Ctrl+C
+          process.stdin.setRawMode?.(false);
+          rl.close();
+          process.exit(1);
+        } else if (ch === '\u007f' || ch === '\b') {
+          // Backspace
+          if (value.length > 0) {
+            value = value.slice(0, -1);
+            origWrite('\b \b');
+          }
+        } else {
+          value += ch;
+          origWrite('•');
+        }
+      };
+      process.stdin.on('data', onData);
+    } else {
+      rl.question(message, (answer) => {
+        rl.close();
+        resolve(answer);
+      });
+    }
+  });
+}
+
+/** Build env vars from skill config fields (for auth methods that use envVar). */
+function envFromConfig(config: SkillConfig): Record<string, string> {
+  const env: Record<string, string> = {};
+  if (config.fields) {
+    for (const [key, val] of Object.entries(config.fields)) {
+      if (typeof val === 'string') env[key] = val;
+    }
+  }
+  return env;
+}
+
 /** Dynamically load the skills SDK (optional dependency). */
 async function loadSDK(): Promise<Record<string, unknown> | null> {
   try {
@@ -240,40 +297,129 @@ async function setupSkill(name: string | undefined, skillsDir: string): Promise<
 
   const config = readSkillConfig(skillsDir, name);
 
+  let authOk = false;
+
   // Auth methods
   if (manifest.setup.auth?.methods?.length) {
     const methods = manifest.setup.auth.methods;
-    process.stdout.write(`\nAuthentication methods:\n`);
-    for (let i = 0; i < methods.length; i++) {
-      process.stdout.write(`  ${BOLD}${i + 1}${RESET}) ${methods[i].label}${methods[i].description ? ` — ${DIM}${methods[i].description}${RESET}` : ''}\n`);
+
+    // Pick method: if only one, use it; otherwise prompt
+    let method = methods[0];
+    if (methods.length > 1) {
+      process.stdout.write(`Authentication methods:\n`);
+      for (let i = 0; i < methods.length; i++) {
+        process.stdout.write(`  ${BOLD}${i + 1}${RESET}) ${methods[i].label}${methods[i].description ? ` — ${DIM}${methods[i].description}${RESET}` : ''}\n`);
+      }
+      const choice = await prompt(`\nChoose method [1-${methods.length}]: `);
+      const idx = parseInt(choice, 10) - 1;
+      if (idx >= 0 && idx < methods.length) method = methods[idx];
+      else {
+        process.stdout.write(`${RED}✗${RESET} Invalid choice.\n`);
+        return;
+      }
+    } else {
+      process.stdout.write(`Auth: ${BOLD}${method.label}${RESET}\n`);
+      if (method.description) process.stdout.write(`  ${DIM}${method.description}${RESET}\n`);
     }
-    // For non-interactive CLI: run the first method's command if available
-    const method = methods[0];
-    if (method.command) {
+
+    config.authMethod = method.type;
+
+    // Handle by auth type
+    if (method.type === 'api-key' || method.type === 'pat') {
+      // Prompt for the key/token
+      const label = method.type === 'pat' ? 'token' : 'API key';
+      if (method.tokenUrl) {
+        process.stdout.write(`  Get your ${label} at: ${BOLD}${method.tokenUrl}${RESET}\n`);
+      }
+      const envVar = method.envVar ?? 'API_KEY';
+      const key = await prompt(`  Enter ${label}: `, true);
+      if (!key?.trim()) {
+        process.stdout.write(`${RED}✗${RESET} No ${label} provided. Aborting setup.\n`);
+        return;
+      }
+      config.fields[envVar] = key.trim();
+
+      // Validate with the stored key in env
+      if (method.validateCommand) {
+        try {
+          const { execSync: exec } = await import('node:child_process');
+          exec(method.validateCommand, {
+            encoding: 'utf-8',
+            timeout: 15000,
+            stdio: 'pipe',
+            env: { ...process.env, [envVar]: key.trim() },
+          });
+          process.stdout.write(`${GREEN}✓${RESET} Auth validated.\n`);
+          authOk = true;
+        } catch {
+          process.stdout.write(`${RED}✗${RESET} Auth validation failed. Check your ${label} and try again.\n`);
+          return;
+        }
+      } else {
+        authOk = true; // No validate command — trust the input
+      }
+    } else if (method.type === 'login' && method.command) {
+      // Interactive CLI login (e.g. gh auth login)
       process.stdout.write(`\nRunning: ${BOLD}${method.command}${RESET}\n`);
       try {
         const { execSync: exec } = await import('node:child_process');
         exec(method.command, { stdio: 'inherit', timeout: 120000 });
-        config.authMethod = method.type;
         process.stdout.write(`${GREEN}✓${RESET} Authentication complete.\n`);
+        authOk = true;
       } catch {
         process.stdout.write(`${RED}✗${RESET} Authentication failed.\n`);
+        return;
       }
-    }
-
-    // Validate
-    if (method.validateCommand) {
+      // Post-login validation
+      if (method.validateCommand) {
+        try {
+          const { execSync: exec } = await import('node:child_process');
+          exec(method.validateCommand, { encoding: 'utf-8', timeout: 15000, stdio: 'pipe' });
+          process.stdout.write(`${GREEN}✓${RESET} Auth validated.\n`);
+        } catch {
+          process.stdout.write(`${RED}✗${RESET} Auth validation failed after login.\n`);
+          return;
+        }
+      }
+    } else if (method.command) {
+      // Generic command-based auth (ssh-key, oauth browser flow, etc.)
+      process.stdout.write(`\nRunning: ${BOLD}${method.command}${RESET}\n`);
       try {
         const { execSync: exec } = await import('node:child_process');
-        exec(method.validateCommand, { encoding: 'utf-8', timeout: 15000, stdio: 'pipe' });
-        process.stdout.write(`${GREEN}✓${RESET} Auth validated.\n`);
+        exec(method.command, { stdio: 'inherit', timeout: 120000 });
+        authOk = true;
       } catch {
-        process.stdout.write(`${RED}✗${RESET} Auth validation failed.\n`);
+        process.stdout.write(`${RED}✗${RESET} Authentication command failed.\n`);
+        return;
+      }
+    } else {
+      process.stdout.write(`${YELLOW}⚠${RESET} No interactive auth flow for method "${method.type}". Configure manually.\n`);
+      return;
+    }
+  } else {
+    authOk = true; // No auth required
+  }
+
+  if (!authOk) return;
+
+  // Prompt for additional config fields
+  if (manifest.setup.fields?.length) {
+    for (const field of manifest.setup.fields) {
+      const req = field.required ? ' (required)' : '';
+      const desc = field.description ? ` — ${DIM}${field.description}${RESET}` : '';
+      const existing = config.fields[field.name];
+      const defaultHint = existing ? ` [${existing}]` : '';
+      const value = await prompt(`  ${field.label ?? field.name}${req}${desc}${defaultHint}: `, field.mask === true);
+      if (value?.trim()) {
+        config.fields[field.name] = field.type === 'number' ? Number(value) : field.type === 'boolean' ? value.toLowerCase() === 'true' : value.trim();
+      } else if (field.required && !existing) {
+        process.stdout.write(`${RED}✗${RESET} Required field "${field.name}" not provided.\n`);
+        return;
       }
     }
   }
 
-  // Run setup handler
+  // Run setup handler for post-validation
   if (manifest.setup.handler) {
     const handlerPath = join(skillsDir, name, manifest.setup.handler);
     if (existsSync(handlerPath)) {
@@ -284,15 +430,22 @@ async function setupSkill(name: string | undefined, skillsDir: string): Promise<
           encoding: 'utf-8',
           timeout: 30000,
           input: JSON.stringify(config),
+          env: { ...process.env, ...envFromConfig(config) },
         }).trim();
         try {
           const updates = JSON.parse(result);
           if (updates.fields) Object.assign(config.fields, updates.fields);
+          if (updates.validated === false) {
+            process.stdout.write(`${RED}✗${RESET}\n`);
+            process.stdout.write(`${RED}✗${RESET} Setup handler rejected the configuration.\n`);
+            return;
+          }
         } catch {}
         process.stdout.write(`${GREEN}✓${RESET}\n`);
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         process.stdout.write(`${RED}✗ ${msg}${RESET}\n`);
+        return;
       }
     }
   }
