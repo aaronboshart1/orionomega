@@ -14,14 +14,11 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
-    "isolatedModules": true,
-    "jsx": "react-jsx",
-    "jsxImportSource": "react"
+    "isolatedModules": true
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx"],
+  "include": ["src/**/*.ts"],
   "exclude": ["dist", "node_modules"],
   "references": [
-    { "path": "../core" },
-    { "path": "../gateway" }
+    { "path": "../core" }
   ]
 }
