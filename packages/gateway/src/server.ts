@@ -86,6 +86,7 @@ async function initMainAgent(): Promise<void> {
     workerTimeout: fullConfig?.orchestration?.workerTimeout ?? 300,
     maxRetries: fullConfig?.orchestration?.maxRetries ?? 2,
     skillsDir: fullConfig?.skills?.directory,
+    hindsight: fullConfig?.hindsight,
   };
 
   // Stable IDs for streaming — each new response starts a fresh ID,
