@@ -42,15 +42,9 @@ export function getDefaultConfig(): OrionOmegaConfig {
     models: {
       provider: 'anthropic',
       apiKey: '',
-      default: 'claude-sonnet-4-20250514',
-      planner: 'claude-sonnet-4-20250514',
-      workers: {
-        research: 'claude-haiku-4-20250414',
-        code: 'claude-sonnet-4-20250514',
-        writing: 'claude-sonnet-4-20250514',
-        analysis: 'claude-haiku-4-20250414',
-        data: 'claude-haiku-4-20250414',
-      },
+      default: '',
+      planner: '',
+      workers: {},
     },
     orchestration: {
       maxSpawnDepth: 3,

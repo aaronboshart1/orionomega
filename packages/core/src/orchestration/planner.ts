@@ -11,6 +11,7 @@ import { buildGraph } from './graph.js';
 import { AnthropicClient } from '../anthropic/client.js';
 import { readConfig } from '../config/loader.js';
 import { createLogger } from '../logging/logger.js';
+import { discoverModels, buildModelGuide, pickModelByTier, type DiscoveredModel } from '../models/model-discovery.js';
 
 const log = createLogger('planner');
 
@@ -61,7 +62,21 @@ export class Planner {
     }
 
     const client = new AnthropicClient(apiKey);
-    const systemPrompt = this.buildPlannerPrompt(task, context);
+
+    // Discover available models dynamically — no hardcoded model names
+    let discoveredModels: DiscoveredModel[] = [];
+    try {
+      discoveredModels = await discoverModels(apiKey);
+    } catch {
+      log.warn('Model discovery failed — planner will use configured defaults');
+    }
+
+    // Determine the default worker model (midweight, fallback to main agent model)
+    const defaultWorkerModel = discoveredModels.length > 0
+      ? (pickModelByTier(discoveredModels, 'sonnet')?.id ?? appConfig.models.default)
+      : appConfig.models.default;
+
+    const systemPrompt = this.buildPlannerPrompt(task, context, discoveredModels, appConfig.models.default);
 
     try {
       log.info(`Planning task with model ${model}: "${task.slice(0, 80)}..."`);
@@ -125,7 +140,7 @@ export class Planner {
           agent: n.agent
             ? {
                 model: String(
-                  (n.agent as Record<string, unknown>).model ?? model,
+                  (n.agent as Record<string, unknown>).model ?? defaultWorkerModel,
                 ),
                 task: String(
                   (n.agent as Record<string, unknown>).task ?? '',
@@ -190,7 +205,12 @@ export class Planner {
    * @param context - Optional additional context (memories, skills, files).
    * @returns The complete system prompt string.
    */
-  buildPlannerPrompt(task: string, context?: object): string {
+  buildPlannerPrompt(
+    task: string,
+    context?: object,
+    discoveredModels?: DiscoveredModel[],
+    mainModel?: string,
+  ): string {
     const ctx = context as
       | {
           memories?: string[];
@@ -221,9 +241,7 @@ Given a task description, you produce a WorkflowGraph JSON that orchestrates mul
 2. **One deliverable per worker.** Each AGENT node should have a single, well-scoped task that produces one clear output.
 3. **Use TOOL nodes sparingly** — only for shell commands (e.g. exec). For file operations, writing documents, web searches, etc., use AGENT nodes — they have built-in tools: exec (shell), read (files), write (files), edit (files). Skills may also provide: web_search, web_fetch. AGENT nodes should handle almost all work.
 4. **Use ROUTER nodes for conditional logic.** When the next step depends on a previous result, use a ROUTER with condition and routes.
-5. **Model assignment guidelines:**
-   - Use the planner model for complex reasoning, code generation, and creative writing.
-   - Use a lighter model (e.g. haiku) for data gathering, simple lookups, and formatting.
+5. **Model assignment:** Pick models from the available models list below. The list is fetched live from the API — only use models that appear in it.
 6. **Maximum ${this.config.maxWorkers ?? 8} concurrent workers** per layer.
 7. **Always include a JOIN node** when multiple paths converge to a single output.
 8. **Set reasonable timeouts** (in seconds) for each node based on expected duration.
@@ -272,6 +290,8 @@ Respond with a JSON object matching this schema:
 
 Only include the relevant config key (agent/tool/router) for each node type.
 Every node must have: id, type, label, dependsOn (array, can be empty).
+
+## ${discoveredModels?.length ? buildModelGuide(discoveredModels, mainModel ?? this.config.model) : `Available models: Use "${mainModel ?? this.config.model}" for all workers.`}
 ${skillsList}${memoriesList}${filesList}
 
 ## Task
@@ -324,12 +344,16 @@ Respond ONLY with the JSON object. No markdown fences, no commentary.`;
    * Builds a single-node fallback plan when the LLM planner fails.
    */
   private fallbackPlan(task: string, reason: string): PlannerOutput {
+    // Fallback uses the main agent model — always the configured default, never hardcoded
+    const appConfig = readConfig();
+    const fallbackModel = appConfig.models.default || this.config.model;
+
     const node: WorkflowNode = {
       id: 'worker-1',
       type: 'AGENT',
       label: 'Primary Worker',
       agent: {
-        model: this.config.model,
+        model: fallbackModel,
         task,
       },
       dependsOn: [],

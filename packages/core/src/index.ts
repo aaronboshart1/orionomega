@@ -93,3 +93,6 @@ export {
   SessionSummarizer,
   CompactionFlush,
 } from './memory/index.js';
+
+export { discoverModels, buildModelGuide, pickModelByTier, clearModelCache } from "./models/model-discovery.js";
+export type { DiscoveredModel } from "./models/model-discovery.js";

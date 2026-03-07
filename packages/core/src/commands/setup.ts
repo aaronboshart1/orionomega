@@ -165,18 +165,12 @@ async function stepApiKey(config: OrionOmegaConfig): Promise<void> {
   print(`  Testing key... `);
 
   try {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
+    // Validate key via models endpoint — no hardcoded model IDs needed
+    const res = await fetch('https://api.anthropic.com/v1/models?limit=1', {
       headers: {
-        'Content-Type': 'application/json',
         'x-api-key': key,
         'anthropic-version': '2023-06-01',
       },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 10,
-        messages: [{ role: 'user', content: 'ping' }],
-      }),
     });
 
     if (res.ok) {
@@ -242,16 +236,41 @@ async function fetchAnthropicModels(apiKey: string): Promise<{ label: string; va
 async function stepModel(config: OrionOmegaConfig): Promise<void> {
   heading('Step 2/5 — Default Model');
 
-  const options: { label: string; value: string }[] = [
-      { label: `Claude Sonnet 4.6 ${DIM}(recommended)${RESET}`, value: 'claude-sonnet-4-6' },
-      { label: 'Claude Opus 4.6', value: 'claude-opus-4-6' },
-      { label: 'Claude Sonnet 4.5', value: 'claude-sonnet-4-5-20250929' },
-      { label: 'Claude Opus 4.5', value: 'claude-opus-4-5-20251101' },
-      { label: 'Claude Haiku 4.5', value: 'claude-haiku-4-5-20251001' },
-      { label: 'Claude Sonnet 4', value: 'claude-sonnet-4-20250514' },
-      { label: 'Claude Opus 4', value: 'claude-opus-4-20250514' },
-      { label: 'Claude Haiku 4', value: 'claude-haiku-4-20250414' },
-    ];
+  // Always discover models from the API — no hardcoded fallback list
+  let options: { label: string; value: string }[] = [];
+
+  if (config.models.apiKey) {
+    process.stdout.write(`  Fetching models from Anthropic API... `);
+    try {
+      const { discoverModels } = await import('../models/model-discovery.js');
+      const models = await discoverModels(config.models.apiKey);
+      if (models.length > 0) {
+        println(`${GREEN}found ${models.length} models${RESET}`);
+        options = models.map((m) => {
+          let suffix = '';
+          if (m.tier === 'sonnet') suffix = ` ${DIM}(recommended for default)${RESET}`;
+          else if (m.tier === 'haiku') suffix = ` ${DIM}(lightweight)${RESET}`;
+          else if (m.tier === 'opus') suffix = ` ${DIM}(heavyweight)${RESET}`;
+          return { label: `${m.displayName}${suffix}`, value: m.id };
+        });
+      } else {
+        println(`${YELLOW}no models returned${RESET}`);
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      println(`${YELLOW}(error: ${msg})${RESET}`);
+    }
+  }
+
+  if (options.length === 0) {
+    // If API discovery failed, let user enter manually
+    println(`  ${YELLOW}Could not discover models. You can enter a model ID manually.${RESET}`);
+    const model = await ask('Enter model ID');
+    config.models.default = model;
+    config.models.planner = model;
+    success(`Default model: ${model}`);
+    return;
+  }
 
   // Also allow manual entry
   options.push({ label: `${DIM}Enter a model ID manually${RESET}`, value: '__custom__' });
@@ -259,7 +278,7 @@ async function stepModel(config: OrionOmegaConfig): Promise<void> {
   let model = await choose('Select your default model:', options);
 
   if (model === '__custom__') {
-    model = await ask('Enter model ID (e.g. claude-sonnet-4-6)');
+    model = await ask('Enter model ID');
   }
 
   config.models.default = model;

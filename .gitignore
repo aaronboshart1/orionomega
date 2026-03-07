@@ -37,3 +37,8 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+
+# Workflow output (may contain secrets)
+aaron_*.md
+MIGRATION_*.md
+memory/*.json
