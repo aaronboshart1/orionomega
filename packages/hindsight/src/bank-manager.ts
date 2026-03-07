@@ -3,8 +3,8 @@
  * Automatically creates and manages project-specific memory banks in Hindsight.
  */
 
-import { HindsightClient } from '@orionomega/hindsight';
-import { createLogger } from '../logging/logger.js';
+import { HindsightClient } from './client.js';
+import { createLogger } from './logger.js';
 
 const log = createLogger('bank-manager');
 

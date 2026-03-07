@@ -168,53 +168,64 @@ export class WorkerProcess {
   /**
    * Resolves the model to use for this worker.
    *
-   * Checks config.models.workers[profile] first (profile from skill's
-   * workerProfile), then falls back to config.models.default.
+   * Priority:
+   * 1. Explicit model ID in agent config (from planner) — used as-is if it looks like an ID
+   * 2. Tier hint (lightweight/midweight/heavyweight) — resolved via cached model discovery
+   * 3. Config workers map (if populated)
+   * 4. Config default model
+   *
+   * Tier hints allow skill manifests and planner to specify intent without hardcoding model IDs.
    */
   private resolveWorkerModel(): string {
     const config = readConfig();
     const agentConfig = this.node.agent;
 
-    // If the node has an explicit model, resolve aliases first
     if (agentConfig?.model) {
       const model = agentConfig.model;
-
-      // Resolve well-known aliases from config
-      const aliases: Record<string, string> = {
-        'planner': config.models.planner || config.models.default,
-        'default': config.models.default,
-        'research': config.models.workers?.research || config.models.default,
-        'code': config.models.workers?.code || config.models.default,
-        'writing': config.models.workers?.writing || config.models.default,
-        'analysis': config.models.workers?.analysis || config.models.default,
-        'data': config.models.workers?.data || config.models.default,
-      };
-
-      // Check if it's an alias
-      if (aliases[model]) {
-        return aliases[model];
-      }
 
       // Check if it looks like a real model ID (contains a hyphen and digits)
       if (model.includes('-') && /\d/.test(model)) {
         return model;
       }
 
-      // Unknown string — check workers map, then fall back to default
+      // Resolve tier hints to the configured default or a tier-based mapping
+      const tierMap: Record<string, 'haiku' | 'sonnet' | 'opus'> = {
+        'lightweight': 'haiku',
+        'light': 'haiku',
+        'haiku': 'haiku',
+        'midweight': 'sonnet',
+        'mid': 'sonnet',
+        'sonnet': 'sonnet',
+        'default': 'sonnet',
+        'heavyweight': 'opus',
+        'heavy': 'opus',
+        'opus': 'opus',
+        'planner': 'opus',
+        // Task-type aliases map to tiers
+        'research': 'haiku',
+        'data': 'haiku',
+        'analysis': 'sonnet',
+        'code': 'sonnet',
+        'writing': 'sonnet',
+      };
+
+      const tier = tierMap[model.toLowerCase()];
+      if (tier) {
+        // Try workers map first (user may have explicit overrides)
+        const workerModel = config.models.workers?.[tier] || config.models.workers?.[model];
+        if (workerModel) return workerModel;
+
+        // Fall back to the default model — model discovery happens at planner level,
+        // so the planner should have already assigned real model IDs.
+        // This is a safety net for skill-triggered workers.
+        return config.models.default;
+      }
+
+      // Check workers map for custom keys
       const workerModel = config.models.workers?.[model];
       if (workerModel) return workerModel;
 
       return config.models.default;
-    }
-
-    // Try to find a profile-based model
-    // Skills could set a workerProfile — for now we check skillIds
-    if (agentConfig?.skillIds?.length) {
-      // Use the first skill ID as a potential profile hint
-      for (const skillId of agentConfig.skillIds) {
-        const profileModel = config.models.workers[skillId];
-        if (profileModel) return profileModel;
-      }
     }
 
     return config.models.default;

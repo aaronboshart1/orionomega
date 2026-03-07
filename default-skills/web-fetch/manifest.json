@@ -42,7 +42,7 @@
     }
   ],
   "workerProfile": {
-    "model": "claude-haiku-4-5-20251001",
+    "tier": "lightweight",
     "tools": ["web_fetch"],
     "maxTimeout": 60000
   }

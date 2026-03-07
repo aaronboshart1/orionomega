@@ -1,26 +1,21 @@
 /**
  * @module memory
- * Hindsight memory integration — bank management, session bootstrap,
- * retention engine, compaction flush, session summaries, and mental models.
+ * Memory integration. Generic Hindsight operations (bank management, mental models,
+ * session bootstrap) live in @orionomega/hindsight. Orchestration-specific memory
+ * features (retention during workflows, compaction flush, session summaries) stay here.
  */
 
-// Bank Manager
-export { BankManager } from './bank-manager.js';
+// Re-export from @orionomega/hindsight (these modules moved there for clean boundaries)
+export { BankManager, MentalModelManager, SessionBootstrap } from '@orionomega/hindsight';
+export type { BootstrapContext } from '@orionomega/hindsight';
 
-// Session Bootstrap
-export type { BootstrapContext } from './session-bootstrap.js';
-export { SessionBootstrap } from './session-bootstrap.js';
-
-// Retention Engine
+// Retention Engine (stays in core — needs EventBus, WorkerEvent types)
 export type { RetentionConfig, WorkflowOutcome } from './retention-engine.js';
 export { RetentionEngine } from './retention-engine.js';
 
-// Compaction Flush
+// Compaction Flush (stays in core — needs AnthropicClient)
 export type { FlushResult } from './compaction-flush.js';
 export { CompactionFlush } from './compaction-flush.js';
 
-// Session Summary
+// Session Summary (stays in core — needs AnthropicClient)
 export { SessionSummarizer } from './session-summary.js';
-
-// Mental Models
-export { MentalModelManager } from './mental-models.js';

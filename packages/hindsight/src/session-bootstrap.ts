@@ -3,8 +3,8 @@
  * Loads context from Hindsight at session start to prime the system prompt.
  */
 
-import { HindsightClient } from '@orionomega/hindsight';
-import { createLogger } from '../logging/logger.js';
+import { HindsightClient } from './client.js';
+import { createLogger } from './logger.js';
 
 const log = createLogger('session-bootstrap');
 

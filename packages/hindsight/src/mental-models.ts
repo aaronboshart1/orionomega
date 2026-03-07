@@ -4,8 +4,8 @@
  * in Hindsight. Debounces refresh triggers to avoid excessive API calls.
  */
 
-import { HindsightClient } from '@orionomega/hindsight';
-import { createLogger } from '../logging/logger.js';
+import { HindsightClient } from './client.js';
+import { createLogger } from './logger.js';
 
 const log = createLogger('mental-models');
 
