@@ -205,8 +205,17 @@ export function ChatView({
     }
   });
 
+  // Compute a stable height for the dynamic section to prevent Ink cursor drift.
+  // When streaming/thinking/plan/slash suggestions toggle, height changes cause
+  // ghost borders because Ink cannot properly erase the previous taller frame.
+  let dynamicRows = 3; // Input box (border top + content + border bottom)
+  if (streamingMessage) dynamicRows += 3; // approximate streaming message
+  if (thinking) dynamicRows += 1;
+  if (activePlan) dynamicRows += 8; // approximate plan prompt
+  if (isSlashMode && filteredCommands.length > 0) dynamicRows += filteredCommands.length;
+
   return (
-    <>
+    <Box flexDirection="column">
       {/* Completed messages — rendered once into terminal scrollback */}
       <Static items={messages}>
         {(msg: DisplayMessage) => (
@@ -217,7 +226,7 @@ export function ChatView({
       </Static>
 
       {/* Dynamic bottom section — re-renders in place */}
-      <Box flexDirection="column">
+      <Box flexDirection="column" minHeight={dynamicRows}>
         {/* Currently streaming message */}
         {streamingMessage && (
           <Box>
@@ -267,6 +276,6 @@ export function ChatView({
           <Text dimColor>▋</Text>
         </Box>
       </Box>
-    </>
+    </Box>
   );
 }
