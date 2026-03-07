@@ -138,7 +138,9 @@ export async function runGateway(args: string[]): Promise<void> {
         const out = execSync('systemctl status orionomega 2>&1', { encoding: 'utf-8' });
         process.stdout.write(out + '\n');
       } else {
-        execSync(`systemctl ${sub} orionomega`, { stdio: 'inherit' });
+        // Use sudo for service management — avoids polkit auth prompts.
+        // A passwordless sudoers rule should be in /etc/sudoers.d/orionomega.
+        execSync(`sudo systemctl ${sub} orionomega`, { stdio: 'inherit' });
         process.stdout.write(`${GREEN}✓${RESET} Gateway ${sub}ed via systemd\n`);
       }
     } catch (err: unknown) {
