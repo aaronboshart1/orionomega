@@ -991,7 +991,7 @@ export class MainAgent {
 
     const {
       status, durationSec, workerCount, findings, errors,
-      taskSummary, outputPaths, decisions,
+      taskSummary, outputPaths, decisions, nodeOutputs,
     } = result;
 
     const lines: string[] = [];
@@ -1004,16 +1004,27 @@ export class MainAgent {
       lines.push('🛑 Workflow stopped.');
     }
 
-    // Task summary
-    if (taskSummary) {
+    // Primary answer: use the exit node output (the actual result the user wants)
+    const nodeOutputEntries = nodeOutputs ? Object.entries(nodeOutputs) : [];
+    if (nodeOutputEntries.length > 0) {
+      // The last node output is typically the synthesis/verification step
+      const [, lastOutput] = nodeOutputEntries[nodeOutputEntries.length - 1];
+      const maxLen = 4000;
+      const trimmed = lastOutput.length > maxLen
+        ? lastOutput.slice(0, maxLen) + '\n\n... [truncated]'
+        : lastOutput;
+      lines.push('');
+      lines.push(trimmed);
+    } else if (taskSummary) {
+      // Fallback: show task summary if no node outputs available
       lines.push('');
       lines.push(taskSummary);
     }
 
-    // Key findings
+    // Key findings (from worker events)
     if (findings.length > 0) {
       lines.push('');
-      lines.push('Key findings:');
+      lines.push('**Key findings:**');
       for (const f of findings.slice(0, 8)) {
         lines.push(`  • ${f}`);
       }
@@ -1022,7 +1033,7 @@ export class MainAgent {
     // Key decisions
     if (decisions.length > 0) {
       lines.push('');
-      lines.push('Decisions:');
+      lines.push('**Decisions:**');
       for (const d of decisions.slice(0, 5)) {
         lines.push(`  • ${d}`);
       }
@@ -1031,7 +1042,7 @@ export class MainAgent {
     // Output files — read contents and include them
     if (outputPaths.length > 0) {
       lines.push('');
-      lines.push('Output files:');
+      lines.push('**Output files:**');
       for (const p of outputPaths) {
         lines.push(`  📄 ${p}`);
         try {
@@ -1055,7 +1066,7 @@ export class MainAgent {
     // Errors
     if (errors.length > 0) {
       lines.push('');
-      lines.push('Errors:');
+      lines.push('**Errors:**');
       for (const e of errors.slice(0, 5)) {
         lines.push(`  ❌ ${e.worker}: ${e.message}`);
       }

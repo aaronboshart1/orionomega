@@ -537,6 +537,14 @@ export class GraphExecutor {
     terminalStatus: 'complete' | 'error' | 'stopped',
     startTime: number,
   ): ExecutionResult {
+    // Collect text outputs from all completed nodes
+    const nodeOutputs: Record<string, string> = {};
+    for (const [nodeId, result] of this.nodeResults) {
+      if (result.output && typeof result.output === "string") {
+        nodeOutputs[nodeId] = result.output;
+      }
+    }
+
     return {
       workflowId: this.graph.id,
       status: terminalStatus,
@@ -548,6 +556,7 @@ export class GraphExecutor {
       decisions: this.decisions,
       findings: this.findings,
       errors: this.errors,
+      nodeOutputs,
     };
   }
 }

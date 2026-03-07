@@ -209,6 +209,8 @@ export interface ExecutionResult {
   findings: string[];
   /** Errors encountered. */
   errors: { worker: string; message: string; resolution?: string }[];
+  /** Output text from each completed node, keyed by node ID. */
+  nodeOutputs?: Record<string, string>;
   /** Infrastructure changes made (if any). */
   infraChanges?: string[];
 }
