@@ -47,6 +47,21 @@ const COMMANDS: Record<string, () => Promise<void>> = {
 };
 
 /**
+ * Print version from package.json.
+ */
+async function printVersion(): Promise<void> {
+  try {
+    const { readFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const pkgPath = join(new URL('.', import.meta.url).pathname, '..', 'package.json');
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8')) as { version: string };
+    process.stdout.write(`OrionOmega v${pkg.version}\n`);
+  } catch {
+    process.stdout.write('OrionOmega v0.1.0\n');
+  }
+}
+
+/**
  * Main entry — parse argv and route to the appropriate command handler.
  */
 async function main(): Promise<void> {
@@ -55,6 +70,17 @@ async function main(): Promise<void> {
   // No args → show help
   if (!subcommand) {
     await COMMANDS.help();
+    return;
+  }
+
+  // Flags
+  if (subcommand === '--help' || subcommand === '-h') {
+    await COMMANDS.help();
+    return;
+  }
+
+  if (subcommand === '--version' || subcommand === '-v' || subcommand === 'version') {
+    await printVersion();
     return;
   }
 

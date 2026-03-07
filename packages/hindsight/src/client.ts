@@ -39,7 +39,7 @@ export class HindsightClient {
 
   /** Check API health and version. */
   async health(): Promise<HealthStatus> {
-    return this.request<HealthStatus>('GET', '/v1/health');
+    return this.request<HealthStatus>('GET', '/health');
   }
 
   // ── Banks ──────────────────────────────────────────────────────────

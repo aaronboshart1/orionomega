@@ -1,7 +1,39 @@
+# Dependencies
 node_modules/
+
+# Build output
 dist/
 .next/
 *.tsbuildinfo
+
+# Environment & secrets
 .env
 .env.local
+
+# Logs
 *.log
+
+# Research & working files (generated, not source)
+output/
+*.research.md
+hindsight_*.md
+hindsight_*.json
+transfer_*.md
+dragonfly_*.md
+redis_*.md
+redis-*.md
+keydb_*.md
+memcached_*.md
+valkey_*.md
+research_*.md
+research_*.txt
+research_*.py
+research_*.json
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/

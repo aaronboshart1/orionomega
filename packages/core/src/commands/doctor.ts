@@ -77,7 +77,7 @@ export async function runDoctor(): Promise<void> {
 
   // 3. Hindsight connectivity
   try {
-    const res = await fetch(`${config.hindsight.url}/v1/health`, {
+    const res = await fetch(`${config.hindsight.url}/health`, {
       signal: AbortSignal.timeout(3000),
     });
     if (res.ok) {
@@ -96,35 +96,58 @@ export async function runDoctor(): Promise<void> {
     bad('Anthropic API key', 'missing — run "orionomega setup"');
   }
 
-  // 5. Anthropic API reachable
+  // 5. Anthropic API reachable — dynamic model discovery
   if (config.models.apiKey) {
     try {
-      const res = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
+      // List available models (future-proof — no hardcoded model IDs)
+      const modelsRes = await fetch("https://api.anthropic.com/v1/models?limit=1", {
         headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': config.models.apiKey,
-          'anthropic-version': '2023-06-01',
+          "x-api-key": config.models.apiKey,
+          "anthropic-version": "2023-06-01",
         },
-        body: JSON.stringify({
-          model: 'claude-haiku-4-20250414',
-          max_tokens: 10,
-          messages: [{ role: 'user', content: 'ping' }],
-        }),
         signal: AbortSignal.timeout(10000),
       });
-      if (res.ok) {
-        ok('Anthropic API', 'reachable and key valid');
-      } else if (res.status === 401) {
-        bad('Anthropic API', 'invalid API key');
+  
+      if (modelsRes.status === 401) {
+        bad("Anthropic API", "invalid API key");
+      } else if (!modelsRes.ok) {
+        warn("Anthropic API", `models endpoint returned ${modelsRes.status}`);
       } else {
-        warn('Anthropic API', `returned ${res.status}`);
+        const modelsData = (await modelsRes.json()) as { data?: { id: string }[] };
+        const models = modelsData.data ?? [];
+  
+        if (models.length === 0) {
+          warn("Anthropic API", "key valid but no models available");
+        } else {
+          // Test inference with a real model from the account
+          const testModel = models[0].id;
+          const msgRes = await fetch("https://api.anthropic.com/v1/messages", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "x-api-key": config.models.apiKey,
+              "anthropic-version": "2023-06-01",
+            },
+            body: JSON.stringify({
+              model: testModel,
+              max_tokens: 1,
+              messages: [{ role: "user", content: "hi" }],
+            }),
+            signal: AbortSignal.timeout(10000),
+          });
+  
+          if (msgRes.ok) {
+            ok("Anthropic API", `key valid, tested ${testModel}`);
+          } else {
+            warn("Anthropic API", `key valid (listed models) but inference returned ${msgRes.status}`);
+          }
+        }
       }
     } catch {
-      warn('Anthropic API', 'network error');
+      warn("Anthropic API", "network error");
     }
   } else {
-    warn('Anthropic API', 'skipped — no key');
+    warn("Anthropic API", "skipped — no key");
   }
 
   // 6. Workspace exists and writable

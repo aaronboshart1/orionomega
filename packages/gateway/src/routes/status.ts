@@ -30,7 +30,7 @@ export async function handleStatus(
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 2000);
-    const resp = await fetch(`${hindsightUrl}/v1/health`, { signal: controller.signal });
+    const resp = await fetch(`${hindsightUrl}/health`, { signal: controller.signal });
     clearTimeout(timeout);
     hindsightConnected = resp.ok;
   } catch {

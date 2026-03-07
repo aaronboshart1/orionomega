@@ -9,7 +9,7 @@ INSTALL_DIR="/opt/orionomega"
 CONFIG_DIR="${ORIONOMEGA_HOME:-$HOME/.orionomega}"
 REPO_URL="https://github.com/aaronboshart1/orionomega.git"
 NODE_MIN=22
-GATEWAY_PORT=18790
+GATEWAY_PORT=7800
 
 # ── Colours ──────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'
@@ -163,14 +163,21 @@ fi
 [[ -n "${SUDO:-}" ]] && $SUDO chown -R "$(id -u):$(id -g)" "$INSTALL_DIR"
 git config --global --add safe.directory "$INSTALL_DIR" 2>/dev/null || true
 
+# Set git identity if not configured (needed for merge/pull operations)
+if ! git config --global user.email &>/dev/null; then
+    git config --global user.email "orionomega@localhost"
+    git config --global user.name "OrionOmega"
+fi
+
 cd "$INSTALL_DIR"
 
 info "Installing dependencies..."
-pnpm install 2>&1 | tail -3
+CI=true pnpm install --no-frozen-lockfile 2>&1 | tail -3
+pnpm approve-builds --all 2>/dev/null || true
 ok "Dependencies installed"
 
 info "Building packages (this may take a minute)..."
-if pnpm -r build 2>&1 | tee /tmp/orionomega-build.log | tail -5; then
+if CI=true pnpm -r build 2>&1 | tee /tmp/orionomega-build.log | tail -5; then
     ok "Build complete"
 else
     echo ""
@@ -335,19 +342,7 @@ else
     # Install Docker if missing
     if ! command -v docker &>/dev/null; then
         info "Installing Docker..."
-        if command -v apt-get &>/dev/null; then
-            $SUDO install -m 0755 -d /etc/apt/keyrings
-            curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
-            $SUDO chmod a+r /etc/apt/keyrings/docker.asc
-            echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable" | \
-                $SUDO tee /etc/apt/sources.list.d/docker.list >/dev/null
-            $SUDO apt-get update -qq 2>/dev/null
-            $SUDO apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-compose-plugin 2>/dev/null
-        elif command -v dnf &>/dev/null || command -v yum &>/dev/null; then
-            curl -fsSL https://get.docker.com | $SUDO sh 2>/dev/null
-        else
-            warn "Could not auto-install Docker. Install manually: https://docs.docker.com/engine/install/"
-        fi
+        curl -fsSL https://get.docker.com | $SUDO sh 2>/dev/null
         $SUDO systemctl enable --now docker 2>/dev/null || true
     fi
 
