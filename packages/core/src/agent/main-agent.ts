@@ -241,7 +241,9 @@ export class MainAgent {
   /** Handle a slash command. */
   async handleCommand(command: string): Promise<void> {
     try {
-      const cmd = command.trim().toLowerCase();
+      // Normalize: commands may arrive with or without the leading slash
+      const raw = command.trim().toLowerCase();
+      const cmd = raw.startsWith('/') ? raw : `/${raw}`;
 
       // Client-side commands that should never reach the server
       if (cmd === '/exit' || cmd === '/quit' || cmd === '/q') {
