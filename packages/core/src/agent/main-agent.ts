@@ -87,6 +87,7 @@ export class MainAgent {
 
   private readonly memory: MemoryBridge;
   private readonly orchestration: OrchestrationBridge;
+  private initPromise: Promise<void> | null = null;
 
   private history: HistoryEntry[] = [];
   private cachedSystemPrompt: string | null = null;
@@ -106,6 +107,7 @@ export class MainAgent {
 
     // We'll initialise orchestration in init() after skills are discovered
     this.orchestration = null!; // set in init()
+    this.initPromise = null;
 
     log.info('MainAgent initialised', { model: config.model });
   }
@@ -115,6 +117,11 @@ export class MainAgent {
    * Must be called before handling messages.
    */
   async init(): Promise<void> {
+    this.initPromise = this._init();
+    return this.initPromise;
+  }
+
+  private async _init(): Promise<void> {
     // 1. Initialise memory — get bootstrap context for system prompt
     const contextBlock = await this.memory.init();
     if (contextBlock) {
@@ -163,6 +170,11 @@ export class MainAgent {
    * Routes to: conversation, immediate execution, plan generation, or command.
    */
   async handleMessage(content: string): Promise<void> {
+    // Ensure init() has completed before processing any message
+    if (this.initPromise) {
+      await this.initPromise;
+    }
+
     if (!content?.trim()) {
       this.callbacks.onText('I didn\'t catch that. Could you say that again?', false, true);
       return;
@@ -241,6 +253,9 @@ export class MainAgent {
 
   /** Handle a slash command. */
   async handleCommand(command: string): Promise<void> {
+    // Ensure init() has completed
+    if (this.initPromise) await this.initPromise;
+
     try {
       // Normalize: commands may arrive with or without the leading slash
       const raw = command.trim().toLowerCase();
