@@ -151,7 +151,7 @@ function confirm(question: string, defaultYes: boolean = true): Promise<boolean>
 // ── Steps ───────────────────────────────────────────────────────
 
 async function stepApiKey(config: OrionOmegaConfig): Promise<void> {
-  heading('Step 1/5 — Anthropic API Key');
+  heading('Step 1/6 — Anthropic API Key');
 
   const key = await ask('Enter your Anthropic API key');
 
@@ -234,7 +234,7 @@ async function fetchAnthropicModels(apiKey: string): Promise<{ label: string; va
 }
 
 async function stepModel(config: OrionOmegaConfig): Promise<void> {
-  heading('Step 2/5 — Default Model');
+  heading('Step 2/6 — Default Model');
 
   // Always discover models from the API — no hardcoded fallback list
   let options: { label: string; value: string }[] = [];
@@ -287,7 +287,7 @@ async function stepModel(config: OrionOmegaConfig): Promise<void> {
 }
 
 async function stepGatewaySecurity(config: OrionOmegaConfig): Promise<void> {
-  heading('Step 3/5 — Gateway Security');
+  heading('Step 3/6 — Gateway Security');
 
   const mode = await choose('Authentication mode for the gateway:', [
     { label: 'API Key authentication', value: 'api-key' },
@@ -317,7 +317,7 @@ async function stepGatewaySecurity(config: OrionOmegaConfig): Promise<void> {
 }
 
 async function stepHindsight(config: OrionOmegaConfig): Promise<void> {
-  heading('Step 4/5 — Hindsight Memory');
+  heading('Step 4/6 — Hindsight Memory');
 
   const mode = await choose('Hindsight server:', [
     { label: `Local ${DIM}(localhost:8888)${RESET}`, value: 'local' },
@@ -361,7 +361,7 @@ async function stepHindsight(config: OrionOmegaConfig): Promise<void> {
 }
 
 async function stepWorkspace(config: OrionOmegaConfig): Promise<void> {
-  heading('Step 5/5 — Workspace');
+  heading('Step 5/6 — Workspace');
 
   const defaultPath = join(homedir(), '.orionomega', 'workspace');
   const wsPath = await ask('Workspace directory', { default: defaultPath });
@@ -445,6 +445,53 @@ Your personal cheat sheet for environment-specific details.
 
 // ── Main ────────────────────────────────────────────────────────
 
+async function stepAgentSdk(config: OrionOmegaConfig): Promise<void> {
+  heading('Step 6/6 — Claude Agent SDK (Coding Agents)');
+
+  println(`  The Claude Agent SDK powers coding tasks in workflows.`);
+  println(`  It uses the same Anthropic API key configured in Step 1.`);
+  println(`  When enabled, the orchestrator can spawn CODING_AGENT workers`);
+  println(`  with the full Claude Code toolset (Read, Write, Edit, Bash, etc.).`);
+  println();
+
+  const enable = await ask('Enable Claude Agent SDK?', { default: 'yes' });
+  const enabled = enable.toLowerCase().startsWith('y');
+  config.agentSdk.enabled = enabled;
+
+  if (!enabled) {
+    println(`  ${DIM}Agent SDK disabled. Coding tasks will use generic AGENT workers.${RESET}`);
+    return;
+  }
+
+  // Permission mode
+  const permOptions = [
+    { label: `Accept file edits automatically ${DIM}(recommended)${RESET}`, value: 'acceptEdits' },
+    { label: 'Bypass all permissions (caution!)', value: 'bypassPermissions' },
+    { label: 'Require approval for each tool', value: 'default' },
+  ];
+  config.agentSdk.permissionMode = (await choose(
+    'Permission mode for coding agents:', permOptions,
+  )) as OrionOmegaConfig['agentSdk']['permissionMode'];
+
+  // Effort level
+  const effortOptions = [
+    { label: `High ${DIM}(recommended — good balance of thoroughness and speed)${RESET}`, value: 'high' },
+    { label: 'Max (deepest reasoning, slowest)', value: 'max' },
+    { label: 'Medium (faster, less thorough)', value: 'medium' },
+    { label: 'Low (fastest, minimal reasoning)', value: 'low' },
+  ];
+  config.agentSdk.effort = (await choose(
+    'Effort level:', effortOptions,
+  )) as OrionOmegaConfig['agentSdk']['effort'];
+
+  // Max budget
+  const budget = await ask('Max budget per coding task (USD, 0 for unlimited)', { default: '0' });
+  const budgetNum = parseFloat(budget);
+  if (budgetNum > 0) config.agentSdk.maxBudgetUsd = budgetNum;
+
+  success(`Agent SDK configured: ${config.agentSdk.permissionMode}, effort=${config.agentSdk.effort}`);
+}
+
 /**
  * Run the interactive setup wizard.
  */
@@ -464,6 +511,7 @@ export async function runSetup(): Promise<void> {
     await stepGatewaySecurity(config);
     await stepHindsight(config);
     await stepWorkspace(config);
+    await stepAgentSdk(config);
 
     // Also ensure skills & logs directories exist
     if (!existsSync(config.skills.directory)) {

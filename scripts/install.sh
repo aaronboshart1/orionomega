@@ -242,13 +242,9 @@ hindsight:
 models:
   provider: 'anthropic'
   apiKey: ''
-  default: 'claude-sonnet-4-20250514'
-  planner: 'claude-sonnet-4-20250514'
-  workers:
-    code: 'claude-sonnet-4-20250514'
-    research: 'claude-haiku-4-20250514'
-    analysis: 'claude-haiku-4-20250514'
-    writing: 'claude-sonnet-4-20250514'
+  default: ''
+  planner: ''
+  workers: {}
 
 orchestration:
   maxSpawnDepth: 2
@@ -278,6 +274,12 @@ logging:
 skills:
   directory: '${CONFIG_DIR}/skills'
   autoLoad: true
+
+agentSdk:
+  enabled: true
+  permissionMode: 'acceptEdits'
+  effort: 'high'
+  maxTurns: 50
 YAML
     ok "Config written to $CONFIG_DIR/config.yaml"
 else

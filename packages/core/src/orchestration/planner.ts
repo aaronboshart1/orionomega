@@ -210,6 +210,28 @@ export class Planner {
                   .routes as Record<string, string>) ?? {},
               }
             : undefined,
+          codingAgent: n.codingAgent
+            ? (() => {
+                const ca = n.codingAgent as Record<string, unknown>;
+                return {
+                  task: String(ca.task ?? ''),
+                  model: ca.model ? String(ca.model) : undefined,
+                  cwd: ca.cwd ? String(ca.cwd) : undefined,
+                  additionalDirectories: Array.isArray(ca.additionalDirectories)
+                    ? (ca.additionalDirectories as string[])
+                    : undefined,
+                  systemPrompt: ca.systemPrompt ? String(ca.systemPrompt) : undefined,
+                  allowedTools: Array.isArray(ca.allowedTools)
+                    ? (ca.allowedTools as string[])
+                    : undefined,
+                  maxTurns: ca.maxTurns ? Number(ca.maxTurns) : undefined,
+                  maxBudgetUsd: ca.maxBudgetUsd ? Number(ca.maxBudgetUsd) : undefined,
+                  agents: ca.agents && typeof ca.agents === 'object'
+                    ? (ca.agents as Record<string, { description: string; prompt: string; tools?: string[] }>)
+                    : undefined,
+                };
+              })()
+            : undefined,
         }),
       );
 
@@ -275,14 +297,15 @@ Given a task description, you produce a WorkflowGraph JSON that orchestrates mul
 ## Rules
 1. **Maximise parallelism.** If two sub-tasks have no data dependency, they MUST be in the same layer (no dependsOn between them).
 2. **One deliverable per worker.** Each AGENT node should have a single, well-scoped task that produces one clear output.
-3. **Use TOOL nodes sparingly** — only for shell commands (e.g. exec). For file operations, writing documents, web searches, etc., use AGENT nodes — they have built-in tools: exec (shell), read (files), write (files), edit (files). Skills may also provide: web_search, web_fetch. AGENT nodes should handle almost all work.
-4. **Use ROUTER nodes for conditional logic.** When the next step depends on a previous result, use a ROUTER with condition and routes.
-5. **Model assignment:** Pick models from the available models list below. The list is fetched live from the API — only use models that appear in it.
-6. **Maximum ${this.config.maxWorkers ?? 8} concurrent workers** per layer.
-7. **Always include a JOIN node** when multiple paths converge to a single output.
-8. **Set reasonable timeouts** (in seconds) for each node based on expected duration.
-9. **Set retries** for nodes that might fail transiently (network calls, API requests).
-10. **Set fallbackNodeId** for critical nodes where an alternative approach exists.
+3. **Use TOOL nodes sparingly** — only for shell commands (e.g. exec). For file operations, writing documents, web searches, etc., use AGENT nodes — they have built-in tools: exec (shell), read (files), write (files), edit (files). Skills may also provide: web_search, web_fetch.
+4. **Use CODING_AGENT nodes for coding tasks.** When a task involves writing code, refactoring, debugging, building features, or any software engineering work, use CODING_AGENT instead of AGENT. CODING_AGENT nodes run via the Claude Agent SDK and have access to the full Claude Code toolset: Read, Write, Edit, Bash, Glob, Grep, WebSearch, WebFetch, and Task (subagents). They are significantly more capable at coding than generic AGENT nodes. CODING_AGENT nodes also support subagent definitions for complex multi-part coding tasks.
+5. **Use ROUTER nodes for conditional logic.** When the next step depends on a previous result, use a ROUTER with condition and routes.
+6. **Model assignment:** Pick models from the available models list below. The list is fetched live from the API — only use models that appear in it.
+7. **Maximum ${this.config.maxWorkers ?? 8} concurrent workers** per layer.
+8. **Always include a JOIN node** when multiple paths converge to a single output.
+9. **Set reasonable timeouts** (in seconds) for each node based on expected duration.
+10. **Set retries** for nodes that might fail transiently (network calls, API requests).
+11. **Set fallbackNodeId** for critical nodes where an alternative approach exists.
 
 ## Parallelism — CRITICAL
 The executor runs all nodes in the same layer concurrently. Nodes only wait for nodes listed in their dependsOn.
@@ -323,7 +346,7 @@ Respond with a JSON object matching this schema:
   "nodes": [
     {
       "id": "unique-id",
-      "type": "AGENT | TOOL | ROUTER | PARALLEL | JOIN",
+      "type": "AGENT | TOOL | ROUTER | PARALLEL | JOIN | CODING_AGENT",
       "label": "Human-readable label",
       "dependsOn": ["ids-of-prerequisite-nodes"],
       "timeout": 300,
@@ -333,7 +356,23 @@ Respond with a JSON object matching this schema:
         "model": "model-name",
         "task": "Detailed task description for this worker",
         "tools": ["tool-names"],
-        "skillIds": ["skill-ids"]
+        "skillIds": ["skill-ids"],
+        "tokenBudget": 200000
+      },
+      "codingAgent": {
+        "task": "Detailed coding task description",
+        "model": "model-name (optional, uses default)",
+        "cwd": "/path/to/project (optional)",
+        "systemPrompt": "Additional instructions to append to Claude Code prompt (optional)",
+        "allowedTools": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
+        "maxTurns": 30,
+        "agents": {
+          "subagent-name": {
+            "description": "What this subagent does",
+            "prompt": "System prompt for the subagent",
+            "tools": ["Read", "Edit", "Bash"]
+          }
+        }
       },
       "tool": {
         "name": "shell-command-to-execute (e.g. curl, grep, cat — NOT built-in tools like write/read)",
@@ -351,8 +390,9 @@ Respond with a JSON object matching this schema:
 }
 \`\`\`
 
-Only include the relevant config key (agent/tool/router) for each node type.
+Only include the relevant config key (agent/tool/router/codingAgent) for each node type.
 Every node must have: id, type, label, dependsOn (array, can be empty).
+For CODING_AGENT nodes, include the "codingAgent" key (not "agent"). CODING_AGENT nodes get the full Claude Code toolset and are the PREFERRED choice for any coding/engineering task.
 
 ## ${discoveredModels?.length ? buildModelGuide(discoveredModels, mainModel ?? this.config.model) : `Available models: Use "${mainModel ?? this.config.model}" for all workers.`}
 ${skillsList}${memoriesList}${filesList}${infraContext ? `\n\n## Known Context (from memory — DO NOT create discovery nodes for this)\n${infraContext}` : ''}

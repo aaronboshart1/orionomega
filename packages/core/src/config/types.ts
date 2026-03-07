@@ -93,4 +93,27 @@ export interface OrionOmegaConfig {
     /** Whether to auto-load skills on startup. */
     autoLoad: boolean;
   };
+
+  agentSdk: {
+    /** Whether the Claude Agent SDK is enabled. */
+    enabled: boolean;
+    /**
+     * Permission mode for the agent SDK.
+     * - 'acceptEdits': auto-approve file edits (recommended for orchestration)
+     * - 'bypassPermissions': skip all permission prompts (use with caution)
+     * - 'default': require approval for each tool
+     */
+    permissionMode: 'acceptEdits' | 'bypassPermissions' | 'default';
+    /**
+     * Effort level for the agent SDK.
+     * Controls how much effort Claude puts into responses (affects thinking depth).
+     */
+    effort: 'low' | 'medium' | 'high' | 'max';
+    /** Maximum budget in USD per coding agent invocation. */
+    maxBudgetUsd?: number;
+    /** Maximum agentic turns (tool-use round trips) per invocation. */
+    maxTurns?: number;
+    /** Additional directories the agent can access beyond the working directory. */
+    additionalDirectories?: string[];
+  };
 }

@@ -51,3 +51,6 @@ export { RecoveryManager } from './recovery.js';
 // Commands
 export type { OrchestratorCommandResult } from './commands.js';
 export { OrchestratorCommands } from './commands.js';
+
+export { executeCodingAgent } from "./agent-sdk-bridge.js";
+export type { CodingAgentResult, CodingAgentConfig } from "./agent-sdk-bridge.js";

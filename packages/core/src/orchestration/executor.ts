@@ -389,6 +389,71 @@ export class GraphExecutor {
         }
       }
 
+      case 'CODING_AGENT': {
+        // Route to Claude Agent SDK — full coding toolset
+        const { executeCodingAgent } = await import('./agent-sdk-bridge.js');
+
+        // Build upstream context for the coding agent
+        const codingContext: string[] = [];
+        if (node.dependsOn.length > 0) {
+          for (const depId of node.dependsOn) {
+            const depOutput = this.state.getNodeOutput(depId);
+            const depNode = this.graph.nodes.get(depId);
+            if (depOutput && typeof depOutput === 'string') {
+              codingContext.push(`### ${depNode?.label ?? depId}\n${depOutput}`);
+            }
+          }
+        }
+
+        // Inject upstream context into the task description
+        const codingTask = codingContext.length > 0
+          ? `${node.codingAgent?.task ?? node.agent?.task ?? ''}\n\n## Context from previous steps:\n${codingContext.join('\n\n')}`
+          : node.codingAgent?.task ?? node.agent?.task ?? '';
+
+        // Create output directory for the coding agent
+        const codingOutputDir = `${this.config.workspaceDir}/output/${this.graph.id}/${node.id}`;
+        const { mkdirSync: mkdirCoding } = await import('node:fs');
+        try { mkdirCoding(codingOutputDir, { recursive: true }); } catch { /* may exist */ }
+
+        // Override the task with context-enriched version
+        const codingNode: WorkflowNode = {
+          ...node,
+          codingAgent: {
+            ...node.codingAgent,
+            task: codingTask,
+            cwd: node.codingAgent?.cwd ?? codingOutputDir,
+          },
+        };
+
+        const startMs = Date.now();
+        const codingResult = await executeCodingAgent(
+          codingNode,
+          codingOutputDir,
+          (event) => {
+            const typeMap: Record<string, string> = {
+              'status': 'status', 'tool': 'tool_call', 'done': 'done', 'error': 'error',
+            };
+            this.eventBus.emit({
+              workerId: node.id,
+              nodeId: node.id,
+              timestamp: new Date().toISOString(),
+              type: (typeMap[event.type] ?? 'status') as WorkerEvent['type'],
+              message: event.message,
+              progress: event.progress ?? 0,
+            });
+          },
+        );
+
+        return {
+          nodeId: node.id,
+          output: codingResult.output,
+          durationMs: Date.now() - startMs,
+          toolCallCount: codingResult.toolCalls,
+          findings: [],
+          outputPaths: [],
+        };
+      }
+
       case 'ROUTER':
         return this.executeRouter(node);
 

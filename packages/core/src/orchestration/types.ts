@@ -5,7 +5,7 @@
  */
 
 /** The kind of node in a workflow graph. */
-export type NodeType = 'AGENT' | 'TOOL' | 'ROUTER' | 'PARALLEL' | 'JOIN';
+export type NodeType = 'AGENT' | 'TOOL' | 'ROUTER' | 'PARALLEL' | 'JOIN' | 'CODING_AGENT';
 
 /** Runtime status of a single workflow node. */
 export type NodeStatus =
@@ -25,6 +25,32 @@ export type WorkflowStatus =
   | 'complete'
   | 'error'
   | 'stopped';
+
+/**
+ * Configuration for a CODING_AGENT node.
+ * Executed via the Claude Agent SDK — gets the full Claude Code toolset
+ * (Read, Write, Edit, Bash, Glob, Grep, WebSearch, WebFetch, Task).
+ */
+export interface CodingAgentNodeConfig {
+  /** The task description for the coding agent. */
+  task: string;
+  /** Model to use (overrides default). */
+  model?: string;
+  /** Working directory for the agent. */
+  cwd?: string;
+  /** Additional directories the agent can access. */
+  additionalDirectories?: string[];
+  /** System prompt to append to Claude Code's default prompt. */
+  systemPrompt?: string;
+  /** Specific tools to allow (defaults to full coding toolset). */
+  allowedTools?: string[];
+  /** Maximum turns for this invocation. */
+  maxTurns?: number;
+  /** Maximum budget in USD. */
+  maxBudgetUsd?: number;
+  /** Subagent definitions for complex multi-part coding tasks. */
+  agents?: Record<string, { description: string; prompt: string; tools?: string[] }>;
+}
 
 /** Configuration for an agent-type node. */
 export interface AgentConfig {
@@ -76,6 +102,8 @@ export interface WorkflowNode {
   tool?: ToolConfig;
   /** Router configuration (when type is 'ROUTER'). */
   router?: RouterConfig;
+  /** Coding agent configuration (when type is 'CODING_AGENT'). Uses Claude Agent SDK. */
+  codingAgent?: CodingAgentNodeConfig;
   /** Execution timeout in seconds. */
   timeout?: number;
   /** Maximum retry attempts. */

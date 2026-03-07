@@ -73,6 +73,12 @@ export function getDefaultConfig(): OrionOmegaConfig {
       directory: join(homedir(), '.orionomega', 'skills'),
       autoLoad: true,
     },
+    agentSdk: {
+      enabled: true,
+      permissionMode: 'acceptEdits',
+      effort: 'high',
+      maxTurns: 50,
+    },
   };
 }
 
