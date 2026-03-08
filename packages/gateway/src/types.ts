@@ -30,7 +30,7 @@ export interface ClientMessage {
 /** Gateway → Client message envelope. */
 export interface ServerMessage {
   id: string;
-  type: 'text' | 'thinking' | 'plan' | 'event' | 'status' | 'command_result' | 'session_status' | 'error' | 'ack';
+  type: 'text' | 'thinking' | 'plan' | 'event' | 'status' | 'command_result' | 'session_status' | 'error' | 'ack' | 'history';
   content?: string;
   streaming?: boolean;
   done?: boolean;
@@ -42,6 +42,7 @@ export interface ServerMessage {
   commandResult?: CommandResult;
   sessionStatus?: { model: string; inputTokens: number; outputTokens: number; maxContextTokens: number };
   error?: string;
+  history?: Array<{ id: string; role: string; content: string; timestamp: string }>;
 }
 
 /** Aggregate system health status. */

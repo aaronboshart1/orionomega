@@ -22,7 +22,7 @@ export interface ClientMessage {
 /** Gateway → Client message envelope. */
 interface ServerMessage {
   id: string;
-  type: 'text' | 'thinking' | 'plan' | 'event' | 'status' | 'command_result' | 'session_status' | 'error' | 'ack';
+  type: 'text' | 'thinking' | 'plan' | 'event' | 'status' | 'command_result' | 'session_status' | 'error' | 'ack' | 'history';
   content?: string;
   streaming?: boolean;
   done?: boolean;
@@ -34,6 +34,7 @@ interface ServerMessage {
   commandResult?: { command: string; success: boolean; message: string };
   error?: string;
   sessionStatus?: { model: string; inputTokens: number; outputTokens: number; maxContextTokens: number };
+  history?: Array<{ id: string; role: string; content: string; timestamp: string }>;
 }
 
 /** A display-ready message. */
@@ -64,6 +65,7 @@ export interface GatewayClientEvents {
   graphState: [GraphState];
   event: [WorkerEvent];
   sessionStatus: [{ model: string; inputTokens: number; outputTokens: number; maxContextTokens: number }];
+  history: [Array<{ id: string; role: string; content: string; timestamp: string }>];
 }
 
 /**
@@ -80,6 +82,9 @@ export class GatewayClient extends EventEmitter<GatewayClientEvents> {
 
   connected = false;
 
+  /** Session ID persisted across TUI restarts. */
+  sessionId: string | null = null;
+
   constructor(
     private readonly url: string,
     private readonly token: string,
@@ -94,7 +99,14 @@ export class GatewayClient extends EventEmitter<GatewayClientEvents> {
     const doConnect = () => {
       if (this.disposed) return;
 
-      const ws = new WS(this.url, {
+      // Append session param if we have one from a previous connection
+      let wsUrl = this.url;
+      if (this.sessionId) {
+        const sep = wsUrl.includes('?') ? '&' : '?';
+        wsUrl = `${wsUrl}${sep}session=${this.sessionId}`;
+      }
+
+      const ws = new WS(wsUrl, {
         headers: this.token ? { Authorization: `Bearer ${this.token}` } : undefined,
       });
 
@@ -302,6 +314,22 @@ export class GatewayClient extends EventEmitter<GatewayClientEvents> {
         break;
 
       case 'ack':
+        // Capture session ID from connection ack
+        if (msg.content) {
+          try {
+            const ackData = JSON.parse(msg.content);
+            if (ackData.sessionId) {
+              this.sessionId = ackData.sessionId;
+            }
+          } catch {}
+        }
+        break;
+
+      case 'history':
+        // Replay message history on reconnect
+        if (msg.history && Array.isArray(msg.history)) {
+          this.emit('history', msg.history);
+        }
         break;
     }
   }

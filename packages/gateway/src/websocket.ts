@@ -147,6 +147,20 @@ export class WebSocketHandler {
       }),
     });
 
+    // Send message history if rejoining an existing session
+    if (session.messages.length > 0) {
+      this.send(ws, {
+        id: randomBytes(8).toString('hex'),
+        type: 'history' as any,
+        history: session.messages.map((m) => ({
+          id: m.id,
+          role: m.role,
+          content: m.content,
+          timestamp: m.timestamp,
+        })),
+      } as any);
+    }
+
     ws.on('message', (data) => {
       this.handleMessage(clientId, data);
     });

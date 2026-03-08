@@ -13,6 +13,9 @@ import {
   TUI,
   type SlashCommand,
 } from '@mariozechner/pi-tui';
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
 import { readConfig } from '@orionomega/core';
 import type { PlannerOutput, GraphState } from '@orionomega/core';
 
@@ -66,6 +69,23 @@ function defaultModel(): string {
   }
 }
 
+const SESSION_FILE = join(homedir(), '.orionomega', '.session');
+
+function loadSessionId(): string | null {
+  try {
+    return readFileSync(SESSION_FILE, 'utf-8').trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+function saveSessionId(id: string): void {
+  try {
+    mkdirSync(join(homedir(), '.orionomega'), { recursive: true });
+    writeFileSync(SESSION_FILE, id, 'utf-8');
+  } catch {}
+}
+
 /**
  * Launch the TUI.
  */
@@ -110,6 +130,7 @@ export async function start(): Promise<void> {
   // ── Gateway connection ────────────────────────────────────────
 
   const client = new GatewayClient(gatewayUrl, token);
+  client.sessionId = loadSessionId();
   let activePlanId: string | null = null;
   let workflowActive = false;
 
@@ -119,6 +140,27 @@ export async function start(): Promise<void> {
 
   client.on('connected', () => {
     statusBar.connected = true;
+    // Session ID is set from the ack message — save it once available
+    const saveCheck = setInterval(() => {
+      if (client.sessionId) {
+        saveSessionId(client.sessionId);
+        clearInterval(saveCheck);
+      }
+    }, 100);
+    // Clear after 5s in case ack never arrives
+    setTimeout(() => clearInterval(saveCheck), 5000);
+    tui.requestRender();
+  });
+
+  client.on('history', (messages) => {
+    for (const msg of messages) {
+      chatLog.addMessage({
+        id: msg.id,
+        role: msg.role as 'user' | 'assistant' | 'system',
+        content: msg.content,
+        timestamp: msg.timestamp,
+      });
+    }
     tui.requestRender();
   });
 
