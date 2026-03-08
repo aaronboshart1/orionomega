@@ -40,8 +40,31 @@ export class StatusBar extends Text {
   private _status: SessionStatus = {};
   private spinnerFrame = 0;
   private spinnerTimer: ReturnType<typeof setInterval> | null = null;
-  // Braille ring orbiting the Omega — one dot missing, rotates clockwise
-  private static readonly SPINNER = ['⣾Ω', '⣽Ω', '⣻Ω', '⢿Ω', '⡿Ω', '⣟Ω', '⣯Ω', '⣷Ω'];
+  // Braille pixel Ω — builds dot by dot, holds, dissolves
+  // Shape (6×4 grid → 3 braille chars):
+  //   .▪▪▪▪.    ⡪⣉⢕ = full omega
+  //   ▪....▪
+  //   .▪..▪.
+  //   ▪.▪▪.▪
+  private static readonly SPINNER = [
+    '⠀⠀⠀',  // empty
+    '⠀⠉⠀',  // top center appears
+    '⠈⠉⠁',  // full top arc
+    '⠊⠉⠑',  // + sides
+    '⠪⠉⠕',  // + narrowing
+    '⡪⠉⢕',  // + outer feet
+    '⡪⣉⢕',  // FULL Ω
+    '⡪⣉⢕',  // hold
+    '⡪⣉⢕',  // hold
+    '⡪⣉⢕',  // hold
+    '⡪⠉⢕',  // dissolve inner feet
+    '⠪⠉⠕',  // dissolve outer feet
+    '⠊⠉⠑',  // dissolve narrowing
+    '⠈⠉⠁',  // dissolve sides
+    '⠀⠉⠀',  // dissolve outer top
+    '⠀⠀⠀',  // empty
+    '⠀⠀⠀',  // hold empty
+  ];
 
   /** Called when the status bar updates itself (e.g. spinner tick). Wire to tui.requestRender(). */
   onUpdate?: () => void;
@@ -68,7 +91,7 @@ export class StatusBar extends Text {
         this.spinnerFrame = (this.spinnerFrame + 1) % StatusBar.SPINNER.length;
         this.updateDisplay();
         this.onUpdate?.();
-      }, 80);
+      }, 120);
     } else if (!value && this.spinnerTimer) {
       clearInterval(this.spinnerTimer);
       this.spinnerTimer = null;
