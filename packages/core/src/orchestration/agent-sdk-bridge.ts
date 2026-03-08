@@ -12,6 +12,14 @@
  */
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
+import type {
+  SDKAssistantMessage,
+  SDKResultSuccess,
+  SDKResultError,
+  SDKToolProgressMessage,
+  SDKTaskStartedMessage,
+  SDKTaskProgressMessage,
+} from '@anthropic-ai/claude-agent-sdk';
 import type { OrionOmegaConfig } from '../config/types.js';
 import { readConfig } from '../config/loader.js';
 import type { WorkflowNode } from './types.js';
@@ -82,6 +90,7 @@ export async function executeCodingAgent(
   node: WorkflowNode,
   workspaceDir: string,
   onProgress?: (event: { type: string; message: string; progress?: number }) => void,
+  abortSignal?: AbortSignal,
 ): Promise<CodingAgentResult> {
   const config = readConfig();
   const sdkConfig = config.agentSdk;
@@ -111,10 +120,15 @@ export async function executeCodingAgent(
 
   onProgress?.({ type: 'status', message: `Coding agent starting: ${task.slice(0, 60)}...`, progress: 0 });
 
+  // P2: AbortController for SDK cancellation
+  const abortController = new AbortController();
+  if (abortSignal) {
+    abortSignal.addEventListener('abort', () => abortController.abort());
+  }
+
   const startTime = Date.now();
   let output = '';
   let toolCalls = 0;
-  let lastToolName = '';
   let costUsd: number | undefined;
 
   try {
@@ -164,9 +178,15 @@ export async function executeCodingAgent(
         maxTurns,
         ...(maxBudgetUsd ? { maxBudgetUsd } : {}),
         systemPrompt,
+        // P4: Adaptive thinking — Claude decides when and how much to think
+        thinking: { type: 'adaptive' },
+        // P2: AbortController for cooperative cancellation
+        abortController,
         env: {
           ...process.env,
           ANTHROPIC_API_KEY: apiKey,
+          // P3: Identify this client to the SDK
+          CLAUDE_AGENT_SDK_CLIENT_APP: 'orionomega-orchestrator',
         },
         additionalDirectories: codingConfig.additionalDirectories ?? sdkConfig.additionalDirectories,
         ...(agents ? { agents } : {}),
@@ -176,35 +196,72 @@ export async function executeCodingAgent(
     });
 
     for await (const message of queryResult) {
-      // Assistant message — collect text and tool use
-      if (message.type === 'assistant' && message.message?.content) {
-        for (const block of message.message.content) {
-          if ('text' in block && typeof block.text === 'string') {
-            output += block.text + '\n';
-          }
-          if ('name' in block && typeof block.name === 'string') {
-            toolCalls++;
-            lastToolName = block.name;
+      // P3: Use message.type discriminator for proper typed handling
 
-            // Report progress
-            const pct = Math.min(90, Math.round((toolCalls / maxTurns) * 100));
-            onProgress?.({
-              type: 'tool',
-              message: `Tool: ${block.name}${('tool_input' in block && block.tool_input && typeof block.tool_input === 'object' && 'file_path' in block.tool_input) ? ` → ${(block.tool_input as Record<string, unknown>).file_path}` : ''}`,
-              progress: pct,
-            });
+      // Assistant message — collect text and tool use
+      if (message.type === 'assistant') {
+        const assistantMsg = message as SDKAssistantMessage;
+        if (assistantMsg.message?.content) {
+          for (const block of assistantMsg.message.content) {
+            if (block.type === 'text') {
+              output += block.text + '\n';
+            }
+            if (block.type === 'tool_use') {
+              toolCalls++;
+              const pct = Math.min(90, Math.round((toolCalls / maxTurns) * 100));
+              const filePath = block.input && typeof block.input === 'object' && 'file_path' in block.input
+                ? ` → ${(block.input as Record<string, unknown>).file_path}`
+                : '';
+              onProgress?.({
+                type: 'tool',
+                message: `Tool: ${block.name}${filePath}`,
+                progress: pct,
+              });
+            }
           }
         }
       }
 
-      // Result message — final output
-      if (message.type === 'result') {
-        const resultMsg = message as Record<string, unknown>;
-        if (resultMsg.result && typeof resultMsg.result === 'string') {
-          output += '\n' + resultMsg.result;
+      // Tool progress — richer subagent/tool progress reporting
+      if (message.type === 'tool_progress') {
+        const tpMsg = message as SDKToolProgressMessage;
+        onProgress?.({
+          type: 'tool',
+          message: `Tool running: ${tpMsg.tool_name} (${tpMsg.elapsed_time_seconds.toFixed(1)}s)`,
+        });
+      }
+
+      // System messages — subagent task lifecycle
+      if (message.type === 'system') {
+        const sysMsg = message as SDKTaskStartedMessage | SDKTaskProgressMessage;
+        if (sysMsg.subtype === 'task_started') {
+          onProgress?.({
+            type: 'status',
+            message: `Subagent started: ${(sysMsg as SDKTaskStartedMessage).description}`,
+          });
+        } else if (sysMsg.subtype === 'task_progress') {
+          const tp = sysMsg as SDKTaskProgressMessage;
+          onProgress?.({
+            type: 'status',
+            message: `Subagent progress: ${tp.description}${tp.last_tool_name ? ` (${tp.last_tool_name})` : ''}`,
+          });
         }
-        if (typeof resultMsg.total_cost_usd === 'number') {
-          costUsd = resultMsg.total_cost_usd;
+      }
+
+      // Result message — final output (success or error)
+      if (message.type === 'result') {
+        costUsd = (message as SDKResultSuccess | SDKResultError).total_cost_usd;
+
+        if ((message as SDKResultSuccess).subtype === 'success') {
+          const successMsg = message as SDKResultSuccess;
+          if (successMsg.result) {
+            output += '\n' + successMsg.result;
+          }
+        } else {
+          // Error result — log the errors
+          const errorMsg = message as SDKResultError;
+          const errSummary = errorMsg.errors?.join('; ') ?? errorMsg.subtype;
+          log.warn(`Coding agent result error: ${errSummary}`);
         }
 
         onProgress?.({
