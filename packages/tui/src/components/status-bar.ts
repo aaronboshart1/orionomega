@@ -12,7 +12,7 @@ const palette = {
   dim: '#5C6370',
   text: '#ABB2BF',
   accent: '#F6C453',
-  green: '#7DD3A5',
+  green: '#00DE6A',
   red: '#F97066',
   blue: '#61AFEF',
   purple: '#C678DD',

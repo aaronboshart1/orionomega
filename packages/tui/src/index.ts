@@ -119,13 +119,6 @@ export async function start(): Promise<void> {
 
   client.on('connected', () => {
     statusBar.connected = true;
-    chatLog.addMessage({
-      id: 'sys-connected',
-      role: 'system',
-      content: 'Connected to gateway',
-      timestamp: new Date().toISOString(),
-      emoji: '🟢',
-    });
     tui.requestRender();
   });
 
