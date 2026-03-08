@@ -40,7 +40,8 @@ export class StatusBar extends Text {
   private _status: SessionStatus = {};
   private spinnerFrame = 0;
   private spinnerTimer: ReturnType<typeof setInterval> | null = null;
-  private static readonly SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+  // Braille ring orbiting the Omega — one dot missing, rotates clockwise
+  private static readonly SPINNER = ['⣾Ω', '⣽Ω', '⣻Ω', '⢿Ω', '⡿Ω', '⣟Ω', '⣯Ω', '⣷Ω'];
 
   /** Called when the status bar updates itself (e.g. spinner tick). Wire to tui.requestRender(). */
   onUpdate?: () => void;
@@ -97,7 +98,7 @@ export class StatusBar extends Text {
 
     // Thinking indicator
     if (this._thinking) {
-      parts.push(chalk.hex(palette.accent)(StatusBar.SPINNER[this.spinnerFrame]) + chalk.hex(palette.accent)(' thinking'));
+      parts.push(chalk.hex(palette.accent)(StatusBar.SPINNER[this.spinnerFrame]));
     }
 
     // Model
