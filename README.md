@@ -25,7 +25,7 @@ The system ships with [Hindsight](https://github.com/aaronboshart1/hindsight) in
 - 🧠 **Graph-based orchestration** — DAG decomposition with topological sorting and parallel execution
 - 📋 **Plan-first UX** — always shows you the plan (worker count, estimated cost, time, reasoning) before executing
 - 💾 **Hindsight memory** — remembers across sessions via a temporal knowledge graph with banks and mental models
-- 🖥️ **Dual interface** — TUI (Ink/React for CLI) and Web UI (Next.js dashboard with ReactFlow)
+- 🖥️ **Dual interface** — TUI (pi-tui, differential rendering) and Web UI (Next.js dashboard with ReactFlow)
 - 🔍 **Full transparency** — see every tool call, thinking trace, finding, and event in real-time
 - 🔌 **Skills system** — extend capabilities with custom skill packages (manifest + docs + handlers)
 - 🤖 **Anthropic-native** — built for Claude models (Haiku, Sonnet, Opus) with native fetch
@@ -205,7 +205,7 @@ See [`docs/skills-guide.md`](docs/skills-guide.md) for the full authoring guide.
 | Orchestration | Custom DAG engine (Kahn topological sort) |
 | AI | Anthropic Claude (native `fetch`, no SDK) |
 | Memory | Hindsight temporal knowledge graph |
-| TUI | Ink (React for CLI) |
+| TUI | pi-tui (differential rendering, React-like API) |
 | Web UI | Next.js 15, ReactFlow, Zustand, Tailwind CSS |
 | Gateway | Native Node.js HTTP server + `ws` WebSocket library |
 | Build | npm workspaces, tsx |
@@ -218,7 +218,7 @@ orionomega/
 │   ├── core/           # Config, orchestration engine, Anthropic client, memory, agent, CLI
 │   ├── gateway/        # WebSocket + REST server for client connections
 │   ├── hindsight/      # Hindsight temporal knowledge graph client library
-│   ├── tui/            # Terminal UI built with Ink (React for CLI)
+│   ├── tui/            # Terminal UI built with pi-tui (differential rendering)
 │   ├── web/            # Next.js dashboard with ReactFlow DAG visualization
 │   └── skills-sdk/     # Skill manifest, loader, validator, executor, and scaffolding
 ├── scripts/
