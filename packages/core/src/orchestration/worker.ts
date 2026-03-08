@@ -500,7 +500,7 @@ ${agentConfig.task}
 2. Use the available tools (exec, read, write, edit) and any skill tools as needed.
 3. Be efficient — avoid unnecessary tool calls.
 4. If you encounter an error, try to recover or work around it.
-5. When done, provide a clear summary of what you accomplished and any notable findings.
+5. **CRITICAL: Your final text response IS the deliverable.** When you are done, your last message must contain the FULL substantive output — the complete analysis, report, findings, code, or answer. Do NOT just say "I've completed the task" or "Here's a summary" — include the actual content. This text is what gets delivered to the user. If you also wrote files, still include the key content in your final response.
 
 ## Working Directory
 All relative paths are resolved against the workspace directory.

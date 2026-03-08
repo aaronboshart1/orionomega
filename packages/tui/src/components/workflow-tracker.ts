@@ -1,10 +1,9 @@
 /**
  * @module components/workflow-tracker
  * Displays workflow progress with tree-style layout.
- * Each task shows status icon + name + model, with an L-shaped bar
- * showing streaming activity indented below.
+ * Rendered as a single Text block to ensure correct line ordering:
  *
- *   ⚡ Review OrionOmega SDK · 45s · ✅ 3/8 · 🔄 2 running · layer 2/3
+ *   ⚡ Review SDK · 45s · ✅ 3/8 · 🔄 2 · layer 2/3
  *   ✅ Discover Repo Structure [Haiku 4.5]
  *      └─ Explored 47 files, found 6 packages
  *   🔄 SDK Architecture Review [Opus 4.6]
@@ -40,18 +39,21 @@ interface TrackedNode {
 }
 
 /**
- * Visual workflow tracker with tree-style activity lines.
+ * Visual workflow tracker — renders as a single Text element so
+ * node lines and their activity └─ lines stay correctly interleaved.
  */
 export class WorkflowTracker extends Container {
+  private display: Text;
   private trackedNodes = new Map<string, TrackedNode>();
   private workflowName = '';
   private startTime = Date.now();
   private totalLayers = 0;
   private completedLayers = 0;
-  private renderedLines = new Map<string, Text>(); // keyed by purpose: "header", "node:{id}", "activity:{id}"
 
   constructor() {
     super();
+    this.display = new Text('', 1, 0);
+    this.addChild(this.display);
   }
 
   /** Initialize tracker with a new workflow's graph state. */
@@ -60,12 +62,6 @@ export class WorkflowTracker extends Container {
     this.totalLayers = state.totalLayers;
     this.completedLayers = state.completedLayers;
     this.startTime = Date.now();
-
-    // Clear everything
-    for (const text of this.renderedLines.values()) {
-      this.removeChild(text);
-    }
-    this.renderedLines.clear();
     this.trackedNodes.clear();
 
     const nodes = state.nodes ?? {};
@@ -145,7 +141,9 @@ export class WorkflowTracker extends Container {
     const pur = chalk.hex(palette.purple);
     const tree = chalk.hex(palette.tree);
 
-    // Header line
+    const lines: string[] = [];
+
+    // Header
     const elapsed = Math.round((Date.now() - this.startTime) / 1000);
     const vals = Array.from(this.trackedNodes.values());
     const done = vals.filter(n => n.status === 'complete').length;
@@ -162,65 +160,36 @@ export class WorkflowTracker extends Container {
     if (failed > 0) parts.push(red(`❌ ${failed}`));
     parts.push(dim(`layer ${this.completedLayers}/${this.totalLayers}`));
 
-    this.setLine('header', '  ' + parts.join(dim(' · ')));
+    lines.push('  ' + parts.join(dim(' · ')));
 
-    // Nodes sorted by layer then id
+    // Nodes sorted by layer then id — with activity lines interleaved
     const sorted = vals.sort((a, b) =>
       a.layer !== b.layer ? a.layer - b.layer : a.id.localeCompare(b.id),
     );
 
-    let prevLayer = -1;
     for (const node of sorted) {
-      // Layer separator
-      if (node.layer !== prevLayer) {
-        prevLayer = node.layer;
-      }
-
-      // Node line: icon + name + model
+      // Node line
       const icon = this.statusIcon(node.status);
       const nameColor = node.status === 'complete' ? grn
         : node.status === 'error' ? red
         : node.status === 'running' ? blu
         : dim;
       const model = node.model ? pur(` [${node.model}]`) : '';
-      this.setLine(`node:${node.id}`, `    ${icon} ${nameColor(node.label)}${model}`);
+      lines.push(`    ${icon} ${nameColor(node.label)}${model}`);
 
-      // Activity line: L-bar with message (only for running/complete/error with messages)
+      // Activity line immediately after its node
       if (node.lastMessage) {
         const msg = node.lastMessage.length > 60
           ? node.lastMessage.slice(0, 60) + '…'
           : node.lastMessage;
         const msgColor = node.status === 'error' ? red : dim;
-        this.setLine(`activity:${node.id}`, `       ${tree('└─')} ${msgColor(msg)}`);
+        lines.push(`       ${tree('└─')} ${msgColor(msg)}`);
       } else if (node.status === 'running') {
-        this.setLine(`activity:${node.id}`, `       ${tree('└─')} ${dim('starting...')}`);
-      } else {
-        // Remove activity line if no message and not running
-        this.removeLine(`activity:${node.id}`);
+        lines.push(`       ${tree('└─')} ${dim('starting...')}`);
       }
     }
-  }
 
-  /** Set or update a named line. */
-  private setLine(key: string, content: string): void {
-    const existing = this.renderedLines.get(key);
-    if (existing) {
-      existing.setText(content);
-    } else {
-      const text = new Text(content, 1, 0);
-      // Insert in order — header first, then nodes/activities in order
-      this.addChild(text);
-      this.renderedLines.set(key, text);
-    }
-  }
-
-  /** Remove a named line. */
-  private removeLine(key: string): void {
-    const existing = this.renderedLines.get(key);
-    if (existing) {
-      this.removeChild(existing);
-      this.renderedLines.delete(key);
-    }
+    this.display.setText(lines.join('\n'));
   }
 
   private statusIcon(status: string): string {
