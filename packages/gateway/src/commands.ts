@@ -81,7 +81,7 @@ export class CommandHandler {
       `Session: ${session.id}`,
       `Messages: ${session.messages.length}`,
       `Connected clients: ${session.clients.size}`,
-      `Active workflow: ${session.activeWorkflow ?? 'none'}`,
+      `Active workflows: ${session.activeWorkflows.size > 0 ? [...session.activeWorkflows].join(', ') : 'none'}`,
       `---`,
       `Total sessions: ${allSessions.length}`,
     ];
@@ -124,7 +124,7 @@ export class CommandHandler {
 
   private handleReset(session: Session): CommandResult {
     session.messages.length = 0;
-    session.activeWorkflow = undefined;
+    session.activeWorkflows.clear();
     session.updatedAt = new Date().toISOString();
 
     return {

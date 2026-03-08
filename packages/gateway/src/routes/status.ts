@@ -38,16 +38,16 @@ export async function handleStatus(
   }
 
   // Collect workflow summaries from active sessions
-  const activeWorkflows = sessions
-    .filter((s) => s.activeWorkflow)
-    .map((s) => ({
-      id: s.activeWorkflow!,
-      name: s.activeWorkflow!,
+  const activeWorkflows = sessions.flatMap((s) =>
+    [...s.activeWorkflows].map((wfId) => ({
+      id: wfId,
+      name: wfId,
       status: 'running',
       progress: 0,
       workerCount: 0,
       startedAt: s.updatedAt,
-    }));
+    })),
+  );
 
   const status: SystemStatus = {
     activeWorkflows,

@@ -53,17 +53,19 @@ export class WorkerProcess {
   private lastEvent: WorkerEvent | undefined;
   private readonly events: WorkerEvent[] = [];
   private readonly context: string | undefined;
+  private readonly workflowId: string | undefined;
 
   constructor(
     node: WorkflowNode,
     eventBus: EventBus,
-    options: { workspaceDir: string; timeout: number; context?: string },
+    options: { workspaceDir: string; timeout: number; context?: string; workflowId?: string },
   ) {
     this.node = node;
     this.eventBus = eventBus;
     this.workspaceDir = options.workspaceDir;
     this.timeout = options.timeout;
     this.context = options.context;
+    this.workflowId = options.workflowId;
   }
 
   /**
@@ -142,6 +144,7 @@ export class WorkerProcess {
     partial: Omit<WorkerEvent, 'workerId' | 'nodeId' | 'timestamp'>,
   ): void {
     const event: WorkerEvent = {
+      workflowId: this.workflowId,
       workerId: this.node.id,
       nodeId: this.node.id,
       timestamp: new Date().toISOString(),

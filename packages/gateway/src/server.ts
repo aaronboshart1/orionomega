@@ -168,6 +168,7 @@ async function initMainAgent(): Promise<void> {
       wsHandler.broadcast({
         id: randomBytes(8).toString('hex'),
         type: 'event',
+        workflowId: (event as { workflowId?: string }).workflowId,
         event,
       });
     },
@@ -175,6 +176,7 @@ async function initMainAgent(): Promise<void> {
       wsHandler.broadcast({
         id: randomBytes(8).toString('hex'),
         type: 'status',
+        workflowId: state.workflowId,
         graphState: state,
       });
     },

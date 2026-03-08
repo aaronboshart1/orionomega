@@ -21,7 +21,8 @@ export interface Session {
   createdAt: string;
   updatedAt: string;
   messages: Message[];
-  activeWorkflow?: string;
+  /** IDs of all currently active workflows for this session. */
+  activeWorkflows: Set<string>;
   hindsightBank?: string;
   clients: Set<string>;
 }
@@ -45,6 +46,7 @@ export class SessionManager {
       createdAt: now,
       updatedAt: now,
       messages: [],
+      activeWorkflows: new Set(),
       clients: new Set(),
     };
     this.sessions.set(id, session);
@@ -105,14 +107,26 @@ export class SessionManager {
   }
 
   /**
-   * Associate an active workflow with a session.
+   * Register a workflow as active for a session.
    * @param sessionId - Target session ID.
    * @param workflowId - The workflow identifier.
    */
-  setActiveWorkflow(sessionId: string, workflowId: string): void {
+  addActiveWorkflow(sessionId: string, workflowId: string): void {
     const session = this.sessions.get(sessionId);
     if (!session) return;
-    session.activeWorkflow = workflowId;
+    session.activeWorkflows.add(workflowId);
+    session.updatedAt = new Date().toISOString();
+  }
+
+  /**
+   * Remove a workflow from a session's active set (e.g. on completion).
+   * @param sessionId - Target session ID.
+   * @param workflowId - The workflow identifier.
+   */
+  removeActiveWorkflow(sessionId: string, workflowId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    session.activeWorkflows.delete(workflowId);
     session.updatedAt = new Date().toISOString();
   }
 
@@ -135,7 +149,7 @@ export class SessionManager {
       createdAt: session.createdAt,
       updatedAt: session.updatedAt,
       messages: session.messages,
-      activeWorkflow: session.activeWorkflow ?? null,
+      activeWorkflows: [...session.activeWorkflows],
       hindsightBank: session.hindsightBank ?? null,
       clientCount: session.clients.size,
     };

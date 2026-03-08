@@ -229,9 +229,9 @@ export class MainAgent {
       }
 
       // 3. Pending plan + "do it"
-      if (this.orchestration.hasPendingPlan && this.orchestration.pendingId && isImmediateExecution(trimmed)) {
+      if (this.orchestration.hasPendingPlans && this.orchestration.latestPendingPlanId && isImmediateExecution(trimmed)) {
         await this.orchestration.handlePlanResponse(
-          this.orchestration.pendingId, 'approve',
+          this.orchestration.latestPendingPlanId, 'approve',
           (e) => this.pushHistory(e as HistoryEntry),
         );
         return;
@@ -302,16 +302,17 @@ export class MainAgent {
           command: '/help', success: true,
           message: [
             'Available commands:',
-            '  /status  — Current workflow status',
-            '  /stop    — Stop the active workflow',
-            '  /pause   — Pause before next layer',
-            '  /resume  — Resume a paused workflow',
-            '  /plan    — Show the current plan',
-            '  /workers — List active workers',
-            '  /reset   — Clear pending plans and history',
-            '  /restart — Restart the gateway service',
-            '  /skills  — View, enable/disable, configure skills',
-            '  /help    — This message',
+            '  /workflows — List all active workflows',
+            '  /status    — Current workflow status',
+            '  /stop      — Stop the active workflow',
+            '  /pause     — Pause before next layer',
+            '  /resume    — Resume a paused workflow',
+            '  /plan      — Show the current plan',
+            '  /workers   — List active workers',
+            '  /reset     — Clear pending plans and history',
+            '  /restart   — Restart the gateway service',
+            '  /skills    — View, enable/disable, configure skills',
+            '  /help      — This message',
           ].join('\n'),
         });
         return;
@@ -339,8 +340,8 @@ export class MainAgent {
       }
 
       if (cmd === '/reset') {
-        this.orchestration.clearPendingPlan();
-        this.orchestration.stop();
+        this.orchestration.clearPendingPlans();
+        this.orchestration.stopAll();
         this.context.clear();
         this.cachedSystemPrompt = null;
         this.callbacks.onCommandResult({
@@ -510,7 +511,7 @@ export class MainAgent {
     }
     const context: PromptContext = {
       workspaceDir: this.config.workspaceDir,
-      activeWorkflow: this.orchestration.executor !== null,
+      activeWorkflow: this.orchestration.hasActiveWorkflow,
     };
     this.cachedSystemPrompt = await buildSystemPrompt(context);
     return this.cachedSystemPrompt;

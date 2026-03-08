@@ -434,6 +434,7 @@ export class GraphExecutor {
           workspaceDir: workerOutputDir,
           timeout: node.timeout ?? this.config.workerTimeout,
           context: injectedContext,
+          workflowId: this.graph.id,
         });
         this.activeWorkers.set(node.id, worker);
 
@@ -490,6 +491,7 @@ export class GraphExecutor {
               'status': 'status', 'tool': 'tool_call', 'done': 'done', 'error': 'error',
             };
             this.eventBus.emit({
+              workflowId: this.graph.id,
               workerId: node.id,
               nodeId: node.id,
               timestamp: new Date().toISOString(),
@@ -825,13 +827,14 @@ export class GraphExecutor {
     return this.pausePromise;
   }
 
-  /** Emits an event on the 'orchestrator' channel. */
+  /** Emits an event on the 'orchestrator' channel, tagged with this workflow's ID. */
   private emitOrchestrator(
     type: WorkerEvent['type'],
     message: string,
     data?: unknown,
   ): void {
     this.eventBus.emit({
+      workflowId: this.graph.id,
       workerId: 'orchestrator',
       nodeId: 'orchestrator',
       timestamp: new Date().toISOString(),

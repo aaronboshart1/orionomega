@@ -3,7 +3,8 @@
  * Bridges the main agent to the orchestration engine (Planner → Executor).
  *
  * Handles plan generation, execution, worker event relay, and completion processing.
- * Separated from main-agent.ts so orchestration concerns are isolated.
+ * Supports concurrent workflows — multiple plans can be pending and multiple
+ * executors can run simultaneously without interfering with one another.
  */
 
 import { Planner } from '../orchestration/planner.js';
@@ -33,10 +34,31 @@ export interface OrchestrationConfig {
   maxRetries: number;
 }
 
+/** An active, running workflow. */
+interface ActiveWorkflow {
+  id: string;
+  name: string;
+  executor: GraphExecutor;
+  /** Unsubscribes the event listener for this workflow. */
+  eventUnsubscribe: () => void;
+  /** Periodic state snapshot timer. */
+  stateSnapshotTimer: ReturnType<typeof setInterval>;
+  startedAt: string;
+  task: string;
+}
+
+/** A plan that has been generated and is awaiting user approval. */
+interface PendingPlan {
+  id: string;
+  plan: PlannerOutput;
+  task: string;
+  createdAt: string;
+}
+
 /**
  * Manages the lifecycle of workflow planning and execution.
  *
- * Owns: planner, executor, pending plan state, event subscriptions.
+ * Owns: planner, executor map, pending plan map, event subscriptions.
  * Delegates: memory recall to MemoryBridge, UI updates to callbacks.
  */
 export class OrchestrationBridge {
@@ -44,15 +66,11 @@ export class OrchestrationBridge {
   readonly eventBus: EventBus;
   readonly commands: OrchestratorCommands;
 
-  /** The plan currently awaiting user approval. */
-  private pendingPlan: PlannerOutput | null = null;
-  private pendingPlanId: string | null = null;
-  private pendingPlanTask: string | null = null;
+  /** Plans currently awaiting user approval, keyed by plan (graph) ID. */
+  private readonly pendingPlans = new Map<string, PendingPlan>();
 
-  /** The currently running executor. */
-  private activeExecutor: GraphExecutor | null = null;
-  private eventUnsubscribe: (() => void) | null = null;
-  private stateSnapshotTimer: ReturnType<typeof setInterval> | null = null;
+  /** Currently running executors, keyed by workflow ID. */
+  private readonly activeWorkflows = new Map<string, ActiveWorkflow>();
 
   constructor(
     private readonly config: OrchestrationConfig,
@@ -63,17 +81,30 @@ export class OrchestrationBridge {
   ) {
     this.planner = new Planner({ model });
     this.eventBus = new EventBus();
-    this.commands = new OrchestratorCommands(null);
+    this.commands = new OrchestratorCommands();
   }
 
-  /** Whether there is a pending plan awaiting approval. */
-  get hasPendingPlan(): boolean { return this.pendingPlan !== null; }
+  // ── Public getters ──────────────────────────────────────────────
 
-  /** ID of the pending plan. */
-  get pendingId(): string | null { return this.pendingPlanId; }
+  /** Whether there is at least one plan awaiting user approval. */
+  get hasPendingPlans(): boolean { return this.pendingPlans.size > 0; }
 
-  /** The active executor (if a workflow is running). */
-  get executor(): GraphExecutor | null { return this.activeExecutor; }
+  /**
+   * ID of the most recently added pending plan, or null.
+   * Used for single-plan approval flows (backward-compat).
+   */
+  get latestPendingPlanId(): string | null {
+    if (this.pendingPlans.size === 0) return null;
+    return [...this.pendingPlans.keys()].pop()!;
+  }
+
+  /** Whether any workflow is currently running. */
+  get hasActiveWorkflow(): boolean { return this.activeWorkflows.size > 0; }
+
+  /** Number of currently running workflows. */
+  get workflowCount(): number { return this.activeWorkflows.size; }
+
+  // ── Plan generation ─────────────────────────────────────────────
 
   /**
    * Generate a plan and present it to the user (without executing).
@@ -91,9 +122,12 @@ export class OrchestrationBridge {
         ...(this.availableSkills.length ? { availableSkills: this.availableSkills } : {}),
       });
 
-      this.pendingPlan = plan;
-      this.pendingPlanId = plan.graph.id;
-      this.pendingPlanTask = task;
+      this.pendingPlans.set(plan.graph.id, {
+        id: plan.graph.id,
+        plan,
+        task,
+        createdAt: new Date().toISOString(),
+      });
 
       this.callbacks.onThinking('', true, true);
       this.callbacks.onPlan(plan);
@@ -101,12 +135,13 @@ export class OrchestrationBridge {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       log.error('Planning error', { error: msg });
+      this.callbacks.onThinking('', true, true);
       this.callbacks.onText(`Failed to generate a plan: ${msg}`, false, true);
     }
   }
 
   /**
-   * Generate a plan and immediately execute it.
+   * Generate a plan and immediately execute it (no approval step).
    */
   async planAndExecute(
     task: string,
@@ -131,8 +166,10 @@ export class OrchestrationBridge {
     }
   }
 
+  // ── Plan response handling ──────────────────────────────────────
+
   /**
-   * Handle a plan response (approve, modify, reject).
+   * Handle a plan response (approve, modify, reject) for a specific plan ID.
    */
   async handlePlanResponse(
     planId: string,
@@ -140,7 +177,8 @@ export class OrchestrationBridge {
     pushHistory: (entry: { role: string; content: string }) => void,
     modification?: string,
   ): Promise<void> {
-    if (!this.pendingPlan || this.pendingPlanId !== planId) {
+    const pending = this.pendingPlans.get(planId);
+    if (!pending) {
       this.callbacks.onText(
         'That plan is no longer available. It may have expired or been superseded.',
         false, true,
@@ -150,25 +188,24 @@ export class OrchestrationBridge {
 
     switch (action) {
       case 'approve':
-        if (this.memory.banks && this.pendingPlanTask) {
-          await this.memory.ensureProjectBank(this.pendingPlanTask);
+        if (this.memory.banks && pending.task) {
+          await this.memory.ensureProjectBank(pending.task);
         }
-        await this.executePlan(this.pendingPlan, pushHistory);
+        await this.executePlan(pending.plan, pushHistory);
         break;
 
       case 'modify': {
-        const originalTask = this.pendingPlanTask ?? '';
         const modifiedTask = modification
-          ? `${originalTask}\n\nModification: ${modification}`
-          : originalTask;
-        this.clearPendingPlan();
+          ? `${pending.task}\n\nModification: ${modification}`
+          : pending.task;
+        this.pendingPlans.delete(planId);
         this.callbacks.onText('Re-planning with your modifications…', true, true);
         await this.planOnly(modifiedTask, pushHistory);
         break;
       }
 
       case 'reject':
-        this.clearPendingPlan();
+        this.pendingPlans.delete(planId);
         this.callbacks.onText('Plan rejected. What would you like instead?', false, true);
         break;
 
@@ -180,14 +217,21 @@ export class OrchestrationBridge {
     }
   }
 
+  // ── Execution ───────────────────────────────────────────────────
+
   /**
-   * Execute a plan via the GraphExecutor.
+   * Execute an approved plan via the GraphExecutor.
+   * Registers the workflow in both the active map and the commands registry.
    */
   private async executePlan(
     plan: PlannerOutput,
     pushHistory: (entry: { role: string; content: string }) => void,
   ): Promise<void> {
-    this.clearPendingPlan();
+    const workflowId = plan.graph.id;
+    const workflowName = plan.graph.name;
+
+    // Remove from pending (it's now moving to execution)
+    this.pendingPlans.delete(workflowId);
 
     const executorConfig: ExecutorConfig = {
       workspaceDir: this.config.workspaceDir,
@@ -198,49 +242,69 @@ export class OrchestrationBridge {
     };
 
     const executor = new GraphExecutor(plan.graph, this.eventBus, executorConfig);
-    this.activeExecutor = executor;
-    this.commands.setExecutor(executor);
 
-    this.eventUnsubscribe = this.eventBus.subscribe('*', (event) => {
-      this.handleWorkerEvent(event);
+    // Subscribe to '*' and filter to only this workflow's events
+    const eventUnsub = this.eventBus.subscribe('*', (event) => {
+      if (event.workflowId === workflowId) {
+        this.handleWorkerEvent(event, workflowId);
+      }
     });
 
-    this.stateSnapshotTimer = setInterval(() => {
-      if (this.activeExecutor) {
-        this.callbacks.onGraphState(this.activeExecutor.getState());
-      }
+    // Periodic state snapshot for this workflow
+    const stateSnapshotTimer = setInterval(() => {
+      const wf = this.activeWorkflows.get(workflowId);
+      if (wf) this.callbacks.onGraphState(wf.executor.getState());
     }, 2_000);
+
+    const workflow: ActiveWorkflow = {
+      id: workflowId,
+      name: workflowName,
+      executor,
+      eventUnsubscribe: eventUnsub,
+      stateSnapshotTimer,
+      startedAt: new Date().toISOString(),
+      task: plan.summary,
+    };
+
+    this.activeWorkflows.set(workflowId, workflow);
+    this.commands.addWorkflow(workflowId, executor, workflowName);
 
     this.callbacks.onText('Workflow started. I\'ll keep you posted on progress.', false, true);
     pushHistory({ role: 'assistant', content: '[Workflow execution started]' });
 
     try {
       const result = await executor.execute();
-      await this.onExecutionComplete(result, pushHistory);
+      await this.onExecutionComplete(result, workflowId, pushHistory);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       log.error('Execution error', { error: msg });
       this.callbacks.onText(`Workflow failed: ${msg}`, false, true);
     } finally {
-      this.cleanupExecution();
+      this.cleanupWorkflow(workflowId);
     }
   }
 
-  /** Handle worker events during execution. */
-  private handleWorkerEvent(event: WorkerEvent): void {
+  // ── Event handling ──────────────────────────────────────────────
+
+  /** Relay a worker event to callbacks, also triggering a state snapshot. */
+  private handleWorkerEvent(event: WorkerEvent, workflowId: string): void {
     this.callbacks.onEvent(event);
     if (event.type === 'done' || event.type === 'error' || event.type === 'status') {
-      if (this.activeExecutor) {
-        this.callbacks.onGraphState(this.activeExecutor.getState());
-      }
+      const wf = this.activeWorkflows.get(workflowId);
+      if (wf) this.callbacks.onGraphState(wf.executor.getState());
     }
   }
 
-  /** Process workflow completion. */
+  // ── Completion ──────────────────────────────────────────────────
+
+  /** Process workflow completion, emit summary text. */
   private async onExecutionComplete(
     result: ExecutionResult,
+    workflowId: string,
     pushHistory: (entry: { role: string; content: string }) => void,
   ): Promise<void> {
+    const wf = this.activeWorkflows.get(workflowId);
+
     // Retain workflow outcome (fire-and-forget)
     if (this.memory.retention && this.memory.projectBank) {
       this.memory.retention.retainWorkflowOutcome({
@@ -311,28 +375,43 @@ export class OrchestrationBridge {
     this.callbacks.onText(summary, false, true);
     pushHistory({ role: 'assistant', content: `[Workflow result] ${summary}` });
 
-    if (this.activeExecutor) {
-      this.callbacks.onGraphState(this.activeExecutor.getState());
+    // Final state snapshot
+    if (wf) this.callbacks.onGraphState(wf.executor.getState());
+  }
+
+  // ── Lifecycle ───────────────────────────────────────────────────
+
+  /**
+   * Clean up resources for a single completed or stopped workflow.
+   * Does not affect sibling workflows.
+   */
+  private cleanupWorkflow(workflowId: string): void {
+    const wf = this.activeWorkflows.get(workflowId);
+    if (!wf) return;
+    wf.eventUnsubscribe();
+    clearInterval(wf.stateSnapshotTimer);
+    this.activeWorkflows.delete(workflowId);
+    this.commands.removeWorkflow(workflowId);
+  }
+
+  /** Clear all pending plans (e.g. on /reset). */
+  clearPendingPlans(): void {
+    this.pendingPlans.clear();
+  }
+
+  /**
+   * Stop a specific workflow by ID, or stop all if no ID given.
+   */
+  stop(workflowId?: string): void {
+    if (workflowId) {
+      this.activeWorkflows.get(workflowId)?.executor.stop();
+    } else {
+      for (const [, wf] of this.activeWorkflows) wf.executor.stop();
     }
   }
 
-  /** Clear the pending plan. */
-  clearPendingPlan(): void {
-    this.pendingPlan = null;
-    this.pendingPlanId = null;
-    this.pendingPlanTask = null;
-  }
-
-  /** Stop and clean up execution. */
-  stop(): void {
-    if (this.activeExecutor) this.activeExecutor.stop();
-    this.cleanupExecution();
-  }
-
-  private cleanupExecution(): void {
-    if (this.eventUnsubscribe) { this.eventUnsubscribe(); this.eventUnsubscribe = null; }
-    if (this.stateSnapshotTimer) { clearInterval(this.stateSnapshotTimer); this.stateSnapshotTimer = null; }
-    this.activeExecutor = null;
-    this.commands.setExecutor(null as unknown as GraphExecutor);
+  /** Stop all running workflows. */
+  stopAll(): void {
+    for (const [, wf] of this.activeWorkflows) wf.executor.stop();
   }
 }

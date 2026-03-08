@@ -140,6 +140,8 @@ export interface WorkflowGraph {
 // ── Events ──────────────────────────────────────────────────────────────────
 
 export interface WorkerEvent {
+  /** Identifies which workflow this event belongs to. */
+  workflowId?: string;
   workerId: string;
   nodeId: string;
   timestamp: string;
