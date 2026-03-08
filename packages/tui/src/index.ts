@@ -100,6 +100,9 @@ export async function start(): Promise<void> {
   const model = defaultModel();
   if (model) statusBar.updateStatus({ model });
 
+  // Wire status bar spinner to trigger re-renders
+  statusBar.onUpdate = () => tui.requestRender();
+
   // Autocomplete for slash commands
   editor.setAutocompleteProvider(
     new CombinedAutocompleteProvider(SLASH_COMMANDS, process.cwd()),
@@ -182,9 +185,11 @@ export async function start(): Promise<void> {
       tui.requestRender();
     };
 
+    overlay.onUpdate = () => tui.requestRender();
+
     planOverlayHandle = tui.showOverlay(overlay, {
       width: '80%',
-      maxHeight: '70%',
+      maxHeight: '90%',
       anchor: 'center',
     });
     tui.setFocus(overlay);

@@ -42,6 +42,9 @@ export class StatusBar extends Text {
   private spinnerTimer: ReturnType<typeof setInterval> | null = null;
   private static readonly SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
+  /** Called when the status bar updates itself (e.g. spinner tick). Wire to tui.requestRender(). */
+  onUpdate?: () => void;
+
   constructor() {
     super('', 1, 0);
     this.updateDisplay();
@@ -63,6 +66,7 @@ export class StatusBar extends Text {
       this.spinnerTimer = setInterval(() => {
         this.spinnerFrame = (this.spinnerFrame + 1) % StatusBar.SPINNER.length;
         this.updateDisplay();
+        this.onUpdate?.();
       }, 80);
     } else if (!value && this.spinnerTimer) {
       clearInterval(this.spinnerTimer);
