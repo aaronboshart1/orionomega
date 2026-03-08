@@ -11,7 +11,7 @@
  * we delegate to the SDK that powers Claude Code itself.
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { query, createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import type {
   SDKAssistantMessage,
   SDKResultSuccess,
@@ -19,11 +19,15 @@ import type {
   SDKToolProgressMessage,
   SDKTaskStartedMessage,
   SDKTaskProgressMessage,
+  McpSdkServerConfigWithInstance,
 } from '@anthropic-ai/claude-agent-sdk';
-import type { OrionOmegaConfig } from '../config/types.js';
+import { z } from 'zod/v4';
 import { readConfig } from '../config/loader.js';
 import type { WorkflowNode } from './types.js';
 import { createLogger } from '../logging/logger.js';
+import { SkillLoader, SkillExecutor, readSkillConfig } from '@orionomega/skills-sdk';
+import type { SkillTool } from '@orionomega/skills-sdk';
+import path from 'node:path';
 
 const log = createLogger('agent-sdk-bridge');
 
@@ -108,6 +112,8 @@ export interface AgentExecutionConfig {
   abortSignal?: AbortSignal;
   /** Progress callback for WorkerEvent emission. */
   onProgress?: (event: { type: string; message: string; progress?: number }) => void;
+  /** Optional structured output format. When provided, the SDK will return parsed JSON. */
+  outputFormat?: { type: 'json_schema'; schema: Record<string, unknown> };
 }
 
 /** Result of an AGENT node execution via the Agent SDK. */
@@ -126,6 +132,8 @@ export interface AgentExecutionResult {
   durationSec: number;
   /** Paths to files written by the agent (tracked from Write tool calls). */
   outputPaths: string[];
+  /** Parsed structured output when outputFormat was provided. */
+  structuredOutput?: unknown;
 }
 
 /**
@@ -143,6 +151,170 @@ function tokenBudgetToUsd(tokenBudget: number, model: string): number {
   // Multiply by 4 to account for output tokens and safety margin
   const estimated = (tokenBudget / 1_000_000) * costPerMillion * 4;
   return Math.max(1.0, Math.min(estimated, 50.0)); // Cap: $1 min, $50 max
+}
+
+// ── P5: Skill MCP server ─────────────────────────────────────────────
+
+/**
+ * Convert a JSON Schema property descriptor to a Zod type.
+ * Handles the most common types; falls back to z.unknown() for complex schemas.
+ */
+function jsonSchemaPropertyToZod(
+  prop: Record<string, unknown>,
+  required: boolean,
+): z.ZodType {
+  const type = prop.type as string | undefined;
+
+  let base: z.ZodType;
+
+  if (prop.enum && Array.isArray(prop.enum)) {
+    // Enum — use z.enum for string enums, z.unknown otherwise
+    const values = prop.enum as unknown[];
+    if (values.length >= 1 && values.every((v) => typeof v === 'string')) {
+      base = z.enum(values as [string, ...string[]]);
+    } else {
+      // Mixed or non-string enum — accept any value
+      base = z.unknown();
+    }
+  } else if (type === 'string') {
+    base = z.string();
+  } else if (type === 'number' || type === 'integer') {
+    base = z.number();
+  } else if (type === 'boolean') {
+    base = z.boolean();
+  } else if (type === 'array') {
+    const items = prop.items as Record<string, unknown> | undefined;
+    if (items?.type === 'string') {
+      base = z.array(z.string());
+    } else if (items?.type === 'number' || items?.type === 'integer') {
+      base = z.array(z.number());
+    } else {
+      base = z.array(z.unknown());
+    }
+  } else if (type === 'object') {
+    base = z.record(z.string(), z.unknown());
+  } else {
+    base = z.unknown();
+  }
+
+  return required ? base : base.optional();
+}
+
+/**
+ * Convert a JSON Schema object descriptor (with `properties` and `required`)
+ * into a Zod raw shape (plain object of zod types) for use with tool().
+ */
+function jsonSchemaToZodShape(
+  schema: Record<string, unknown>,
+): Record<string, z.ZodType> {
+  const properties = (schema.properties ?? {}) as Record<
+    string,
+    Record<string, unknown>
+  >;
+  const requiredFields = new Set(
+    Array.isArray(schema.required) ? (schema.required as string[]) : [],
+  );
+
+  const shape: Record<string, z.ZodType> = {};
+  for (const [key, propDef] of Object.entries(properties)) {
+    shape[key] = jsonSchemaPropertyToZod(propDef, requiredFields.has(key));
+  }
+  return shape;
+}
+
+/**
+ * Build an in-process MCP server exposing all tools from the given skill IDs.
+ *
+ * Each skill's tools are registered as SDK MCP tool definitions. The handler
+ * reads the skill's config.json to obtain API keys and other env vars, then
+ * delegates to SkillExecutor.executeHandler() (JSON-in / JSON-out child process).
+ *
+ * @param skillIds - Skill identifiers to expose (e.g. ["linear"]).
+ * @param skillsDir - Absolute path to the skills directory.
+ * @returns McpSdkServerConfigWithInstance ready to pass to query() mcpServers.
+ */
+async function buildSkillMcpServer(
+  skillIds: string[],
+  skillsDir: string,
+): Promise<McpSdkServerConfigWithInstance> {
+  const loader = new SkillLoader(skillsDir);
+  const executor = new SkillExecutor();
+  const toolDefs: ReturnType<typeof tool>[] = [];
+
+  for (const skillId of skillIds) {
+    let loadedSkill;
+    try {
+      loadedSkill = await loader.load(skillId);
+    } catch (err) {
+      log.warn(
+        `buildSkillMcpServer: skipping skill "${skillId}" — failed to load: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      continue;
+    }
+
+    const skillConfig = readSkillConfig(skillsDir, skillId);
+    if (!skillConfig.enabled) {
+      log.warn(`buildSkillMcpServer: skipping skill "${skillId}" — disabled`);
+      continue;
+    }
+
+    // Build env vars from skill config fields
+    const skillEnv: Record<string, string> = {};
+    for (const [key, value] of Object.entries(skillConfig.fields)) {
+      skillEnv[key] = String(value);
+    }
+
+    const skillDir = loadedSkill.skillDir;
+    const skillTools: SkillTool[] = loadedSkill.manifest.tools ?? [];
+
+    for (const toolDef of skillTools) {
+      const zodShape = jsonSchemaToZodShape(
+        toolDef.inputSchema as Record<string, unknown>,
+      );
+
+      // Capture loop variables for the async handler closure
+      const capturedHandlerPath = path.resolve(skillDir, toolDef.handler);
+      const capturedTimeout = toolDef.timeout ?? 30_000;
+      const capturedSkillDir = skillDir;
+      const capturedEnv = skillEnv;
+
+      const mcpTool = tool(
+        toolDef.name,
+        toolDef.description,
+        zodShape,
+        async (args: Record<string, unknown>) => {
+          try {
+            const result = await executor.executeHandler(
+              capturedHandlerPath,
+              args,
+              {
+                cwd: capturedSkillDir,
+                timeout: capturedTimeout,
+                env: capturedEnv,
+              },
+            );
+            const text =
+              typeof result === 'string'
+                ? result
+                : JSON.stringify(result, null, 2);
+            return { content: [{ type: 'text' as const, text }] };
+          } catch (err) {
+            const errMsg = err instanceof Error ? err.message : String(err);
+            log.warn(`Skill tool "${toolDef.name}" failed: ${errMsg}`);
+            return {
+              content: [{ type: 'text' as const, text: `Error: ${errMsg}` }],
+              isError: true,
+            };
+          }
+        },
+      );
+
+      toolDefs.push(mcpTool);
+      log.info(`Registered MCP skill tool: ${toolDef.name} (from ${skillId})`);
+    }
+  }
+
+  return createSdkMcpServer({ name: 'orionomega-skills', tools: toolDefs });
 }
 
 /**
@@ -175,7 +347,7 @@ export async function executeAgent(
 
   const {
     task, model, systemPrompt, cwd,
-    abortSignal, onProgress,
+    abortSignal, onProgress, outputFormat,
   } = options;
 
   const maxTurns = options.maxTurns ?? sdkConfig.maxTurns ?? 50;
@@ -195,8 +367,26 @@ export async function executeAgent(
   let output = '';
   let toolCalls = 0;
   let costUsd: number | undefined;
+  let structuredOutput: unknown;
   const outputPaths: string[] = [];
   let progressEstimate = 5;
+
+  // P5: Build skill MCP server if skillIds are provided
+  let mcpServers: Record<string, McpSdkServerConfigWithInstance> | undefined;
+  if (options.skillIds?.length) {
+    const skillsDir = readConfig().skills?.directory;
+    if (skillsDir) {
+      try {
+        const mcpServer = await buildSkillMcpServer(options.skillIds, skillsDir);
+        mcpServers = { 'orionomega-skills': mcpServer };
+        log.info(`Skill MCP server built with ${options.skillIds.join(', ')} for worker`);
+      } catch (err) {
+        log.warn(
+          `Failed to build skill MCP server: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+  }
 
   try {
     const queryResult = query({
@@ -224,6 +414,10 @@ export async function executeAgent(
         // Omit settingSources — default is no CLAUDE.md loading; the worker
         // system prompt is self-contained.
         persistSession: false,
+        // P5: Skill MCP server (if any skills are configured)
+        ...(mcpServers ? { mcpServers } : {}),
+        // P6: Structured output format (optional)
+        ...(outputFormat ? { outputFormat } : {}),
       },
     });
 
@@ -276,7 +470,11 @@ export async function executeAgent(
 
         if ((message as SDKResultSuccess).subtype === 'success') {
           const successMsg = message as SDKResultSuccess;
-          if (successMsg.result) {
+          // P6: Prefer structured output over raw text when available
+          if (successMsg.structured_output !== undefined) {
+            structuredOutput = successMsg.structured_output;
+            output += '\n' + JSON.stringify(successMsg.structured_output, null, 2);
+          } else if (successMsg.result) {
             output += '\n' + successMsg.result;
           }
         } else {
@@ -303,6 +501,7 @@ export async function executeAgent(
       durationSec,
       costUsd,
       outputPaths,
+      ...(structuredOutput !== undefined ? { structuredOutput } : {}),
     };
   } catch (err) {
     const durationSec = (Date.now() - startTime) / 1000;
