@@ -11,7 +11,6 @@ import {
   ProcessTerminal,
   Text,
   TUI,
-  type OverlayHandle,
   type SlashCommand,
 } from '@mariozechner/pi-tui';
 import { readConfig } from '@orionomega/core';
@@ -20,7 +19,7 @@ import type { PlannerOutput, GraphState } from '@orionomega/core';
 import { GatewayClient } from './gateway-client.js';
 import { ChatLog } from './components/chat-log.js';
 import { CustomEditor } from './components/custom-editor.js';
-import { PlanOverlay } from './components/plan-overlay.js';
+import { formatPlan } from './components/plan-overlay.js';
 import { StatusBar } from './components/status-bar.js';
 import { WorkflowTracker } from './components/workflow-tracker.js';
 import { editorTheme, theme } from './theme.js';
@@ -111,7 +110,6 @@ export async function start(): Promise<void> {
   // ── Gateway connection ────────────────────────────────────────
 
   const client = new GatewayClient(gatewayUrl, token);
-  let planOverlayHandle: OverlayHandle | null = null;
   let activePlanId: string | null = null;
   let workflowActive = false;
 
@@ -170,38 +168,21 @@ export async function start(): Promise<void> {
     activePlanId = planId;
     statusBar.thinking = false;
 
-    // Show plan as an overlay
-    const overlay = new PlanOverlay(plan);
-    overlay.onRespond = (action) => {
-      if (activePlanId) {
-        client.respondToPlan(activePlanId, action);
-        activePlanId = null;
-      }
-      if (planOverlayHandle) {
-        planOverlayHandle.hide();
-        planOverlayHandle = null;
-      }
-      tui.setFocus(editor);
-      tui.requestRender();
-    };
-
-    overlay.onUpdate = () => tui.requestRender();
-
-    planOverlayHandle = tui.showOverlay(overlay, {
-      width: '80%',
-      maxHeight: '90%',
-      anchor: 'center',
+    // Render plan inline in chat
+    const formatted = formatPlan(plan);
+    chatLog.addMessage({
+      id: `plan-${planId}`,
+      role: 'system',
+      content: '',
+      timestamp: new Date().toISOString(),
+      raw: formatted,
     });
-    tui.setFocus(overlay);
+
     tui.requestRender();
   });
 
   client.on('planCleared', () => {
-    if (planOverlayHandle) {
-      planOverlayHandle.hide();
-      planOverlayHandle = null;
-    }
-    tui.setFocus(editor);
+    activePlanId = null;
     tui.requestRender();
   });
 
@@ -267,8 +248,50 @@ export async function start(): Promise<void> {
 
   // ── Editor submission ─────────────────────────────────────────
 
+  // Handle plan approval keybindings
+  editor.onEscape = () => {
+    if (activePlanId) {
+      client.respondToPlan(activePlanId, 'reject');
+      chatLog.addMessage({
+        id: `plan-reject-${activePlanId}`,
+        role: 'system',
+        content: '❌ Plan rejected.',
+        timestamp: new Date().toISOString(),
+      });
+      activePlanId = null;
+      tui.requestRender();
+    }
+  };
+
   editor.onSubmit = (text: string) => {
     const value = text.trim();
+
+    // If a plan is pending and user presses Enter with empty input → approve
+    if (!value && activePlanId) {
+      client.respondToPlan(activePlanId, 'approve');
+      chatLog.addMessage({
+        id: `plan-approve-${activePlanId}`,
+        role: 'system',
+        content: '✅ Plan approved. Executing...',
+        timestamp: new Date().toISOString(),
+      });
+      activePlanId = null;
+      statusBar.thinking = true;
+      tui.requestRender();
+      return;
+    }
+
+    // If plan pending and user types 'm' or 'modify' → modify
+    if (activePlanId && (value === 'm' || value.toLowerCase() === 'modify')) {
+      editor.setText('');
+      editor.addToHistory(value);
+      // TODO: prompt for modifications
+      client.respondToPlan(activePlanId, 'modify');
+      activePlanId = null;
+      tui.requestRender();
+      return;
+    }
+
     if (!value) return;
 
     editor.setText('');

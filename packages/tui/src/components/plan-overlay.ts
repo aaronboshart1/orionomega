@@ -1,14 +1,10 @@
 /**
  * @module components/plan-overlay
- * Plan approval overlay with rich formatting — numbered tasks, models,
- * dependencies, estimated cost/time. Supports approve/reject/modify.
- * Scrollable when content exceeds viewport.
+ * Plan rendering as inline chat content + keybinding interception.
+ * No floating overlays — plans render in the chat flow.
  */
 
-import { Container, Text, Spacer, Key, matchesKey } from '@mariozechner/pi-tui';
-import type { Focusable } from '@mariozechner/pi-tui';
 import type { PlannerOutput } from '@orionomega/core';
-import { theme } from '../theme.js';
 import chalk from 'chalk';
 
 const palette = {
@@ -22,261 +18,164 @@ const palette = {
 };
 
 /**
- * Plan overlay with internal scroll offset.
- * Content is pre-built as an array of styled lines.
- * render() slices to fit the available height, controlled by up/down keys.
+ * Format a plan as a styled string for inline display in the chat log.
+ * Returns a single string with ANSI styling.
  */
-export class PlanOverlay extends Container implements Focusable {
-  focused = false;
-  private readonly plan: PlannerOutput;
-  private allLines: string[] = [];
-  private scrollOffset = 0;
-  onRespond?: (action: 'approve' | 'reject' | 'modify') => void;
+export function formatPlan(plan: PlannerOutput): string {
+  const graph = plan.graph;
+  const W = 60;
+  const lines: string[] = [];
 
-  /** Called when the overlay needs a re-render (scroll change). Wire to tui.requestRender(). */
-  onUpdate?: () => void;
+  const bdr = chalk.hex(palette.border);
+  const dim = chalk.hex(palette.dim);
+  const txt = chalk.hex(palette.text);
+  const acc = chalk.hex(palette.accent);
+  const blu = chalk.hex(palette.blue);
+  const pur = chalk.hex(palette.purple);
+  const grn = chalk.hex(palette.green);
 
-  constructor(plan: PlannerOutput) {
-    super();
-    this.plan = plan;
-    this.allLines = this.buildLines();
-    this.rebuildChildren();
+  lines.push('');
+  lines.push(bdr('┌' + '─'.repeat(W) + '┐'));
+  lines.push(bdr('│') + ' ' + acc.bold('📋 Execution Plan') + ' '.repeat(W - 19) + bdr('│'));
+  lines.push(bdr('├' + '─'.repeat(W) + '┤'));
+
+  // Plan name
+  const name = graph.name.length > W - 2 ? graph.name.slice(0, W - 5) + '...' : graph.name;
+  lines.push(bdr('│') + ' ' + txt.bold(name) + ' '.repeat(Math.max(1, W - 1 - name.length)) + bdr('│'));
+
+  // Summary
+  if (plan.summary) {
+    for (const sl of wrapText(plan.summary, W - 2)) {
+      lines.push(bdr('│') + ' ' + dim(sl) + ' '.repeat(Math.max(1, W - 1 - sl.length)) + bdr('│'));
+    }
   }
 
-  /** Build all content lines (un-sliced). */
-  private buildLines(): string[] {
-    const p = this.plan;
-    const graph = p.graph;
-    const W = 62;
-    const lines: string[] = [];
+  lines.push(bdr('├' + '─'.repeat(W) + '┤'));
 
-    const bdr = (ch: string) => chalk.hex(palette.border)(ch);
-    const row = (content: string, rawLen?: number) => {
-      const len = rawLen ?? this.stripAnsi(content).length;
-      const pad = Math.max(1, W - len);
-      return bdr('│') + content + ' '.repeat(pad) + bdr('│');
-    };
+  // Nodes grouped by layer
+  const nodes = graph.nodes instanceof Map
+    ? graph.nodes
+    : new Map(Object.entries(graph.nodes as Record<string, any>));
+  const layers = graph.layers ?? [];
+  let taskNum = 0;
 
-    // Top border + title
-    lines.push(bdr('┌' + '─'.repeat(W) + '┐'));
-    lines.push(row(' ' + chalk.hex(palette.accent).bold('📋 Execution Plan') + ' '.repeat(44), 48));
-    lines.push(bdr('├' + '─'.repeat(W) + '┤'));
+  for (let layerIdx = 0; layerIdx < layers.length; layerIdx++) {
+    const layerNodes = layers[layerIdx];
+    const isParallel = layerNodes.length > 1;
 
-    // Plan name + summary
-    const nameStr = ' ' + chalk.hex(palette.text).bold(graph.name);
-    lines.push(row(nameStr, 1 + graph.name.length));
-    if (p.summary) {
-      for (const line of this.wrapText(p.summary, W - 2)) {
-        lines.push(row(' ' + chalk.hex(palette.dim)(line), 1 + line.length));
-      }
-    }
-    lines.push(bdr('├' + '─'.repeat(W) + '┤'));
+    const layerText = isParallel
+      ? ` ═══ Layer ${layerIdx + 1} (parallel) ═══`
+      : ` ─── Layer ${layerIdx + 1} ───`;
+    lines.push(bdr('│') + blu(layerText) + ' '.repeat(Math.max(1, W - layerText.length)) + bdr('│'));
 
-    // Nodes grouped by layer
-    const nodes = graph.nodes instanceof Map
-      ? graph.nodes
-      : new Map(Object.entries(graph.nodes as Record<string, any>));
-    const layers = graph.layers ?? [];
-    let taskNum = 0;
+    for (const nodeId of layerNodes) {
+      taskNum++;
+      const node = nodes.get(nodeId) as any;
+      if (!node) continue;
 
-    for (let layerIdx = 0; layerIdx < layers.length; layerIdx++) {
-      const layerNodes = layers[layerIdx];
-      const isParallel = layerNodes.length > 1;
-      const layerLabel = isParallel
-        ? chalk.hex(palette.blue)(`  ═══ Layer ${layerIdx + 1} (parallel) ═══`)
-        : chalk.hex(palette.blue)(`  ─── Layer ${layerIdx + 1} ───`);
-      const rawLen = isParallel
-        ? `  ═══ Layer ${layerIdx + 1} (parallel) ═══`.length
-        : `  ─── Layer ${layerIdx + 1} ───`.length;
-      lines.push(row(layerLabel, rawLen));
+      const label = node.label ?? nodeId;
+      const model = shortenModel(node.agent?.model ?? '');
+      const nodeType = node.type ?? 'AGENT';
+      const icon = nodeType === 'CODING_AGENT' ? '💻' : '🔧';
 
-      for (const nodeId of layerNodes) {
-        taskNum++;
-        const node = nodes.get(nodeId) as any;
-        if (!node) continue;
+      const taskText = ` ${taskNum}. ${icon} ${label}${model ? ` [${model}]` : ''}`;
+      const styledTask = ' ' + acc.bold(`${taskNum}.`) + txt.bold(` ${icon} ${label}`) +
+        (model ? pur(` [${model}]`) : '');
+      lines.push(bdr('│') + styledTask + ' '.repeat(Math.max(1, W - taskText.length)) + bdr('│'));
 
-        const label = node.label ?? nodeId;
-        const model = this.shortenModel(node.agent?.model ?? '');
-        const nodeType = node.type ?? 'AGENT';
-        const icon = nodeType === 'CODING_AGENT' ? '💻' : '🔧';
-        const taskLine = `  ${taskNum}. ${icon} ${label}` + (model ? ` [${model}]` : '');
-        const styledTask = chalk.hex(palette.accent).bold(`  ${taskNum}.`) +
-          chalk.hex(palette.text).bold(` ${icon} ${label}`) +
-          (model ? chalk.hex(palette.purple)(` [${model}]`) : '');
-        lines.push(row(styledTask, taskLine.length));
-
-        // Task description (max 3 lines)
-        if (node.task) {
-          const descLines = this.wrapText(node.task, W - 8);
-          for (const dl of descLines.slice(0, 3)) {
-            const padded = `      ${dl}`;
-            lines.push(row(chalk.hex(palette.dim)(padded), padded.length));
-          }
-          if (descLines.length > 3) {
-            const more = `      ... +${descLines.length - 3} more lines`;
-            lines.push(row(chalk.hex(palette.dim)(more), more.length));
-          }
+      // Description (max 3 lines)
+      if (node.task) {
+        const descLines = wrapText(node.task, W - 8);
+        for (const dl of descLines.slice(0, 3)) {
+          const padded = `     ${dl}`;
+          lines.push(bdr('│') + dim(padded) + ' '.repeat(Math.max(1, W - padded.length)) + bdr('│'));
         }
-
-        // Dependencies
-        const deps = node.dependsOn ?? [];
-        if (deps.length > 0) {
-          const depStr = `      → depends on: ${deps.join(', ')}`;
-          lines.push(row(chalk.hex(palette.dim)(depStr), depStr.length));
+        if (descLines.length > 3) {
+          const more = `     ... +${descLines.length - 3} more`;
+          lines.push(bdr('│') + dim(more) + ' '.repeat(Math.max(1, W - more.length)) + bdr('│'));
         }
       }
-    }
 
-    // Orphan nodes not in layers
-    const layerNodeIds = new Set(layers.flat());
-    for (const [nodeId, node] of nodes) {
-      if (!layerNodeIds.has(nodeId)) {
-        taskNum++;
-        const n = node as any;
-        const taskLine = `  ${taskNum}. 🔧 ${n.label ?? nodeId}`;
-        const styled = chalk.hex(palette.accent).bold(`  ${taskNum}.`) +
-          chalk.hex(palette.text).bold(` 🔧 ${n.label ?? nodeId}`);
-        lines.push(row(styled, taskLine.length));
+      // Dependencies
+      const deps = node.dependsOn ?? [];
+      if (deps.length) {
+        const depStr = `     → depends on: ${deps.join(', ')}`;
+        lines.push(bdr('│') + dim(depStr) + ' '.repeat(Math.max(1, W - depStr.length)) + bdr('│'));
       }
     }
+  }
 
+  // Orphan nodes
+  const layerNodeIds = new Set(layers.flat());
+  for (const [nodeId, node] of nodes) {
+    if (!layerNodeIds.has(nodeId)) {
+      taskNum++;
+      const n = node as any;
+      const taskText = ` ${taskNum}. 🔧 ${n.label ?? nodeId}`;
+      const styled = ' ' + acc.bold(`${taskNum}.`) + txt.bold(` 🔧 ${n.label ?? nodeId}`);
+      lines.push(bdr('│') + styled + ' '.repeat(Math.max(1, W - taskText.length)) + bdr('│'));
+    }
+  }
+
+  lines.push(bdr('├' + '─'.repeat(W) + '┤'));
+
+  // Estimates footer
+  const estimates: string[] = [];
+  if (plan.estimatedTime) estimates.push(`⏱ ~${Math.ceil(plan.estimatedTime)}s`);
+  if (plan.estimatedCost) estimates.push(`💰 ~$${plan.estimatedCost.toFixed(3)}`);
+  estimates.push(`${taskNum} task${taskNum !== 1 ? 's' : ''}`);
+  estimates.push(`${layers.length} layer${layers.length !== 1 ? 's' : ''}`);
+  const estLine = ' ' + estimates.join('  •  ');
+  lines.push(bdr('│') + dim(estLine) + ' '.repeat(Math.max(1, W - estLine.length)) + bdr('│'));
+
+  // Reasoning (truncated)
+  if (plan.reasoning) {
     lines.push(bdr('├' + '─'.repeat(W) + '┤'));
-
-    // Estimates
-    const estimates: string[] = [];
-    if (p.estimatedTime) estimates.push(`⏱ ~${Math.ceil(p.estimatedTime)}s`);
-    if (p.estimatedCost) estimates.push(`💰 ~$${p.estimatedCost.toFixed(3)}`);
-    estimates.push(`${taskNum} task${taskNum !== 1 ? 's' : ''}`);
-    estimates.push(`${layers.length} layer${layers.length !== 1 ? 's' : ''}`);
-    const estLine = '  ' + estimates.join('  •  ');
-    lines.push(row(chalk.hex(palette.dim)(estLine), estLine.length));
-
-    // Reasoning
-    if (p.reasoning) {
-      lines.push(bdr('├' + '─'.repeat(W) + '┤'));
-      const reasonLines = this.wrapText(p.reasoning, W - 2);
-      for (const rl of reasonLines.slice(0, 6)) {
-        lines.push(row(' ' + chalk.hex(palette.dim).italic(rl), 1 + rl.length));
-      }
-      if (reasonLines.length > 6) {
-        lines.push(row(chalk.hex(palette.dim)('  ... (truncated)'), 17));
-      }
+    const reasonLines = wrapText(plan.reasoning, W - 2);
+    for (const rl of reasonLines.slice(0, 4)) {
+      lines.push(bdr('│') + ' ' + dim.italic(rl) + ' '.repeat(Math.max(1, W - 1 - rl.length)) + bdr('│'));
     }
-
-    // Actions
-    lines.push(bdr('├' + '─'.repeat(W) + '┤'));
-    const actionsLine = '  ' +
-      chalk.hex(palette.green).bold('[Enter]') + ' Approve  ' +
-      chalk.hex('#F97066').bold('[Esc]') + ' Reject  ' +
-      chalk.hex(palette.accent).bold('[m]') + ' Modify';
-    lines.push(row(actionsLine, '  [Enter] Approve  [Esc] Reject  [m] Modify'.length));
-    lines.push(bdr('└' + '─'.repeat(W) + '┘'));
-
-    return lines;
-  }
-
-  /** Rebuild visible children from scroll offset. */
-  private rebuildChildren(): void {
-    // Remove all existing children
-    while (this.children.length > 0) {
-      this.removeChild(this.children[0]);
-    }
-
-    // Determine visible window — use terminal rows if available
-    const termRows = process.stdout.rows ?? 40;
-    const maxVisible = Math.max(10, Math.floor(termRows * 0.85) - 2);
-    const totalLines = this.allLines.length;
-
-    // Clamp scroll offset
-    const maxScroll = Math.max(0, totalLines - maxVisible);
-    if (this.scrollOffset > maxScroll) this.scrollOffset = maxScroll;
-    if (this.scrollOffset < 0) this.scrollOffset = 0;
-
-    // Slice visible lines
-    const visibleLines = this.allLines.slice(this.scrollOffset, this.scrollOffset + maxVisible);
-
-    for (const line of visibleLines) {
-      this.addChild(new Text(line, 1, 0));
-    }
-
-    // Scroll indicator
-    if (totalLines > maxVisible) {
-      const indicator = this.scrollOffset > 0 && this.scrollOffset < maxScroll
-        ? `  ↑↓ scroll (${this.scrollOffset + 1}-${Math.min(this.scrollOffset + maxVisible, totalLines)}/${totalLines})`
-        : this.scrollOffset > 0
-        ? `  ↑ scroll up (${this.scrollOffset + 1}-${totalLines}/${totalLines})`
-        : `  ↓ scroll down (1-${maxVisible}/${totalLines})`;
-      this.addChild(new Text(chalk.hex(palette.dim)(indicator), 1, 0));
+    if (reasonLines.length > 4) {
+      lines.push(bdr('│') + dim(' ... (truncated)') + ' '.repeat(W - 16) + bdr('│'));
     }
   }
 
-  handleInput(data: string): void {
-    if (matchesKey(data, Key.enter)) {
-      this.onRespond?.('approve');
-    } else if (matchesKey(data, Key.escape)) {
-      this.onRespond?.('reject');
-    } else if (data === 'm' || data === 'M') {
-      this.onRespond?.('modify');
-    } else if (matchesKey(data, Key.up) || data === 'k') {
-      if (this.scrollOffset > 0) {
-        this.scrollOffset--;
-        this.rebuildChildren();
-        this.onUpdate?.();
-      }
-    } else if (matchesKey(data, Key.down) || data === 'j') {
-      this.scrollOffset++;
-      this.rebuildChildren();
-      this.onUpdate?.();
-    } else if (matchesKey(data, Key.pageUp)) {
-      this.scrollOffset = Math.max(0, this.scrollOffset - 10);
-      this.rebuildChildren();
-      this.onUpdate?.();
-    } else if (matchesKey(data, Key.pageDown)) {
-      this.scrollOffset += 10;
-      this.rebuildChildren();
-      this.onUpdate?.();
-    } else if (data === 'g') {
-      this.scrollOffset = 0;
-      this.rebuildChildren();
-      this.onUpdate?.();
-    } else if (data === 'G') {
-      this.scrollOffset = this.allLines.length; // clamp handles it
-      this.rebuildChildren();
-      this.onUpdate?.();
+  lines.push(bdr('└' + '─'.repeat(W) + '┘'));
+
+  // Action prompt (below the box, not inside it)
+  lines.push('');
+  lines.push(
+    '  ' + grn.bold('[Enter]') + ' Approve   ' +
+    chalk.hex('#F97066').bold('[Esc]') + ' Reject   ' +
+    acc.bold('[m]') + ' Modify',
+  );
+  lines.push('');
+
+  return lines.join('\n');
+}
+
+function wrapText(text: string, width: number): string[] {
+  const words = text.split(/\s+/);
+  const lines: string[] = [];
+  let current = '';
+  for (const word of words) {
+    if (current.length + word.length + 1 > width) {
+      lines.push(current);
+      current = word;
+    } else {
+      current = current ? current + ' ' + word : word;
     }
   }
+  if (current) lines.push(current);
+  return lines;
+}
 
-  invalidate(): void {
-    super.invalidate();
+function shortenModel(model: string): string {
+  const match = model.match(/claude-(\w+)-([\d.-]+)/);
+  if (match) {
+    const name = match[1].charAt(0).toUpperCase() + match[1].slice(1);
+    const ver = match[2].replace(/-\d{8}$/, '').replace(/-/g, '.');
+    return `${name} ${ver}`;
   }
-
-  private wrapText(text: string, width: number): string[] {
-    const words = text.split(/\s+/);
-    const lines: string[] = [];
-    let current = '';
-    for (const word of words) {
-      if (current.length + word.length + 1 > width) {
-        lines.push(current);
-        current = word;
-      } else {
-        current = current ? current + ' ' + word : word;
-      }
-    }
-    if (current) lines.push(current);
-    return lines;
-  }
-
-  private stripAnsi(str: string): string {
-    return str.replace(/\x1b\[[0-9;]*m/g, '');
-  }
-
-  private shortenModel(model: string): string {
-    const match = model.match(/claude-(\w+)-([\d.-]+)/);
-    if (match) {
-      const name = match[1].charAt(0).toUpperCase() + match[1].slice(1);
-      const ver = match[2].replace(/-\d{8}$/, '').replace(/-/g, '.');
-      return `${name} ${ver}`;
-    }
-    return model.length > 20 ? model.slice(0, 20) + '…' : model;
-  }
+  return model.length > 20 ? model.slice(0, 20) + '…' : model;
 }

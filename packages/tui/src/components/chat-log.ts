@@ -40,6 +40,14 @@ export class ChatLog extends Container {
       const label = new Text(theme.userLabel() + '  ' + theme.user(msg.content), 1, 0);
       this.addChild(label);
       this.entries.push({ component: label, role: 'user' });
+    } else if (msg.raw) {
+      // Pre-formatted ANSI content — render each line as a Text component
+      const rawLines = msg.raw.split('\n');
+      for (const line of rawLines) {
+        const t = new Text(line, 1, 0);
+        this.addChild(t);
+      }
+      this.entries.push({ component: new Text('', 0, 0), role: 'system' });
     } else if (msg.role === 'system') {
       const prefix = msg.emoji ? `${msg.emoji} ` : '';
       const text = new Text(theme.system(prefix + msg.content), 1, 0);

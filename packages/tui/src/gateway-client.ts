@@ -43,6 +43,8 @@ export interface DisplayMessage {
   content: string;
   timestamp: string;
   emoji?: string;
+  /** Pre-formatted ANSI string — rendered as-is, bypassing markdown. */
+  raw?: string;
 }
 
 let messageCounter = 0;
