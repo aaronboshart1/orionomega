@@ -39,15 +39,10 @@ export function formatPlan(plan: PlannerOutput): string {
   lines.push(bdr('│') + ' ' + acc.bold('📋 Execution Plan') + ' '.repeat(W - 19) + bdr('│'));
   lines.push(bdr('├' + '─'.repeat(W) + '┤'));
 
-  // Plan name
-  const name = graph.name.length > W - 2 ? graph.name.slice(0, W - 5) + '...' : graph.name;
-  lines.push(bdr('│') + ' ' + txt.bold(name) + ' '.repeat(Math.max(1, W - 1 - name.length)) + bdr('│'));
-
-  // Summary
-  if (plan.summary) {
-    for (const sl of wrapText(plan.summary, W - 2)) {
-      lines.push(bdr('│') + ' ' + dim(sl) + ' '.repeat(Math.max(1, W - 1 - sl.length)) + bdr('│'));
-    }
+  // Summary (wraps to fit)
+  const summaryText = plan.summary ?? graph.name;
+  for (const sl of wrapText(summaryText, W - 2)) {
+    lines.push(bdr('│') + ' ' + txt(sl) + ' '.repeat(Math.max(1, W - 1 - sl.length)) + bdr('│'));
   }
 
   lines.push(bdr('├' + '─'.repeat(W) + '┤'));
@@ -83,24 +78,10 @@ export function formatPlan(plan: PlannerOutput): string {
         (model ? pur(` [${model}]`) : '');
       lines.push(bdr('│') + styledTask + ' '.repeat(Math.max(1, W - taskText.length)) + bdr('│'));
 
-      // Description — extract from agent.task or codingAgent.task
-      const taskDesc = node.agent?.task ?? node.codingAgent?.task ?? node.task ?? '';
-      if (taskDesc) {
-        const descLines = wrapText(taskDesc, W - 8);
-        for (const dl of descLines.slice(0, 3)) {
-          const padded = `     ${dl}`;
-          lines.push(bdr('│') + dim(padded) + ' '.repeat(Math.max(1, W - padded.length)) + bdr('│'));
-        }
-        if (descLines.length > 3) {
-          const more = `     ... +${descLines.length - 3} more`;
-          lines.push(bdr('│') + dim(more) + ' '.repeat(Math.max(1, W - more.length)) + bdr('│'));
-        }
-      }
-
-      // Dependencies
+      // Dependencies (compact, same line style)
       const deps = node.dependsOn ?? [];
       if (deps.length) {
-        const depStr = `     → depends on: ${deps.join(', ')}`;
+        const depStr = `     → ${deps.join(', ')}`;
         lines.push(bdr('│') + dim(depStr) + ' '.repeat(Math.max(1, W - depStr.length)) + bdr('│'));
       }
     }
@@ -118,13 +99,6 @@ export function formatPlan(plan: PlannerOutput): string {
       const styled = ' ' + acc.bold(`${taskNum}.`) + txt.bold(` 🔧 ${nLabel}`) +
         (nModel ? pur(` [${nModel}]`) : '');
       lines.push(bdr('│') + styled + ' '.repeat(Math.max(1, W - taskText.length)) + bdr('│'));
-      const nTask = n.agent?.task ?? n.codingAgent?.task ?? '';
-      if (nTask) {
-        for (const dl of wrapText(nTask, W - 8).slice(0, 2)) {
-          const padded = `     ${dl}`;
-          lines.push(bdr('│') + dim(padded) + ' '.repeat(Math.max(1, W - padded.length)) + bdr('│'));
-        }
-      }
     }
   }
 
@@ -139,17 +113,7 @@ export function formatPlan(plan: PlannerOutput): string {
   const estLine = ' ' + estimates.join('  •  ');
   lines.push(bdr('│') + dim(estLine) + ' '.repeat(Math.max(1, W - estLine.length)) + bdr('│'));
 
-  // Reasoning (truncated)
-  if (plan.reasoning) {
-    lines.push(bdr('├' + '─'.repeat(W) + '┤'));
-    const reasonLines = wrapText(plan.reasoning, W - 2);
-    for (const rl of reasonLines.slice(0, 4)) {
-      lines.push(bdr('│') + ' ' + dim.italic(rl) + ' '.repeat(Math.max(1, W - 1 - rl.length)) + bdr('│'));
-    }
-    if (reasonLines.length > 4) {
-      lines.push(bdr('│') + dim(' ... (truncated)') + ' '.repeat(W - 16) + bdr('│'));
-    }
-  }
+  // Reasoning — omitted from display, available in logs
 
   lines.push(bdr('└' + '─'.repeat(W) + '┘'));
   lines.push('');

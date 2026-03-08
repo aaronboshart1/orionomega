@@ -140,19 +140,19 @@ async function initMainAgent(): Promise<void> {
       const graph = (plan as any)?.graph;
       const planId = graph?.id ?? randomBytes(8).toString('hex');
 
-      // Serialize graph.nodes Map → plain object for JSON transport.
-      // JSON.stringify(Map) produces "{}" — nodes would be lost.
-      if (graph?.nodes instanceof Map) {
-        graph.nodes = Object.fromEntries(graph.nodes);
-      }
+      // Clone plan for transport — MUST NOT mutate the original.
+      // The executor still needs graph.nodes as a Map.
+      const transportPlan = JSON.parse(JSON.stringify(plan, (key, value) =>
+        value instanceof Map ? Object.fromEntries(value) : value,
+      ));
 
-      // Store plan in session history so it persists across TUI restarts
+      // Store plan in session history
       const sessionId = sessionManager.listSessions()[0]?.id;
       if (sessionId) {
         sessionManager.addMessage(sessionId, {
           id: planId,
           role: 'assistant',
-          content: JSON.stringify(plan),
+          content: JSON.stringify(transportPlan),
           timestamp: new Date().toISOString(),
           type: 'plan',
         });
@@ -161,7 +161,7 @@ async function initMainAgent(): Promise<void> {
       wsHandler.broadcast({
         id: planId,
         type: 'plan',
-        plan,
+        plan: transportPlan,
       });
     },
     onEvent(event) {
