@@ -22,6 +22,7 @@ export interface ClientMessage {
 /** Gateway → Client message envelope. */
 interface ServerMessage {
   id: string;
+  workflowId?: string;
   type: 'text' | 'thinking' | 'plan' | 'event' | 'status' | 'command_result' | 'session_status' | 'error' | 'ack' | 'history';
   content?: string;
   streaming?: boolean;
@@ -62,8 +63,8 @@ export interface GatewayClientEvents {
   thinking: [string];
   plan: [PlannerOutput, string];
   planCleared: [];
-  graphState: [GraphState];
-  event: [WorkerEvent];
+  graphState: [GraphState, string?];
+  event: [WorkerEvent, string?];
   sessionStatus: [{ model: string; inputTokens: number; outputTokens: number; maxContextTokens: number }];
   history: [Array<{ id: string; role: string; content: string; timestamp: string }>];
 }
@@ -261,7 +262,7 @@ export class GatewayClient extends EventEmitter<GatewayClientEvents> {
       case 'event': {
         const event = msg.event as WorkerEvent;
         if (event) {
-          this.emit('event', event);
+          this.emit('event', event, msg.workflowId ?? event.workflowId);
           if (event.type === 'finding' || event.type === 'error' || event.type === 'done') {
             const emojiMap: Record<string, string> = { finding: '💡', error: '❌', done: '✅' };
             this.emit('message', {
@@ -277,12 +278,12 @@ export class GatewayClient extends EventEmitter<GatewayClientEvents> {
             this.emit('thinking', `${event.nodeId}: ${event.message}`);
           }
         }
-        if (msg.graphState) this.emit('graphState', msg.graphState as GraphState);
+        if (msg.graphState) this.emit('graphState', msg.graphState as GraphState, msg.workflowId ?? (msg.graphState as GraphState).workflowId);
         break;
       }
 
       case 'status':
-        if (msg.graphState) this.emit('graphState', msg.graphState as GraphState);
+        if (msg.graphState) this.emit('graphState', msg.graphState as GraphState, msg.workflowId ?? (msg.graphState as GraphState).workflowId);
         break;
 
       case 'command_result':

@@ -19,7 +19,7 @@ import { createLogger } from '../logging/logger.js';
 import { SkillLoader, readSkillConfig, writeSkillConfig } from '@orionomega/skills-sdk';
 import type { OrionOmegaConfig } from '../config/types.js';
 
-import type { PlannerOutput, WorkerEvent, GraphState } from '../orchestration/types.js';
+import type { PlannerOutput, WorkerEvent, GraphState, WorkflowCheckpoint } from '../orchestration/types.js';
 import { EventBus } from '../orchestration/event-bus.js';
 
 // Sub-modules
@@ -62,6 +62,8 @@ export interface MainAgentCallbacks {
   onGraphState: (state: GraphState) => void;
   onCommandResult: (result: { command: string; success: boolean; message: string }) => void;
   onSessionStatus?: (status: { model: string; inputTokens: number; outputTokens: number; maxContextTokens: number }) => void;
+  onWorkflowStart?: (workflowId: string, workflowName: string) => void;
+  onWorkflowEnd?: (workflowId: string) => void;
 }
 
 // ── History ────────────────────────────────────────────────────────────────
@@ -94,6 +96,7 @@ export class MainAgent {
   private cumulativeInputTokens = 0;
   private cumulativeOutputTokens = 0;
   private availableSkills: string[] = [];
+  private interruptedWorkflows: WorkflowCheckpoint[] = [];
 
   constructor(config: MainAgentConfig, callbacks: MainAgentCallbacks) {
     this.config = config;
@@ -187,6 +190,21 @@ export class MainAgent {
       this.availableSkills,
       this.config.model,
     );
+
+    // 4. Check for interrupted workflows from previous sessions
+    const interrupted = this.orchestration.checkForInterruptedWorkflows();
+    if (interrupted.length > 0) {
+      this.interruptedWorkflows = interrupted;
+      const list = interrupted
+        .map((c, i) =>
+          `  ${i + 1}. ${c.task} (layer ${c.currentLayer}/${c.graph.layers.length}, ${Object.values(c.nodeOutputs).length} nodes done)`,
+        )
+        .join('\n');
+      this.callbacks.onText(
+        `🔄 Found ${interrupted.length} interrupted workflow(s):\n${list}\n\nSay resume or resume all to continue, or discard to clear.`,
+        false, true,
+      );
+    }
   }
 
   // ── Public API ─────────────────────────────────────────────────────────
@@ -216,6 +234,39 @@ export class MainAgent {
     }
 
     try {
+      // 0a. Human gate resolution
+      if (this.orchestration.hasPendingGates && /^(allow|approve|yes|y|deny|reject|no|n)$/i.test(trimmed)) {
+        const gates = this.orchestration.listPendingGates();
+        if (gates.length > 0) {
+          const approved = /^(allow|approve|yes|y)$/i.test(trimmed);
+          this.orchestration.resolveGate(gates[0].gateId, approved);
+          return;
+        }
+      }
+
+      // 0b. Checkpoint resume / discard
+      if (this.interruptedWorkflows.length > 0) {
+        const lower = trimmed.toLowerCase().trim();
+        if (/^resume( all)?$/.test(lower)) {
+          const toResume = this.interruptedWorkflows.splice(0);
+          for (const checkpoint of toResume) {
+            void this.orchestration.resumeFromCheckpoint(
+              checkpoint,
+              (e) => this.pushHistory(e as HistoryEntry),
+            );
+          }
+          return;
+        }
+        if (/^discard$/.test(lower)) {
+          for (const checkpoint of this.interruptedWorkflows) {
+            this.orchestration.discardInterruptedWorkflow(checkpoint.workflowId);
+          }
+          this.interruptedWorkflows = [];
+          this.callbacks.onText('Interrupted workflows discarded.', false, true);
+          return;
+        }
+      }
+
       // 1. Slash command
       if (trimmed.startsWith('/')) {
         await this.handleCommand(trimmed);
@@ -229,9 +280,9 @@ export class MainAgent {
       }
 
       // 3. Pending plan + "do it"
-      if (this.orchestration.hasPendingPlan && this.orchestration.pendingId && isImmediateExecution(trimmed)) {
+      if (this.orchestration.hasPendingPlans && this.orchestration.latestPendingPlanId && isImmediateExecution(trimmed)) {
         await this.orchestration.handlePlanResponse(
-          this.orchestration.pendingId, 'approve',
+          this.orchestration.latestPendingPlanId, 'approve',
           (e) => this.pushHistory(e as HistoryEntry),
         );
         return;
@@ -302,16 +353,18 @@ export class MainAgent {
           command: '/help', success: true,
           message: [
             'Available commands:',
-            '  /status  — Current workflow status',
-            '  /stop    — Stop the active workflow',
-            '  /pause   — Pause before next layer',
-            '  /resume  — Resume a paused workflow',
-            '  /plan    — Show the current plan',
-            '  /workers — List active workers',
-            '  /reset   — Clear pending plans and history',
-            '  /restart — Restart the gateway service',
-            '  /skills  — View, enable/disable, configure skills',
-            '  /help    — This message',
+            '  /workflows — List all active workflows',
+            '  /status    — Current workflow status',
+            '  /stop      — Stop the active workflow',
+            '  /pause     — Pause before next layer',
+            '  /resume    — Resume a paused workflow',
+            '  /plan      — Show the current plan',
+            '  /workers   — List active workers',
+            '  /gates     — List pending human approval gates',
+            '  /reset     — Clear pending plans and history',
+            '  /restart   — Restart the gateway service',
+            '  /skills    — View, enable/disable, configure skills',
+            '  /help      — This message',
           ].join('\n'),
         });
         return;
@@ -338,9 +391,24 @@ export class MainAgent {
         return;
       }
 
+      if (cmd === '/gates') {
+        const gates = this.orchestration.listPendingGates();
+        if (gates.length === 0) {
+          this.callbacks.onCommandResult({ command: '/gates', success: true, message: 'No pending gates.' });
+        } else {
+          const lines = ['Pending gates:', ''];
+          for (const g of gates) {
+            lines.push(`  [${g.gateId}] ${g.workflowName}: ${g.action} — ${g.description}`);
+          }
+          lines.push('', 'Reply allow or deny to approve/reject the first gate.');
+          this.callbacks.onCommandResult({ command: '/gates', success: true, message: lines.join('\n') });
+        }
+        return;
+      }
+
       if (cmd === '/reset') {
-        this.orchestration.clearPendingPlan();
-        this.orchestration.stop();
+        this.orchestration.clearPendingPlans();
+        this.orchestration.stopAll();
         this.context.clear();
         this.cachedSystemPrompt = null;
         this.callbacks.onCommandResult({
@@ -510,7 +578,7 @@ export class MainAgent {
     }
     const context: PromptContext = {
       workspaceDir: this.config.workspaceDir,
-      activeWorkflow: this.orchestration.executor !== null,
+      activeWorkflow: this.orchestration.hasActiveWorkflow,
     };
     this.cachedSystemPrompt = await buildSystemPrompt(context);
     return this.cachedSystemPrompt;

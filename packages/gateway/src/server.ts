@@ -168,6 +168,7 @@ async function initMainAgent(): Promise<void> {
       wsHandler.broadcast({
         id: randomBytes(8).toString('hex'),
         type: 'event',
+        workflowId: (event as { workflowId?: string }).workflowId,
         event,
       });
     },
@@ -175,6 +176,7 @@ async function initMainAgent(): Promise<void> {
       wsHandler.broadcast({
         id: randomBytes(8).toString('hex'),
         type: 'status',
+        workflowId: state.workflowId,
         graphState: state,
       });
     },
@@ -184,6 +186,14 @@ async function initMainAgent(): Promise<void> {
         type: "session_status",
         sessionStatus: status,
       });
+    },
+    onWorkflowStart(workflowId, _workflowName) {
+      const sessionId = sessionManager.listSessions()[0]?.id;
+      if (sessionId) sessionManager.addActiveWorkflow(sessionId, workflowId);
+    },
+    onWorkflowEnd(workflowId) {
+      const sessionId = sessionManager.listSessions()[0]?.id;
+      if (sessionId) sessionManager.removeActiveWorkflow(sessionId, workflowId);
     },
     onCommandResult(result) {
       wsHandler.broadcast({

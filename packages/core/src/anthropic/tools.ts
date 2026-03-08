@@ -7,9 +7,12 @@
  * in the default-skills/ directory and installed to ~/.orionomega/skills/.
  */
 
-import { execSync } from 'node:child_process';
+import { exec as execCb } from 'node:child_process';
+import { promisify } from 'node:util';
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { dirname } from 'node:path';
+
+const execAsync = promisify(execCb);
 
 /** A built-in tool available to every worker agent. */
 export interface BuiltInTool {
@@ -86,17 +89,16 @@ export function getBuiltInTools(): BuiltInTool[] {
         if (!command) return 'Error: command is required';
 
         try {
-          const stdout = execSync(command, {
+          const { stdout, stderr } = await execAsync(command, {
             cwd,
             timeout,
             maxBuffer: 10 * 1024 * 1024,
-            encoding: 'utf-8',
-            stdio: ['pipe', 'pipe', 'pipe'],
+            shell: '/bin/bash',
           });
-          return truncate(stdout);
+          return truncate(stdout + (stderr ? '\nstderr:\n' + stderr : ''));
         } catch (err: unknown) {
           const e = err as {
-            status?: number;
+            code?: number;
             stdout?: string;
             stderr?: string;
             message?: string;
@@ -104,7 +106,7 @@ export function getBuiltInTools(): BuiltInTool[] {
           const output = [
             e.stdout ? `stdout:\n${e.stdout}` : '',
             e.stderr ? `stderr:\n${e.stderr}` : '',
-            `exit code: ${e.status ?? 'unknown'}`,
+            `exit code: ${e.code ?? 'unknown'}`,
           ]
             .filter(Boolean)
             .join('\n');

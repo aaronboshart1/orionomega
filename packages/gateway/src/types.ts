@@ -31,6 +31,8 @@ export interface ClientMessage {
 export interface ServerMessage {
   id: string;
   type: 'text' | 'thinking' | 'plan' | 'event' | 'status' | 'command_result' | 'session_status' | 'error' | 'ack' | 'history';
+  /** Identifies which workflow this message relates to (events, status updates, plans). */
+  workflowId?: string;
   content?: string;
   streaming?: boolean;
   done?: boolean;

@@ -1,6 +1,11 @@
 /**
  * @module anthropic/client
  * Lightweight Anthropic API client using native fetch. No SDK dependency.
+ *
+ * @deprecated AGENT nodes now use the Claude Agent SDK via executeAgent() in
+ * agent-sdk-bridge.ts. This client is retained for non-worker uses (e.g. the
+ * LLM judge in executor.ts loop exit conditions). Do NOT delete without
+ * auditing all import sites.
  */
 
 /** A message in the Anthropic conversation format. */

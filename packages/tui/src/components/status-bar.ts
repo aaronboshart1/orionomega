@@ -191,7 +191,7 @@ export class StatusBar extends Text {
       );
     }
 
-    // Tasks
+    // Workflows / tasks
     const tasks = this._status.activeTasks ?? 0;
     const completedTasks = this._status.completedTasks ?? 0;
     const totalTasks = this._status.totalTasks ?? 0;
@@ -199,7 +199,7 @@ export class StatusBar extends Text {
       const taskStr = totalTasks > 0
         ? `${completedTasks}/${totalTasks}`
         : `${tasks}`;
-      parts.push(chalk.hex(palette.blue)('◆') + ' ' + chalk.hex(palette.text)(`tasks ${taskStr}`));
+      parts.push(chalk.hex(palette.blue)('◆') + ' ' + chalk.hex(palette.text)(`workflows ${taskStr}`));
     }
 
     // Workers

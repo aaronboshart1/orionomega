@@ -11,11 +11,23 @@
  * we delegate to the SDK that powers Claude Code itself.
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
-import type { OrionOmegaConfig } from '../config/types.js';
+import { query, createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
+import type {
+  SDKAssistantMessage,
+  SDKResultSuccess,
+  SDKResultError,
+  SDKToolProgressMessage,
+  SDKTaskStartedMessage,
+  SDKTaskProgressMessage,
+  McpSdkServerConfigWithInstance,
+} from '@anthropic-ai/claude-agent-sdk';
+import { z } from 'zod/v4';
 import { readConfig } from '../config/loader.js';
 import type { WorkflowNode } from './types.js';
 import { createLogger } from '../logging/logger.js';
+import { SkillLoader, SkillExecutor, readSkillConfig } from '@orionomega/skills-sdk';
+import type { SkillTool } from '@orionomega/skills-sdk';
+import path from 'node:path';
 
 const log = createLogger('agent-sdk-bridge');
 
@@ -67,6 +79,449 @@ const DEFAULT_CODING_TOOLS = [
 ];
 
 /**
+ * Default tools for AGENT nodes — the Claude Code toolset without subagent spawning.
+ * Workers run autonomously but don't need to spawn their own sub-agents.
+ */
+const DEFAULT_AGENT_TOOLS = [
+  'Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep',
+  'WebSearch', 'WebFetch',
+];
+
+/** Configuration for a general AGENT node execution via the Agent SDK. */
+export interface AgentExecutionConfig {
+  /** The task description. */
+  task: string;
+  /** Resolved model ID. */
+  model: string;
+  /** Worker system prompt (plain string, built by buildWorkerSystemPrompt). */
+  systemPrompt: string;
+  /** Working directory for the agent. */
+  cwd: string;
+  /** Skill IDs — docs are injected via systemPrompt; reserved for future MCP integration. */
+  skillIds?: string[];
+  /**
+   * Token budget from agent config. Converted to maxBudgetUsd unless
+   * maxBudgetUsd is explicitly provided.
+   */
+  tokenBudget?: number;
+  /** Explicit USD budget override (takes precedence over tokenBudget). */
+  maxBudgetUsd?: number;
+  /** Maximum agentic turns. Defaults to SDK config then 50. */
+  maxTurns?: number;
+  /** Abort signal for cooperative cancellation. */
+  abortSignal?: AbortSignal;
+  /** Progress callback for WorkerEvent emission. */
+  onProgress?: (event: { type: string; message: string; progress?: number }) => void;
+  /** Optional structured output format. When provided, the SDK will return parsed JSON. */
+  outputFormat?: { type: 'json_schema'; schema: Record<string, unknown> };
+}
+
+/** Result of an AGENT node execution via the Agent SDK. */
+export interface AgentExecutionResult {
+  /** Final text output from the agent. */
+  output: string;
+  /** Total tool calls made. */
+  toolCalls: number;
+  /** Whether execution completed successfully. */
+  success: boolean;
+  /** Error message if the agent failed. */
+  error?: string;
+  /** Cost in USD (if reported by the SDK). */
+  costUsd?: number;
+  /** Duration in seconds. */
+  durationSec: number;
+  /** Paths to files written by the agent (tracked from Write tool calls). */
+  outputPaths: string[];
+  /** Parsed structured output when outputFormat was provided. */
+  structuredOutput?: unknown;
+}
+
+/**
+ * Converts a token budget to a rough USD estimate for the given model.
+ * Uses input-token cost rates with a 4x multiplier to account for output tokens.
+ */
+function tokenBudgetToUsd(tokenBudget: number, model: string): number {
+  const lower = model.toLowerCase();
+  // Cost per million input tokens (approximate current rates)
+  let costPerMillion: number;
+  if (lower.includes('haiku')) costPerMillion = 1.0;
+  else if (lower.includes('opus')) costPerMillion = 5.0;
+  else costPerMillion = 3.0; // sonnet default
+
+  // Multiply by 4 to account for output tokens and safety margin
+  const estimated = (tokenBudget / 1_000_000) * costPerMillion * 4;
+  return Math.max(1.0, Math.min(estimated, 50.0)); // Cap: $1 min, $50 max
+}
+
+// ── P5: Skill MCP server ─────────────────────────────────────────────
+
+/**
+ * Convert a JSON Schema property descriptor to a Zod type.
+ * Handles the most common types; falls back to z.unknown() for complex schemas.
+ */
+function jsonSchemaPropertyToZod(
+  prop: Record<string, unknown>,
+  required: boolean,
+): z.ZodType {
+  const type = prop.type as string | undefined;
+
+  let base: z.ZodType;
+
+  if (prop.enum && Array.isArray(prop.enum)) {
+    // Enum — use z.enum for string enums, z.unknown otherwise
+    const values = prop.enum as unknown[];
+    if (values.length >= 1 && values.every((v) => typeof v === 'string')) {
+      base = z.enum(values as [string, ...string[]]);
+    } else {
+      // Mixed or non-string enum — accept any value
+      base = z.unknown();
+    }
+  } else if (type === 'string') {
+    base = z.string();
+  } else if (type === 'number' || type === 'integer') {
+    base = z.number();
+  } else if (type === 'boolean') {
+    base = z.boolean();
+  } else if (type === 'array') {
+    const items = prop.items as Record<string, unknown> | undefined;
+    if (items?.type === 'string') {
+      base = z.array(z.string());
+    } else if (items?.type === 'number' || items?.type === 'integer') {
+      base = z.array(z.number());
+    } else {
+      base = z.array(z.unknown());
+    }
+  } else if (type === 'object') {
+    base = z.record(z.string(), z.unknown());
+  } else {
+    base = z.unknown();
+  }
+
+  return required ? base : base.optional();
+}
+
+/**
+ * Convert a JSON Schema object descriptor (with `properties` and `required`)
+ * into a Zod raw shape (plain object of zod types) for use with tool().
+ */
+function jsonSchemaToZodShape(
+  schema: Record<string, unknown>,
+): Record<string, z.ZodType> {
+  const properties = (schema.properties ?? {}) as Record<
+    string,
+    Record<string, unknown>
+  >;
+  const requiredFields = new Set(
+    Array.isArray(schema.required) ? (schema.required as string[]) : [],
+  );
+
+  const shape: Record<string, z.ZodType> = {};
+  for (const [key, propDef] of Object.entries(properties)) {
+    shape[key] = jsonSchemaPropertyToZod(propDef, requiredFields.has(key));
+  }
+  return shape;
+}
+
+/**
+ * Build an in-process MCP server exposing all tools from the given skill IDs.
+ *
+ * Each skill's tools are registered as SDK MCP tool definitions. The handler
+ * reads the skill's config.json to obtain API keys and other env vars, then
+ * delegates to SkillExecutor.executeHandler() (JSON-in / JSON-out child process).
+ *
+ * @param skillIds - Skill identifiers to expose (e.g. ["linear"]).
+ * @param skillsDir - Absolute path to the skills directory.
+ * @returns McpSdkServerConfigWithInstance ready to pass to query() mcpServers.
+ */
+async function buildSkillMcpServer(
+  skillIds: string[],
+  skillsDir: string,
+): Promise<McpSdkServerConfigWithInstance> {
+  const loader = new SkillLoader(skillsDir);
+  const executor = new SkillExecutor();
+  const toolDefs: ReturnType<typeof tool>[] = [];
+
+  for (const skillId of skillIds) {
+    let loadedSkill;
+    try {
+      loadedSkill = await loader.load(skillId);
+    } catch (err) {
+      log.warn(
+        `buildSkillMcpServer: skipping skill "${skillId}" — failed to load: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      continue;
+    }
+
+    const skillConfig = readSkillConfig(skillsDir, skillId);
+    if (!skillConfig.enabled) {
+      log.warn(`buildSkillMcpServer: skipping skill "${skillId}" — disabled`);
+      continue;
+    }
+
+    // Build env vars from skill config fields
+    const skillEnv: Record<string, string> = {};
+    for (const [key, value] of Object.entries(skillConfig.fields)) {
+      skillEnv[key] = String(value);
+    }
+
+    const skillDir = loadedSkill.skillDir;
+    const skillTools: SkillTool[] = loadedSkill.manifest.tools ?? [];
+
+    for (const toolDef of skillTools) {
+      const zodShape = jsonSchemaToZodShape(
+        toolDef.inputSchema as Record<string, unknown>,
+      );
+
+      // Capture loop variables for the async handler closure
+      const capturedHandlerPath = path.resolve(skillDir, toolDef.handler);
+      const capturedTimeout = toolDef.timeout ?? 30_000;
+      const capturedSkillDir = skillDir;
+      const capturedEnv = skillEnv;
+
+      const mcpTool = tool(
+        toolDef.name,
+        toolDef.description,
+        zodShape,
+        async (args: Record<string, unknown>) => {
+          try {
+            const result = await executor.executeHandler(
+              capturedHandlerPath,
+              args,
+              {
+                cwd: capturedSkillDir,
+                timeout: capturedTimeout,
+                env: capturedEnv,
+              },
+            );
+            const text =
+              typeof result === 'string'
+                ? result
+                : JSON.stringify(result, null, 2);
+            return { content: [{ type: 'text' as const, text }] };
+          } catch (err) {
+            const errMsg = err instanceof Error ? err.message : String(err);
+            log.warn(`Skill tool "${toolDef.name}" failed: ${errMsg}`);
+            return {
+              content: [{ type: 'text' as const, text: `Error: ${errMsg}` }],
+              isError: true,
+            };
+          }
+        },
+      );
+
+      toolDefs.push(mcpTool);
+      log.info(`Registered MCP skill tool: ${toolDef.name} (from ${skillId})`);
+    }
+  }
+
+  return createSdkMcpServer({ name: 'orionomega-skills', tools: toolDefs });
+}
+
+/**
+ * Execute a general AGENT node using the Claude Agent SDK.
+ *
+ * This replaces the hand-rolled runAgentLoop() for AGENT nodes, gaining the
+ * full Claude Code toolset (Bash, Glob, Grep, WebSearch, WebFetch, etc.),
+ * adaptive thinking, and non-blocking async tool execution.
+ *
+ * @param options - Agent execution configuration.
+ * @returns AgentExecutionResult with output, metrics, and output file paths.
+ */
+export async function executeAgent(
+  options: AgentExecutionConfig,
+): Promise<AgentExecutionResult> {
+  const config = readConfig();
+  const sdkConfig = config.agentSdk;
+  const apiKey = config.models.apiKey;
+
+  if (!apiKey) {
+    return {
+      output: '',
+      toolCalls: 0,
+      success: false,
+      error: 'No API key configured',
+      durationSec: 0,
+      outputPaths: [],
+    };
+  }
+
+  const {
+    task, model, systemPrompt, cwd,
+    abortSignal, onProgress, outputFormat,
+  } = options;
+
+  const maxTurns = options.maxTurns ?? sdkConfig.maxTurns ?? 50;
+  const maxBudgetUsd = options.maxBudgetUsd
+    ?? sdkConfig.maxBudgetUsd
+    ?? (options.tokenBudget ? tokenBudgetToUsd(options.tokenBudget, model) : undefined);
+
+  log.info(`Starting agent: "${task.slice(0, 80)}..."`, { model, cwd, maxTurns });
+  onProgress?.({ type: 'status', message: `Agent starting: ${task.slice(0, 60)}...`, progress: 0 });
+
+  const abortController = new AbortController();
+  if (abortSignal) {
+    abortSignal.addEventListener('abort', () => abortController.abort());
+  }
+
+  const startTime = Date.now();
+  let output = '';
+  let toolCalls = 0;
+  let costUsd: number | undefined;
+  let structuredOutput: unknown;
+  const outputPaths: string[] = [];
+  let progressEstimate = 5;
+
+  // P5: Build skill MCP server if skillIds are provided
+  let mcpServers: Record<string, McpSdkServerConfigWithInstance> | undefined;
+  if (options.skillIds?.length) {
+    const skillsDir = readConfig().skills?.directory;
+    if (skillsDir) {
+      try {
+        const mcpServer = await buildSkillMcpServer(options.skillIds, skillsDir);
+        mcpServers = { 'orionomega-skills': mcpServer };
+        log.info(`Skill MCP server built with ${options.skillIds.join(', ')} for worker`);
+      } catch (err) {
+        log.warn(
+          `Failed to build skill MCP server: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+  }
+
+  try {
+    const queryResult = query({
+      prompt: task,
+      options: {
+        model,
+        cwd,
+        allowedTools: DEFAULT_AGENT_TOOLS,
+        // Workers run autonomously — bypass permission prompts
+        permissionMode: 'bypassPermissions' as const,
+        allowDangerouslySkipPermissions: true,
+        effort: sdkConfig.effort ?? 'high',
+        // Adaptive thinking — Claude decides when/how much to think
+        thinking: { type: 'adaptive' },
+        maxTurns,
+        ...(maxBudgetUsd ? { maxBudgetUsd } : {}),
+        systemPrompt,
+        abortController,
+        env: {
+          ...process.env,
+          ANTHROPIC_API_KEY: apiKey,
+          CLAUDE_AGENT_SDK_CLIENT_APP: 'orionomega-worker',
+        },
+        additionalDirectories: sdkConfig.additionalDirectories,
+        // Omit settingSources — default is no CLAUDE.md loading; the worker
+        // system prompt is self-contained.
+        persistSession: false,
+        // P5: Skill MCP server (if any skills are configured)
+        ...(mcpServers ? { mcpServers } : {}),
+        // P6: Structured output format (optional)
+        ...(outputFormat ? { outputFormat } : {}),
+      },
+    });
+
+    for await (const message of queryResult) {
+      // Assistant message — collect text and tool use
+      if (message.type === 'assistant') {
+        const assistantMsg = message as SDKAssistantMessage;
+        if (assistantMsg.message?.content) {
+          for (const block of assistantMsg.message.content) {
+            if (block.type === 'text' && block.text.trim()) {
+              output += block.text + '\n';
+              onProgress?.({
+                type: 'status',
+                message: block.text.trim().slice(0, 100),
+                progress: Math.min(progressEstimate, 90),
+              });
+            }
+
+            if (block.type === 'tool_use') {
+              toolCalls++;
+              progressEstimate = Math.min(progressEstimate + 5, 90);
+              const toolName = block.name;
+              const toolInput = block.input as Record<string, unknown> | undefined ?? {};
+
+              // Build a concise summary
+              let summary = toolName;
+              if (toolInput.file_path) summary = `${toolName}: ${String(toolInput.file_path)}`;
+              else if (toolInput.command) summary = `${toolName}: ${String(toolInput.command).slice(0, 80)}`;
+              else if (toolInput.pattern) summary = `${toolName}: ${String(toolInput.pattern)}`;
+              else if (toolInput.url) summary = `${toolName}: ${String(toolInput.url).slice(0, 80)}`;
+
+              // Track write/edit paths for output reporting
+              if ((toolName === 'Write' || toolName === 'Edit') && toolInput.file_path) {
+                outputPaths.push(String(toolInput.file_path));
+              }
+
+              onProgress?.({
+                type: 'tool_call',
+                message: summary,
+                progress: progressEstimate,
+              });
+            }
+          }
+        }
+      }
+
+      // Result message — final output
+      if (message.type === 'result') {
+        costUsd = (message as SDKResultSuccess | SDKResultError).total_cost_usd;
+
+        if ((message as SDKResultSuccess).subtype === 'success') {
+          const successMsg = message as SDKResultSuccess;
+          // P6: Prefer structured output over raw text when available
+          if (successMsg.structured_output !== undefined) {
+            structuredOutput = successMsg.structured_output;
+            output += '\n' + JSON.stringify(successMsg.structured_output, null, 2);
+          } else if (successMsg.result) {
+            output += '\n' + successMsg.result;
+          }
+        } else {
+          const errorMsg = message as SDKResultError;
+          const errSummary = errorMsg.errors?.join('; ') ?? errorMsg.subtype;
+          log.warn(`Agent result error: ${errSummary}`);
+        }
+
+        onProgress?.({
+          type: 'done',
+          message: `Agent complete: ${toolCalls} tool calls`,
+          progress: 100,
+        });
+      }
+    }
+
+    const durationSec = (Date.now() - startTime) / 1000;
+    log.info(`Agent completed: ${toolCalls} tool calls, ${durationSec.toFixed(1)}s${costUsd ? ` ($${costUsd.toFixed(4)})` : ''}`);
+
+    return {
+      output: output.trim(),
+      toolCalls,
+      success: true,
+      durationSec,
+      costUsd,
+      outputPaths,
+      ...(structuredOutput !== undefined ? { structuredOutput } : {}),
+    };
+  } catch (err) {
+    const durationSec = (Date.now() - startTime) / 1000;
+    const errorMsg = err instanceof Error ? err.message : String(err);
+
+    log.error(`Agent failed: ${errorMsg}`);
+    onProgress?.({ type: 'error', message: `Agent error: ${errorMsg}` });
+
+    return {
+      output: output.trim(),
+      toolCalls,
+      success: false,
+      error: errorMsg,
+      durationSec,
+      outputPaths,
+    };
+  }
+}
+
+/**
  * Execute a coding task using the Claude Agent SDK.
  *
  * This is the main entry point called by the executor for CODING_AGENT nodes.
@@ -82,6 +537,7 @@ export async function executeCodingAgent(
   node: WorkflowNode,
   workspaceDir: string,
   onProgress?: (event: { type: string; message: string; progress?: number }) => void,
+  abortSignal?: AbortSignal,
 ): Promise<CodingAgentResult> {
   const config = readConfig();
   const sdkConfig = config.agentSdk;
@@ -111,10 +567,15 @@ export async function executeCodingAgent(
 
   onProgress?.({ type: 'status', message: `Coding agent starting: ${task.slice(0, 60)}...`, progress: 0 });
 
+  // P2: AbortController for SDK cancellation
+  const abortController = new AbortController();
+  if (abortSignal) {
+    abortSignal.addEventListener('abort', () => abortController.abort());
+  }
+
   const startTime = Date.now();
   let output = '';
   let toolCalls = 0;
-  let lastToolName = '';
   let costUsd: number | undefined;
 
   try {
@@ -164,9 +625,15 @@ export async function executeCodingAgent(
         maxTurns,
         ...(maxBudgetUsd ? { maxBudgetUsd } : {}),
         systemPrompt,
+        // P4: Adaptive thinking — Claude decides when and how much to think
+        thinking: { type: 'adaptive' },
+        // P2: AbortController for cooperative cancellation
+        abortController,
         env: {
           ...process.env,
           ANTHROPIC_API_KEY: apiKey,
+          // P3: Identify this client to the SDK
+          CLAUDE_AGENT_SDK_CLIENT_APP: 'orionomega-orchestrator',
         },
         additionalDirectories: codingConfig.additionalDirectories ?? sdkConfig.additionalDirectories,
         ...(agents ? { agents } : {}),
@@ -176,35 +643,72 @@ export async function executeCodingAgent(
     });
 
     for await (const message of queryResult) {
-      // Assistant message — collect text and tool use
-      if (message.type === 'assistant' && message.message?.content) {
-        for (const block of message.message.content) {
-          if ('text' in block && typeof block.text === 'string') {
-            output += block.text + '\n';
-          }
-          if ('name' in block && typeof block.name === 'string') {
-            toolCalls++;
-            lastToolName = block.name;
+      // P3: Use message.type discriminator for proper typed handling
 
-            // Report progress
-            const pct = Math.min(90, Math.round((toolCalls / maxTurns) * 100));
-            onProgress?.({
-              type: 'tool',
-              message: `Tool: ${block.name}${('tool_input' in block && block.tool_input && typeof block.tool_input === 'object' && 'file_path' in block.tool_input) ? ` → ${(block.tool_input as Record<string, unknown>).file_path}` : ''}`,
-              progress: pct,
-            });
+      // Assistant message — collect text and tool use
+      if (message.type === 'assistant') {
+        const assistantMsg = message as SDKAssistantMessage;
+        if (assistantMsg.message?.content) {
+          for (const block of assistantMsg.message.content) {
+            if (block.type === 'text') {
+              output += block.text + '\n';
+            }
+            if (block.type === 'tool_use') {
+              toolCalls++;
+              const pct = Math.min(90, Math.round((toolCalls / maxTurns) * 100));
+              const filePath = block.input && typeof block.input === 'object' && 'file_path' in block.input
+                ? ` → ${(block.input as Record<string, unknown>).file_path}`
+                : '';
+              onProgress?.({
+                type: 'tool',
+                message: `Tool: ${block.name}${filePath}`,
+                progress: pct,
+              });
+            }
           }
         }
       }
 
-      // Result message — final output
-      if (message.type === 'result') {
-        const resultMsg = message as Record<string, unknown>;
-        if (resultMsg.result && typeof resultMsg.result === 'string') {
-          output += '\n' + resultMsg.result;
+      // Tool progress — richer subagent/tool progress reporting
+      if (message.type === 'tool_progress') {
+        const tpMsg = message as SDKToolProgressMessage;
+        onProgress?.({
+          type: 'tool',
+          message: `Tool running: ${tpMsg.tool_name} (${tpMsg.elapsed_time_seconds.toFixed(1)}s)`,
+        });
+      }
+
+      // System messages — subagent task lifecycle
+      if (message.type === 'system') {
+        const sysMsg = message as SDKTaskStartedMessage | SDKTaskProgressMessage;
+        if (sysMsg.subtype === 'task_started') {
+          onProgress?.({
+            type: 'status',
+            message: `Subagent started: ${(sysMsg as SDKTaskStartedMessage).description}`,
+          });
+        } else if (sysMsg.subtype === 'task_progress') {
+          const tp = sysMsg as SDKTaskProgressMessage;
+          onProgress?.({
+            type: 'status',
+            message: `Subagent progress: ${tp.description}${tp.last_tool_name ? ` (${tp.last_tool_name})` : ''}`,
+          });
         }
-        if (typeof resultMsg.total_cost_usd === 'number') {
-          costUsd = resultMsg.total_cost_usd;
+      }
+
+      // Result message — final output (success or error)
+      if (message.type === 'result') {
+        costUsd = (message as SDKResultSuccess | SDKResultError).total_cost_usd;
+
+        if ((message as SDKResultSuccess).subtype === 'success') {
+          const successMsg = message as SDKResultSuccess;
+          if (successMsg.result) {
+            output += '\n' + successMsg.result;
+          }
+        } else {
+          // Error result — log the errors
+          const errorMsg = message as SDKResultError;
+          const errSummary = errorMsg.errors?.join('; ') ?? errorMsg.subtype;
+          log.warn(`Coding agent result error: ${errSummary}`);
         }
 
         onProgress?.({

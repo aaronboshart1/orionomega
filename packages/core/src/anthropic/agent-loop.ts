@@ -2,6 +2,12 @@
  * @module anthropic/agent-loop
  * Core agent conversation loop with tool use, streaming, and automatic retries.
  *
+ * @deprecated AGENT nodes now use the Claude Agent SDK via executeAgent() in
+ * agent-sdk-bridge.ts, which provides adaptive thinking, richer tooling, and
+ * non-blocking async execution. This module is retained as a fallback and may
+ * still be used by other non-worker consumers. Do NOT delete without auditing
+ * all import sites.
+ *
  * This is the heart of the worker execution system. It sends messages to the
  * Anthropic API, streams responses, handles tool_use blocks by executing tools
  * and feeding results back, and loops until the model signals end_turn.

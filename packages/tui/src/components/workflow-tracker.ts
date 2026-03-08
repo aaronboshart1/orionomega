@@ -1,19 +1,11 @@
 /**
  * @module components/workflow-tracker
- * Displays workflow progress with tree-style layout.
- * Rendered as a single Text block to ensure correct line ordering:
- *
- *   ⚡ Review SDK · 45s · ✅ 3/8 · 🔄 2 · layer 2/3
- *   ✅ Discover Repo Structure [Haiku 4.5]
- *      └─ Explored 47 files, found 6 packages
- *   🔄 SDK Architecture Review [Opus 4.6]
- *      └─ Analyzing skill manifest schema...
- *   🔄 Security Review [Sonnet 4.6]
- *      └─ Checking dependency audit...
- *   ⏳ Final Report [Opus 4.6]
+ * Displays workflow progress aligned to the approved plan.
+ * Shows each task with status: ⏳ pending, 🔄 running, ✅ done, ❌ failed.
+ * Rendered as a persistent block in the chat log when a workflow is active.
  */
 
-import { Container, Text } from '@mariozechner/pi-tui';
+import { Container, Text, Spacer } from '@mariozechner/pi-tui';
 import type { GraphState } from '@orionomega/core';
 import chalk from 'chalk';
 
@@ -21,11 +13,11 @@ const palette = {
   dim: '#5C6370',
   text: '#ABB2BF',
   accent: '#F6C453',
-  green: '#00DE6A',
+  green: '#7DD3A5',
   red: '#F97066',
   blue: '#61AFEF',
   purple: '#C678DD',
-  tree: '#3E4451',
+  yellow: '#E5C07B',
 };
 
 interface TrackedNode {
@@ -36,24 +28,48 @@ interface TrackedNode {
   layer: number;
   lastMessage?: string;
   progress?: number;
+  elapsed?: number;
 }
 
 /**
- * Visual workflow tracker — renders as a single Text element so
- * node lines and their activity └─ lines stay correctly interleaved.
+ * Visual workflow tracker that updates in-place as tasks progress.
  */
 export class WorkflowTracker extends Container {
-  private display: Text;
+  private headerText: Text;
+  private nodeTexts = new Map<string, Text>();
+  private nodeAttached = new Set<string>();
   private trackedNodes = new Map<string, TrackedNode>();
   private workflowName = '';
   private startTime = Date.now();
   private totalLayers = 0;
   private completedLayers = 0;
+  private _expanded = true;
 
   constructor() {
     super();
-    this.display = new Text('', 1, 0);
-    this.addChild(this.display);
+    this.headerText = new Text('', 1, 0);
+    this.addChild(this.headerText);
+  }
+
+  get expanded(): boolean {
+    return this._expanded;
+  }
+
+  set expanded(value: boolean) {
+    if (this._expanded === value) return;
+    this._expanded = value;
+    if (!value) {
+      // Collapse: detach all node texts
+      for (const [id, text] of this.nodeTexts) {
+        if (this.nodeAttached.has(id)) {
+          this.removeChild(text);
+          this.nodeAttached.delete(id);
+        }
+      }
+    } else {
+      // Expand: re-attach via rebuild
+      this.rebuild();
+    }
   }
 
   /** Initialize tracker with a new workflow's graph state. */
@@ -62,19 +78,29 @@ export class WorkflowTracker extends Container {
     this.totalLayers = state.totalLayers;
     this.completedLayers = state.completedLayers;
     this.startTime = Date.now();
+
+    // Clear old nodes
+    for (const text of this.nodeTexts.values()) {
+      this.removeChild(text);
+    }
+    this.nodeTexts.clear();
+    this.nodeAttached.clear();
     this.trackedNodes.clear();
 
+    // Build tracked nodes from graph state
     const nodes = state.nodes ?? {};
     for (const [id, node] of Object.entries(nodes)) {
       const n = node as any;
-      this.trackedNodes.set(id, {
+      const tracked: TrackedNode = {
         id,
         label: n.label ?? id,
-        model: this.shortenModel(n.agent?.model ?? n.codingAgent?.model ?? ''),
+        model: this.shortenModel(n.agent?.model ?? ''),
         status: this.mapStatus(n.status),
         layer: n.layer ?? 0,
+        lastMessage: undefined,
         progress: n.progress,
-      });
+      };
+      this.trackedNodes.set(id, tracked);
     }
 
     this.rebuild();
@@ -96,7 +122,7 @@ export class WorkflowTracker extends Container {
         this.trackedNodes.set(id, {
           id,
           label: n.label ?? id,
-          model: this.shortenModel(n.agent?.model ?? n.codingAgent?.model ?? ''),
+          model: this.shortenModel(n.agent?.model ?? ''),
           status: this.mapStatus(n.status),
           layer: n.layer ?? 0,
           progress: n.progress,
@@ -104,6 +130,7 @@ export class WorkflowTracker extends Container {
       }
     }
 
+    // Check recent events for status messages
     for (const evt of state.recentEvents ?? []) {
       const tracked = this.trackedNodes.get(evt.nodeId);
       if (tracked && evt.message) {
@@ -121,75 +148,73 @@ export class WorkflowTracker extends Container {
 
     if (type === 'done') tracked.status = 'complete';
     else if (type === 'error') tracked.status = 'error';
-    else if (tracked.status === 'pending') tracked.status = 'running';
+    else if (type !== 'done' && type !== 'error' && tracked.status === 'pending') {
+      tracked.status = 'running';
+    }
     if (message) tracked.lastMessage = message;
     this.rebuild();
   }
 
+  /** Check if workflow is still active. */
   get isActive(): boolean {
     return this.trackedNodes.size > 0 &&
       Array.from(this.trackedNodes.values()).some(n => n.status === 'pending' || n.status === 'running');
   }
 
   private rebuild(): void {
-    const dim = chalk.hex(palette.dim);
-    const txt = chalk.hex(palette.text);
-    const acc = chalk.hex(palette.accent);
-    const grn = chalk.hex(palette.green);
-    const red = chalk.hex(palette.red);
-    const blu = chalk.hex(palette.blue);
-    const pur = chalk.hex(palette.purple);
-    const tree = chalk.hex(palette.tree);
-
-    const lines: string[] = [];
-
-    // Header
+    // Update header
     const elapsed = Math.round((Date.now() - this.startTime) / 1000);
-    const vals = Array.from(this.trackedNodes.values());
-    const done = vals.filter(n => n.status === 'complete').length;
-    const total = vals.length;
-    const running = vals.filter(n => n.status === 'running').length;
-    const failed = vals.filter(n => n.status === 'error').length;
+    const done = Array.from(this.trackedNodes.values()).filter(n => n.status === 'complete').length;
+    const total = this.trackedNodes.size;
+    const running = Array.from(this.trackedNodes.values()).filter(n => n.status === 'running').length;
+    const failed = Array.from(this.trackedNodes.values()).filter(n => n.status === 'error').length;
 
-    const parts = [
-      acc.bold(`⚡ ${this.workflowName.slice(0, 50)}`),
-      dim(`${elapsed}s`),
-      grn(`✅ ${done}`) + dim('/') + txt(`${total}`),
+    const headerParts = [
+      chalk.hex(palette.accent).bold(`⚡ ${this.workflowName}`),
+      chalk.hex(palette.dim)(`${elapsed}s`),
+      chalk.hex(palette.green)(`✅ ${done}`) +
+        chalk.hex(palette.dim)('/') +
+        chalk.hex(palette.text)(`${total}`),
     ];
-    if (running > 0) parts.push(blu(`🔄 ${running}`));
-    if (failed > 0) parts.push(red(`❌ ${failed}`));
-    parts.push(dim(`layer ${this.completedLayers}/${this.totalLayers}`));
+    if (running > 0) headerParts.push(chalk.hex(palette.blue)(`🔄 ${running} running`));
+    if (failed > 0) headerParts.push(chalk.hex(palette.red)(`❌ ${failed} failed`));
+    headerParts.push(chalk.hex(palette.dim)(`layer ${this.completedLayers}/${this.totalLayers}`));
 
-    lines.push('  ' + parts.join(dim(' · ')));
+    this.headerText.setText('  ' + headerParts.join(chalk.hex(palette.dim)(' · ')));
 
-    // Nodes sorted by layer then id — with activity lines interleaved
-    const sorted = vals.sort((a, b) =>
-      a.layer !== b.layer ? a.layer - b.layer : a.id.localeCompare(b.id),
-    );
+    if (!this._expanded) return;
+
+    // Update or create node lines
+    // Sort by layer then by id
+    const sorted = Array.from(this.trackedNodes.values()).sort((a, b) => {
+      if (a.layer !== b.layer) return a.layer - b.layer;
+      return a.id.localeCompare(b.id);
+    });
 
     for (const node of sorted) {
-      // Node line
       const icon = this.statusIcon(node.status);
-      const nameColor = node.status === 'complete' ? grn
-        : node.status === 'error' ? red
-        : node.status === 'running' ? blu
-        : dim;
-      const model = node.model ? pur(` [${node.model}]`) : '';
-      lines.push(`    ${icon} ${nameColor(node.label)}${model}`);
+      const name = chalk.hex(node.status === 'complete' ? palette.green : node.status === 'error' ? palette.red : node.status === 'running' ? palette.blue : palette.dim)(node.label);
+      const model = node.model ? chalk.hex(palette.purple)(` [${node.model}]`) : '';
+      const msg = node.lastMessage
+        ? chalk.hex(palette.dim)(` — ${node.lastMessage.length > 50 ? node.lastMessage.slice(0, 50) + '…' : node.lastMessage}`)
+        : '';
 
-      // Activity line immediately after its node
-      if (node.lastMessage) {
-        const msg = node.lastMessage.length > 60
-          ? node.lastMessage.slice(0, 60) + '…'
-          : node.lastMessage;
-        const msgColor = node.status === 'error' ? red : dim;
-        lines.push(`       ${tree('└─')} ${msgColor(msg)}`);
-      } else if (node.status === 'running') {
-        lines.push(`       ${tree('└─')} ${dim('starting...')}`);
+      const line = `    ${icon} ${name}${model}${msg}`;
+
+      const existing = this.nodeTexts.get(node.id);
+      if (existing) {
+        existing.setText(line);
+        if (!this.nodeAttached.has(node.id)) {
+          this.addChild(existing);
+          this.nodeAttached.add(node.id);
+        }
+      } else {
+        const text = new Text(line, 1, 0);
+        this.addChild(text);
+        this.nodeTexts.set(node.id, text);
+        this.nodeAttached.add(node.id);
       }
     }
-
-    this.display.setText(lines.join('\n'));
   }
 
   private statusIcon(status: string): string {
@@ -218,5 +243,77 @@ export class WorkflowTracker extends Container {
       return `${name} ${ver}`;
     }
     return model.length > 15 ? model.slice(0, 15) + '…' : model;
+  }
+}
+
+/**
+ * Manages multiple WorkflowTracker instances — one per concurrent workflow.
+ * Supports focus mode: when focusedId is set, all other trackers collapse to header-only.
+ */
+export class MultiWorkflowTracker extends Container {
+  readonly trackers = new Map<string, WorkflowTracker>();
+  private focusedId: string | null = null;
+  private removalTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  addWorkflow(workflowId: string, state: import('@orionomega/core').GraphState): void {
+    if (!this.trackers.has(workflowId)) {
+      const tracker = new WorkflowTracker();
+      this.trackers.set(workflowId, tracker);
+      this.addChild(tracker);
+    }
+    this.trackers.get(workflowId)!.initFromGraphState(state);
+    this.updateVisibility();
+  }
+
+  updateWorkflow(workflowId: string, state: import('@orionomega/core').GraphState): void {
+    const tracker = this.trackers.get(workflowId);
+    if (!tracker) return;
+    tracker.updateFromGraphState(state);
+
+    // Schedule removal after completion
+    if (state.status === 'complete' || state.status === 'error' || state.status === 'stopped') {
+      if (!this.removalTimers.has(workflowId)) {
+        const timer = setTimeout(() => {
+          const t = this.trackers.get(workflowId);
+          if (t) {
+            this.removeChild(t);
+            this.trackers.delete(workflowId);
+          }
+          this.removalTimers.delete(workflowId);
+          if (this.focusedId === workflowId) this.focusedId = null;
+          this.updateVisibility();
+        }, 30_000);
+        this.removalTimers.set(workflowId, timer);
+      }
+    }
+  }
+
+  updateNodeEvent(workflowId: string, nodeId: string, type: string, message?: string): void {
+    this.trackers.get(workflowId)?.updateNodeEvent(nodeId, type, message);
+  }
+
+  setFocus(workflowId: string | null): void {
+    this.focusedId = workflowId;
+    this.updateVisibility();
+  }
+
+  get activeCount(): number {
+    return [...this.trackers.values()].filter(t => t.isActive).length;
+  }
+
+  get totalRunningWorkers(): number {
+    let count = 0;
+    for (const tracker of this.trackers.values()) {
+      // Count running nodes across all trackers via isActive check
+      // We approximate by looking at the tracker's active state
+      if (tracker.isActive) count++;
+    }
+    return count;
+  }
+
+  private updateVisibility(): void {
+    for (const [id, tracker] of this.trackers) {
+      tracker.expanded = this.focusedId === null || this.focusedId === id;
+    }
   }
 }
