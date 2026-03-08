@@ -12,17 +12,20 @@ import { GraphExecutor } from '../orchestration/executor.js';
 import type { ExecutorConfig } from '../orchestration/executor.js';
 import { EventBus } from '../orchestration/event-bus.js';
 import { OrchestratorCommands } from '../orchestration/commands.js';
+import { CheckpointManager } from '../orchestration/checkpoint.js';
 import type {
   PlannerOutput,
   WorkerEvent,
   GraphState,
   ExecutionResult,
+  WorkflowCheckpoint,
 } from '../orchestration/types.js';
 import type { MemoryBridge } from './memory-bridge.js';
 import type { MainAgentCallbacks } from './main-agent.js';
 import { createLogger } from '../logging/logger.js';
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 
 const log = createLogger('orchestration-bridge');
 
@@ -55,6 +58,17 @@ interface PendingPlan {
   createdAt: string;
 }
 
+/** A human gate approval request waiting for user input. */
+interface HumanGateRequest {
+  gateId: string;
+  workflowId: string;
+  workflowName: string;
+  action: string;
+  description: string;
+  resolve: (approved: boolean) => void;
+  timestamp: string;
+}
+
 /**
  * Manages the lifecycle of workflow planning and execution.
  *
@@ -71,6 +85,9 @@ export class OrchestrationBridge {
 
   /** Currently running executors, keyed by workflow ID. */
   private readonly activeWorkflows = new Map<string, ActiveWorkflow>();
+
+  /** Human gate requests awaiting approval, keyed by gate ID. */
+  private readonly pendingGates = new Map<string, HumanGateRequest>();
 
   constructor(
     private readonly config: OrchestrationConfig,
@@ -103,6 +120,9 @@ export class OrchestrationBridge {
 
   /** Number of currently running workflows. */
   get workflowCount(): number { return this.activeWorkflows.size; }
+
+  /** Whether there are any human gate requests awaiting approval. */
+  get hasPendingGates(): boolean { return this.pendingGates.size > 0; }
 
   // ── Plan generation ─────────────────────────────────────────────
 
@@ -239,6 +259,24 @@ export class OrchestrationBridge {
       workerTimeout: this.config.workerTimeout,
       maxRetries: this.config.maxRetries,
       checkpointInterval: 1,
+      humanGateCallback: async (action: string, description: string): Promise<boolean> => {
+        const gateId = randomBytes(8).toString('hex');
+        return new Promise<boolean>((resolve) => {
+          this.pendingGates.set(gateId, {
+            gateId,
+            workflowId,
+            workflowName,
+            action,
+            description,
+            resolve,
+            timestamp: new Date().toISOString(),
+          });
+          this.callbacks.onText(
+            `⚠️ [${workflowName}] Approval needed: ${action} — ${description}\nGate ID: ${gateId}\nReply allow or deny`,
+            false, true,
+          );
+        });
+      },
     };
 
     const executor = new GraphExecutor(plan.graph, this.eventBus, executorConfig);
@@ -413,5 +451,65 @@ export class OrchestrationBridge {
   /** Stop all running workflows. */
   stopAll(): void {
     for (const [, wf] of this.activeWorkflows) wf.executor.stop();
+  }
+
+  // ── Human gate API ──────────────────────────────────────────────
+
+  /** Resolve a pending human gate by ID. */
+  resolveGate(gateId: string, approved: boolean): void {
+    const gate = this.pendingGates.get(gateId);
+    if (!gate) return;
+    this.pendingGates.delete(gateId);
+    gate.resolve(approved);
+    this.callbacks.onText(
+      `${approved ? '✅' : '❌'} Gate ${gate.action} [${gate.workflowName}]: ${approved ? 'approved' : 'denied'}`,
+      false, true,
+    );
+  }
+
+  /** Return all pending gate requests as an array. */
+  listPendingGates(): HumanGateRequest[] {
+    return [...this.pendingGates.values()];
+  }
+
+  // ── Checkpoint resume API ───────────────────────────────────────
+
+  /** Scan the checkpoint directory for incomplete workflows from previous sessions. */
+  checkForInterruptedWorkflows(): WorkflowCheckpoint[] {
+    const mgr = new CheckpointManager(this.config.checkpointDir);
+    return mgr.findIncomplete();
+  }
+
+  /** Resume a workflow from a checkpoint. Re-executes the full graph. */
+  async resumeFromCheckpoint(
+    checkpoint: WorkflowCheckpoint,
+    pushHistory: (entry: { role: string; content: string }) => void,
+  ): Promise<void> {
+    const graph = CheckpointManager.graphFromCheckpoint(checkpoint);
+    // Reset any nodes stuck in 'running' state back to pending
+    for (const [, node] of graph.nodes) {
+      if (node.status === 'running') {
+        node.status = 'pending';
+        node.startedAt = undefined;
+      }
+    }
+    const plan: PlannerOutput = {
+      graph,
+      reasoning: `Resuming interrupted workflow from layer ${checkpoint.currentLayer}`,
+      estimatedCost: 0,
+      estimatedTime: 0,
+      summary: checkpoint.task,
+    };
+    // Remove the checkpoint so we don't prompt to resume again
+    const mgr = new CheckpointManager(this.config.checkpointDir);
+    mgr.remove(checkpoint.workflowId);
+    this.callbacks.onText(`Resuming: ${checkpoint.graph.name}`, false, true);
+    await this.executePlan(plan, pushHistory);
+  }
+
+  /** Delete a checkpoint without resuming it. */
+  discardInterruptedWorkflow(workflowId: string): void {
+    const mgr = new CheckpointManager(this.config.checkpointDir);
+    mgr.remove(workflowId);
   }
 }

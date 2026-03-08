@@ -974,7 +974,7 @@ export class GraphExecutor {
     if (!auto.humanGates.includes(action)) return true;
 
     if (this.config.humanGateCallback) {
-      this.emitOrchestrator('status', `🚧 Human gate: "${action}" — awaiting approval`, { action, description });
+      this.emitOrchestrator('status', `🚧 Human gate: "${action}" — awaiting approval`, { action, description, workflowId: this.graph.id });
       return this.config.humanGateCallback(action, description);
     }
 
