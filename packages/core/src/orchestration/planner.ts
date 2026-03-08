@@ -117,7 +117,7 @@ export class Planner {
         model,
         messages: [{ role: 'user', content: task }],
         system: systemPrompt,
-        maxTokens: 4096,
+        maxTokens: 8192,
         temperature: 0.2,
       });
 
@@ -135,10 +135,10 @@ export class Planner {
       // Parse the JSON from the response
       const parsed = this.extractJson(responseText);
       if (!parsed) {
-        log.warn('Failed to parse JSON from planner response');
+        log.warn('Failed to parse JSON from planner response', { raw: responseText.slice(0, 500) });
         return this.fallbackPlan(
           task,
-          `Failed to parse planner JSON. Raw response:\n${responseText.slice(0, 500)}`,
+          'The planner could not structure this task into a multi-step plan. Running as a single task instead.',
         );
       }
 
@@ -151,8 +151,8 @@ export class Planner {
       // Build WorkflowNodes from the parsed nodes array
       const rawNodes = parsed.nodes;
       if (!Array.isArray(rawNodes) || rawNodes.length === 0) {
-        log.warn('Planner returned no nodes');
-        return this.fallbackPlan(task, `Planner returned no nodes. Reasoning: ${reasoning}`);
+        log.warn('Planner returned no nodes', { reasoning });
+        return this.fallbackPlan(task, 'Running as a single task.');
       }
 
       const nodes: WorkflowNode[] = rawNodes.map(
@@ -539,12 +539,13 @@ Respond ONLY with the JSON object. No markdown fences, no commentary.`;
 
     const graph = buildGraph([node], task.slice(0, 80));
 
+    log.debug(`Fallback plan reason: ${reason}`);
     return {
       graph,
-      reasoning: `Single-worker fallback plan. Reason: ${reason}`,
+      reasoning: reason,
       estimatedCost: 0,
       estimatedTime: 0,
-      summary: `Execute task with one agent worker: "${task.slice(0, 120)}"`,
+      summary: task.slice(0, 120),
     };
   }
 
