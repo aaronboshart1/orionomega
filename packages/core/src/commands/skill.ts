@@ -334,7 +334,7 @@ async function setupSkill(name: string | undefined, skillsDir: string): Promise<
         process.stdout.write(`  Get your ${label} at: ${BOLD}${method.tokenUrl}${RESET}\n`);
       }
       const envVar = method.envVar ?? 'API_KEY';
-      const key = await prompt(`  Enter ${label}: `, true);
+      const key = await prompt(`  Enter ${label}: `);
       if (!key?.trim()) {
         process.stdout.write(`${RED}✗${RESET} No ${label} provided. Aborting setup.\n`);
         return;
