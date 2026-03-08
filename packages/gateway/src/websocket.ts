@@ -157,6 +157,7 @@ export class WebSocketHandler {
           role: m.role,
           content: m.content,
           timestamp: m.timestamp,
+          type: m.type,
         })),
       } as any);
     }

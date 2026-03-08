@@ -154,6 +154,24 @@ export async function start(): Promise<void> {
 
   client.on('history', (messages) => {
     for (const msg of messages) {
+      const m = msg as any;
+      // Restore plan messages as formatted plans
+      if (m.type === 'plan' && m.content) {
+        try {
+          const plan = JSON.parse(m.content);
+          const formatted = formatPlan(plan);
+          chatLog.addMessage({
+            id: msg.id,
+            role: 'system',
+            content: '',
+            timestamp: msg.timestamp,
+            raw: formatted,
+          });
+          // Restore pending plan state
+          activePlanId = msg.id;
+          continue;
+        } catch {}
+      }
       chatLog.addMessage({
         id: msg.id,
         role: msg.role as 'user' | 'assistant' | 'system',

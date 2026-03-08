@@ -104,6 +104,19 @@ async function initMainAgent(): Promise<void> {
         streaming,
         done,
       });
+      // Store completed (non-streaming) messages in session history
+      if (done || !streaming) {
+        const sid = sessionManager.listSessions()[0]?.id;
+        if (sid) {
+          sessionManager.addMessage(sid, {
+            id: currentTextId,
+            role: 'assistant',
+            content: text,
+            timestamp: new Date().toISOString(),
+            type: 'text',
+          });
+        }
+      }
       // Rotate ID when this stream is complete, ready for the next response
       if (done || !streaming) {
         currentTextId = randomBytes(8).toString('hex');
@@ -131,6 +144,18 @@ async function initMainAgent(): Promise<void> {
       // JSON.stringify(Map) produces "{}" — nodes would be lost.
       if (graph?.nodes instanceof Map) {
         graph.nodes = Object.fromEntries(graph.nodes);
+      }
+
+      // Store plan in session history so it persists across TUI restarts
+      const sessionId = sessionManager.listSessions()[0]?.id;
+      if (sessionId) {
+        sessionManager.addMessage(sessionId, {
+          id: planId,
+          role: 'assistant',
+          content: JSON.stringify(plan),
+          timestamp: new Date().toISOString(),
+          type: 'plan',
+        });
       }
 
       wsHandler.broadcast({
