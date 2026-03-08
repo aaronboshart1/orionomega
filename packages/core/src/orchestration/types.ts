@@ -188,6 +188,17 @@ export interface PlannerOutput {
 
 // ── Execution Result ────────────────────────────────────────────────────────
 
+/** Per-model token usage and cost summary. */
+export interface ModelUsage {
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  workerCount: number;
+  costUsd: number;
+}
+
 export interface ExecutionResult {
   workflowId: string;
   status: 'complete' | 'error' | 'stopped';
@@ -201,6 +212,10 @@ export interface ExecutionResult {
   errors: { worker: string; message: string; resolution?: string }[];
   nodeOutputs?: Record<string, string>;
   infraChanges?: string[];
+  /** Per-model token usage breakdown. */
+  modelUsage?: ModelUsage[];
+  /** Total cost in USD. */
+  totalCostUsd?: number;
 }
 
 // ── Checkpointing ───────────────────────────────────────────────────────────

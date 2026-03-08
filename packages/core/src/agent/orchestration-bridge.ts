@@ -341,7 +341,30 @@ export class OrchestrationBridge {
       for (const e of errors.slice(0, 5)) lines.push(`  ❌ ${e.worker}: ${e.message}`);
     }
 
-    lines.push('', `⏱️ ${durationSec.toFixed(1)}s | ${workerCount} workers`);
+    // Per-model token usage and cost
+    if (result.modelUsage?.length) {
+      lines.push('', '**Token Usage & Cost:**');
+      lines.push('```');
+      const shortName = (m: string) => {
+        if (m.includes('opus')) return 'Opus';
+        if (m.includes('haiku')) return 'Haiku';
+        if (m.includes('sonnet')) return 'Sonnet';
+        return m.length > 20 ? m.slice(0, 20) : m;
+      };
+      for (const u of result.modelUsage) {
+        const input = (u.inputTokens / 1000).toFixed(0);
+        const output = (u.outputTokens / 1000).toFixed(0);
+        const cached = (u.cacheReadTokens / 1000).toFixed(0);
+        lines.push(
+          `  ${shortName(u.model).padEnd(8)} ${u.workerCount} worker${u.workerCount > 1 ? 's' : ' '} │ ${input}K in / ${output}K out │ ${cached}K cached │ $${u.costUsd.toFixed(3)}`,
+        );
+      }
+      lines.push(`  ${'─'.repeat(52)}`);
+      lines.push(`  ${'Total'.padEnd(8)} ${workerCount} workers │ $${result.totalCostUsd?.toFixed(3) ?? '?'}`);
+      lines.push('```');
+    }
+
+    lines.push('', `⏱️ ${durationSec.toFixed(1)}s | ${workerCount} workers | 💰 $${(result.totalCostUsd ?? 0).toFixed(3)}`);
 
     const summary = lines.join('\n');
     this.callbacks.onText(summary, false, true);

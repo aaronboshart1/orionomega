@@ -33,6 +33,16 @@ export interface WorkerResult {
   findings: string[];
   /** Paths to files written by this worker. */
   outputPaths: string[];
+  /** Model used for this worker. */
+  model?: string;
+  /** Input tokens consumed. */
+  inputTokens?: number;
+  /** Output tokens consumed. */
+  outputTokens?: number;
+  /** Cache read tokens. */
+  cacheReadTokens?: number;
+  /** Cache creation tokens. */
+  cacheCreationTokens?: number;
 }
 
 /**
@@ -433,6 +443,11 @@ export class WorkerProcess {
       toolCallCount: result.toolCalls,
       findings,
       outputPaths,
+      model,
+      inputTokens: result.inputTokens,
+      outputTokens: result.outputTokens,
+      cacheReadTokens: result.cacheReadTokens,
+      cacheCreationTokens: result.cacheCreationTokens,
     };
   }
 
@@ -544,6 +559,7 @@ Use absolute paths when referencing files outside the workspace.${skillDocs}`;
       toolCallCount: result.toolCalls,
       findings: [],
       outputPaths: [],
+      model: this.node.codingAgent?.model ?? this.node.agent?.model ?? 'unknown',
     };
   }
 
