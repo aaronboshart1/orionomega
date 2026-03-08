@@ -14,6 +14,7 @@ import { runAgentLoop } from '../anthropic/agent-loop.js';
 import { getBuiltInTools } from '../anthropic/tools.js';
 import { readConfig } from '../config/loader.js';
 import { SkillLoader } from '@orionomega/skills-sdk';
+import { executeCodingAgent } from './agent-sdk-bridge.js';
 import { createLogger } from '../logging/logger.js';
 
 const log = createLogger('worker');
@@ -85,6 +86,9 @@ export class WorkerProcess {
           break;
         case 'TOOL':
           result = await this.runTool();
+          break;
+        case 'CODING_AGENT':
+          result = await this.runCodingAgent();
           break;
         default:
           // ROUTER, PARALLEL, JOIN are structural — pass-through
@@ -506,6 +510,43 @@ Use absolute paths when referencing files outside the workspace.${skillDocs}`;
   /**
    * Executes a TOOL node by running the configured command via child_process.
    */
+  private async runCodingAgent(): Promise<WorkerResult> {
+    const workDir = `${this.workspaceDir}/output/${this.node.id}`;
+
+    this.emitEvent({
+      type: 'status',
+      message: `Coding agent starting`,
+      progress: 0,
+    });
+
+    const result = await executeCodingAgent(this.node, workDir, (evt) => {
+      this.emitEvent({
+        type: evt.type as WorkerEvent['type'],
+        message: evt.message,
+        progress: evt.progress,
+      });
+    });
+
+    if (!result.success) {
+      throw new Error(result.error ?? 'Coding agent failed');
+    }
+
+    this.emitEvent({
+      type: 'done',
+      message: `Coding agent complete: ${result.toolCalls} tool calls`,
+      progress: 100,
+    });
+
+    return {
+      nodeId: this.node.id,
+      output: result.output,
+      durationMs: result.durationSec * 1000,
+      toolCallCount: result.toolCalls,
+      findings: [],
+      outputPaths: [],
+    };
+  }
+
   private async runTool(): Promise<WorkerResult> {
     const toolConfig = this.node.tool;
     if (!toolConfig) {
