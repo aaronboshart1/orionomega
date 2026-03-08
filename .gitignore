@@ -21,6 +21,7 @@ hindsight_*.json
 transfer_*.md
 dragonfly_*.md
 redis_*.md
+redis_*.json
 redis-*.md
 keydb_*.md
 memcached_*.md
