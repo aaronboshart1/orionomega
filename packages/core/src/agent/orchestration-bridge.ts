@@ -44,6 +44,10 @@ export class OrchestrationBridge {
   readonly eventBus: EventBus;
   readonly commands: OrchestratorCommands;
 
+  // Aggregate token tracking across workers
+  private workflowInputTokens = 0;
+  private workflowOutputTokens = 0;
+
   /** The plan currently awaiting user approval. */
   private pendingPlan: PlannerOutput | null = null;
   private pendingPlanId: string | null = null;
@@ -54,6 +58,8 @@ export class OrchestrationBridge {
   private eventUnsubscribe: (() => void) | null = null;
   private stateSnapshotTimer: ReturnType<typeof setInterval> | null = null;
 
+  private readonly model: string;
+
   constructor(
     private readonly config: OrchestrationConfig,
     private readonly callbacks: MainAgentCallbacks,
@@ -61,6 +67,7 @@ export class OrchestrationBridge {
     private readonly availableSkills: string[],
     model: string,
   ) {
+    this.model = model;
     this.planner = new Planner({ model });
     this.eventBus = new EventBus();
     this.commands = new OrchestratorCommands(null);
@@ -197,6 +204,10 @@ export class OrchestrationBridge {
       checkpointInterval: 1,
     };
 
+    // Reset workflow token counters
+    this.workflowInputTokens = 0;
+    this.workflowOutputTokens = 0;
+
     const executor = new GraphExecutor(plan.graph, this.eventBus, executorConfig);
     this.activeExecutor = executor;
     this.commands.setExecutor(executor);
@@ -229,6 +240,20 @@ export class OrchestrationBridge {
   /** Handle worker events during execution. */
   private handleWorkerEvent(event: WorkerEvent): void {
     this.callbacks.onEvent(event);
+
+    // Aggregate token usage from worker completion events
+    const data = (event as any).data;
+    if (data && typeof data.inputTokens === 'number') {
+      this.workflowInputTokens += data.inputTokens;
+      this.workflowOutputTokens += (data.outputTokens ?? 0);
+      this.callbacks.onSessionStatus?.({
+        model: this.model,
+        inputTokens: this.workflowInputTokens,
+        outputTokens: this.workflowOutputTokens,
+        maxContextTokens: 200000,
+      });
+    }
+
     if (event.type === 'done' || event.type === 'error' || event.type === 'status') {
       if (this.activeExecutor) {
         this.callbacks.onGraphState(this.activeExecutor.getState());
