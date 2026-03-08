@@ -1,11 +1,20 @@
 /**
  * @module components/workflow-tracker
- * Displays workflow progress aligned to the approved plan.
- * Shows each task with status: ⏳ pending, 🔄 running, ✅ done, ❌ failed.
- * Rendered as a persistent block in the chat log when a workflow is active.
+ * Displays workflow progress with tree-style layout.
+ * Each task shows status icon + name + model, with an L-shaped bar
+ * showing streaming activity indented below.
+ *
+ *   ⚡ Review OrionOmega SDK · 45s · ✅ 3/8 · 🔄 2 running · layer 2/3
+ *   ✅ Discover Repo Structure [Haiku 4.5]
+ *   └─ Explored 47 files, found 6 packages
+ *   🔄 SDK Architecture Review [Opus 4.6]
+ *   └─ Analyzing skill manifest schema...
+ *   🔄 Security Review [Sonnet 4.6]
+ *   └─ Checking dependency audit...
+ *   ⏳ Final Report [Opus 4.6]
  */
 
-import { Container, Text, Spacer } from '@mariozechner/pi-tui';
+import { Container, Text } from '@mariozechner/pi-tui';
 import type { GraphState } from '@orionomega/core';
 import chalk from 'chalk';
 
@@ -13,11 +22,11 @@ const palette = {
   dim: '#5C6370',
   text: '#ABB2BF',
   accent: '#F6C453',
-  green: '#7DD3A5',
+  green: '#00DE6A',
   red: '#F97066',
   blue: '#61AFEF',
   purple: '#C678DD',
-  yellow: '#E5C07B',
+  tree: '#3E4451',
 };
 
 interface TrackedNode {
@@ -28,25 +37,21 @@ interface TrackedNode {
   layer: number;
   lastMessage?: string;
   progress?: number;
-  elapsed?: number;
 }
 
 /**
- * Visual workflow tracker that updates in-place as tasks progress.
+ * Visual workflow tracker with tree-style activity lines.
  */
 export class WorkflowTracker extends Container {
-  private headerText: Text;
-  private nodeTexts = new Map<string, Text>();
   private trackedNodes = new Map<string, TrackedNode>();
   private workflowName = '';
   private startTime = Date.now();
   private totalLayers = 0;
   private completedLayers = 0;
+  private renderedLines = new Map<string, Text>(); // keyed by purpose: "header", "node:{id}", "activity:{id}"
 
   constructor() {
     super();
-    this.headerText = new Text('', 1, 0);
-    this.addChild(this.headerText);
   }
 
   /** Initialize tracker with a new workflow's graph state. */
@@ -56,27 +61,24 @@ export class WorkflowTracker extends Container {
     this.completedLayers = state.completedLayers;
     this.startTime = Date.now();
 
-    // Clear old nodes
-    for (const text of this.nodeTexts.values()) {
+    // Clear everything
+    for (const text of this.renderedLines.values()) {
       this.removeChild(text);
     }
-    this.nodeTexts.clear();
+    this.renderedLines.clear();
     this.trackedNodes.clear();
 
-    // Build tracked nodes from graph state
     const nodes = state.nodes ?? {};
     for (const [id, node] of Object.entries(nodes)) {
       const n = node as any;
-      const tracked: TrackedNode = {
+      this.trackedNodes.set(id, {
         id,
         label: n.label ?? id,
-        model: this.shortenModel(n.agent?.model ?? ''),
+        model: this.shortenModel(n.agent?.model ?? n.codingAgent?.model ?? ''),
         status: this.mapStatus(n.status),
         layer: n.layer ?? 0,
-        lastMessage: undefined,
         progress: n.progress,
-      };
-      this.trackedNodes.set(id, tracked);
+      });
     }
 
     this.rebuild();
@@ -98,7 +100,7 @@ export class WorkflowTracker extends Container {
         this.trackedNodes.set(id, {
           id,
           label: n.label ?? id,
-          model: this.shortenModel(n.agent?.model ?? ''),
+          model: this.shortenModel(n.agent?.model ?? n.codingAgent?.model ?? ''),
           status: this.mapStatus(n.status),
           layer: n.layer ?? 0,
           progress: n.progress,
@@ -106,7 +108,6 @@ export class WorkflowTracker extends Container {
       }
     }
 
-    // Check recent events for status messages
     for (const evt of state.recentEvents ?? []) {
       const tracked = this.trackedNodes.get(evt.nodeId);
       if (tracked && evt.message) {
@@ -124,65 +125,101 @@ export class WorkflowTracker extends Container {
 
     if (type === 'done') tracked.status = 'complete';
     else if (type === 'error') tracked.status = 'error';
-    else if (type !== 'done' && type !== 'error' && tracked.status === 'pending') {
-      tracked.status = 'running';
-    }
+    else if (tracked.status === 'pending') tracked.status = 'running';
     if (message) tracked.lastMessage = message;
     this.rebuild();
   }
 
-  /** Check if workflow is still active. */
   get isActive(): boolean {
     return this.trackedNodes.size > 0 &&
       Array.from(this.trackedNodes.values()).some(n => n.status === 'pending' || n.status === 'running');
   }
 
   private rebuild(): void {
-    // Update header
+    const dim = chalk.hex(palette.dim);
+    const txt = chalk.hex(palette.text);
+    const acc = chalk.hex(palette.accent);
+    const grn = chalk.hex(palette.green);
+    const red = chalk.hex(palette.red);
+    const blu = chalk.hex(palette.blue);
+    const pur = chalk.hex(palette.purple);
+    const tree = chalk.hex(palette.tree);
+
+    // Header line
     const elapsed = Math.round((Date.now() - this.startTime) / 1000);
-    const done = Array.from(this.trackedNodes.values()).filter(n => n.status === 'complete').length;
-    const total = this.trackedNodes.size;
-    const running = Array.from(this.trackedNodes.values()).filter(n => n.status === 'running').length;
-    const failed = Array.from(this.trackedNodes.values()).filter(n => n.status === 'error').length;
+    const vals = Array.from(this.trackedNodes.values());
+    const done = vals.filter(n => n.status === 'complete').length;
+    const total = vals.length;
+    const running = vals.filter(n => n.status === 'running').length;
+    const failed = vals.filter(n => n.status === 'error').length;
 
-    const headerParts = [
-      chalk.hex(palette.accent).bold(`⚡ ${this.workflowName}`),
-      chalk.hex(palette.dim)(`${elapsed}s`),
-      chalk.hex(palette.green)(`✅ ${done}`) +
-        chalk.hex(palette.dim)('/') +
-        chalk.hex(palette.text)(`${total}`),
+    const parts = [
+      acc.bold(`⚡ ${this.workflowName.slice(0, 50)}`),
+      dim(`${elapsed}s`),
+      grn(`✅ ${done}`) + dim('/') + txt(`${total}`),
     ];
-    if (running > 0) headerParts.push(chalk.hex(palette.blue)(`🔄 ${running} running`));
-    if (failed > 0) headerParts.push(chalk.hex(palette.red)(`❌ ${failed} failed`));
-    headerParts.push(chalk.hex(palette.dim)(`layer ${this.completedLayers}/${this.totalLayers}`));
+    if (running > 0) parts.push(blu(`🔄 ${running}`));
+    if (failed > 0) parts.push(red(`❌ ${failed}`));
+    parts.push(dim(`layer ${this.completedLayers}/${this.totalLayers}`));
 
-    this.headerText.setText('  ' + headerParts.join(chalk.hex(palette.dim)(' · ')));
+    this.setLine('header', '  ' + parts.join(dim(' · ')));
 
-    // Update or create node lines
-    // Sort by layer then by id
-    const sorted = Array.from(this.trackedNodes.values()).sort((a, b) => {
-      if (a.layer !== b.layer) return a.layer - b.layer;
-      return a.id.localeCompare(b.id);
-    });
+    // Nodes sorted by layer then id
+    const sorted = vals.sort((a, b) =>
+      a.layer !== b.layer ? a.layer - b.layer : a.id.localeCompare(b.id),
+    );
 
+    let prevLayer = -1;
     for (const node of sorted) {
-      const icon = this.statusIcon(node.status);
-      const name = chalk.hex(node.status === 'complete' ? palette.green : node.status === 'error' ? palette.red : node.status === 'running' ? palette.blue : palette.dim)(node.label);
-      const model = node.model ? chalk.hex(palette.purple)(` [${node.model}]`) : '';
-      const msg = node.lastMessage
-        ? chalk.hex(palette.dim)(` — ${node.lastMessage.length > 50 ? node.lastMessage.slice(0, 50) + '…' : node.lastMessage}`)
-        : '';
-
-      const line = `    ${icon} ${name}${model}${msg}`;
-
-      const existing = this.nodeTexts.get(node.id);
-      if (existing) {
-        existing.setText(line);
-      } else {
-        const text = new Text(line, 1, 0);
-        this.addChild(text);
-        this.nodeTexts.set(node.id, text);
+      // Layer separator
+      if (node.layer !== prevLayer) {
+        prevLayer = node.layer;
       }
+
+      // Node line: icon + name + model
+      const icon = this.statusIcon(node.status);
+      const nameColor = node.status === 'complete' ? grn
+        : node.status === 'error' ? red
+        : node.status === 'running' ? blu
+        : dim;
+      const model = node.model ? pur(` [${node.model}]`) : '';
+      this.setLine(`node:${node.id}`, `    ${icon} ${nameColor(node.label)}${model}`);
+
+      // Activity line: L-bar with message (only for running/complete/error with messages)
+      if (node.lastMessage) {
+        const msg = node.lastMessage.length > 60
+          ? node.lastMessage.slice(0, 60) + '…'
+          : node.lastMessage;
+        const msgColor = node.status === 'error' ? red : dim;
+        this.setLine(`activity:${node.id}`, `    ${tree('└─')} ${msgColor(msg)}`);
+      } else if (node.status === 'running') {
+        this.setLine(`activity:${node.id}`, `    ${tree('└─')} ${dim('starting...')}`);
+      } else {
+        // Remove activity line if no message and not running
+        this.removeLine(`activity:${node.id}`);
+      }
+    }
+  }
+
+  /** Set or update a named line. */
+  private setLine(key: string, content: string): void {
+    const existing = this.renderedLines.get(key);
+    if (existing) {
+      existing.setText(content);
+    } else {
+      const text = new Text(content, 1, 0);
+      // Insert in order — header first, then nodes/activities in order
+      this.addChild(text);
+      this.renderedLines.set(key, text);
+    }
+  }
+
+  /** Remove a named line. */
+  private removeLine(key: string): void {
+    const existing = this.renderedLines.get(key);
+    if (existing) {
+      this.removeChild(existing);
+      this.renderedLines.delete(key);
     }
   }
 
