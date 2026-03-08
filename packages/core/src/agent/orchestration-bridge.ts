@@ -290,6 +290,10 @@ export class OrchestrationBridge {
 
     // Primary answer from exit node
     const nodeOutputEntries = nodeOutputs ? Object.entries(nodeOutputs) : [];
+    log.info('Workflow nodeOutputs', {
+      keys: nodeOutputEntries.map(([k]) => k),
+      lengths: nodeOutputEntries.map(([k, v]) => `${k}:${v?.length ?? 0}`),
+    });
     if (nodeOutputEntries.length > 0) {
       const [, lastOutput] = nodeOutputEntries[nodeOutputEntries.length - 1];
       const maxLen = 4000;
