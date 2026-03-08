@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# Pre-commit hook: detect accidentally staged secrets before they hit history
+# Uses detect-secrets if available, falls back to a lightweight grep scan.
+#
+# To bypass in an emergency: git commit --no-verify
+# To install for new clones, run: scripts/setup-hooks.sh
+
+set -euo pipefail
+
+# --- detect-secrets (preferred) ---
+DETECT_SECRETS=$(command -v detect-secrets-hook 2>/dev/null || echo "")
+
+if [[ -n "$DETECT_SECRETS" && -f ".secrets.baseline" ]]; then
+  echo "🔍 Scanning staged files for secrets (detect-secrets)..."
+  git diff --cached --name-only -z | xargs -0 "$DETECT_SECRETS" --baseline .secrets.baseline
+  EXIT_CODE=$?
+  if [[ $EXIT_CODE -ne 0 ]]; then
+    echo ""
+    echo "❌ Potential secret detected. Review the above output."
+    echo "   If this is a false positive, update the baseline:"
+    echo "     detect-secrets scan --update .secrets.baseline"
+    echo "   Then stage .secrets.baseline and re-commit."
+    exit 1
+  fi
+  echo "✅ No secrets detected."
+  exit 0
+fi
+
+# --- Fallback: regex scan of staged diff ---
+echo "🔍 Scanning staged files for secrets (regex fallback)..."
+
+# Get the staged diff
+STAGED_DIFF=$(git diff --cached -U0)
+
+# Patterns that indicate a real secret (not a placeholder/template)
+SECRET_PATTERNS=(
+  'sk-ant-api[0-9]+-[A-Za-z0-9_\-]{80,}'   # Anthropic API keys
+  'ghp_[A-Za-z0-9]{36,}'                    # GitHub personal access tokens
+  'ghs_[A-Za-z0-9]{36,}'                    # GitHub OAuth tokens
+  'lin_api_[A-Za-z0-9]{30,}'                # Linear API keys
+  'AKIA[0-9A-Z]{16}'                         # AWS access key IDs
+  'xoxb-[0-9]+-[A-Za-z0-9]+'               # Slack bot tokens
+)
+
+FOUND=0
+for PATTERN in "${SECRET_PATTERNS[@]}"; do
+  if echo "$STAGED_DIFF" | grep -qE "^\+.*${PATTERN}"; then
+    echo "❌ Possible secret matched pattern: ${PATTERN}"
+    echo "   Run: git diff --cached | grep -E '${PATTERN}'"
+    FOUND=1
+  fi
+done
+
+if [[ $FOUND -ne 0 ]]; then
+  echo ""
+  echo "Commit blocked. Remove secrets before committing."
+  echo "To bypass (only if certain this is a false positive): git commit --no-verify"
+  exit 1
+fi
+
+echo "✅ No secrets detected."
+exit 0
