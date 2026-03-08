@@ -29,27 +29,29 @@ function prompt(message: string, mask = false): Promise<string> {
       process.stdin.setRawMode?.(true);
       process.stdin.resume();
       process.stdin.setEncoding('utf-8');
-      const onData = (ch: string) => {
-        if (ch === '\r' || ch === '\n') {
-          process.stdin.setRawMode?.(false);
-          process.stdin.removeListener('data', onData);
-          origWrite('\n');
-          rl.close();
-          resolve(value);
-        } else if (ch === '\u0003') {
-          // Ctrl+C
-          process.stdin.setRawMode?.(false);
-          rl.close();
-          process.exit(1);
-        } else if (ch === '\u007f' || ch === '\b') {
-          // Backspace
-          if (value.length > 0) {
-            value = value.slice(0, -1);
-            origWrite('\b \b');
+      const onData = (chunk: string) => {
+        // Iterate per character — pastes arrive as a single chunk
+        for (const ch of chunk) {
+          if (ch === '\r' || ch === '\n') {
+            process.stdin.setRawMode?.(false);
+            process.stdin.removeListener('data', onData);
+            origWrite('\n');
+            rl.close();
+            resolve(value);
+            return;
+          } else if (ch === '\u0003') {
+            process.stdin.setRawMode?.(false);
+            rl.close();
+            process.exit(1);
+          } else if (ch === '\u007f' || ch === '\b') {
+            if (value.length > 0) {
+              value = value.slice(0, -1);
+              origWrite('\b \b');
+            }
+          } else {
+            value += ch;
+            origWrite('•');
           }
-        } else {
-          value += ch;
-          origWrite('•');
         }
       };
       process.stdin.on('data', onData);
