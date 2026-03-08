@@ -7,7 +7,12 @@ set -euo pipefail
 
 INSTALL_DIR="/opt/orionomega"
 CONFIG_DIR="${ORIONOMEGA_HOME:-$HOME/.orionomega}"
-REPO_URL="https://github.com/aaronboshart1/orionomega.git"
+# Support GITHUB_TOKEN for private repos
+if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+  REPO_URL="https://${GITHUB_TOKEN}@github.com/aaronboshart1/orionomega.git"
+else
+  REPO_URL="https://github.com/aaronboshart1/orionomega.git"
+fi
 NODE_MIN=22
 GATEWAY_PORT=7800
 
