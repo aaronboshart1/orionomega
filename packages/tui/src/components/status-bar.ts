@@ -40,31 +40,76 @@ export class StatusBar extends Text {
   private _status: SessionStatus = {};
   private spinnerFrame = 0;
   private spinnerTimer: ReturnType<typeof setInterval> | null = null;
-  // Braille pixel Ω — builds dot by dot, holds, dissolves
-  // Shape (6×4 grid → 3 braille chars):
-  //   .▪▪▪▪.    ⡪⣉⢕ = full omega
-  //   ▪....▪
-  //   .▪..▪.
-  //   ▪.▪▪.▪
-  private static readonly SPINNER = [
-    '⠀⠀⠀',  // empty
-    '⠀⠉⠀',  // top center appears
-    '⠈⠉⠁',  // full top arc
-    '⠊⠉⠑',  // + sides
-    '⠪⠉⠕',  // + narrowing
-    '⡪⠉⢕',  // + outer feet
-    '⡪⣉⢕',  // FULL Ω
-    '⡪⣉⢕',  // hold
-    '⡪⣉⢕',  // hold
-    '⡪⣉⢕',  // hold
-    '⡪⠉⢕',  // dissolve inner feet
-    '⠪⠉⠕',  // dissolve outer feet
-    '⠊⠉⠑',  // dissolve narrowing
-    '⠈⠉⠁',  // dissolve sides
-    '⠀⠉⠀',  // dissolve outer top
-    '⠀⠀⠀',  // empty
-    '⠀⠀⠀',  // hold empty
-  ];
+  // Braille pixel Ω — 14×4 pixel grid (7 braille chars wide)
+  // Builds phase by phase, holds, dissolves in reverse.
+  //
+  //   ..▪▪▪▪▪▪▪▪▪▪..    arc
+  //   .▪▪........▪▪.    sides
+  //   .▪..........▪.    sides
+  //   ▪▪.▪▪▪..▪▪▪.▪▪    feet
+  //
+  private static readonly SPINNER = (() => {
+    // Pixel grid: 14 wide × 4 tall
+    const OMEGA = [
+      [0,0,1,1,1,1,1,1,1,1,1,1,0,0],
+      [0,1,1,0,0,0,0,0,0,0,0,1,1,0],
+      [0,1,0,0,0,0,0,0,0,0,0,0,1,0],
+      [1,1,0,1,1,1,0,0,1,1,1,0,1,1],
+    ];
+
+    // Reveal phases — pixels appear in symmetric groups
+    const PHASES: [number, number][][] = [
+      [[0,6],[0,7]],                                       // center arc
+      [[0,5],[0,8],[0,4],[0,9]],                           // arc extends
+      [[0,3],[0,10],[0,2],[0,11]],                         // full arc
+      [[1,1],[1,12],[1,2],[1,11]],                         // upper sides
+      [[2,1],[2,12]],                                      // lower sides
+      [[3,0],[3,13],[3,1],[3,12]],                         // outer feet
+      [[3,3],[3,10],[3,4],[3,9],[3,5],[3,8]],              // inner feet → FULL
+    ];
+
+    const toBraille = (grid: number[][]): string => {
+      let result = '';
+      const w = grid[0].length;
+      for (let x = 0; x < w; x += 2) {
+        let code = 0x2800;
+        for (let y = 0; y < 4; y++) {
+          if (grid[y]?.[x])     code |= y < 3 ? (1 << y) : 0x40;
+          if (grid[y]?.[x + 1]) code |= y < 3 ? (1 << (y + 3)) : 0x80;
+        }
+        result += String.fromCharCode(code);
+      }
+      return result;
+    };
+
+    const grid = OMEGA.map(r => r.map(() => 0));
+    const frames: string[] = [];
+
+    // Empty
+    frames.push(toBraille(grid));
+
+    // Build
+    for (const phase of PHASES) {
+      for (const [y, x] of phase) grid[y][x] = 1;
+      frames.push(toBraille(grid));
+    }
+
+    // Hold full
+    frames.push(toBraille(grid));
+    frames.push(toBraille(grid));
+    frames.push(toBraille(grid));
+
+    // Dissolve (reverse)
+    for (let i = PHASES.length - 1; i >= 0; i--) {
+      for (const [y, x] of PHASES[i]) grid[y][x] = 0;
+      frames.push(toBraille(grid));
+    }
+
+    // Hold empty
+    frames.push(toBraille(grid));
+
+    return frames;
+  })();
 
   /** Called when the status bar updates itself (e.g. spinner tick). Wire to tui.requestRender(). */
   onUpdate?: () => void;
