@@ -318,6 +318,17 @@ export class WorkerProcess {
     // Determine token budget: explicit > tier-based default
     const tokenBudget = agentConfig.tokenBudget ?? this.defaultTokenBudget(model);
 
+    const agentStart = Date.now();
+    let turnCount = 0;
+    const heartbeat = setInterval(() => {
+      const elapsed = Math.round((Date.now() - agentStart) / 1000);
+      this.emitEvent({
+        type: 'status',
+        message: `Still working... (${elapsed}s, ${turnCount} turns)`,
+        progress: Math.min(progressEstimate, 90),
+      });
+    }, 30_000);
+
     const result = await runAgentLoop({
       client,
       model,
@@ -338,6 +349,7 @@ export class WorkerProcess {
       },
 
       onText: (text: string) => {
+        turnCount++;
         // Only emit status events for substantial text chunks
         if (text.trim().length > 10) {
           this.emitEvent({
@@ -397,7 +409,7 @@ export class WorkerProcess {
           progress: progressEstimate,
         });
       },
-    });
+    }).finally(() => clearInterval(heartbeat));
 
     const cacheHitRate = result.inputTokens > 0
       ? Math.round((result.cacheReadTokens / result.inputTokens) * 100)

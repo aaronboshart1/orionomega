@@ -62,6 +62,8 @@ export interface MainAgentCallbacks {
   onGraphState: (state: GraphState) => void;
   onCommandResult: (result: { command: string; success: boolean; message: string }) => void;
   onSessionStatus?: (status: { model: string; inputTokens: number; outputTokens: number; maxContextTokens: number }) => void;
+  onWorkflowStart?: (workflowId: string, workflowName: string) => void;
+  onWorkflowEnd?: (workflowId: string) => void;
 }
 
 // ── History ────────────────────────────────────────────────────────────────

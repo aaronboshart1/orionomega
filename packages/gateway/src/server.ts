@@ -187,6 +187,14 @@ async function initMainAgent(): Promise<void> {
         sessionStatus: status,
       });
     },
+    onWorkflowStart(workflowId, _workflowName) {
+      const sessionId = sessionManager.listSessions()[0]?.id;
+      if (sessionId) sessionManager.addActiveWorkflow(sessionId, workflowId);
+    },
+    onWorkflowEnd(workflowId) {
+      const sessionId = sessionManager.listSessions()[0]?.id;
+      if (sessionId) sessionManager.removeActiveWorkflow(sessionId, workflowId);
+    },
     onCommandResult(result) {
       wsHandler.broadcast({
         id: randomBytes(8).toString('hex'),

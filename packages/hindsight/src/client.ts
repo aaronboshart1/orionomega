@@ -76,7 +76,7 @@ export class HindsightClient {
       await this.getBank(bankId);
       return true;
     } catch (err) {
-      if (err instanceof HindsightError && err.statusCode === 404) {
+      if (err instanceof HindsightError && (err.statusCode === 404 || err.statusCode === 405)) {
         return false;
       }
       throw err;

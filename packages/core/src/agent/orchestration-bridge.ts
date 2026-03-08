@@ -305,6 +305,7 @@ export class OrchestrationBridge {
     };
 
     this.activeWorkflows.set(workflowId, workflow);
+    this.callbacks.onWorkflowStart?.(workflowId, workflowName);
     this.commands.addWorkflow(workflowId, executor, workflowName);
 
     this.callbacks.onText('Workflow started. I\'ll keep you posted on progress.', false, true);
@@ -428,6 +429,7 @@ export class OrchestrationBridge {
     if (!wf) return;
     wf.eventUnsubscribe();
     clearInterval(wf.stateSnapshotTimer);
+    this.callbacks.onWorkflowEnd?.(workflowId);
     this.activeWorkflows.delete(workflowId);
     this.commands.removeWorkflow(workflowId);
   }
