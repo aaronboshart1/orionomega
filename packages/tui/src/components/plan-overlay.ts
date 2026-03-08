@@ -141,14 +141,6 @@ export function formatPlan(plan: PlannerOutput): string {
   }
 
   lines.push(bdr('└' + '─'.repeat(W) + '┘'));
-
-  // Action prompt (below the box, not inside it)
-  lines.push('');
-  lines.push(
-    '  ' + grn.bold('[Enter]') + ' Approve   ' +
-    chalk.hex('#F97066').bold('[Esc]') + ' Reject   ' +
-    acc.bold('[m]') + ' Modify',
-  );
   lines.push('');
 
   return lines.join('\n');

@@ -117,7 +117,7 @@ export class Planner {
         model,
         messages: [{ role: 'user', content: task }],
         system: systemPrompt,
-        maxTokens: 8192,
+        maxTokens: 16384,
         temperature: 0.2,
       });
 

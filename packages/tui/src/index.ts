@@ -248,51 +248,32 @@ export async function start(): Promise<void> {
 
   // ── Editor submission ─────────────────────────────────────────
 
-  // Handle plan approval keybindings
-  editor.onEscape = () => {
-    if (activePlanId) {
-      client.respondToPlan(activePlanId, 'reject');
-      chatLog.addMessage({
-        id: `plan-reject-${activePlanId}`,
-        role: 'system',
-        content: '❌ Plan rejected.',
-        timestamp: new Date().toISOString(),
-      });
-      activePlanId = null;
-      tui.requestRender();
-    }
-  };
-
   editor.onSubmit = (text: string) => {
     const value = text.trim();
+    if (!value) return;
 
-    // If a plan is pending and user presses Enter with empty input → approve
-    if (!value && activePlanId) {
-      client.respondToPlan(activePlanId, 'approve');
-      chatLog.addMessage({
-        id: `plan-approve-${activePlanId}`,
-        role: 'system',
-        content: '✅ Plan approved. Executing...',
-        timestamp: new Date().toISOString(),
-      });
-      activePlanId = null;
-      statusBar.thinking = true;
-      tui.requestRender();
-      return;
-    }
-
-    // If plan pending and user types 'm' or 'modify' → modify
-    if (activePlanId && (value === 'm' || value.toLowerCase() === 'modify')) {
+    // If a plan is pending, send the user's response as plan feedback
+    if (activePlanId) {
       editor.setText('');
       editor.addToHistory(value);
-      // TODO: prompt for modifications
-      client.respondToPlan(activePlanId, 'modify');
+
+      // Interpret natural language: affirmative → approve, otherwise send as modification
+      const lower = value.toLowerCase();
+      const isApproval = /^(y|yes|go|do it|go ahead|ok|okay|approve|run it|execute|looks good|lgtm|ship it|send it)$/i.test(lower);
+
+      if (isApproval) {
+        client.respondToPlan(activePlanId, 'approve');
+        statusBar.thinking = true;
+      } else {
+        client.respondToPlan(activePlanId, 'reject');
+        // Send the feedback as a new chat message so the agent can re-plan
+        client.sendChat(value);
+        statusBar.thinking = true;
+      }
       activePlanId = null;
       tui.requestRender();
       return;
     }
-
-    if (!value) return;
 
     editor.setText('');
     editor.addToHistory(value);
