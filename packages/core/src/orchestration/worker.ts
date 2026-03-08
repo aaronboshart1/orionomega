@@ -2,16 +2,16 @@
  * @module orchestration/worker
  * Worker process wrapper that executes a single workflow node.
  *
- * For AGENT nodes, runs the full Anthropic agent loop with streaming
- * callbacks that emit WorkerEvents through the EventBus.
+ * For AGENT nodes, delegates to the Claude Agent SDK via executeAgent()
+ * instead of the hand-rolled agent loop. This gains adaptive thinking,
+ * a richer toolset (Bash, Glob, Grep, WebSearch, WebFetch), and non-blocking
+ * async tool execution.
  */
 
 import { execFile } from 'node:child_process';
 import type { WorkflowNode, WorkerEvent } from './types.js';
 import type { EventBus } from './event-bus.js';
-import { AnthropicClient } from '../anthropic/client.js';
-import { runAgentLoop } from '../anthropic/agent-loop.js';
-import { getBuiltInTools } from '../anthropic/tools.js';
+import { executeAgent } from './agent-sdk-bridge.js';
 import { readConfig } from '../config/loader.js';
 import { SkillLoader } from '@orionomega/skills-sdk';
 import { createLogger } from '../logging/logger.js';
@@ -38,7 +38,7 @@ export interface WorkerResult {
  * Wraps the execution of a single workflow node, emitting structured events
  * through the EventBus as work progresses.
  *
- * For AGENT nodes, runs the Anthropic agent loop with built-in tools.
+ * For AGENT nodes, delegates to the Claude Agent SDK.
  * For TOOL nodes, the configured command is executed via child_process.
  */
 export class WorkerProcess {
@@ -48,6 +48,7 @@ export class WorkerProcess {
   private readonly timeout: number;
 
   private cancelled = false;
+  private abortController?: AbortController;
   private currentStatus: string = 'pending';
   private currentProgress = 0;
   private lastEvent: WorkerEvent | undefined;
@@ -117,11 +118,12 @@ export class WorkerProcess {
   }
 
   /**
-   * Cancels the worker. Currently running work will be abandoned
-   * at the next cancellation check point.
+   * Cancels the worker. Aborts the Agent SDK invocation immediately
+   * and marks the worker as cancelled.
    */
   cancel(): void {
     this.cancelled = true;
+    this.abortController?.abort();
   }
 
   /**
@@ -235,71 +237,23 @@ export class WorkerProcess {
   }
 
   /**
-   * Executes an AGENT node using the Anthropic agent loop.
+   * Executes an AGENT node via the Claude Agent SDK.
+   *
+   * Replaces the hand-rolled runAgentLoop() + AnthropicClient path, gaining:
+   * - Full Claude Code toolset (Bash, Glob, Grep, WebSearch, WebFetch, Read, Write, Edit)
+   * - Adaptive thinking (opus/sonnet)
+   * - Non-blocking async tool execution
+   * - Cooperative cancellation via AbortController
    */
   private async runAgent(): Promise<WorkerResult> {
     if (this.cancelled) return this.cancelledResult();
 
-    const config = readConfig();
-    const apiKey = config.models.apiKey;
-
-    if (!apiKey) {
-      throw new Error(
-        'No Anthropic API key configured. Set models.apiKey in config.',
-      );
-    }
-
-    const client = new AnthropicClient(apiKey);
     const model = this.resolveWorkerModel();
     const agentConfig = this.node.agent!;
-    const tools = getBuiltInTools();
-
-    // Load skill tools for any assigned skillIds
-    if (agentConfig.skillIds?.length) {
-      const config = readConfig();
-      const skillsDir = config.skills?.directory;
-      if (skillsDir) {
-        try {
-          const skillLoader = new SkillLoader(skillsDir);
-          for (const skillId of agentConfig.skillIds) {
-            try {
-              const loaded = await skillLoader.load(skillId);
-              for (const skillTool of loaded.tools) {
-                // Convert RegisteredTool to BuiltInTool format
-                tools.push({
-                  name: skillTool.name,
-                  description: skillTool.description,
-                  inputSchema: skillTool.inputSchema,
-                  execute: async (params: Record<string, unknown>): Promise<string> => {
-                    const result = await skillTool.execute(params);
-                    if (typeof result === "string") return result;
-                    if (result && typeof result === "object" && "result" in result) {
-                      return String((result as { result: unknown }).result);
-                    }
-                    if (result && typeof result === "object" && "error" in result) {
-                      return `Error: ${String((result as { error: unknown }).error)}`;
-                    }
-                    return JSON.stringify(result);
-                  },
-                });
-              }
-            } catch (err) {
-              log.warn(`Failed to load skill tools for "${skillId}"`, {
-                error: err instanceof Error ? err.message : String(err),
-              });
-            }
-          }
-        } catch (err) {
-          log.warn("Failed to initialise SkillLoader for skill tools", {
-            error: err instanceof Error ? err.message : String(err),
-          });
-        }
-      }
-    }
-
-
-    // Build the system prompt
     const systemPrompt = await this.buildWorkerSystemPrompt(agentConfig);
+
+    // Create abort controller — wired to cancel()
+    this.abortController = new AbortController();
 
     this.emitEvent({
       type: 'status',
@@ -311,139 +265,89 @@ export class WorkerProcess {
       `Worker ${this.node.id} starting with model ${model}: "${agentConfig.task.slice(0, 80)}"`,
     );
 
-    let progressEstimate = 5;
-    const findings: string[] = [];
-    const outputPaths: string[] = [];
-
-    // Determine token budget: explicit > tier-based default
-    const tokenBudget = agentConfig.tokenBudget ?? this.defaultTokenBudget(model);
-
+    // Heartbeat: show the worker is alive during long operations
     const agentStart = Date.now();
-    let turnCount = 0;
+    let heartbeatToolCalls = 0;
     const heartbeat = setInterval(() => {
       const elapsed = Math.round((Date.now() - agentStart) / 1000);
       this.emitEvent({
         type: 'status',
-        message: `Still working... (${elapsed}s, ${turnCount} turns)`,
-        progress: Math.min(progressEstimate, 90),
+        message: `Still working... (${elapsed}s, ${heartbeatToolCalls} tool calls)`,
+        progress: Math.min(this.currentProgress, 90),
       });
     }, 30_000);
 
-    const result = await runAgentLoop({
-      client,
+    const tokenBudget = agentConfig.tokenBudget ?? this.defaultTokenBudget(model);
+
+    const result = await executeAgent({
+      task: agentConfig.task,
       model,
       systemPrompt,
-      tools,
-      messages: [{ role: 'user', content: agentConfig.task }],
-      maxTokens: 8192,
-      maxInputTokens: tokenBudget,
-      workingDir: this.workspaceDir,
-      isCancelled: () => this.cancelled,
-
-      onThinking: (text: string) => {
-        this.emitEvent({
-          type: 'thinking',
-          thinking: this.summarize(text),
-          progress: Math.min(progressEstimate, 90),
-        });
-      },
-
-      onText: (text: string) => {
-        turnCount++;
-        // Only emit status events for substantial text chunks
-        if (text.trim().length > 10) {
+      cwd: this.workspaceDir,
+      skillIds: agentConfig.skillIds,
+      tokenBudget,
+      abortSignal: this.abortController.signal,
+      onProgress: (event) => {
+        if (event.type === 'tool_call') {
+          heartbeatToolCalls++;
+          // Extract tool name (before the first colon if present)
+          const toolName = event.message.split(':')[0].trim();
+          this.emitEvent({
+            type: 'tool_call',
+            tool: {
+              name: toolName,
+              action: toolName,
+              summary: event.message,
+            },
+            message: event.message,
+            progress: event.progress ?? this.currentProgress,
+          });
+        } else if (event.type === 'status') {
           this.emitEvent({
             type: 'status',
-            message: this.summarize(text.trim()),
-            progress: Math.min(progressEstimate, 95),
+            message: event.message,
+            progress: event.progress ?? this.currentProgress,
+          });
+        } else if (event.type === 'error') {
+          this.emitEvent({
+            type: 'error',
+            error: event.message,
+            message: event.message,
           });
         }
-      },
-
-      onToolCall: (name: string, input: Record<string, unknown>) => {
-        progressEstimate = Math.min(progressEstimate + 5, 90);
-
-        // Track file writes for output reporting
-        if (name === 'write' && input.path) {
-          outputPaths.push(String(input.path));
-        }
-
-        // Build a concise summary of tool params
-        let summary = name;
-        if (name === 'exec' && input.command) {
-          summary = `exec: ${this.summarize(String(input.command), 80)}`;
-        } else if (name === 'read' && input.path) {
-          summary = `read: ${String(input.path)}`;
-        } else if (name === 'write' && input.path) {
-          summary = `write: ${String(input.path)}`;
-        } else if (name === 'edit' && input.path) {
-          summary = `edit: ${String(input.path)}`;
-        } else if (name === 'web_fetch' && input.url) {
-          summary = `fetch: ${this.summarize(String(input.url), 80)}`;
-        }
-
-        this.emitEvent({
-          type: 'tool_call',
-          tool: {
-            name,
-            action: name,
-            file: input.path ? String(input.path) : undefined,
-            summary,
-          },
-          message: summary,
-          progress: progressEstimate,
-        });
-      },
-
-      onToolResult: (name: string, resultText: string) => {
-        progressEstimate = Math.min(progressEstimate + 3, 95);
-
-        this.emitEvent({
-          type: 'tool_result',
-          tool: {
-            name,
-            action: name,
-            summary: this.summarize(resultText),
-          },
-          message: this.summarize(resultText, 80),
-          progress: progressEstimate,
-        });
+        // 'done' is handled below with full data
       },
     }).finally(() => clearInterval(heartbeat));
 
-    const cacheHitRate = result.inputTokens > 0
-      ? Math.round((result.cacheReadTokens / result.inputTokens) * 100)
-      : 0;
-
     this.emitEvent({
       type: 'done',
-      message: `Completed: ${this.node.label}${result.stoppedByBudget ? ' (budget reached)' : ''}`,
+      message: `Completed: ${this.node.label}`,
       progress: 100,
       data: {
         toolCalls: result.toolCalls,
-        inputTokens: result.inputTokens,
-        outputTokens: result.outputTokens,
-        cacheCreationTokens: result.cacheCreationTokens,
-        cacheReadTokens: result.cacheReadTokens,
-        cacheHitRate,
-        stoppedByBudget: result.stoppedByBudget,
+        // Token counts not available from Agent SDK — the SDK manages them internally
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+        cacheHitRate: 0,
+        stoppedByBudget: false,
+        ...(result.costUsd !== undefined ? { costUsd: result.costUsd } : {}),
       },
     });
 
     log.info(
-      `Worker ${this.node.id} completed: ${result.toolCalls} tool calls, ` +
-        `${result.inputTokens}+${result.outputTokens} tokens ` +
-        `(cache: ${result.cacheReadTokens} read, ${result.cacheCreationTokens} created, ${cacheHitRate}% hit rate)` +
-        `${result.stoppedByBudget ? ' [BUDGET REACHED]' : ''}`,
+      `Worker ${this.node.id} completed: ${result.toolCalls} tool calls, ${result.durationSec.toFixed(1)}s` +
+      (result.costUsd ? ` (cost: $${result.costUsd.toFixed(4)})` : ''),
     );
 
     return {
       nodeId: this.node.id,
-      output: result.finalText,
-      durationMs: 0, // filled by run()
+      output: result.output,
+      durationMs: result.durationSec * 1000,
       toolCallCount: result.toolCalls,
-      findings,
-      outputPaths,
+      findings: [],
+      outputPaths: result.outputPaths,
     };
   }
 
@@ -508,7 +412,7 @@ ${agentConfig.task}
 
 ## Rules
 1. Complete the task thoroughly and deliver clear output.
-2. Use the available tools (exec, read, write, edit) and any skill tools as needed.
+2. Use the available tools (Bash, Read, Write, Edit, Glob, Grep, WebSearch, WebFetch) as needed.
 3. Be efficient — avoid unnecessary tool calls.
 4. If you encounter an error, try to recover or work around it.
 5. When done, provide a clear summary of what you accomplished and any notable findings.
