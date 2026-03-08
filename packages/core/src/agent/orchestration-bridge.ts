@@ -227,11 +227,18 @@ export class OrchestrationBridge {
 
     try {
       const result = await executor.execute();
-      await this.onExecutionComplete(result, pushHistory);
+      log.info('Executor returned', { status: result.status, workerCount: result.workerCount, nodeOutputKeys: Object.keys(result.nodeOutputs ?? {}) });
+      try {
+        await this.onExecutionComplete(result, pushHistory);
+      } catch (completionErr) {
+        const msg = completionErr instanceof Error ? completionErr.stack ?? completionErr.message : String(completionErr);
+        log.error('onExecutionComplete crashed', { error: msg });
+        this.callbacks.onText(`Workflow completed but failed to render results: ${completionErr instanceof Error ? completionErr.message : String(completionErr)}`, false, true);
+      }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = err instanceof Error ? err.stack ?? err.message : String(err);
       log.error('Execution error', { error: msg });
-      this.callbacks.onText(`Workflow failed: ${msg}`, false, true);
+      this.callbacks.onText(`Workflow failed: ${err instanceof Error ? err.message : String(err)}`, false, true);
     } finally {
       this.cleanupExecution();
     }
