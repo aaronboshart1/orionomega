@@ -124,11 +124,17 @@ async function initMainAgent(): Promise<void> {
     onPlan(plan) {
       // Use graph.id as the message ID so the TUI can send it back
       // in plan_response and the MainAgent can match it to pendingPlanId.
-      const planId = (plan as unknown as Record<string, unknown>).graph
-        ? ((plan as unknown as Record<string, unknown>).graph as Record<string, unknown>).id as string
-        : randomBytes(8).toString('hex');
+      const graph = (plan as any)?.graph;
+      const planId = graph?.id ?? randomBytes(8).toString('hex');
+
+      // Serialize graph.nodes Map → plain object for JSON transport.
+      // JSON.stringify(Map) produces "{}" — nodes would be lost.
+      if (graph?.nodes instanceof Map) {
+        graph.nodes = Object.fromEntries(graph.nodes);
+      }
+
       wsHandler.broadcast({
-        id: planId || randomBytes(8).toString('hex'),
+        id: planId,
         type: 'plan',
         plan,
       });

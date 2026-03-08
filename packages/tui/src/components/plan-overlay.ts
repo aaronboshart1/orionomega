@@ -74,18 +74,19 @@ export function formatPlan(plan: PlannerOutput): string {
       if (!node) continue;
 
       const label = node.label ?? nodeId;
-      const model = shortenModel(node.agent?.model ?? '');
+      const model = shortenModel(node.agent?.model ?? node.codingAgent?.model ?? '');
       const nodeType = node.type ?? 'AGENT';
-      const icon = nodeType === 'CODING_AGENT' ? '💻' : '🔧';
+      const icon = nodeType === 'CODING_AGENT' ? '💻' : nodeType === 'LOOP' ? '🔁' : '🔧';
 
       const taskText = ` ${taskNum}. ${icon} ${label}${model ? ` [${model}]` : ''}`;
       const styledTask = ' ' + acc.bold(`${taskNum}.`) + txt.bold(` ${icon} ${label}`) +
         (model ? pur(` [${model}]`) : '');
       lines.push(bdr('│') + styledTask + ' '.repeat(Math.max(1, W - taskText.length)) + bdr('│'));
 
-      // Description (max 3 lines)
-      if (node.task) {
-        const descLines = wrapText(node.task, W - 8);
+      // Description — extract from agent.task or codingAgent.task
+      const taskDesc = node.agent?.task ?? node.codingAgent?.task ?? node.task ?? '';
+      if (taskDesc) {
+        const descLines = wrapText(taskDesc, W - 8);
         for (const dl of descLines.slice(0, 3)) {
           const padded = `     ${dl}`;
           lines.push(bdr('│') + dim(padded) + ' '.repeat(Math.max(1, W - padded.length)) + bdr('│'));
@@ -105,15 +106,25 @@ export function formatPlan(plan: PlannerOutput): string {
     }
   }
 
-  // Orphan nodes
+  // Orphan nodes (not in any layer — show them so nothing is hidden)
   const layerNodeIds = new Set(layers.flat());
-  for (const [nodeId, node] of nodes) {
+  for (const [nodeId, nodeVal] of nodes) {
     if (!layerNodeIds.has(nodeId)) {
       taskNum++;
-      const n = node as any;
-      const taskText = ` ${taskNum}. 🔧 ${n.label ?? nodeId}`;
-      const styled = ' ' + acc.bold(`${taskNum}.`) + txt.bold(` 🔧 ${n.label ?? nodeId}`);
+      const n = nodeVal as any;
+      const nLabel = n.label ?? nodeId;
+      const nModel = shortenModel(n.agent?.model ?? n.codingAgent?.model ?? '');
+      const taskText = ` ${taskNum}. 🔧 ${nLabel}${nModel ? ` [${nModel}]` : ''}`;
+      const styled = ' ' + acc.bold(`${taskNum}.`) + txt.bold(` 🔧 ${nLabel}`) +
+        (nModel ? pur(` [${nModel}]`) : '');
       lines.push(bdr('│') + styled + ' '.repeat(Math.max(1, W - taskText.length)) + bdr('│'));
+      const nTask = n.agent?.task ?? n.codingAgent?.task ?? '';
+      if (nTask) {
+        for (const dl of wrapText(nTask, W - 8).slice(0, 2)) {
+          const padded = `     ${dl}`;
+          lines.push(bdr('│') + dim(padded) + ' '.repeat(Math.max(1, W - padded.length)) + bdr('│'));
+        }
+      }
     }
   }
 
