@@ -6,11 +6,11 @@
  *
  *   ⚡ Review OrionOmega SDK · 45s · ✅ 3/8 · 🔄 2 running · layer 2/3
  *   ✅ Discover Repo Structure [Haiku 4.5]
- *   └─ Explored 47 files, found 6 packages
+ *      └─ Explored 47 files, found 6 packages
  *   🔄 SDK Architecture Review [Opus 4.6]
- *   └─ Analyzing skill manifest schema...
+ *      └─ Analyzing skill manifest schema...
  *   🔄 Security Review [Sonnet 4.6]
- *   └─ Checking dependency audit...
+ *      └─ Checking dependency audit...
  *   ⏳ Final Report [Opus 4.6]
  */
 
@@ -191,9 +191,9 @@ export class WorkflowTracker extends Container {
           ? node.lastMessage.slice(0, 60) + '…'
           : node.lastMessage;
         const msgColor = node.status === 'error' ? red : dim;
-        this.setLine(`activity:${node.id}`, `    ${tree('└─')} ${msgColor(msg)}`);
+        this.setLine(`activity:${node.id}`, `       ${tree('└─')} ${msgColor(msg)}`);
       } else if (node.status === 'running') {
-        this.setLine(`activity:${node.id}`, `    ${tree('└─')} ${dim('starting...')}`);
+        this.setLine(`activity:${node.id}`, `       ${tree('└─')} ${dim('starting...')}`);
       } else {
         // Remove activity line if no message and not running
         this.removeLine(`activity:${node.id}`);
