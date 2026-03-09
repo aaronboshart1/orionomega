@@ -1,13 +1,14 @@
 /**
  * @module components/workflow-tracker
  * Displays workflow progress aligned to the approved plan.
- * Shows each task with status: ⏳ pending, 🔄 running, ✅ done, ❌ failed.
+ * Shows each task with status: ⏳ pending, Ω running, ✅ done, ❌ failed.
  * Rendered as a persistent block in the chat log when a workflow is active.
  */
 
 import { Container, Text, Spacer } from '@mariozechner/pi-tui';
 import type { GraphState } from '@orionomega/core';
 import chalk from 'chalk';
+import { omegaSpinner } from './omega-spinner.js';
 
 const palette = {
   dim: '#5C6370',
@@ -44,6 +45,9 @@ export class WorkflowTracker extends Container {
   private totalLayers = 0;
   private completedLayers = 0;
   private _expanded = true;
+  private unsubSpinner: (() => void) | null = null;
+  /** Wire this to tui.requestRender() for spinner-driven re-renders. */
+  onUpdate?: () => void;
 
   constructor() {
     super();
@@ -66,6 +70,7 @@ export class WorkflowTracker extends Container {
           this.nodeAttached.delete(id);
         }
       }
+      this.stopSpinner();
     } else {
       // Expand: re-attach via rebuild
       this.rebuild();
@@ -161,6 +166,31 @@ export class WorkflowTracker extends Container {
       Array.from(this.trackedNodes.values()).some(n => n.status === 'pending' || n.status === 'running');
   }
 
+  /** Clean up spinner subscription. */
+  dispose(): void {
+    this.stopSpinner();
+  }
+
+  private hasRunningNodes(): boolean {
+    return Array.from(this.trackedNodes.values()).some(n => n.status === 'running');
+  }
+
+  private startSpinner(): void {
+    if (this.unsubSpinner) return;
+    this.unsubSpinner = omegaSpinner.subscribe(() => {
+      // Re-render running node lines with updated spinner frame
+      this.rebuildNodeLines();
+      this.onUpdate?.();
+    });
+  }
+
+  private stopSpinner(): void {
+    if (this.unsubSpinner) {
+      this.unsubSpinner();
+      this.unsubSpinner = null;
+    }
+  }
+
   private rebuild(): void {
     // Update header
     const elapsed = Math.round((Date.now() - this.startTime) / 1000);
@@ -176,15 +206,25 @@ export class WorkflowTracker extends Container {
         chalk.hex(palette.dim)('/') +
         chalk.hex(palette.text)(`${total}`),
     ];
-    if (running > 0) headerParts.push(chalk.hex(palette.blue)(`🔄 ${running} running`));
+    if (running > 0) headerParts.push(chalk.hex(palette.blue)(`${omegaSpinner.current} ${running} running`));
     if (failed > 0) headerParts.push(chalk.hex(palette.red)(`❌ ${failed} failed`));
     headerParts.push(chalk.hex(palette.dim)(`layer ${this.completedLayers}/${this.totalLayers}`));
 
     this.headerText.setText('  ' + headerParts.join(chalk.hex(palette.dim)(' · ')));
 
+    // Manage spinner subscription based on running state
+    if (this.hasRunningNodes()) {
+      this.startSpinner();
+    } else {
+      this.stopSpinner();
+    }
+
     if (!this._expanded) return;
 
-    // Update or create node lines
+    this.rebuildNodeLines();
+  }
+
+  private rebuildNodeLines(): void {
     // Sort by layer then by id
     const sorted = Array.from(this.trackedNodes.values()).sort((a, b) => {
       if (a.layer !== b.layer) return a.layer - b.layer;
@@ -221,7 +261,7 @@ export class WorkflowTracker extends Container {
     switch (status) {
       case 'complete': return '✅';
       case 'error': return '❌';
-      case 'running': return '🔄';
+      case 'running': return chalk.hex(palette.blue)(omegaSpinner.current);
       default: return '⏳';
     }
   }
@@ -254,10 +294,13 @@ export class MultiWorkflowTracker extends Container {
   readonly trackers = new Map<string, WorkflowTracker>();
   private focusedId: string | null = null;
   private removalTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Wire this to tui.requestRender() for spinner-driven re-renders. */
+  onUpdate?: () => void;
 
   addWorkflow(workflowId: string, state: import('@orionomega/core').GraphState): void {
     if (!this.trackers.has(workflowId)) {
       const tracker = new WorkflowTracker();
+      tracker.onUpdate = () => this.onUpdate?.();
       this.trackers.set(workflowId, tracker);
       this.addChild(tracker);
     }
@@ -276,6 +319,7 @@ export class MultiWorkflowTracker extends Container {
         const timer = setTimeout(() => {
           const t = this.trackers.get(workflowId);
           if (t) {
+            t.dispose();
             this.removeChild(t);
             this.trackers.delete(workflowId);
           }
@@ -304,8 +348,6 @@ export class MultiWorkflowTracker extends Container {
   get totalRunningWorkers(): number {
     let count = 0;
     for (const tracker of this.trackers.values()) {
-      // Count running nodes across all trackers via isActive check
-      // We approximate by looking at the tracker's active state
       if (tracker.isActive) count++;
     }
     return count;
