@@ -21,7 +21,7 @@
         {
           "type": "oauth",
           "label": "GitHub OAuth (recommended)",
-          "description": "Sign in with your browser — creates a secure token automatically",
+          "description": "Sign in via GitHub device flow — works over SSH, no browser auto-open",
           "command": "gh auth login --web --git-protocol https",
           "validateCommand": "gh auth status"
         },

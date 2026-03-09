@@ -15,6 +15,7 @@ import { readConfig, writeConfig, getConfigPath, getDefaultConfig } from '../con
 import type { OrionOmegaConfig } from '../config/index.js';
 import { SkillLoader, readSkillConfig, writeSkillConfig } from '@orionomega/skills-sdk';
 import type { SkillManifest, SkillConfig, SkillAuthMethod, SkillSetupField } from '@orionomega/skills-sdk';
+import { githubDeviceFlowAuth, isGhWebAuthCommand, extractGitProtocol } from './github-device-auth.js';
 
 // ── Colour helpers ──────────────────────────────────────────────
 
@@ -611,12 +612,24 @@ async function runAuthSetup(methods: SkillAuthMethod[], skillsDir: string, skill
     case "oauth":
     case "login": {
       if (method.command) {
-        println("  Running: " + BOLD + method.command + RESET);
-        try {
-          execSync(method.command, { stdio: "inherit", timeout: 120000 });
-          success("Authentication complete.");
-        } catch {
-          fail("Authentication command failed. You can retry with: orionomega skill setup " + skillName);
+        if (isGhWebAuthCommand(method.command)) {
+          // SSH-friendly: use device flow instead of trying to open a browser
+          const protocol = extractGitProtocol(method.command);
+          const ok = await githubDeviceFlowAuth(protocol);
+          if (ok) {
+            success("Authentication complete.");
+          } else {
+            fail("Authentication failed. You can retry with: orionomega skill setup " + skillName);
+          }
+        } else {
+          // Non-web auth command: run normally with inherited stdio
+          println("  Running: " + BOLD + method.command + RESET);
+          try {
+            execSync(method.command, { stdio: "inherit", timeout: 120000 });
+            success("Authentication complete.");
+          } catch {
+            fail("Authentication command failed. You can retry with: orionomega skill setup " + skillName);
+          }
         }
       }
       break;
@@ -807,7 +820,7 @@ export async function runSetup(): Promise<void> {
       const out = execSync('systemctl is-active orionomega 2>/dev/null', { encoding: 'utf-8' }).trim();
       if (out === 'active') {
         print('  Restarting gateway to apply new config... ');
-        execSync('sudo systemctl restart orionomega', { stdio: 'ignore' });
+        execSync('systemctl restart orionomega', { stdio: 'ignore' });
         println(`${GREEN}✓${RESET} Gateway restarted`);
       }
     } catch {

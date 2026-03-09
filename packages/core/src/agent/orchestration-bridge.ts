@@ -370,7 +370,7 @@ export class OrchestrationBridge {
     const nodeOutputEntries = nodeOutputs ? Object.entries(nodeOutputs) : [];
     if (nodeOutputEntries.length > 0) {
       const [, lastOutput] = nodeOutputEntries[nodeOutputEntries.length - 1];
-      const maxLen = 4000;
+      const maxLen = 32000;
       lines.push('');
       lines.push(lastOutput.length > maxLen ? lastOutput.slice(0, maxLen) + '\n\n... [truncated]' : lastOutput);
     } else if (taskSummary) {
@@ -396,7 +396,7 @@ export class OrchestrationBridge {
           const resolved = p.startsWith('/') ? p : `${this.config.workspaceDir}/${p}`;
           if (existsSync(resolved)) {
             const fileContent = await readFile(resolved, 'utf-8');
-            const preview = fileContent.length > 2000 ? fileContent.slice(0, 2000) + '\n... [truncated]' : fileContent;
+            const preview = fileContent.length > 8000 ? fileContent.slice(0, 8000) + '\n... [truncated]' : fileContent;
             lines.push('', '```', preview, '```');
           }
         } catch { /* non-fatal */ }
