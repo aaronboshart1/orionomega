@@ -9,6 +9,7 @@ import { createInterface } from 'node:readline';
 import { readConfig } from "../config/index.js";
 import { SkillLoader, readSkillConfig, writeSkillConfig } from "@orionomega/skills-sdk";
 import type { SkillManifest, SkillConfig } from "@orionomega/skills-sdk";
+import { githubDeviceFlowAuth, isGhWebAuthCommand, extractGitProtocol } from './github-device-auth.js';
 
 const GREEN = '\x1b[32m';
 const RED = '\x1b[31m';
@@ -360,8 +361,30 @@ async function setupSkill(name: string | undefined, skillsDir: string): Promise<
       } else {
         authOk = true; // No validate command — trust the input
       }
+    } else if ((method.type === 'login' || method.type === 'oauth') && method.command && isGhWebAuthCommand(method.command)) {
+      // SSH-friendly: use device flow instead of trying to open a browser
+      const protocol = extractGitProtocol(method.command);
+      const ok = await githubDeviceFlowAuth(protocol);
+      if (ok) {
+        process.stdout.write(`${GREEN}✓${RESET} Authentication complete.\n`);
+        authOk = true;
+      } else {
+        process.stdout.write(`${RED}✗${RESET} Authentication failed.\n`);
+        return;
+      }
+      // Post-login validation
+      if (method.validateCommand) {
+        try {
+          const { execSync: exec } = await import('node:child_process');
+          exec(method.validateCommand, { encoding: 'utf-8', timeout: 15000, stdio: 'pipe' });
+          process.stdout.write(`${GREEN}✓${RESET} Auth validated.\n`);
+        } catch {
+          process.stdout.write(`${RED}✗${RESET} Auth validation failed after login.\n`);
+          return;
+        }
+      }
     } else if (method.type === 'login' && method.command) {
-      // Interactive CLI login (e.g. gh auth login)
+      // Interactive CLI login (e.g. gh auth login without --web)
       process.stdout.write(`\nRunning: ${BOLD}${method.command}${RESET}\n`);
       try {
         const { execSync: exec } = await import('node:child_process');
@@ -384,7 +407,7 @@ async function setupSkill(name: string | undefined, skillsDir: string): Promise<
         }
       }
     } else if (method.command) {
-      // Generic command-based auth (ssh-key, oauth browser flow, etc.)
+      // Generic command-based auth (ssh-key, other flows, etc.)
       process.stdout.write(`\nRunning: ${BOLD}${method.command}${RESET}\n`);
       try {
         const { execSync: exec } = await import('node:child_process');
