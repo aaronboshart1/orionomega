@@ -211,6 +211,7 @@ export async function start(): Promise<void> {
   });
 
   client.on('message', (msg) => {
+    chatLog.updateThinking('');
     chatLog.clearStreaming();
     statusBar.thinking = false;
     chatLog.addMessage(msg);
@@ -218,6 +219,7 @@ export async function start(): Promise<void> {
   });
 
   client.on('streaming', (msg) => {
+    chatLog.updateThinking('');
     statusBar.thinking = true;
     chatLog.updateStreaming(msg.content);
     tui.requestRender();
@@ -225,6 +227,7 @@ export async function start(): Promise<void> {
 
   client.on('streamingDone', () => {
     statusBar.thinking = false;
+    chatLog.updateThinking('');
     chatLog.clearStreaming();
     tui.requestRender();
   });
