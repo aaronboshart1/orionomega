@@ -807,7 +807,7 @@ export async function runSetup(): Promise<void> {
       const out = execSync('systemctl is-active orionomega 2>/dev/null', { encoding: 'utf-8' }).trim();
       if (out === 'active') {
         print('  Restarting gateway to apply new config... ');
-        execSync('systemctl restart orionomega', { stdio: 'ignore' });
+        execSync('sudo systemctl restart orionomega', { stdio: 'ignore' });
         println(`${GREEN}✓${RESET} Gateway restarted`);
       }
     } catch {

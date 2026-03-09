@@ -4,6 +4,7 @@ import { memo } from 'react';
 import { Handle, Position, type NodeProps } from '@xyflow/react';
 import { Bot, Wrench, GitBranch, Zap, Link } from 'lucide-react';
 import { useOrchestrationStore } from '@/stores/orchestration';
+import { OmegaSpinner } from '../chat/OmegaSpinner';
 
 interface WorkerNodeData {
   label: string;
@@ -26,7 +27,6 @@ const statusColors: Record<string, { border: string; bg: string; text: string }>
 const statusIcons: Record<string, string> = {
   pending: '⏳',
   waiting: '⏳',
-  running: '🔄',
   done: '✅',
   error: '❌',
   skipped: '⏭️',
@@ -55,13 +55,15 @@ function WorkerNodeComponent({ data, id }: NodeProps) {
       <Handle type="target" position={Position.Left} className="!h-2 !w-2 !border-zinc-600 !bg-zinc-500" />
       <div
         className={`min-w-[140px] rounded-lg border-2 ${colors.border} ${colors.bg} px-3 py-2 shadow-lg transition-all ${
-          d.status === 'running' ? 'animate-pulse' : ''
-        } ${isSelected ? 'ring-2 ring-blue-400 ring-offset-1 ring-offset-zinc-900' : ''} ${
-          d.status === 'skipped' ? 'opacity-50' : ''
-        }`}
+          isSelected ? 'ring-2 ring-blue-400 ring-offset-1 ring-offset-zinc-900' : ''
+        } ${d.status === 'skipped' ? 'opacity-50' : ''}`}
       >
         <div className="flex items-center gap-2">
-          <span className="text-xs">{statusIcons[d.status] || '⏳'}</span>
+          {d.status === 'running' ? (
+            <OmegaSpinner size={4} gap={1} interval={180} />
+          ) : (
+            <span className="text-xs">{statusIcons[d.status] || '⏳'}</span>
+          )}
           <NodeTypeIcon type={d.nodeType as string} />
           <span className={`text-xs font-medium ${colors.text}`}>{d.label as string}</span>
         </div>

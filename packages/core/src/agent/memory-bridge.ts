@@ -148,16 +148,19 @@ export class MemoryBridge {
 
     try {
       const result = await this.hindsightClient.recall('jarvis-core', task, { maxTokens: 1024 });
-      if (result?.memories?.length) {
-        memories.push(result.memories.map((m) => m.content).join('\n\n'));
+      // Hindsight API returns 'results' key (not 'memories' despite typed interface)
+      const items = (result as any)?.results ?? result?.memories ?? [];
+      if (items.length) {
+        memories.push(items.map((m: any) => m.content).join('\n\n'));
       }
     } catch { /* non-fatal */ }
 
     if (this.activeProjectBank) {
       try {
         const result = await this.hindsightClient.recall(this.activeProjectBank, task, { maxTokens: 2048 });
-        if (result?.memories?.length) {
-          memories.push(result.memories.map((m) => m.content).join('\n\n'));
+        const items = (result as any)?.results ?? result?.memories ?? [];
+        if (items.length) {
+          memories.push(items.map((m: any) => m.content).join('\n\n'));
         }
       } catch { /* non-fatal */ }
     }

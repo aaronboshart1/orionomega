@@ -996,6 +996,37 @@ export class GraphExecutor {
       }
     }
 
+    // Aggregate per-model token usage
+    const modelMap = new Map<string, {
+      inputTokens: number; outputTokens: number;
+      cacheReadTokens: number; cacheCreationTokens: number;
+      workerCount: number;
+    }>();
+
+    for (const result of this.nodeResults.values()) {
+      const model = result.model ?? 'unknown';
+      const existing = modelMap.get(model) ?? {
+        inputTokens: 0, outputTokens: 0,
+        cacheReadTokens: 0, cacheCreationTokens: 0,
+        workerCount: 0,
+      };
+      existing.inputTokens += result.inputTokens ?? 0;
+      existing.outputTokens += result.outputTokens ?? 0;
+      existing.cacheReadTokens += result.cacheReadTokens ?? 0;
+      existing.cacheCreationTokens += result.cacheCreationTokens ?? 0;
+      existing.workerCount += 1;
+      modelMap.set(model, existing);
+    }
+
+    // Calculate cost per model using Anthropic pricing
+    const modelUsage: import('./types.js').ModelUsage[] = [];
+    let totalCostUsd = 0;
+    for (const [model, usage] of modelMap) {
+      const cost = this.estimateCost(model, usage.inputTokens, usage.outputTokens, usage.cacheReadTokens, usage.cacheCreationTokens);
+      totalCostUsd += cost;
+      modelUsage.push({ model, ...usage, costUsd: cost });
+    }
+
     return {
       workflowId: this.graph.id,
       status: terminalStatus,
@@ -1003,11 +1034,49 @@ export class GraphExecutor {
       outputPaths: [...new Set(this.outputPaths)],
       durationSec: (Date.now() - startTime) / 1000,
       workerCount: this.nodeResults.size,
-      estimatedCost: 0,
+      estimatedCost: totalCostUsd,
       decisions: this.decisions,
       findings: this.findings,
       errors: this.errors,
       nodeOutputs,
+      modelUsage,
+      totalCostUsd,
     };
+  }
+
+  /** Estimate cost in USD based on Anthropic pricing (June 2025). */
+  private estimateCost(
+    model: string,
+    inputTokens: number,
+    outputTokens: number,
+    cacheReadTokens: number,
+    cacheCreationTokens: number,
+  ): number {
+    // Pricing per million tokens (USD)
+    let inputPricePerM: number;
+    let outputPricePerM: number;
+    let cacheReadPricePerM: number;
+    let cacheWritePricePerM: number;
+
+    if (model.includes('opus')) {
+      inputPricePerM = 15; outputPricePerM = 75;
+      cacheReadPricePerM = 1.5; cacheWritePricePerM = 18.75;
+    } else if (model.includes('haiku')) {
+      inputPricePerM = 0.8; outputPricePerM = 4;
+      cacheReadPricePerM = 0.08; cacheWritePricePerM = 1;
+    } else {
+      // Sonnet default
+      inputPricePerM = 3; outputPricePerM = 15;
+      cacheReadPricePerM = 0.3; cacheWritePricePerM = 3.75;
+    }
+
+    // Uncached input = total input - cache reads
+    const uncachedInput = Math.max(0, inputTokens - cacheReadTokens);
+    return (
+      (uncachedInput / 1_000_000) * inputPricePerM +
+      (outputTokens / 1_000_000) * outputPricePerM +
+      (cacheReadTokens / 1_000_000) * cacheReadPricePerM +
+      (cacheCreationTokens / 1_000_000) * cacheWritePricePerM
+    );
   }
 }

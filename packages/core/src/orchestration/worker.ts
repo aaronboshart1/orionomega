@@ -32,6 +32,18 @@ export interface WorkerResult {
   findings: string[];
   /** Paths to files written by this worker. */
   outputPaths: string[];
+  /** Model used (for cost tracking). */
+  model?: string;
+  /** Input tokens consumed. */
+  inputTokens?: number;
+  /** Output tokens consumed. */
+  outputTokens?: number;
+  /** Cache read tokens. */
+  cacheReadTokens?: number;
+  /** Cache creation tokens. */
+  cacheCreationTokens?: number;
+  /** Cost in USD. */
+  costUsd?: number;
 }
 
 /**

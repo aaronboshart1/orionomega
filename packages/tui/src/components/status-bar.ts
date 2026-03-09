@@ -40,32 +40,39 @@ export class StatusBar extends Text {
   private _status: SessionStatus = {};
   private spinnerFrame = 0;
   private spinnerTimer: ReturnType<typeof setInterval> | null = null;
-  // Braille pixel Ω — 14×4 pixel grid (7 braille chars wide)
-  // Builds phase by phase, holds, dissolves in reverse.
+
+  // 4×4 pixel omega — Aaron's canonical grid:
+  //   . # # .
+  //   # . . #
+  //   . # # .
+  //   # . . #
   //
-  //   ..▪▪▪▪▪▪▪▪▪▪..    arc
-  //   .▪▪........▪▪.    sides
-  //   .▪..........▪.    sides
-  //   ▪▪.▪▪▪..▪▪▪.▪▪    feet
-  //
+  // Rendered as 2 braille characters (2 cols × 4 rows per char).
+  // Animation: spiral fill → solid → dissolve non-omega → reveal omega → fade.
   private static readonly SPINNER = (() => {
-    // Pixel grid: 14 wide × 4 tall
+    // 4 wide × 4 tall pixel grid
     const OMEGA = [
-      [0,0,1,1,1,1,1,1,1,1,1,1,0,0],
-      [0,1,1,0,0,0,0,0,0,0,0,1,1,0],
-      [0,1,0,0,0,0,0,0,0,0,0,0,1,0],
-      [1,1,0,1,1,1,0,0,1,1,1,0,1,1],
+      [0, 1, 1, 0],
+      [1, 0, 0, 1],
+      [0, 1, 1, 0],
+      [1, 0, 0, 1],
     ];
 
-    // Reveal phases — pixels appear in symmetric groups
-    const PHASES: [number, number][][] = [
-      [[0,6],[0,7]],                                       // center arc
-      [[0,5],[0,8],[0,4],[0,9]],                           // arc extends
-      [[0,3],[0,10],[0,2],[0,11]],                         // full arc
-      [[1,1],[1,12],[1,2],[1,11]],                         // upper sides
-      [[2,1],[2,12]],                                      // lower sides
-      [[3,0],[3,13],[3,1],[3,12]],                         // outer feet
-      [[3,3],[3,10],[3,4],[3,9],[3,5],[3,8]],              // inner feet → FULL
+    // Spiral order (clockwise from top-left) as [row, col]
+    const SPIRAL: [number, number][] = [
+      [0,0], [0,1], [0,2], [0,3],  // top row →
+      [1,3], [2,3], [3,3],         // right col ↓
+      [3,2], [3,1], [3,0],         // bottom row ←
+      [2,0], [1,0],                // left col ↑
+      [1,1], [1,2], [2,2], [2,1],  // inner
+    ];
+
+    // Spiral fill phases — 4 cells each
+    const FILL_PHASES: [number, number][][] = [
+      SPIRAL.slice(0, 4),
+      SPIRAL.slice(4, 8),
+      SPIRAL.slice(8, 12),
+      SPIRAL.slice(12, 16),
     ];
 
     const toBraille = (grid: number[][]): string => {
@@ -85,27 +92,36 @@ export class StatusBar extends Text {
     const grid = OMEGA.map(r => r.map(() => 0));
     const frames: string[] = [];
 
-    // Empty
+    // Frame 0: Empty
     frames.push(toBraille(grid));
 
-    // Build
-    for (const phase of PHASES) {
+    // Frames 1-4: Spiral fill (all cells light up)
+    for (const phase of FILL_PHASES) {
       for (const [y, x] of phase) grid[y][x] = 1;
       frames.push(toBraille(grid));
     }
 
-    // Hold full
-    frames.push(toBraille(grid));
-    frames.push(toBraille(grid));
+    // Frame 5: Hold full grid
     frames.push(toBraille(grid));
 
-    // Dissolve (reverse)
-    for (let i = PHASES.length - 1; i >= 0; i--) {
-      for (const [y, x] of PHASES[i]) grid[y][x] = 0;
-      frames.push(toBraille(grid));
+    // Frame 6: Non-omega cells off (omega revealed)
+    for (let y = 0; y < 4; y++) {
+      for (let x = 0; x < 4; x++) {
+        grid[y][x] = OMEGA[y][x];
+      }
     }
+    frames.push(toBraille(grid));
 
-    // Hold empty
+    // Frames 7-8: Hold omega
+    frames.push(toBraille(grid));
+    frames.push(toBraille(grid));
+
+    // Frame 9: Omega fades out
+    for (let y = 0; y < 4; y++) {
+      for (let x = 0; x < 4; x++) {
+        grid[y][x] = 0;
+      }
+    }
     frames.push(toBraille(grid));
 
     return frames;

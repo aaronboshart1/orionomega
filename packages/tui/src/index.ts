@@ -123,9 +123,11 @@ export async function start(): Promise<void> {
 
   const header = new Text('', 1, 0);
   const chatLog = new ChatLog();
+  chatLog.onUpdate = () => tui.requestRender();
   const editor = new CustomEditor(tui, editorTheme);
   const statusBar = new StatusBar();
   const multiTracker = new MultiWorkflowTracker();
+  multiTracker.onUpdate = () => tui.requestRender();
 
   const root = new Container();
   root.addChild(header);
@@ -209,6 +211,7 @@ export async function start(): Promise<void> {
   });
 
   client.on('message', (msg) => {
+    chatLog.updateThinking('');
     chatLog.clearStreaming();
     statusBar.thinking = false;
     chatLog.addMessage(msg);
@@ -216,6 +219,7 @@ export async function start(): Promise<void> {
   });
 
   client.on('streaming', (msg) => {
+    chatLog.updateThinking('');
     statusBar.thinking = true;
     chatLog.updateStreaming(msg.content);
     tui.requestRender();
@@ -223,6 +227,7 @@ export async function start(): Promise<void> {
 
   client.on('streamingDone', () => {
     statusBar.thinking = false;
+    chatLog.updateThinking('');
     chatLog.clearStreaming();
     tui.requestRender();
   });

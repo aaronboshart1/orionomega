@@ -8,6 +8,7 @@ import { Container, Markdown, Spacer, Text } from '@mariozechner/pi-tui';
 import type { Component } from '@mariozechner/pi-tui';
 import type { DisplayMessage } from '../gateway-client.js';
 import { markdownTheme, theme } from '../theme.js';
+import { omegaSpinner } from './omega-spinner.js';
 
 /** A rendered message component with metadata. */
 interface ChatEntry {
@@ -24,6 +25,10 @@ export class ChatLog extends Container {
   private entries: ChatEntry[] = [];
   private streamingComponent: Markdown | null = null;
   private thinkingComponent: Text | null = null;
+  private thinkingText = '';
+  private unsubSpinner: (() => void) | null = null;
+  /** Wire this to tui.requestRender() for spinner-driven re-renders. */
+  onUpdate?: () => void;
 
   constructor(maxEntries = 200) {
     super();
@@ -87,20 +92,36 @@ export class ChatLog extends Container {
     }
   }
 
-  /** Show a thinking indicator. */
+  /** Show a thinking indicator with animated omega spinner. */
   updateThinking(text: string): void {
     if (!text) {
       if (this.thinkingComponent) {
         this.removeChild(this.thinkingComponent);
         this.thinkingComponent = null;
       }
+      if (this.unsubSpinner) {
+        this.unsubSpinner();
+        this.unsubSpinner = null;
+      }
+      this.thinkingText = '';
       return;
     }
 
-    const display = theme.dim(`🧠 ${text.length > 100 ? text.slice(0, 100) + '…' : text}`);
+    this.thinkingText = text;
+    const truncated = text.length > 100 ? text.slice(0, 100) + '…' : text;
+    const display = theme.dim(`${omegaSpinner.current} ${truncated}`);
+
     if (!this.thinkingComponent) {
       this.thinkingComponent = new Text(display, 1, 0);
       this.addChild(this.thinkingComponent);
+      // Subscribe to spinner ticks for animation
+      this.unsubSpinner = omegaSpinner.subscribe(() => {
+        if (this.thinkingComponent && this.thinkingText) {
+          const t = this.thinkingText.length > 100 ? this.thinkingText.slice(0, 100) + '…' : this.thinkingText;
+          this.thinkingComponent.setText(theme.dim(`${omegaSpinner.current} ${t}`));
+          this.onUpdate?.();
+        }
+      });
     } else {
       this.thinkingComponent.setText(display);
     }
@@ -111,7 +132,12 @@ export class ChatLog extends Container {
     this.clear();
     this.entries = [];
     this.streamingComponent = null;
+    if (this.unsubSpinner) {
+      this.unsubSpinner();
+      this.unsubSpinner = null;
+    }
     this.thinkingComponent = null;
+    this.thinkingText = '';
   }
 
   private pruneOverflow(): void {
