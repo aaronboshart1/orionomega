@@ -35,16 +35,12 @@ The system ships with [Hindsight](https://github.com/aaronboshart1/hindsight) in
 ## Quick Start
 
 ```bash
-# Install (requires a GitHub token for private repo access)
+# Install (GITHUB_TOKEN needed to clone the private repo)
 export GITHUB_TOKEN=ghp_your_token_here
-curl -fsSL -H "Authorization: token $GITHUB_TOKEN" \
-  https://raw.githubusercontent.com/aaronboshart1/orionomega/main/scripts/install.sh | bash
+curl -fsSL https://gist.githubusercontent.com/aaronboshart1/185201d854b230aaab48f58fd5ed1dfb/raw/install.sh | bash
 
-# Configure (interactive wizard — sets API key, Hindsight URL, etc.)
+# Configure (interactive wizard — sets API key, model, Hindsight, etc.)
 orionomega setup
-
-# Start the gateway
-orionomega gateway start
 
 # Launch TUI
 orionomega tui
