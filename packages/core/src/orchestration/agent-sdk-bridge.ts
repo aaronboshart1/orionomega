@@ -389,15 +389,24 @@ export async function executeAgent(
   }
 
   try {
+    // Use the same permission mode as coding agents — bypassPermissions crashes
+    // if claude hasn't been explicitly opted in, so respect the config setting
+    const permissionMode = sdkConfig.permissionMode === 'bypassPermissions'
+      ? 'bypassPermissions'
+      : sdkConfig.permissionMode === 'acceptEdits'
+        ? 'acceptEdits'
+        : 'default';
+
     const queryResult = query({
       prompt: task,
       options: {
         model,
         cwd,
         allowedTools: DEFAULT_AGENT_TOOLS,
-        // Workers run autonomously — bypass permission prompts
-        permissionMode: 'bypassPermissions' as const,
-        allowDangerouslySkipPermissions: true,
+        permissionMode,
+        ...(permissionMode === 'bypassPermissions'
+          ? { allowDangerouslySkipPermissions: true }
+          : {}),
         effort: sdkConfig.effort ?? 'high',
         // Adaptive thinking — Claude decides when/how much to think
         thinking: { type: 'adaptive' },
@@ -407,6 +416,7 @@ export async function executeAgent(
         abortController,
         env: {
           ...process.env,
+          HOME: process.env.HOME || '/root',
           ANTHROPIC_API_KEY: apiKey,
           CLAUDE_AGENT_SDK_CLIENT_APP: 'orionomega-worker',
         },
@@ -631,6 +641,7 @@ export async function executeCodingAgent(
         abortController,
         env: {
           ...process.env,
+          HOME: process.env.HOME || '/root',
           ANTHROPIC_API_KEY: apiKey,
           // P3: Identify this client to the SDK
           CLAUDE_AGENT_SDK_CLIENT_APP: 'orionomega-orchestrator',
