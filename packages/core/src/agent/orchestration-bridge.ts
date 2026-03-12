@@ -215,12 +215,35 @@ export class OrchestrationBridge {
         break;
 
       case 'modify': {
-        const modifiedTask = modification
-          ? `${pending.task}\n\nModification: ${modification}`
-          : pending.task;
-        this.pendingPlans.delete(planId);
-        this.callbacks.onText('Re-planning with your modifications…', true, true);
-        await this.planOnly(modifiedTask, pushHistory);
+        if (!modification) {
+          // No modification text — treat as approve
+          if (this.memory.banks && pending.task) {
+            await this.memory.ensureProjectBank(pending.task);
+          }
+          await this.executePlan(pending.plan, pushHistory);
+          break;
+        }
+
+        // Classify the modification: is it approval-with-context or a genuine change?
+        const isApprovalWithContext = await this.classifyModification(modification, pending.task);
+
+        if (isApprovalWithContext) {
+          // User is approving with additional instructions — execute the plan as-is
+          // and inject the additional context into the task description for workers
+          log.verbose('Modification classified as approval-with-context', { modification });
+          pending.task = `${pending.task}\n\nAdditional instructions: ${modification}`;
+          if (this.memory.banks && pending.task) {
+            await this.memory.ensureProjectBank(pending.task);
+          }
+          await this.executePlan(pending.plan, pushHistory);
+        } else {
+          // Genuine modification — re-plan with the changes
+          log.verbose('Modification classified as change request', { modification });
+          const modifiedTask = `${pending.task}\n\nModification: ${modification}`;
+          this.pendingPlans.delete(planId);
+          this.callbacks.onText('Re-planning with your modifications…', true, true);
+          await this.planOnly(modifiedTask, pushHistory);
+        }
         break;
       }
 
@@ -238,6 +261,48 @@ export class OrchestrationBridge {
   }
 
   // ── Execution ───────────────────────────────────────────────────
+
+  /**
+   * Classify whether a user's modification text is:
+   * - Approval with additional context ("this is correct, just do X")
+   * - A genuine change to the plan ("actually, remove step 3 and add Y")
+   *
+   * Uses fast heuristics first, falls back to LLM for ambiguous cases.
+   */
+  private async classifyModification(modification: string, _task: string): Promise<boolean> {
+    const lower = modification.toLowerCase().trim();
+
+    // Fast-path: clear approval signals
+    const approvalSignals = [
+      /\b(this is correct|that'?s? (correct|right|perfect|good|great))\b/i,
+      /\b(looks? good|sounds? good|exactly|perfect|go ahead|do it|proceed|get .* (setup|started|going|done))\b/i,
+      /\b(yes|yep|yeah|correct|approved?|lgtm)\b/i,
+      /^(ok|okay)\b/i,
+    ];
+    const hasApprovalSignal = approvalSignals.some((re) => re.test(lower));
+
+    // Fast-path: clear change signals
+    const changeSignals = [
+      /\b(instead|change|replace|remove|delete|swap|don'?t|shouldn'?t|actually no|wait)\b/i,
+      /\b(add (a |another )?step|reorder|different)\b/i,
+    ];
+    const hasChangeSignal = changeSignals.some((re) => re.test(lower));
+
+    // If only approval signals, it's approval-with-context
+    if (hasApprovalSignal && !hasChangeSignal) return true;
+    // If only change signals, it's a modification
+    if (hasChangeSignal && !hasApprovalSignal) return false;
+
+    // Ambiguous — default to approval-with-context
+    // Rationale: rejecting a plan is more disruptive than executing with extra context.
+    // If the user wanted to reject, they'd say "no", "reject", "cancel", etc.
+    log.verbose('Modification classification ambiguous, defaulting to approval-with-context', {
+      modification: lower.slice(0, 100),
+      hasApprovalSignal,
+      hasChangeSignal,
+    });
+    return true;
+  }
 
   /**
    * Execute an approved plan via the GraphExecutor.

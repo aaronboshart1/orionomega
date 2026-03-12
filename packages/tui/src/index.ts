@@ -372,15 +372,20 @@ export async function start(): Promise<void> {
           pendingPlans.delete(ids[idx]);
         }
       } else if (pendingPlans.size === 1) {
-        // Single plan — existing approval logic
-        const isApproval = /^(y|yes|go|do it|go ahead|ok|okay|approve|run it|execute|looks good|lgtm|ship it|send it)$/i.test(lower);
+        // Single plan — conversational plan response
+        const isApproval = /^(y|yes|go|do it|go ahead|ok|okay|approve|run it|execute|looks good|lgtm|ship it|send it|this is correct|correct|perfect|that works|sounds good|exactly)$/i.test(lower);
+        const isRejection = /^(n|no|nah|nope|reject|cancel|scrap it|start over|nevermind|never mind)$/i.test(lower);
         const [planId] = pendingPlans.keys();
         if (isApproval) {
           client.respondToPlan(planId, 'approve');
           statusBar.thinking = true;
-        } else {
+        } else if (isRejection) {
           client.respondToPlan(planId, 'reject');
-          client.sendChat(value);
+          statusBar.thinking = true;
+        } else {
+          // Anything else = approve with modifications
+          // The user is adding context, refining, or giving the go-ahead with extra instructions
+          client.respondToPlan(planId, 'modify', value);
           statusBar.thinking = true;
         }
         pendingPlans.delete(planId);
