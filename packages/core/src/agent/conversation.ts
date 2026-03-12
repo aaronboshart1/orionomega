@@ -203,6 +203,47 @@ export function extractTextDelta(event: AnthropicStreamEvent): string | null {
   return null;
 }
 
+// ── Tool Failure Circuit Breaker ────────────────────────────────────────
+
+const MAX_CONSECUTIVE_FAILURES = 5;
+
+/**
+ * Generate a normalised signature for a tool call to detect repeated failures.
+ * For exec: uses the first 200 chars of the command (strips variable whitespace).
+ * For read_file/write_file: uses the path.
+ * Catches the pattern of retrying the same failing command with minor variations.
+ */
+function toolSignature(name: string, input: Record<string, unknown>): string {
+  switch (name) {
+    case 'exec': {
+      // Normalise: collapse whitespace, trim, take first 200 chars
+      const cmd = String(input.command ?? '').replace(/\s+/g, ' ').trim().slice(0, 200);
+      return `exec:${cmd}`;
+    }
+    case 'read_file':
+      return `read:${String(input.path ?? '')}`;
+    case 'write_file':
+      return `write:${String(input.path ?? '')}`;
+    default:
+      return `${name}:${JSON.stringify(input).slice(0, 200)}`;
+  }
+}
+
+/**
+ * Broader similarity check — groups tool calls that share a common pattern.
+ * For exec: extracts the "core command" (first recognisable binary or keyword).
+ * This catches the case where the agent retries with slightly different flags/args.
+ */
+function toolCategory(name: string, input: Record<string, unknown>): string {
+  if (name === 'exec') {
+    const cmd = String(input.command ?? '').trim();
+    // Extract the first meaningful command (skip env vars, sudo, etc.)
+    const match = cmd.match(/(?:sudo\s+)?(?:sshpass\s+\S+\s+)?(\w[\w.-]*)/);
+    return `exec:${match?.[1] ?? 'unknown'}`;
+  }
+  return name;
+}
+
 /**
  * Streams a conversational response, supporting multi-round tool use.
  *
@@ -223,6 +264,11 @@ export async function streamConversation(opts: {
   let fullText = '';
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
+
+  // Circuit breaker: track consecutive failures by signature and category
+  const failuresBySignature = new Map<string, number>();
+  const failuresByCategory = new Map<string, number>();
+  const trippedCategories = new Set<string>();
 
   log.verbose('Starting conversation stream', {
     model,
@@ -333,6 +379,19 @@ export async function streamConversation(opts: {
 
     const toolResults: unknown[] = [];
     for (const tc of toolCalls) {
+      const sig = toolSignature(tc.name, tc.input);
+      const cat = toolCategory(tc.name, tc.input);
+
+      // Check if this tool category has been tripped
+      if (trippedCategories.has(cat)) {
+        const msg = `[CIRCUIT BREAKER] This type of ${tc.name} call has failed ${MAX_CONSECUTIVE_FAILURES} times consecutively. `
+          + `Stop retrying and inform the user what went wrong. Do NOT attempt this operation again. `
+          + `Explain the error and suggest the user try it manually or provide different instructions.`;
+        log.warn('Circuit breaker: category tripped, blocking tool call', { name: tc.name, category: cat, signature: sig });
+        toolResults.push({ type: 'tool_result', tool_use_id: tc.id, content: msg });
+        continue;
+      }
+
       const toolStart = Date.now();
       log.verbose(`Tool call: ${tc.name}`, { input: tc.input });
       const result = await executeMainTool(tc.name, tc.input, workspaceDir);
@@ -342,6 +401,38 @@ export async function streamConversation(opts: {
         resultLength: result.length,
         resultPreview: result.slice(0, 300),
       });
+
+      // Track failures
+      const isError = result.startsWith('Error:');
+      if (isError) {
+        const sigCount = (failuresBySignature.get(sig) ?? 0) + 1;
+        const catCount = (failuresByCategory.get(cat) ?? 0) + 1;
+        failuresBySignature.set(sig, sigCount);
+        failuresByCategory.set(cat, catCount);
+
+        if (sigCount >= MAX_CONSECUTIVE_FAILURES || catCount >= MAX_CONSECUTIVE_FAILURES) {
+          trippedCategories.add(cat);
+          const breakerMsg = `${result}\n\n[CIRCUIT BREAKER] This operation has failed ${Math.max(sigCount, catCount)} times. `
+            + `Do NOT retry. Inform the user what went wrong and ask for guidance. `
+            + `Repeated identical failures waste context and tokens.`;
+          log.warn('Circuit breaker tripped', {
+            name: tc.name,
+            category: cat,
+            signature: sig,
+            sigFailures: sigCount,
+            catFailures: catCount,
+          });
+          toolResults.push({ type: 'tool_result', tool_use_id: tc.id, content: breakerMsg });
+          continue;
+        }
+      } else {
+        // Success — reset counters for this signature and category
+        failuresBySignature.delete(sig);
+        if (failuresByCategory.has(cat)) {
+          failuresByCategory.set(cat, Math.max(0, (failuresByCategory.get(cat) ?? 0) - 1));
+        }
+      }
+
       toolResults.push({ type: 'tool_result', tool_use_id: tc.id, content: result });
     }
     messages = [...messages, { role: 'user', content: toolResults as unknown as string }];
