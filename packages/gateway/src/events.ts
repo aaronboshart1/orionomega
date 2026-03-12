@@ -105,16 +105,31 @@ export class EventStreamer {
   }
 
   /**
-   * Emit an event to all connected clients, respecting delivery modes.
+   * Emit an event to all connected clients, respecting delivery modes and subscriptions.
+   *
+   * If a client has workflow subscriptions, events tagged with a non-matching `workflowId`
+   * are dropped. Events without a `workflowId` (e.g. system events) always pass through.
+   *
    * @param event - The raw event payload.
    * @param eventType - Optional event type string (e.g. 'done', 'error', 'finding').
+   * @param workflowId - Optional workflow ID to scope event delivery.
    */
-  emit(event: unknown, eventType?: string): void {
+  emit(event: unknown, eventType?: string, workflowId?: string): void {
     for (const [clientId, client] of this.clients) {
+      // Apply per-client workflow subscription filter
+      if (
+        workflowId &&
+        client.workflowSubscriptions.size > 0 &&
+        !client.workflowSubscriptions.has(workflowId)
+      ) {
+        continue;
+      }
+
       if (client.clientType === 'web' || client.eventMode === 'full') {
         this.sendToClient(client, {
           id: randomBytes(8).toString('hex'),
           type: 'event',
+          workflowId,
           event,
         });
       } else {
@@ -123,6 +138,7 @@ export class EventStreamer {
           this.sendToClient(client, {
             id: randomBytes(8).toString('hex'),
             type: 'event',
+            workflowId,
             event,
           });
         } else {

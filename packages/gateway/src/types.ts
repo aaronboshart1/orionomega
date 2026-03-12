@@ -13,6 +13,12 @@ export interface ClientConnection {
   connectedAt: string;
   eventMode: 'full' | 'throttled';
   ws: WebSocket;
+  /**
+   * Workflow IDs this client is subscribed to.
+   * When non-empty, only events matching one of these IDs (plus non-workflow events) are delivered.
+   * When empty (default), all events are delivered.
+   */
+  workflowSubscriptions: Set<string>;
 }
 
 /** Client → Gateway message envelope. */

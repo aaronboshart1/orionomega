@@ -131,6 +131,7 @@ export class WebSocketHandler {
       connectedAt: new Date().toISOString(),
       eventMode: clientType === 'tui' ? 'throttled' : 'full',
       ws,
+      workflowSubscriptions: new Set(),
     };
 
     this.connections.set(clientId, conn);
@@ -349,12 +350,25 @@ export class WebSocketHandler {
 
   /** Handle a workflow subscription request. */
   private handleSubscribe(conn: ClientConnection, msg: ClientMessage): void {
-    // TODO: subscribe to workflow events once orchestration engine is connected
-    this.send(conn.ws, {
-      id: randomBytes(8).toString('hex'),
-      type: 'ack',
-      content: `Subscribed to workflow ${msg.workflowId ?? 'all'}. Events will stream when available.`,
-    });
+    if (msg.workflowId) {
+      // Subscribe to a specific workflow's events
+      conn.workflowSubscriptions.add(msg.workflowId);
+      log.info(`Client ${conn.id} subscribed to workflow ${msg.workflowId}`);
+      this.send(conn.ws, {
+        id: randomBytes(8).toString('hex'),
+        type: 'ack',
+        content: `Subscribed to workflow ${msg.workflowId}. Events for this workflow will be streamed.`,
+      });
+    } else {
+      // Subscribe to all workflows (clear per-workflow filter)
+      conn.workflowSubscriptions.clear();
+      log.info(`Client ${conn.id} subscribed to all workflow events`);
+      this.send(conn.ws, {
+        id: randomBytes(8).toString('hex'),
+        type: 'ack',
+        content: 'Subscribed to all workflow events.',
+      });
+    }
   }
 
   /** Clean up after a client disconnects. */
