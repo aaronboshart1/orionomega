@@ -1280,38 +1280,44 @@ export async function runSetup(): Promise<void> {
     // Save config
     writeConfig(config);
 
-    // Auto-restart gateway if it's running.
-    // Uses sudo for systemctl — required for system-level services.
-    // Falls back to SIGTERM via PID file if systemctl isn't available.
+    // Start or restart the gateway service.
+    // On fresh install the service is enabled but not started — we need to start it.
+    // On re-run the service may already be active — restart to apply new config.
     try {
-      const out = execSync('systemctl is-active orionomega 2>/dev/null', { encoding: 'utf-8' }).trim();
-      if (out === 'active') {
-        print('  Restarting gateway to apply new config... ');
+      const state = execSync('systemctl is-active orionomega 2>/dev/null', { encoding: 'utf-8' }).trim();
+      const action = state === 'active' ? 'restart' : 'start';
+      const verb = state === 'active' ? 'Restarting' : 'Starting';
+      print(`  ${verb} gateway... `);
+      try {
+        execSync(`sudo systemctl ${action} orionomega`, { stdio: 'ignore', timeout: 15000 });
+        println(`${GREEN}✓${RESET} Gateway ${action === 'restart' ? 'restarted' : 'started'}`);
+      } catch {
         try {
-          execSync('sudo systemctl restart orionomega', { stdio: 'ignore', timeout: 15000 });
-          println(`${GREEN}✓${RESET} Gateway restarted`);
+          execSync(`systemctl ${action} orionomega`, { stdio: 'ignore', timeout: 15000 });
+          println(`${GREEN}✓${RESET} Gateway ${action === 'restart' ? 'restarted' : 'started'}`);
         } catch {
-          // sudo may not be available or user may lack permissions — try without
-          try {
-            execSync('systemctl restart orionomega', { stdio: 'ignore', timeout: 15000 });
-            println(`${GREEN}✓${RESET} Gateway restarted`);
-          } catch {
-            println(`${YELLOW}⚠${RESET} Could not restart gateway. Run: sudo systemctl restart orionomega`);
-          }
+          println(`${YELLOW}⚠${RESET} Could not ${action} gateway. Run: sudo systemctl ${action} orionomega`);
         }
       }
     } catch {
+      // systemctl is-active failed — service may not be installed
+      // Try starting anyway (covers the case where is-active returns non-zero for 'inactive')
+      print('  Starting gateway... ');
       try {
-        const pidFile = join(homedir(), '.orionomega', 'gateway.pid');
-        if (existsSync(pidFile)) {
-          print('  Restarting gateway to apply new config... ');
-          const pid = parseInt(readFileSync(pidFile, 'utf-8').trim(), 10);
-          if (!isNaN(pid)) {
-            try { process.kill(pid, 'SIGTERM'); } catch {}
+        execSync('sudo systemctl start orionomega', { stdio: 'ignore', timeout: 15000 });
+        println(`${GREEN}✓${RESET} Gateway started`);
+      } catch {
+        try {
+          const pidFile = join(homedir(), '.orionomega', 'gateway.pid');
+          if (existsSync(pidFile)) {
+            const pid = parseInt(readFileSync(pidFile, 'utf-8').trim(), 10);
+            if (!isNaN(pid)) {
+              try { process.kill(pid, 'SIGTERM'); } catch {}
+            }
           }
-          println(`${YELLOW}⚠${RESET} Gateway was stopped. Run: orionomega gateway start`);
-        }
-      } catch {}
+        } catch {}
+        println(`${YELLOW}⚠${RESET} Could not start gateway. Run: orionomega gateway start`);
+      }
     }
 
     heading('Setup Complete!');
