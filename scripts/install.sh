@@ -192,6 +192,9 @@ else
     die "Build failed — see errors above. Full log: /tmp/orionomega-build.log"
 fi
 
+# Clear GITHUB_TOKEN so it doesn't interfere with gh CLI auth during setup
+unset GITHUB_TOKEN 2>/dev/null
+
 # ═══════════════════════════════════════════════════════════════
 #  Phase 4 — Global CLI
 # ═══════════════════════════════════════════════════════════════
