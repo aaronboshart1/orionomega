@@ -206,9 +206,14 @@ const STEP_INFO: StepInfo[] = [
     configured: (c) => !!c.workspace.path,
   },
   {
+    name: 'Logging',
+    summary: (c) => `${c.logging.level}, ${c.logging.file.replace(homedir(), '~')}`,
+    configured: (_c) => true,
+  },
+  {
     name: 'Claude Agent SDK',
     summary: (c) => c.agentSdk.enabled ? `enabled (${c.agentSdk.permissionMode})` : 'disabled',
-    configured: (_c) => true, // explicit enable/disable is a valid choice
+    configured: (_c) => true,
   },
   {
     name: 'Skills',
@@ -562,7 +567,44 @@ Your personal cheat sheet for environment-specific details.
 <!-- Anything that helps your agent help you -->
 `;
 
-// ── Step 6: Agent SDK ────────────────────────────────────────────
+// ── Step 6: Logging ──────────────────────────────────────────────
+
+async function stepLogging(config: OrionOmegaConfig, stepIdx: number, totalSteps: number): Promise<StepAction> {
+  heading(`Step ${stepIdx + 1}/${totalSteps} — Logging`);
+
+  showCurrent('Log level', config.logging.level);
+  showCurrent('Log file', config.logging.file.replace(homedir(), '~'));
+
+  const keep = await confirm(`  Keep current settings?`, true);
+  if (keep) {
+    success(`Keeping logging: ${config.logging.level}, file: ${config.logging.file.replace(homedir(), '~')}`);
+    return nav(stepIdx, totalSteps);
+  }
+
+  const levelOptions = [
+    { label: `info ${DIM}(default — startup, connections, errors)${RESET}`, value: 'info' },
+    { label: `verbose ${DIM}(recommended for development — conversations, tool calls, Hindsight, tokens)${RESET}`, value: 'verbose' },
+    { label: `debug ${DIM}(everything — full request/response bodies)${RESET}`, value: 'debug' },
+    { label: `warn ${DIM}(warnings and errors only)${RESET}`, value: 'warn' },
+    { label: `error ${DIM}(errors only)${RESET}`, value: 'error' },
+  ];
+  config.logging.level = (await choose('Log level:', levelOptions)) as OrionOmegaConfig['logging']['level'];
+
+  const defaultLogFile = config.logging.file || join(homedir(), '.orionomega', 'logs', 'orionomega.log');
+  config.logging.file = await ask('Log file path', { default: defaultLogFile });
+
+  const logDir = join(config.logging.file, '..');
+  if (!existsSync(logDir)) {
+    mkdirSync(logDir, { recursive: true });
+    println(`  ${DIM}Created log directory: ${logDir}${RESET}`);
+  }
+
+  success(`Logging: ${config.logging.level}, file: ${config.logging.file.replace(homedir(), '~')}`);
+
+  return nav(stepIdx, totalSteps);
+}
+
+// ── Step 7: Agent SDK ────────────────────────────────────────────
 
 async function stepAgentSdk(config: OrionOmegaConfig, stepIdx: number, totalSteps: number): Promise<StepAction> {
   heading(`Step ${stepIdx + 1}/${totalSteps} — Claude Agent SDK (Coding Agents)`);
@@ -1077,6 +1119,7 @@ export async function runSetup(): Promise<void> {
     stepGatewaySecurity,
     stepHindsight,
     stepWorkspace,
+    stepLogging,
     stepAgentSdk,
     stepSkills,
   ];
