@@ -282,6 +282,7 @@ export class MainAgent {
       // 2. Fast-path conversational
       if (isFastConversational(trimmed)) {
         log.verbose('Route: fast conversational');
+        this.callbacks.onThinking('Thinking…', true, false);
         await this.respondConversationally(trimmed);
         return;
       }
@@ -312,6 +313,7 @@ export class MainAgent {
 
       // 6. Ambiguous — LLM classifier
       log.verbose('Route: LLM intent classification');
+      this.callbacks.onThinking('Classifying intent…', true, false);
       const intent = await classifyIntent(this.anthropic, this.config.model, trimmed);
       log.verbose(`Intent classified: ${intent}`);
       if (intent === 'TASK') {
@@ -531,6 +533,9 @@ export class MainAgent {
   // ── Private ────────────────────────────────────────────────────────────
 
   private async respondConversationally(userMessage: string): Promise<void> {
+    // Signal that we're assembling context (visible in TUI spinner)
+    this.callbacks.onThinking('Assembling context…', true, false);
+
     // Assemble context: hot window + Hindsight recall (parallel with prompt build)
     const [systemPrompt, assembled] = await Promise.all([
       this.getSystemPrompt(),
@@ -549,6 +554,9 @@ export class MainAgent {
         content: m.content,
       })),
     );
+
+    // Signal that we're waiting for the LLM
+    this.callbacks.onThinking('Generating response…', true, false);
 
     try {
       const result = await streamConversation({
