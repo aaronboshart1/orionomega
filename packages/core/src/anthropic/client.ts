@@ -69,6 +69,10 @@ export interface MessageResponse {
   usage: TokenUsage;
 }
 
+import { createLogger } from '../logging/logger.js';
+
+const log = createLogger('anthropic-api');
+
 const API_URL = 'https://api.anthropic.com/v1/messages';
 const API_VERSION = '2023-06-01';
 const MAX_RETRIES = 3;
@@ -95,8 +99,16 @@ export class AnthropicClient {
    * @returns The complete message response.
    */
   async createMessage(options: CreateMessageOptions): Promise<MessageResponse> {
-    const body = this.buildRequestBody(options, false);
+    const start = Date.now();
+    log.verbose('API request (non-streaming)', {
+      model: options.model,
+      messageCount: options.messages.length,
+      toolCount: options.tools?.length ?? 0,
+      maxTokens: options.maxTokens ?? 8192,
+      hasSystem: !!options.system,
+    });
 
+    const body = this.buildRequestBody(options, false);
     const response = await this.fetchWithRetry(body);
     const data = await response.json();
 
@@ -104,12 +116,25 @@ export class AnthropicClient {
       const errorMsg = (data as Record<string, unknown>)?.error
         ? JSON.stringify((data as Record<string, unknown>).error)
         : response.statusText;
+      log.error(`API error (${response.status})`, { error: errorMsg, model: options.model });
       throw new Error(
         `Anthropic API error (${response.status}): ${errorMsg}`,
       );
     }
 
-    return data as MessageResponse;
+    const result = data as MessageResponse;
+    const durationMs = Date.now() - start;
+    log.verbose('API response (non-streaming)', {
+      model: result.model,
+      durationMs,
+      inputTokens: result.usage.input_tokens,
+      outputTokens: result.usage.output_tokens,
+      cacheCreation: result.usage.cache_creation_input_tokens ?? 0,
+      cacheRead: result.usage.cache_read_input_tokens ?? 0,
+      stopReason: result.stop_reason,
+    });
+
+    return result;
   }
 
   /**
@@ -121,8 +146,14 @@ export class AnthropicClient {
   async *streamMessage(
     options: CreateMessageOptions,
   ): AsyncGenerator<AnthropicStreamEvent> {
-    const body = this.buildRequestBody(options, true);
+    log.verbose('API request (streaming)', {
+      model: options.model,
+      messageCount: options.messages.length,
+      toolCount: options.tools?.length ?? 0,
+      maxTokens: options.maxTokens ?? 8192,
+    });
 
+    const body = this.buildRequestBody(options, true);
     const response = await this.fetchWithRetry(body);
 
     if (!response.ok) {
@@ -270,6 +301,7 @@ export class AnthropicClient {
           (response.status === 429 || response.status >= 500)
         ) {
           const delay = RETRY_DELAYS[attempt] ?? 4000;
+          log.warn(`API ${response.status} — retrying in ${delay}ms (attempt ${attempt + 1}/${MAX_RETRIES})`);
           await this.sleep(delay);
           continue;
         }

@@ -62,7 +62,7 @@ export { OrchestratorCommands } from './orchestration/index.js';
 
 // Logging
 export type { Logger, LogLevel } from './logging/index.js';
-export { createLogger, setGlobalLogLevel, getGlobalLogLevel } from './logging/index.js';
+export { createLogger, setGlobalLogLevel, getGlobalLogLevel, enableFileLogging, setConsoleLogging } from './logging/index.js';
 
 // Anthropic API integration
 export { AnthropicClient, getBuiltInTools, runAgentLoop } from './anthropic/index.js';

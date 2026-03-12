@@ -224,7 +224,19 @@ export async function streamConversation(opts: {
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
 
+  log.verbose('Starting conversation stream', {
+    model,
+    messageCount: messages.length,
+    systemPromptLength: systemPrompt.length,
+    maxToolRounds,
+  });
+
   for (let round = 0; round <= maxToolRounds; round++) {
+    const roundStart = Date.now();
+    log.verbose(`Conversation round ${round + 1}/${maxToolRounds + 1}`, {
+      messageCount: messages.length,
+    });
+
     const stream = client.streamMessage({
       model,
       system: systemPrompt,
@@ -290,7 +302,23 @@ export async function streamConversation(opts: {
       }
     }
 
+    const roundDuration = Date.now() - roundStart;
+    log.verbose(`Round ${round + 1} complete`, {
+      durationMs: roundDuration,
+      stopReason,
+      textLength: roundText.length,
+      toolCallCount: toolCalls.length,
+      inputTokens: totalInputTokens,
+      outputTokens: totalOutputTokens,
+    });
+
     if (stopReason !== 'tool_use' || toolCalls.length === 0) {
+      log.verbose('Conversation complete', {
+        totalRounds: round + 1,
+        totalInputTokens,
+        totalOutputTokens,
+        responseLength: fullText.length,
+      });
       onText('', true, true);
       return { text: fullText, inputTokens: totalInputTokens, outputTokens: totalOutputTokens };
     }
@@ -305,8 +333,15 @@ export async function streamConversation(opts: {
 
     const toolResults: unknown[] = [];
     for (const tc of toolCalls) {
-      log.info('Main agent tool call', { tool: tc.name, input: tc.input });
+      const toolStart = Date.now();
+      log.verbose(`Tool call: ${tc.name}`, { input: tc.input });
       const result = await executeMainTool(tc.name, tc.input, workspaceDir);
+      const toolDuration = Date.now() - toolStart;
+      log.verbose(`Tool result: ${tc.name}`, {
+        durationMs: toolDuration,
+        resultLength: result.length,
+        resultPreview: result.slice(0, 300),
+      });
       toolResults.push({ type: 'tool_result', tool_use_id: tc.id, content: result });
     }
     messages = [...messages, { role: 'user', content: toolResults as unknown as string }];

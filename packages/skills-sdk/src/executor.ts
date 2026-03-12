@@ -8,6 +8,27 @@ import { spawn } from 'node:child_process';
 import { access, constants } from 'node:fs/promises';
 import path from 'node:path';
 
+// Simple inline logger — skills-sdk doesn't depend on core's logger
+const LOG_LEVEL = process.env.ORIONOMEGA_LOG_LEVEL ?? 'info';
+const VERBOSE = ['verbose', 'debug'].includes(LOG_LEVEL);
+function logVerbose(msg: string, data?: Record<string, unknown>): void {
+  if (!VERBOSE) return;
+  const tag = `\x1b[35m[${new Date().toISOString()}] [VERBOSE] [skill-executor]\x1b[0m`;
+  if (data && Object.keys(data).length > 0) {
+    console.log(`${tag} ${msg}`, JSON.stringify(data));
+  } else {
+    console.log(`${tag} ${msg}`);
+  }
+}
+function logError(msg: string, data?: Record<string, unknown>): void {
+  const tag = `\x1b[31m[${new Date().toISOString()}] [ERROR  ] [skill-executor]\x1b[0m`;
+  if (data && Object.keys(data).length > 0) {
+    console.log(`${tag} ${msg}`, JSON.stringify(data));
+  } else {
+    console.log(`${tag} ${msg}`);
+  }
+}
+
 /**
  * Executes skill tool handler scripts as child processes.
  *
@@ -53,6 +74,13 @@ export class SkillExecutor {
 
     return new Promise<unknown>((resolve, reject) => {
       const env = { ...process.env, ...options.env };
+      const start = Date.now();
+
+      logVerbose(`Executing handler: ${resolvedPath}`, {
+        cwd: options.cwd,
+        timeout: options.timeout,
+        paramKeys: Object.keys(params),
+      });
 
       const child = spawn(resolvedPath, [], {
         cwd: options.cwd,
@@ -84,8 +112,10 @@ export class SkillExecutor {
 
       child.on('close', (code: number | null) => {
         clearTimeout(timer);
+        const durationMs = Date.now() - start;
 
         if (killed) {
+          logError(`Handler timed out: ${resolvedPath}`, { durationMs, timeout: options.timeout });
           reject(
             new Error(
               `Handler "${resolvedPath}" timed out after ${options.timeout}ms.`,
@@ -95,6 +125,7 @@ export class SkillExecutor {
         }
 
         if (code !== 0) {
+          logError(`Handler failed: ${resolvedPath}`, { code, durationMs, stderr: stderr.slice(0, 500) });
           reject(
             new Error(
               `Handler "${resolvedPath}" exited with code ${code ?? 'null'}. stderr: ${stderr.trim()}`,
@@ -102,6 +133,12 @@ export class SkillExecutor {
           );
           return;
         }
+
+        logVerbose(`Handler complete: ${resolvedPath}`, {
+          durationMs,
+          stdoutLength: stdout.length,
+          stdoutPreview: stdout.slice(0, 300),
+        });
 
         // Attempt JSON parse
         const trimmed = stdout.trim();

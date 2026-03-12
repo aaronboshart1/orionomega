@@ -226,6 +226,11 @@ export class MainAgent {
     }
 
     const trimmed = content.trim();
+    log.verbose('Handling message', {
+      contentLength: trimmed.length,
+      contentPreview: trimmed.slice(0, 200),
+      historyLength: this.context.getHistory().length,
+    });
     this.pushHistory({ role: 'user', content: trimmed });
 
     // Evaluate for preference patterns (fire-and-forget)
@@ -269,18 +274,21 @@ export class MainAgent {
 
       // 1. Slash command
       if (trimmed.startsWith('/')) {
+        log.verbose('Route: slash command', { command: trimmed.slice(0, 80) });
         await this.handleCommand(trimmed);
         return;
       }
 
       // 2. Fast-path conversational
       if (isFastConversational(trimmed)) {
+        log.verbose('Route: fast conversational');
         await this.respondConversationally(trimmed);
         return;
       }
 
       // 3. Pending plan + "do it"
       if (this.orchestration.hasPendingPlans && this.orchestration.latestPendingPlanId && isImmediateExecution(trimmed)) {
+        log.verbose('Route: approve pending plan', { planId: this.orchestration.latestPendingPlanId });
         await this.orchestration.handlePlanResponse(
           this.orchestration.latestPendingPlanId, 'approve',
           (e) => this.pushHistory(e as HistoryEntry),
@@ -290,18 +298,22 @@ export class MainAgent {
 
       // 4. Immediate execution
       if (isImmediateExecution(trimmed)) {
+        log.verbose('Route: immediate execution');
         await this.orchestration.planAndExecute(trimmed, (e) => this.pushHistory(e as HistoryEntry));
         return;
       }
 
       // 5. Fast-path task
       if (isFastTask(trimmed)) {
+        log.verbose('Route: fast task (orchestration)');
         await this.orchestration.planOnly(trimmed, (e) => this.pushHistory(e as HistoryEntry));
         return;
       }
 
       // 6. Ambiguous — LLM classifier
+      log.verbose('Route: LLM intent classification');
       const intent = await classifyIntent(this.anthropic, this.config.model, trimmed);
+      log.verbose(`Intent classified: ${intent}`);
       if (intent === 'TASK') {
         await this.orchestration.planOnly(trimmed, (e) => this.pushHistory(e as HistoryEntry));
       } else {

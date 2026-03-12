@@ -1,4 +1,5 @@
 import { HindsightError } from './errors.js';
+import { createLogger } from './logger.js';
 import type {
   BankConfig,
   BankInfo,
@@ -9,6 +10,8 @@ import type {
   RecallResult,
   RetainResult,
 } from './types.js';
+
+const log = createLogger('hindsight-client');
 
 /**
  * Client for the Hindsight temporal knowledge graph API.
@@ -91,11 +94,19 @@ export class HindsightClient {
    * @param items - Array of memory items to store.
    */
   async retain(bankId: string, items: MemoryItem[]): Promise<RetainResult> {
-    return this.request<RetainResult>(
+    const start = Date.now();
+    log.verbose(`Retain → ${bankId}`, {
+      itemCount: items.length,
+      contexts: items.map(i => i.context),
+      totalChars: items.reduce((sum, i) => sum + (i.content?.length ?? 0), 0),
+    });
+    const result = await this.request<RetainResult>(
       'POST',
       `${this.bankPath(bankId)}/memories`,
       { items },
     );
+    log.verbose(`Retain ← ${bankId}`, { durationMs: Date.now() - start });
+    return result;
   }
 
   /**
@@ -125,7 +136,13 @@ export class HindsightClient {
     query: string,
     opts?: RecallOptions,
   ): Promise<RecallResult> {
-    return this.request<RecallResult>(
+    const start = Date.now();
+    log.verbose(`Recall → ${bankId}`, {
+      queryPreview: query.slice(0, 200),
+      maxTokens: opts?.maxTokens ?? 4096,
+      budget: opts?.budget ?? 'mid',
+    });
+    const result = await this.request<RecallResult>(
       'POST',
       `${this.bankPath(bankId)}/memories/recall`,
       {
@@ -134,6 +151,11 @@ export class HindsightClient {
         budget: opts?.budget ?? 'mid',
       },
     );
+    log.verbose(`Recall ← ${bankId}`, {
+      durationMs: Date.now() - start,
+      resultChars: JSON.stringify(result).length,
+    });
+    return result;
   }
 
   // ── Mental Models ──────────────────────────────────────────────────
@@ -191,15 +213,15 @@ export class HindsightClient {
       init.body = JSON.stringify(body);
     }
 
+    log.debug(`HTTP ${method} ${path}`);
+
     let res: Response;
     try {
       res = await fetch(url, init);
     } catch (err) {
-      throw new HindsightError(
-        err instanceof Error ? err.message : 'Network error',
-        0,
-        `${method} ${path}`,
-      );
+      const msg = err instanceof Error ? err.message : 'Network error';
+      log.error(`Hindsight request failed: ${method} ${path}`, { error: msg });
+      throw new HindsightError(msg, 0, `${method} ${path}`);
     }
 
     if (!res.ok) {
@@ -215,6 +237,7 @@ export class HindsightClient {
       } catch {
         message = res.statusText;
       }
+      log.error(`Hindsight API error: ${method} ${path} → ${res.status}`, { message });
       throw new HindsightError(message, res.status, `${method} ${path}`);
     }
 

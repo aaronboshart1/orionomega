@@ -1,7 +1,25 @@
 /**
  * @module logging/logger
- * Simple colour-coded console logger with configurable log levels.
+ * Structured logger with configurable levels, colour-coded console output,
+ * and optional file output.
+ *
+ * Usage:
+ *   import { createLogger, setGlobalLogLevel, enableFileLogging } from '../logging/logger.js';
+ *   setGlobalLogLevel('verbose');
+ *   enableFileLogging('/path/to/log.log');
+ *   const log = createLogger('my-module');
+ *   log.verbose('Processing request', { requestId: 'abc', tokens: 1234 });
+ *
+ * Levels (ascending verbosity):
+ *   error → warn → info → verbose → debug
+ *
+ * Verbose = operational detail useful for SSH-based troubleshooting:
+ *   conversations, tool calls, Hindsight access, token usage, timing.
+ * Debug = full request/response bodies, raw payloads, internal state dumps.
  */
+
+import { appendFileSync, mkdirSync, existsSync } from 'node:fs';
+import { dirname } from 'node:path';
 
 /** Log level names in ascending verbosity. */
 export type LogLevel = 'error' | 'warn' | 'info' | 'verbose' | 'debug';
@@ -27,10 +45,14 @@ const RESET = '\x1b[0m';
 /** Global log level — set once at startup via `setGlobalLogLevel()`. */
 let globalLevel: LogLevel = 'info';
 
+/** Optional file path for log output. */
+let logFilePath: string | null = null;
+
+/** Whether to log to console (can be disabled for pure file logging). */
+let consoleEnabled = true;
+
 /**
  * Sets the global log level. Only messages at or below this level are emitted.
- *
- * @param level - The minimum log level to display.
  */
 export function setGlobalLogLevel(level: LogLevel): void {
   globalLevel = level;
@@ -43,24 +65,39 @@ export function getGlobalLogLevel(): LogLevel {
   return globalLevel;
 }
 
+/**
+ * Enable file logging. Log lines are appended to the specified path (no colour codes).
+ * Creates parent directories if they don't exist.
+ */
+export function enableFileLogging(filePath: string): void {
+  const dir = dirname(filePath);
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
+  }
+  logFilePath = filePath;
+}
+
+/**
+ * Disable console output (useful if logs are redirected via systemd/journald).
+ */
+export function setConsoleLogging(enabled: boolean): void {
+  consoleEnabled = enabled;
+}
+
 /** A structured logger instance with a fixed name prefix. */
 export interface Logger {
-  /** Log an error message. */
   error(message: string, data?: Record<string, unknown>): void;
-  /** Log a warning. */
   warn(message: string, data?: Record<string, unknown>): void;
-  /** Log an informational message. */
   info(message: string, data?: Record<string, unknown>): void;
-  /** Log a verbose message. */
   verbose(message: string, data?: Record<string, unknown>): void;
-  /** Log a debug message. */
   debug(message: string, data?: Record<string, unknown>): void;
 }
 
 /**
  * Creates a named logger instance.
  *
- * Output format: `[ISO-timestamp] [LEVEL] [name] message {data}`
+ * Console output: `[ISO-timestamp] [LEVEL] [name] message {data}` (colour-coded)
+ * File output:    `[ISO-timestamp] [LEVEL] [name] message {data}` (plain text)
  *
  * @param name - Logger name (typically a module or component name).
  * @returns A Logger instance.
@@ -76,14 +113,28 @@ export function createLogger(name: string): Logger {
     }
 
     const timestamp = new Date().toISOString();
-    const color = LEVEL_COLORS[level];
     const tag = level.toUpperCase().padEnd(7);
-    const prefix = `${color}[${timestamp}] [${tag}] [${name}]${RESET}`;
 
-    if (data !== undefined && Object.keys(data).length > 0) {
-      console.log(`${prefix} ${message}`, data);
-    } else {
-      console.log(`${prefix} ${message}`);
+    // Data serialization (shared between console and file)
+    const dataStr = data !== undefined && Object.keys(data).length > 0
+      ? ' ' + JSON.stringify(data, truncateValues)
+      : '';
+
+    // Console output (colour-coded)
+    if (consoleEnabled) {
+      const color = LEVEL_COLORS[level];
+      const prefix = `${color}[${timestamp}] [${tag}] [${name}]${RESET}`;
+      console.log(`${prefix} ${message}${dataStr}`);
+    }
+
+    // File output (plain text, append)
+    if (logFilePath) {
+      const line = `[${timestamp}] [${tag}] [${name}] ${message}${dataStr}\n`;
+      try {
+        appendFileSync(logFilePath, line);
+      } catch {
+        // Silently ignore file write errors to avoid log recursion
+      }
     }
   }
 
@@ -94,4 +145,15 @@ export function createLogger(name: string): Logger {
     verbose: (msg, data) => log('verbose', msg, data),
     debug: (msg, data) => log('debug', msg, data),
   };
+}
+
+/**
+ * JSON replacer that truncates long string values to prevent log bloat.
+ * Strings over 500 chars are truncated with a [truncated] marker.
+ */
+function truncateValues(_key: string, value: unknown): unknown {
+  if (typeof value === 'string' && value.length > 500) {
+    return value.slice(0, 500) + `... [truncated, ${value.length} chars]`;
+  }
+  return value;
 }

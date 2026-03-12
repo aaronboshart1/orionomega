@@ -14,10 +14,13 @@ import { URL } from 'node:url';
 
 import type { ClientConnection, ClientMessage, ServerMessage, GatewayConfig } from './types.js';
 import type { MainAgent } from '@orionomega/core';
+import { createLogger } from '@orionomega/core';
 import { validateToken } from './auth.js';
 import { SessionManager } from './sessions.js';
 import { CommandHandler } from './commands.js';
 import { EventStreamer } from './events.js';
+
+const log = createLogger('websocket');
 
 const PING_INTERVAL_MS = 30_000;
 
@@ -109,7 +112,7 @@ export class WebSocketHandler {
       const result = validateToken(token, this.config.auth.keyHash);
       if (!result.valid) {
         ws.close(4001, 'Authentication failed');
-        console.warn('[gateway] WebSocket auth failed from', req.socket.remoteAddress);
+        log.warn('WebSocket auth failed', { from: req.socket.remoteAddress ?? 'unknown' });
         return;
       }
     }
@@ -134,7 +137,7 @@ export class WebSocketHandler {
     this.sessionManager.addClient(session.id, clientId);
     this.eventStreamer.addClient(conn);
 
-    console.log(`[gateway] Client connected: ${clientId} (${clientType}) → session ${session.id}`);
+    log.info(` Client connected: ${clientId} (${clientType}) → session ${session.id}`);
 
     // Send connection acknowledgement
     this.send(ws, {
@@ -167,12 +170,12 @@ export class WebSocketHandler {
     });
 
     ws.on('close', (code, reason) => {
-      console.log(`[gateway] Client disconnected: ${clientId} (code=${code})`);
+      log.info(` Client disconnected: ${clientId} (code=${code})`);
       this.handleDisconnect(clientId);
     });
 
     ws.on('error', (err) => {
-      console.error(`[gateway] WebSocket error for ${clientId}:`, err.message);
+      log.error(`WebSocket error for ${clientId}`, { error: err.message });
       this.handleDisconnect(clientId);
     });
 
@@ -242,10 +245,18 @@ export class WebSocketHandler {
 
   /** Handle a chat message — store it, acknowledge, and route to MainAgent. */
   private handleChat(conn: ClientConnection, session: ReturnType<SessionManager['getSession']> & object, msg: ClientMessage): void {
+    const content = msg.content ?? '';
+    log.verbose(`Chat message from ${conn.id}`, {
+      sessionId: conn.sessionId,
+      messageId: msg.id,
+      contentLength: content.length,
+      contentPreview: content.slice(0, 200),
+    });
+
     this.sessionManager.addMessage(conn.sessionId, {
       id: msg.id,
       role: 'user',
-      content: msg.content ?? '',
+      content,
       timestamp: new Date().toISOString(),
       type: 'text',
     });
@@ -259,8 +270,9 @@ export class WebSocketHandler {
 
     // Route to MainAgent if available
     if (this.mainAgent) {
-      this.mainAgent.handleMessage(msg.content ?? '').catch((err) => {
-        console.error('[gateway] MainAgent.handleMessage error:', err);
+      log.verbose('Routing to MainAgent');
+      this.mainAgent.handleMessage(content).catch((err) => {
+        log.error('MainAgent.handleMessage error', { error: err instanceof Error ? err.message : String(err) });
         this.send(conn.ws, {
           id: randomBytes(8).toString('hex'),
           type: 'error',
@@ -284,7 +296,7 @@ export class WebSocketHandler {
       try {
         await this.mainAgent.handleCommand(command);
       } catch (err) {
-        console.error('[gateway] MainAgent.handleCommand error:', err);
+        log.error('MainAgent.handleCommand error', { error: err instanceof Error ? err.message : String(err) });
         this.send(conn.ws, {
           id: randomBytes(8).toString('hex'),
           type: 'error',
@@ -319,7 +331,7 @@ export class WebSocketHandler {
       this.mainAgent
         .handlePlanResponse(msg.planId, msg.action, msg.modification)
         .catch((err) => {
-          console.error('[gateway] MainAgent.handlePlanResponse error:', err);
+          log.error('MainAgent.handlePlanResponse error', { error: err instanceof Error ? err.message : String(err) });
           this.send(conn.ws, {
             id: randomBytes(8).toString('hex'),
             type: 'error',
@@ -384,7 +396,7 @@ export class WebSocketHandler {
         ws.send(JSON.stringify(message));
       }
     } catch (err) {
-      console.error('[gateway] Send error:', err);
+      log.error('Send error', { error: err instanceof Error ? err.message : String(err) });
     }
   }
 }

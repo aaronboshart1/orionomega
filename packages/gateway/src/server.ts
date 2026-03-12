@@ -8,8 +8,9 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { randomBytes } from 'node:crypto';
-import { readConfig, MainAgent } from '@orionomega/core';
-import type { MainAgentConfig, MainAgentCallbacks } from '@orionomega/core';
+import { readConfig, MainAgent, createLogger, setGlobalLogLevel, enableFileLogging } from '@orionomega/core';
+import type { MainAgentConfig, MainAgentCallbacks, LogLevel } from '@orionomega/core';
+import { setLogLevel as setHindsightLogLevel } from '@orionomega/hindsight';
 import type { GatewayConfig, ServerMessage } from './types.js';
 import { SessionManager } from './sessions.js';
 import { CommandHandler } from './commands.js';
@@ -20,6 +21,7 @@ import { handleListSessions, handleGetSession, handleCreateSession } from './rou
 import { handleStatus } from './routes/status.js';
 
 const startTime = Date.now();
+const log = createLogger('gateway');
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -32,6 +34,17 @@ try {
   const fullConfig = readConfig();
   config = fullConfig.gateway;
   hindsightUrl = fullConfig.hindsight.url;
+
+  // Apply logging config from config.yaml — sets level for ALL packages
+  const logLevel = fullConfig.logging?.level ?? 'info';
+  setGlobalLogLevel(logLevel as LogLevel);
+  setHindsightLogLevel(logLevel as LogLevel);
+  // Propagate to child processes (skill executor reads this)
+  process.env.ORIONOMEGA_LOG_LEVEL = logLevel;
+  if (fullConfig.logging?.file) {
+    enableFileLogging(fullConfig.logging.file);
+  }
+  log.info(`Log level set to: ${logLevel}`);
 } catch {
   // Fallback defaults if core config is unavailable
   config = {
@@ -41,7 +54,7 @@ try {
     cors: { origins: ['http://*:*', 'http://localhost:*'] },
   };
   hindsightUrl = 'http://localhost:8888';
-  console.warn('[gateway] Could not load config from @orionomega/core — using defaults');
+  log.warn('Could not load config from @orionomega/core — using defaults');
 }
 
 // ---------------------------------------------------------------------------
@@ -71,7 +84,7 @@ try {
 async function initMainAgent(): Promise<void> {
   const apiKey = fullConfig?.models?.apiKey ?? process.env.ANTHROPIC_API_KEY ?? '';
   if (!apiKey) {
-    console.warn('[gateway] No Anthropic API key — MainAgent will not be available');
+    log.warn(' No Anthropic API key — MainAgent will not be available');
     return;
   }
 
@@ -208,9 +221,9 @@ async function initMainAgent(): Promise<void> {
     const mainAgent = new MainAgent(agentConfig, callbacks);
     await mainAgent.init();
     wsHandler.setMainAgent(mainAgent);
-    console.log('[gateway] MainAgent connected');
+    log.info(' MainAgent connected');
   } catch (err) {
-    console.error('[gateway] Failed to initialise MainAgent:', err);
+    log.error('Failed to initialise MainAgent', { error: err instanceof Error ? err.message : String(err) });
   }
 }
 
@@ -272,7 +285,7 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
   // --- Status ---
   if (url === '/api/status' && method === 'GET') {
     handleStatus(req, res, sessionManager, startTime, hindsightUrl).catch((err) => {
-      console.error('[gateway] Status route error:', err);
+      log.error('Status route error', { error: err instanceof Error ? err.message : String(err) });
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Internal server error' }));
     });
@@ -311,11 +324,11 @@ const server = createServer(handleRequest);
 wsHandler.attach(server);
 
 server.listen(config.port, config.bind, () => {
-  console.log(`[gateway] OrionOmega Gateway v0.1.0`);
-  console.log(`[gateway] Listening on ${config.bind}:${config.port}`);
-  console.log(`[gateway] Auth mode: ${config.auth.mode}`);
-  console.log(`[gateway] CORS origins: ${config.cors.origins.join(', ')}`);
-  console.log(`[gateway] Hindsight: ${hindsightUrl}`);
+  log.info(`OrionOmega Gateway v0.1.0`);
+  log.info(`Listening on ${config.bind}:${config.port}`);
+  log.info(`Auth mode: ${config.auth.mode}`);
+  log.info(`CORS origins: ${config.cors.origins.join(', ')}`);
+  log.info(`Hindsight: ${hindsightUrl}`);
 });
 
 // ---------------------------------------------------------------------------
@@ -323,16 +336,16 @@ server.listen(config.port, config.bind, () => {
 // ---------------------------------------------------------------------------
 
 function shutdown(signal: string): void {
-  console.log(`\n[gateway] ${signal} received — shutting down gracefully…`);
+  log.info(` ${signal} received — shutting down gracefully…`);
   wsHandler.shutdown();
   eventStreamer.destroy();
   server.close(() => {
-    console.log('[gateway] Server closed.');
+    log.info(' Server closed.');
     process.exit(0);
   });
   // Force exit after 5 seconds
   setTimeout(() => {
-    console.warn('[gateway] Forced exit after timeout.');
+    log.warn(' Forced exit after timeout.');
     process.exit(1);
   }, 5000);
 }
