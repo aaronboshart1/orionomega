@@ -10,6 +10,8 @@
 
 import { HindsightClient } from '@orionomega/hindsight';
 import { createLogger } from '../logging/logger.js';
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
 
 const log = createLogger('context-assembler');
 
@@ -48,6 +50,8 @@ export interface ContextAssemblerConfig {
   additionalBanks?: string[];
   /** Hindsight recall budget level. Default: 'mid'. */
   recallBudget?: 'low' | 'mid' | 'high';
+  /** Path to persist hot window to disk. If set, survives gateway restarts. */
+  persistPath?: string;
 }
 
 const DEFAULT_HOT_WINDOW = 20;
@@ -80,6 +84,7 @@ export class ContextAssembler {
   private conversationBank: string | null;
   private additionalBanks: string[];
   private readonly recallBudget: 'low' | 'mid' | 'high';
+  private readonly persistPath: string | null;
   private hs: HindsightClient | null;
 
   /** Track total messages seen (for logging). */
@@ -95,12 +100,20 @@ export class ContextAssembler {
     this.conversationBank = config.conversationBank ?? null;
     this.additionalBanks = config.additionalBanks ?? [];
     this.recallBudget = config.recallBudget ?? 'mid';
+    this.persistPath = config.persistPath ?? null;
+
+    // Restore hot window from disk if available
+    if (this.persistPath) {
+      this.loadFromDisk();
+    }
 
     log.info('ContextAssembler initialised', {
       hotWindowSize: this.hotWindowSize,
       recallBudgetTokens: this.recallBudgetTokens,
       maxTurnTokens: this.maxTurnTokens,
       conversationBank: this.conversationBank,
+      persistPath: this.persistPath,
+      restoredMessages: this.hotWindow.length,
     });
   }
 
@@ -117,6 +130,9 @@ export class ContextAssembler {
       this.hotWindow = this.hotWindow.slice(-this.hotWindowSize);
     }
     this.totalMessageCount++;
+
+    // Persist to disk (sync — fast for 20 messages)
+    this.saveToDisk();
 
     // Retain to Hindsight (fire-and-forget)
     if (this.hs && this.conversationBank) {
@@ -202,6 +218,7 @@ export class ContextAssembler {
   clear(): void {
     this.hotWindow = [];
     this.totalMessageCount = 0;
+    this.saveToDisk();
     log.info('Context assembler cleared');
   }
 
@@ -313,5 +330,56 @@ export class ContextAssembler {
     });
 
     return `[PRIOR CONTEXT — recalled from memory]\n\n${sections.join('\n\n---\n\n')}`;
+  }
+
+  // ── Disk Persistence ─────────────────────────────────────────
+
+  /**
+   * Save hot window to disk as JSON. Synchronous — 20 messages is tiny.
+   */
+  private saveToDisk(): void {
+    if (!this.persistPath) return;
+    try {
+      const dir = dirname(this.persistPath);
+      if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+      writeFileSync(this.persistPath, JSON.stringify(this.hotWindow), 'utf-8');
+    } catch (err) {
+      log.warn('Failed to persist hot window to disk', {
+        path: this.persistPath,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  /**
+   * Load hot window from disk. Called once during construction.
+   */
+  private loadFromDisk(): void {
+    if (!this.persistPath || !existsSync(this.persistPath)) return;
+    try {
+      const raw = readFileSync(this.persistPath, 'utf-8');
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        // Validate and take only the last hotWindowSize messages
+        this.hotWindow = parsed
+          .filter((m: unknown) =>
+            typeof m === 'object' && m !== null &&
+            'role' in m && 'content' in m &&
+            typeof (m as Record<string, unknown>).role === 'string' &&
+            typeof (m as Record<string, unknown>).content === 'string'
+          )
+          .slice(-this.hotWindowSize) as ConversationMessage[];
+        this.totalMessageCount = this.hotWindow.length;
+        log.info('Hot window restored from disk', {
+          path: this.persistPath,
+          messageCount: this.hotWindow.length,
+        });
+      }
+    } catch (err) {
+      log.warn('Failed to load hot window from disk, starting fresh', {
+        path: this.persistPath,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 }

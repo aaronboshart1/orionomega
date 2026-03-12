@@ -114,6 +114,12 @@ export class MainAgent {
     // Note: memory.client may be null until init() runs; we pass null initially
     // and the assembler handles it gracefully
     const hsClient = this.memory.client;
+    // Derive config directory for session persistence
+    const configPath = process.env.CONFIG_PATH || '';
+    const configDir = configPath
+      ? configPath.replace(/\/[^/]+$/, '')  // parent of config.yaml
+      : `${process.env.HOME || '/root'}/.orionomega`;
+
     this.context = new ContextAssembler(hsClient, {
       hotWindowSize: 20,
       recallBudgetTokens: 30_000,
@@ -124,6 +130,7 @@ export class MainAgent {
       additionalBanks: config.hindsight?.url
         ? ['jarvis-core']
         : [],
+      persistPath: `${configDir}/sessions/hot-window.json`,
     });
 
     // We'll initialise orchestration in init() after skills are discovered
