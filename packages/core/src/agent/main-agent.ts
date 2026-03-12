@@ -573,6 +573,7 @@ export class MainAgent {
         messages,
         workspaceDir: this.config.workspaceDir,
         onText: this.callbacks.onText,
+        onThinking: this.callbacks.onThinking,
       });
       this.cumulativeInputTokens += result.inputTokens;
       this.cumulativeOutputTokens += result.outputTokens;

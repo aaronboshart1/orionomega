@@ -262,9 +262,10 @@ export async function streamConversation(opts: {
   messages: AnthropicMessage[];
   workspaceDir: string;
   onText: (text: string, streaming: boolean, done: boolean) => void;
+  onThinking?: (text: string, streaming: boolean, done: boolean) => void;
   maxToolRounds?: number;
 }): Promise<{ text: string; inputTokens: number; outputTokens: number }> {
-  const { client, model, systemPrompt, workspaceDir, onText, maxToolRounds = 10 } = opts;
+  const { client, model, systemPrompt, workspaceDir, onText, onThinking, maxToolRounds = 10 } = opts;
   let messages = [...opts.messages];
   let fullText = '';
   let totalInputTokens = 0;
@@ -284,6 +285,9 @@ export async function streamConversation(opts: {
 
   for (let round = 0; round <= maxToolRounds; round++) {
     const roundStart = Date.now();
+    if (round > 0) {
+      onThinking?.(`Thinking… (round ${round + 1})`, true, false);
+    }
     log.verbose(`Conversation round ${round + 1}/${maxToolRounds + 1}`, {
       messageCount: messages.length,
     });
@@ -370,6 +374,7 @@ export async function streamConversation(opts: {
         totalOutputTokens,
         responseLength: fullText.length,
       });
+      onThinking?.('', false, true);
       onText('', true, true);
       return { text: fullText, inputTokens: totalInputTokens, outputTokens: totalOutputTokens };
     }
@@ -396,6 +401,16 @@ export async function streamConversation(opts: {
         toolResults.push({ type: 'tool_result', tool_use_id: tc.id, content: msg });
         continue;
       }
+
+      // Emit thinking event so the TUI spinner shows activity
+      const toolSummary = tc.name === 'exec'
+        ? `Running: ${String(tc.input.command ?? '').slice(0, 80)}`
+        : tc.name === 'read_file'
+          ? `Reading: ${String(tc.input.path ?? '')}`
+          : tc.name === 'write_file'
+            ? `Writing: ${String(tc.input.path ?? '')}`
+            : `Tool: ${tc.name}`;
+      onThinking?.(toolSummary, true, false);
 
       const toolStart = Date.now();
       log.verbose(`Tool call: ${tc.name}`, { input: tc.input });
