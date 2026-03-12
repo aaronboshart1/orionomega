@@ -1,9 +1,16 @@
 /**
  * @module commands/setup
  * Interactive setup wizard for OrionOmega.
- * Step-based navigator: back / redo / quit available at every step.
- * Auth failures offer retry / skip / continue options.
- * No input masking — all prompts are plain text.
+ *
+ * Features:
+ * - Step overview menu with jump-to (press 'm' at any nav prompt)
+ * - Back / redo / quit / menu navigation at every step
+ * - Loads existing config on re-run — Enter keeps current values
+ * - Current values displayed at the top of each step
+ * - Summary confirmation screen before saving
+ * - Secrets masked in all displays (first 7 + last 4 chars)
+ * - Input validation with re-prompt on errors
+ * - Ctrl+C handled gracefully
  */
 
 import * as readline from 'node:readline';
@@ -13,7 +20,7 @@ import { mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
-import { writeConfig, getConfigPath, getDefaultConfig } from '../config/index.js';
+import { writeConfig, readConfig, getConfigPath, getDefaultConfig } from '../config/index.js';
 import type { OrionOmegaConfig } from '../config/index.js';
 import { SkillLoader, readSkillConfig, writeSkillConfig } from '@orionomega/skills-sdk';
 import type { SkillManifest, SkillAuthMethod, SkillSetupField } from '@orionomega/skills-sdk';
@@ -36,6 +43,18 @@ function fail(msg: string): void { println(`${RED}✗${RESET} ${msg}`); }
 function warn(msg: string): void { println(`${YELLOW}⚠${RESET} ${msg}`); }
 function heading(msg: string): void { println(`\n${BOLD}${BLUE}${msg}${RESET}\n`); }
 
+// ── Secret masking ──────────────────────────────────────────────
+
+/**
+ * Mask a secret for display: show first 7 + last 4 chars, *** in the middle.
+ * Short values (< 12 chars) are fully masked as '***'.
+ */
+function maskSecret(value: string): string {
+  if (!value) return '';
+  if (value.length < 12) return '***';
+  return value.slice(0, 7) + '***' + value.slice(-4);
+}
+
 // ── Readline helpers ────────────────────────────────────────────
 
 let rl: readline.Interface;
@@ -45,14 +64,23 @@ function initRL(): void {
     input: process.stdin,
     output: process.stdout,
   });
+
+  // Graceful Ctrl+C handling
+  rl.on('close', () => {
+    println(`\n${YELLOW}Setup cancelled.${RESET}`);
+    process.exit(0);
+  });
 }
 
 function closeRL(): void {
+  // Remove close listener so normal exit doesn't print cancellation message
+  rl.removeAllListeners('close');
   rl.close();
 }
 
 /**
  * Prompt for plain text input (no masking).
+ * If a default is provided, pressing Enter returns it.
  */
 function ask(question: string, opts?: { default?: string }): Promise<string> {
   return new Promise((resolve) => {
@@ -66,6 +94,7 @@ function ask(question: string, opts?: { default?: string }): Promise<string> {
 
 /**
  * Prompt user to select from a numbered list.
+ * Re-prompts on invalid input instead of silently defaulting.
  */
 function choose(question: string, options: { label: string; value: string }[]): Promise<string> {
   return new Promise((resolve) => {
@@ -73,10 +102,19 @@ function choose(question: string, options: { label: string; value: string }[]): 
     for (let i = 0; i < options.length; i++) {
       println(`  ${BOLD}${i + 1}${RESET}) ${options[i].label}`);
     }
-    rl.question(`\nChoice [1-${options.length}]: `, (answer: string) => {
-      const idx = parseInt(answer.trim(), 10) - 1;
-      resolve(idx >= 0 && idx < options.length ? options[idx].value : options[0].value);
-    });
+
+    const promptForChoice = (): void => {
+      rl.question(`\nChoice [1-${options.length}]: `, (answer: string) => {
+        const idx = parseInt(answer.trim(), 10) - 1;
+        if (idx >= 0 && idx < options.length) {
+          resolve(options[idx].value);
+        } else {
+          warn(`Please enter a number between 1 and ${options.length}.`);
+          promptForChoice();
+        }
+      });
+    };
+    promptForChoice();
   });
 }
 
@@ -96,11 +134,11 @@ function confirm(question: string, defaultYes: boolean = true): Promise<boolean>
 // ── Navigation ──────────────────────────────────────────────────
 
 /** Action returned by each wizard step. */
-type StepAction = 'next' | 'back' | 'redo' | 'quit';
+type StepAction = 'next' | 'back' | 'redo' | 'quit' | 'menu';
 
 /**
  * Show the step navigation bar and return the user's choice.
- * Displayed after each step completes (success or with errors).
+ * Displayed after each step completes.
  */
 async function nav(stepIdx: number, totalSteps: number): Promise<StepAction> {
   const isFirst = stepIdx === 0;
@@ -110,7 +148,7 @@ async function nav(stepIdx: number, totalSteps: number): Promise<StepAction> {
   println(`\n${DIM}──────────────────────────────────────────────────${RESET}`);
   const parts: string[] = [`${BOLD}↵${RESET} ${nextWord}`];
   if (!isFirst) parts.push(`${BOLD}b${RESET} back`);
-  parts.push(`${BOLD}r${RESET} redo`, `${BOLD}q${RESET} quit`);
+  parts.push(`${BOLD}r${RESET} redo`, `${BOLD}m${RESET} menu`, `${BOLD}q${RESET} quit`);
   println(`  ${parts.join('   ·   ')}`);
 
   for (;;) {
@@ -119,15 +157,99 @@ async function nav(stepIdx: number, totalSteps: number): Promise<StepAction> {
     if (a === '' || a === 'n' || a === 'f' || a === 'c') return 'next';
     if (a === 'b' && !isFirst) return 'back';
     if (a === 'r') return 'redo';
+    if (a === 'm') return 'menu';
     if (a === 'q') {
       const yes = await confirm('Exit setup without saving?', false);
       if (yes) return 'quit';
       println(`\n${DIM}──────────────────────────────────────────────────${RESET}`);
       println(`  ${parts.join('   ·   ')}`);
-    } else if (a !== '') {
-      warn(`Unknown input. Press Enter to ${nextWord}, b=back, r=redo, q=quit.`);
+    } else if (a === 'b' && isFirst) {
+      warn('Already at the first step.');
+    } else {
+      warn(`Unknown input. Press Enter to ${nextWord}, b=back, r=redo, m=menu, q=quit.`);
     }
   }
+}
+
+// ── Step status helpers ─────────────────────────────────────────
+
+interface StepInfo {
+  name: string;
+  summary: (config: OrionOmegaConfig) => string;
+  configured: (config: OrionOmegaConfig) => boolean;
+}
+
+const STEP_INFO: StepInfo[] = [
+  {
+    name: 'Anthropic API Key',
+    summary: (c) => c.models.apiKey ? maskSecret(c.models.apiKey) : 'not set',
+    configured: (c) => !!c.models.apiKey,
+  },
+  {
+    name: 'Default Model',
+    summary: (c) => c.models.default || 'not set',
+    configured: (c) => !!c.models.default,
+  },
+  {
+    name: 'Gateway Security',
+    summary: (c) => c.gateway.auth.mode,
+    configured: (_c) => true, // 'none' is a valid choice
+  },
+  {
+    name: 'Hindsight Memory',
+    summary: (c) => c.hindsight.url || 'not set',
+    configured: (c) => !!c.hindsight.url,
+  },
+  {
+    name: 'Workspace',
+    summary: (c) => c.workspace.path.replace(homedir(), '~') || 'not set',
+    configured: (c) => !!c.workspace.path,
+  },
+  {
+    name: 'Claude Agent SDK',
+    summary: (c) => c.agentSdk.enabled ? `enabled (${c.agentSdk.permissionMode})` : 'disabled',
+    configured: (_c) => true, // explicit enable/disable is a valid choice
+  },
+  {
+    name: 'Skills',
+    summary: (_c) => 'see step',
+    configured: (_c) => true,
+  },
+];
+
+/**
+ * Display the step overview menu and return the step index to jump to,
+ * or -1 to start from step 1 (sequential).
+ */
+async function showMenu(config: OrionOmegaConfig): Promise<number> {
+  heading('OrionOmega Setup');
+
+  for (let i = 0; i < STEP_INFO.length; i++) {
+    const info = STEP_INFO[i];
+    const configured = info.configured(config);
+    const icon = configured && info.summary(config) !== 'not set' ? `${GREEN}✓${RESET}` : `${DIM}○${RESET}`;
+    const summary = info.summary(config);
+    const num = `${BOLD}${i + 1}${RESET}`;
+    const pad = ' '.repeat(24 - info.name.length);
+    println(`  ${num}. ${info.name}${pad}${icon} ${DIM}${summary}${RESET}`);
+  }
+
+  println();
+  const input = await ask(`Enter step number to jump to, or press Enter to start from step 1`, { default: '1' });
+  const idx = parseInt(input.trim(), 10) - 1;
+  if (idx >= 0 && idx < STEP_INFO.length) return idx;
+  return 0;
+}
+
+// ── Current value display helper ────────────────────────────────
+
+/**
+ * Show the current value for a step field. Secrets are masked.
+ */
+function showCurrent(label: string, value: string, secret: boolean = false): void {
+  if (!value) return;
+  const display = secret ? maskSecret(value) : value;
+  println(`  ${DIM}Current: ${display}${RESET}`);
 }
 
 // ── Steps ───────────────────────────────────────────────────────
@@ -135,23 +257,40 @@ async function nav(stepIdx: number, totalSteps: number): Promise<StepAction> {
 async function stepApiKey(config: OrionOmegaConfig, stepIdx: number, totalSteps: number): Promise<StepAction> {
   heading(`Step ${stepIdx + 1}/${totalSteps} — Anthropic API Key`);
 
-  const key = await ask('Enter your Anthropic API key');
+  showCurrent('API Key', config.models.apiKey, true);
 
-  if (!key.startsWith('sk-ant-')) {
-    fail('Key must start with "sk-ant-". Skipping validation.');
-    config.models.apiKey = key;
+  const existing = config.models.apiKey;
+  const defaultHint = existing ? 'Enter to keep current' : undefined;
+
+  const key = await ask('Enter your Anthropic API key', { default: defaultHint });
+
+  // If user pressed Enter to keep current value
+  if (key === defaultHint && existing) {
+    success('Keeping existing API key.');
+    return nav(stepIdx, totalSteps);
+  }
+
+  // If user entered nothing and there's no existing key
+  if (!key) {
+    warn('No API key set. The gateway will not be able to use Anthropic models.');
     return nav(stepIdx, totalSteps);
   }
 
   config.models.apiKey = key;
-  print('  Testing key... ');
 
+  if (!key.startsWith('sk-ant-')) {
+    warn('Key doesn\'t start with "sk-ant-" — skipping validation.');
+    return nav(stepIdx, totalSteps);
+  }
+
+  print('  Testing key... ');
   try {
     const res = await fetch('https://api.anthropic.com/v1/models?limit=1', {
       headers: {
         'x-api-key': key,
         'anthropic-version': '2023-06-01',
       },
+      signal: AbortSignal.timeout(10000),
     });
 
     if (res.ok) {
@@ -159,6 +298,8 @@ async function stepApiKey(config: OrionOmegaConfig, stepIdx: number, totalSteps:
     } else {
       const body = await res.text();
       fail(`API returned ${res.status}: ${body.slice(0, 120)}`);
+      const retry = await confirm('  Re-enter the key?', true);
+      if (retry) return 'redo';
     }
   } catch (err: unknown) {
     fail(`Network error: ${err instanceof Error ? err.message : String(err)}`);
@@ -167,53 +308,19 @@ async function stepApiKey(config: OrionOmegaConfig, stepIdx: number, totalSteps:
   return nav(stepIdx, totalSteps);
 }
 
-async function fetchAnthropicModels(apiKey: string): Promise<{ label: string; value: string }[]> {
-  try {
-    print(`  Fetching available models... `);
-    const res = await fetch('https://api.anthropic.com/v1/models?limit=100', {
-      headers: {
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      signal: AbortSignal.timeout(10000),
-    });
-
-    if (!res.ok) {
-      println(`${YELLOW}(could not fetch: ${res.status})${RESET}`);
-      return [];
-    }
-
-    const data = (await res.json()) as { data?: { id: string; display_name?: string; created_at?: string }[] };
-    const models = data.data ?? [];
-
-    if (models.length === 0) {
-      println(`${YELLOW}(no models returned)${RESET}`);
-      return [];
-    }
-
-    models.sort((a, b) => {
-      const da = a.created_at ?? '';
-      const db = b.created_at ?? '';
-      if (da !== db) return db.localeCompare(da);
-      return a.id.localeCompare(b.id);
-    });
-
-    println(`${GREEN}found ${models.length} models${RESET}`);
-
-    return models.map((m) => {
-      const name = m.display_name || m.id;
-      let suffix = '';
-      if (m.id.includes('sonnet')) suffix = ` ${DIM}(recommended)${RESET}`;
-      return { label: `${name}${suffix}`, value: m.id };
-    });
-  } catch (err: unknown) {
-    println(`${YELLOW}(error: ${err instanceof Error ? err.message : String(err)})${RESET}`);
-    return [];
-  }
-}
-
 async function stepModel(config: OrionOmegaConfig, stepIdx: number, totalSteps: number): Promise<StepAction> {
   heading(`Step ${stepIdx + 1}/${totalSteps} — Default Model`);
+
+  showCurrent('Model', config.models.default);
+
+  // If already configured, offer to keep
+  if (config.models.default) {
+    const keep = await confirm(`  Keep ${BOLD}${config.models.default}${RESET}?`, true);
+    if (keep) {
+      success(`Keeping model: ${config.models.default}`);
+      return nav(stepIdx, totalSteps);
+    }
+  }
 
   let options: { label: string; value: string }[] = [];
 
@@ -241,10 +348,12 @@ async function stepModel(config: OrionOmegaConfig, stepIdx: number, totalSteps: 
 
   if (options.length === 0) {
     println(`  ${YELLOW}Could not discover models. Enter a model ID manually.${RESET}`);
-    const model = await ask('Enter model ID');
-    config.models.default = model;
-    config.models.planner = model;
-    success(`Default model: ${model}`);
+    const model = await ask('Enter model ID', { default: config.models.default || undefined });
+    if (model) {
+      config.models.default = model;
+      config.models.planner = model;
+      success(`Default model: ${model}`);
+    }
     return nav(stepIdx, totalSteps);
   }
 
@@ -253,18 +362,34 @@ async function stepModel(config: OrionOmegaConfig, stepIdx: number, totalSteps: 
   let model = await choose('Select your default model:', options);
 
   if (model === '__custom__') {
-    model = await ask('Enter model ID');
+    model = await ask('Enter model ID', { default: config.models.default || undefined });
   }
 
-  config.models.default = model;
-  config.models.planner = model;
-  success(`Default model: ${model}`);
+  if (model) {
+    config.models.default = model;
+    config.models.planner = model;
+    success(`Default model: ${model}`);
+  }
 
   return nav(stepIdx, totalSteps);
 }
 
 async function stepGatewaySecurity(config: OrionOmegaConfig, stepIdx: number, totalSteps: number): Promise<StepAction> {
   heading(`Step ${stepIdx + 1}/${totalSteps} — Gateway Security`);
+
+  showCurrent('Auth mode', config.gateway.auth.mode);
+  if (config.gateway.auth.keyHash) {
+    println(`  ${DIM}Key hash: ${maskSecret(config.gateway.auth.keyHash)}${RESET}`);
+  }
+
+  // If already configured, offer to keep
+  if (config.gateway.auth.mode) {
+    const keep = await confirm(`  Keep ${BOLD}${config.gateway.auth.mode}${RESET} auth mode?`, true);
+    if (keep) {
+      success(`Keeping auth mode: ${config.gateway.auth.mode}`);
+      return nav(stepIdx, totalSteps);
+    }
+  }
 
   const mode = await choose('Authentication mode for the gateway:', [
     { label: 'API Key authentication', value: 'api-key' },
@@ -289,6 +414,7 @@ async function stepGatewaySecurity(config: OrionOmegaConfig, stepIdx: number, to
     println(`  ${DIM}Save this somewhere safe — it's hashed in config.${RESET}`);
     success('Gateway auth configured.');
   } else {
+    config.gateway.auth.keyHash = undefined;
     success('No authentication. Ensure the gateway is not exposed publicly.');
   }
 
@@ -298,6 +424,17 @@ async function stepGatewaySecurity(config: OrionOmegaConfig, stepIdx: number, to
 async function stepHindsight(config: OrionOmegaConfig, stepIdx: number, totalSteps: number): Promise<StepAction> {
   heading(`Step ${stepIdx + 1}/${totalSteps} — Hindsight Memory`);
 
+  showCurrent('Hindsight URL', config.hindsight.url);
+
+  // If already configured, offer to keep
+  if (config.hindsight.url) {
+    const keep = await confirm(`  Keep ${BOLD}${config.hindsight.url}${RESET}?`, true);
+    if (keep) {
+      success(`Keeping Hindsight URL: ${config.hindsight.url}`);
+      return nav(stepIdx, totalSteps);
+    }
+  }
+
   const mode = await choose('Hindsight server:', [
     { label: `Local ${DIM}(localhost:8888)${RESET}`, value: 'local' },
     { label: 'Remote (custom URL)', value: 'remote' },
@@ -305,7 +442,7 @@ async function stepHindsight(config: OrionOmegaConfig, stepIdx: number, totalSte
 
   let url = 'http://localhost:8888';
   if (mode === 'remote') {
-    url = await ask('Hindsight URL', { default: 'http://localhost:8888' });
+    url = await ask('Hindsight URL', { default: config.hindsight.url || 'http://localhost:8888' });
   }
   config.hindsight.url = url;
 
@@ -343,7 +480,9 @@ async function stepHindsight(config: OrionOmegaConfig, stepIdx: number, totalSte
 async function stepWorkspace(config: OrionOmegaConfig, stepIdx: number, totalSteps: number): Promise<StepAction> {
   heading(`Step ${stepIdx + 1}/${totalSteps} — Workspace`);
 
-  const defaultPath = join(homedir(), '.orionomega', 'workspace');
+  showCurrent('Workspace', config.workspace.path.replace(homedir(), '~'));
+
+  const defaultPath = config.workspace.path || join(homedir(), '.orionomega', 'workspace');
   const wsPath = await ask('Workspace directory', { default: defaultPath });
   config.workspace.path = wsPath;
 
@@ -428,13 +567,25 @@ Your personal cheat sheet for environment-specific details.
 async function stepAgentSdk(config: OrionOmegaConfig, stepIdx: number, totalSteps: number): Promise<StepAction> {
   heading(`Step ${stepIdx + 1}/${totalSteps} — Claude Agent SDK (Coding Agents)`);
 
+  const currentStatus = config.agentSdk.enabled
+    ? `enabled, ${config.agentSdk.permissionMode}, effort=${config.agentSdk.effort}`
+    : 'disabled';
+  showCurrent('Agent SDK', currentStatus);
+
+  // If already configured, offer to keep
+  const keep = await confirm(`  Keep current settings?`, true);
+  if (keep) {
+    success(`Keeping Agent SDK: ${currentStatus}`);
+    return nav(stepIdx, totalSteps);
+  }
+
   println(`  The Claude Agent SDK powers coding tasks in workflows.`);
   println(`  It uses the same Anthropic API key configured in Step 1.`);
   println(`  When enabled, the orchestrator can spawn CODING_AGENT workers`);
   println(`  with the full Claude Code toolset (Read, Write, Edit, Bash, etc.).`);
   println();
 
-  const enable = await ask('Enable Claude Agent SDK?', { default: 'yes' });
+  const enable = await ask('Enable Claude Agent SDK?', { default: config.agentSdk.enabled ? 'yes' : 'no' });
   const enabled = enable.toLowerCase().startsWith('y');
   config.agentSdk.enabled = enabled;
 
@@ -462,9 +613,14 @@ async function stepAgentSdk(config: OrionOmegaConfig, stepIdx: number, totalStep
     'Effort level:', effortOptions,
   )) as OrionOmegaConfig['agentSdk']['effort'];
 
-  const budget = await ask('Max budget per coding task (USD, 0 for unlimited)', { default: '0' });
+  const currentBudget = config.agentSdk.maxBudgetUsd ? String(config.agentSdk.maxBudgetUsd) : '0';
+  const budget = await ask('Max budget per coding task (USD, 0 for unlimited)', { default: currentBudget });
   const budgetNum = parseFloat(budget);
-  if (budgetNum > 0) config.agentSdk.maxBudgetUsd = budgetNum;
+  if (budgetNum > 0) {
+    config.agentSdk.maxBudgetUsd = budgetNum;
+  } else {
+    config.agentSdk.maxBudgetUsd = undefined;
+  }
 
   success(`Agent SDK configured: ${config.agentSdk.permissionMode}, effort=${config.agentSdk.effort}`);
 
@@ -507,7 +663,14 @@ async function stepSkills(config: OrionOmegaConfig, stepIdx: number, totalSteps:
   for (let i = 0; i < allManifests.length; i++) {
     const m = allManifests[i];
     const setupTag = m.setup?.required ? ' (requires setup)' : '';
-    println(`  ${BOLD}${i + 1}${RESET}) ${m.name} — ${m.description}${DIM}${setupTag}${RESET}`);
+    // Show current enabled/configured status
+    let statusTag = '';
+    try {
+      const cfg = readSkillConfig(config.skills.directory, m.name);
+      if (cfg.enabled && cfg.configured) statusTag = ` ${GREEN}✓${RESET}`;
+      else if (cfg.enabled) statusTag = ` ${YELLOW}○${RESET}`;
+    } catch {}
+    println(`  ${BOLD}${i + 1}${RESET}) ${m.name} — ${m.description}${DIM}${setupTag}${RESET}${statusTag}`);
   }
   println();
 
@@ -569,7 +732,6 @@ async function stepSkills(config: OrionOmegaConfig, stepIdx: number, totalSteps:
         if (authResult.type) cfg.authMethod = authResult.type;
 
         if (authResult.skipped) {
-          // User explicitly skipped this skill's auth — disable and move on
           cfg.enabled = false;
           writeSkillConfig(config.skills.directory, cfg);
           warn(`Skipped ${m.name} — auth not configured. Re-run with: orionomega skill setup ${m.name}`);
@@ -577,7 +739,6 @@ async function stepSkills(config: OrionOmegaConfig, stepIdx: number, totalSteps:
         }
 
         if (!authResult.success) {
-          // Auth failed but user chose to continue anyway
           warn(`Auth failed for ${m.name}. The skill may not work correctly.`);
           authSucceeded = false;
         }
@@ -636,22 +797,14 @@ async function stepSkills(config: OrionOmegaConfig, stepIdx: number, totalSteps:
   return nav(stepIdx, totalSteps);
 }
 
-// ── Auth result ──────────────────────────────────────────────────
+// ── Auth helpers (unchanged logic) ──────────────────────────────
 
 interface AuthResult {
-  /** Whether auth validation passed. */
   success: boolean;
-  /** Whether the user explicitly skipped this skill. */
   skipped: boolean;
-  /** The auth method type that was used. */
   type?: string;
 }
 
-/**
- * Run interactive auth method selection for a skill.
- * Offers retry / skip / continue on validation failure.
- * No input masking — tokens are shown as plain text.
- */
 async function runAuthSetup(
   methods: SkillAuthMethod[],
   skillsDir: string,
@@ -670,8 +823,6 @@ async function runAuthSetup(
     : await choose('  Choose authentication method:', options);
   const method = methods.find((m) => m.type === chosen);
   if (!method) return { success: false, skipped: false };
-
-  // ── Credential entry ─────────────────────────────────────────
 
   switch (method.type) {
     case 'oauth':
@@ -707,7 +858,6 @@ async function runAuthSetup(
           println(`  Required scopes: ${method.scopes.join(', ')}`);
         }
       }
-      // No masking — plain text input
       const token = await ask(`  Enter your ${method.type === 'pat' ? 'personal access token' : 'API key'}`);
       if (token && method.envVar) {
         const cfg = readSkillConfig(skillsDir, skillName);
@@ -735,8 +885,6 @@ async function runAuthSetup(
     }
   }
 
-  // ── Validation ───────────────────────────────────────────────
-
   if (method.validateCommand) {
     return await validateAuth(method, skillsDir, skillName, methods);
   }
@@ -744,9 +892,6 @@ async function runAuthSetup(
   return { success: true, skipped: false, type: method.type };
 }
 
-/**
- * Run the method's validateCommand and offer retry/skip/continue on failure.
- */
 async function validateAuth(
   method: SkillAuthMethod,
   skillsDir: string,
@@ -764,9 +909,6 @@ async function validateAuth(
   }
 }
 
-/**
- * Offer the user options after an auth failure: retry, skip skill, or continue anyway.
- */
 async function handleAuthFailure(
   method: SkillAuthMethod,
   skillsDir: string,
@@ -788,12 +930,10 @@ async function handleAuthFailure(
       return { success: false, skipped: false, type: method.type };
     }
 
-    // Retry: re-enter credentials based on auth type
     if (method.type === 'api-key' || method.type === 'pat') {
       if (method.tokenUrl) {
         println(`  Token URL: ${BLUE}${method.tokenUrl}${RESET}`);
       }
-      // Plain text — no masking
       const token = await ask(`  Re-enter your ${method.type === 'pat' ? 'personal access token' : 'API key'}`);
       if (token && method.envVar) {
         const cfg = readSkillConfig(skillsDir, skillName);
@@ -811,7 +951,6 @@ async function handleAuthFailure(
       }
     }
 
-    // Re-validate after retry
     if (method.validateCommand) {
       print('  Validating... ');
       try {
@@ -820,19 +959,13 @@ async function handleAuthFailure(
         return { success: true, skipped: false, type: method.type };
       } catch {
         fail('Validation failed again.');
-        // Loop back to retry/skip/continue choice
       }
     } else {
-      // No validateCommand — assume success after re-entry
       return { success: true, skipped: false, type: method.type };
     }
   }
 }
 
-/**
- * Prompt for a single config field value.
- * No masking — all input is plain text during setup.
- */
 async function promptField(field: SkillSetupField): Promise<string | number | boolean | undefined> {
   const defaultStr = field.default !== undefined ? String(field.default) : undefined;
 
@@ -856,13 +989,56 @@ async function promptField(field: SkillSetupField): Promise<string | number | bo
   return raw;
 }
 
+// ── Summary screen ──────────────────────────────────────────────
+
+/**
+ * Display a full summary of all config settings for review before saving.
+ * Returns true if the user confirms, false to go back to the menu.
+ */
+async function showSummary(config: OrionOmegaConfig): Promise<boolean> {
+  heading('Configuration Summary');
+
+  println(`  ${BOLD}Anthropic API Key:${RESET}    ${config.models.apiKey ? maskSecret(config.models.apiKey) : `${RED}not set${RESET}`}`);
+  println(`  ${BOLD}Default Model:${RESET}        ${config.models.default || `${RED}not set${RESET}`}`);
+  println(`  ${BOLD}Planner Model:${RESET}        ${config.models.planner || `${DIM}(same as default)${RESET}`}`);
+  println();
+  println(`  ${BOLD}Gateway Port:${RESET}         ${config.gateway.port}`);
+  println(`  ${BOLD}Gateway Bind:${RESET}         ${config.gateway.bind}`);
+  println(`  ${BOLD}Gateway Auth:${RESET}         ${config.gateway.auth.mode}${config.gateway.auth.keyHash ? ` (key hash: ${maskSecret(config.gateway.auth.keyHash)})` : ''}`);
+  println();
+  println(`  ${BOLD}Hindsight URL:${RESET}        ${config.hindsight.url}`);
+  println(`  ${BOLD}Default Bank:${RESET}         ${config.hindsight.defaultBank}`);
+  println();
+  println(`  ${BOLD}Workspace:${RESET}            ${config.workspace.path.replace(homedir(), '~')}`);
+  println();
+  println(`  ${BOLD}Agent SDK:${RESET}            ${config.agentSdk.enabled ? 'enabled' : 'disabled'}`);
+  if (config.agentSdk.enabled) {
+    println(`  ${BOLD}  Permission Mode:${RESET}    ${config.agentSdk.permissionMode}`);
+    println(`  ${BOLD}  Effort:${RESET}             ${config.agentSdk.effort}`);
+    if (config.agentSdk.maxBudgetUsd) {
+      println(`  ${BOLD}  Max Budget:${RESET}         $${config.agentSdk.maxBudgetUsd}`);
+    }
+  }
+  println();
+  println(`  ${BOLD}Skills Directory:${RESET}     ${config.skills.directory.replace(homedir(), '~')}`);
+  println(`  ${BOLD}Log Level:${RESET}            ${config.logging.level}`);
+  println(`  ${BOLD}Log File:${RESET}             ${config.logging.file.replace(homedir(), '~')}`);
+
+  println();
+  println(`  ${DIM}Config will be saved to: ${getConfigPath()}${RESET}`);
+  println();
+
+  return await confirm(`${BOLD}Save this configuration?${RESET}`, true);
+}
+
 // ── Main ────────────────────────────────────────────────────────
 
 type StepFn = (config: OrionOmegaConfig, stepIdx: number, totalSteps: number) => Promise<StepAction>;
 
 /**
  * Run the interactive setup wizard.
- * Steps are navigable: back, redo, and quit are available after every step.
+ * Loads existing config so re-runs preserve previous settings.
+ * Steps are navigable: back, redo, menu, and quit available after every step.
  */
 export async function runSetup(): Promise<void> {
   println();
@@ -870,9 +1046,10 @@ export async function runSetup(): Promise<void> {
   println(`${BOLD}║     OrionOmega — Setup Wizard        ║${RESET}`);
   println(`${BOLD}╚══════════════════════════════════════╝${RESET}`);
   println();
-  println(`  Navigate with: ${BOLD}↵${RESET} continue   ${BOLD}b${RESET} back   ${BOLD}r${RESET} redo step   ${BOLD}q${RESET} quit`);
+  println(`  Navigate with: ${BOLD}↵${RESET} continue   ${BOLD}b${RESET} back   ${BOLD}r${RESET} redo   ${BOLD}m${RESET} menu   ${BOLD}q${RESET} quit`);
 
-  const config = getDefaultConfig();
+  // Load existing config — re-runs preserve previous settings
+  const config = readConfig();
 
   const steps: StepFn[] = [
     stepApiKey,
@@ -887,23 +1064,43 @@ export async function runSetup(): Promise<void> {
   initRL();
 
   try {
-    let idx = 0;
-    while (idx < steps.length) {
-      const action = await steps[idx](config, idx, steps.length);
-      switch (action) {
-        case 'next':
-          idx++;
-          break;
-        case 'back':
-          if (idx > 0) idx--;
-          break;
-        case 'redo':
-          // Re-run the same step
-          break;
-        case 'quit':
-          println();
-          warn('Setup exited without saving.');
-          process.exit(0);
+    // Show step overview menu first
+    let idx = await showMenu(config);
+
+    // Main wizard loop — runs steps, then shows summary.
+    // If the user rejects the summary, returns to menu and re-enters the loop.
+    let saved = false;
+    while (!saved) {
+      // Step loop
+      while (idx < steps.length) {
+        const action = await steps[idx](config, idx, steps.length);
+        switch (action) {
+          case 'next':
+            idx++;
+            break;
+          case 'back':
+            if (idx > 0) idx--;
+            break;
+          case 'redo':
+            break;
+          case 'menu':
+            idx = await showMenu(config);
+            break;
+          case 'quit':
+            println();
+            warn('Setup exited without saving.');
+            process.exit(0);
+        }
+      }
+
+      // Summary & confirmation
+      const confirmed = await showSummary(config);
+      if (confirmed) {
+        saved = true;
+      } else {
+        println();
+        warn('Not saved. Returning to menu...');
+        idx = await showMenu(config);
       }
     }
 
@@ -950,7 +1147,7 @@ export async function runSetup(): Promise<void> {
     // Save config
     writeConfig(config);
 
-    // Auto-restart gateway if it's running so it picks up the new config
+    // Auto-restart gateway if it's running
     try {
       const out = execSync('systemctl is-active orionomega 2>/dev/null', { encoding: 'utf-8' }).trim();
       if (out === 'active') {
