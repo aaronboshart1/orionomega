@@ -6,6 +6,11 @@
 
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { hostname } from 'node:os';
+import { execSync } from 'node:child_process';
+import { createLogger } from '../logging/logger.js';
+
+const log = createLogger('prompt-builder');
 
 /** Context needed to assemble the system prompt. */
 export interface PromptContext {
@@ -86,5 +91,61 @@ export async function buildSystemPrompt(context: PromptContext): Promise<string>
     );
   }
 
+  // Inject runtime host identity — always authoritative over Hindsight memories
+  const hostInfo = getHostIdentity();
+  if (hostInfo) {
+    sections.push(`\n## This Host (runtime — authoritative)\n${hostInfo}`);
+  }
+
   return sections.join('\n');
+}
+
+/**
+ * Discover the current host's identity at runtime.
+ * This is authoritative — overrides any stale Hindsight memories about "this machine."
+ */
+function getHostIdentity(): string | null {
+  try {
+    const host = hostname();
+    const lines: string[] = [`Hostname: ${host}`];
+
+    // LAN IPs
+    try {
+      const ipOutput = execSync(
+        "ip -4 addr show 2>/dev/null | grep 'inet ' | grep -v '127.0.0' | grep -v 'docker' | grep -v '172.17' | awk '{print $2}'",
+        { encoding: 'utf-8', timeout: 3000 },
+      ).trim();
+      if (ipOutput) {
+        const ips = ipOutput.split('\n').map(ip => ip.replace(/\/\d+$/, ''));
+        lines.push(`LAN IP: ${ips.join(', ')}`);
+      }
+    } catch {}
+
+    // Tailscale IP
+    try {
+      const tsIp = execSync('tailscale ip -4 2>/dev/null', { encoding: 'utf-8', timeout: 3000 }).trim();
+      if (tsIp) lines.push(`Tailscale IP: ${tsIp}`);
+    } catch {}
+
+    // OS
+    try {
+      const os = execSync(
+        "cat /etc/os-release 2>/dev/null | grep '^PRETTY_NAME=' | cut -d= -f2 | tr -d '\"'",
+        { encoding: 'utf-8', timeout: 3000 },
+      ).trim();
+      if (os) lines.push(`OS: ${os}`);
+    } catch {}
+
+    // Current user
+    try {
+      const user = execSync('whoami', { encoding: 'utf-8', timeout: 1000 }).trim();
+      lines.push(`User: ${user}`);
+    } catch {}
+
+    log.verbose('Host identity resolved', { lines });
+    return lines.join('\n');
+  } catch (err) {
+    log.warn('Failed to resolve host identity', { error: err instanceof Error ? err.message : String(err) });
+    return null;
+  }
 }
