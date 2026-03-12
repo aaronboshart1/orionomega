@@ -443,6 +443,8 @@ WantedBy=multi-user.target
 EOF
     $SUDO systemctl daemon-reload
     $SUDO systemctl enable orionomega 2>/dev/null || true
+    # Mark install dir as safe for git (service runs as root, repo may be owned by user)
+    $SUDO git config --global --add safe.directory "$INSTALL_DIR" 2>/dev/null || true
     ok "Systemd service installed (orionomega.service)"
 else
     info "No systemd — use 'orionomega gateway start' to run in dev mode"

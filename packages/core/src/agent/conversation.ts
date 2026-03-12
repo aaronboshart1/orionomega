@@ -166,6 +166,11 @@ export async function executeMainTool(
           cwd: workspaceDir,
           timeout: 30_000,
           maxBuffer: 1024 * 1024,
+          env: {
+            ...process.env,
+            HOME: process.env.HOME || '/root',
+            PATH: process.env.PATH || '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+          },
         });
         let result = stdout || '';
         if (stderr) result += (result ? '\n' : '') + stderr;
