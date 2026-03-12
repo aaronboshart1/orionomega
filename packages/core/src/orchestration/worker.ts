@@ -452,40 +452,67 @@ Use absolute paths when referencing files outside the workspace.${skillDocs}`;
     });
 
     const output = await new Promise<string>((resolve, reject) => {
-      const args = Object.entries(toolConfig.params).map(
-        ([k, v]) => `--${k}=${String(v)}`,
-      );
+      // Build the command: if params look like they're meant for a shell command
+      // (e.g. contain spaces, pipes, or semicolons), run via shell instead of execFile
+      const params = toolConfig.params;
+      const paramValues = Object.values(params).map(String);
+      const hasShellSyntax = paramValues.some(v => /[|;&$`]/.test(v));
 
-      const child = execFile(
-        toolConfig.name,
-        args,
-        {
-          cwd: this.workspaceDir,
-          timeout: this.timeout * 1000,
-          maxBuffer: 10 * 1024 * 1024,
-        },
-        (error, stdout, stderr) => {
-          if (error) {
-            reject(
-              new Error(
-                `Tool '${toolConfig.name}' failed: ${error.message}\n${stderr}`,
-              ),
-            );
-          } else {
-            resolve(stdout);
-          }
-        },
-      );
+      if (hasShellSyntax || Object.keys(params).length === 1 && Object.keys(params)[0] === 'command') {
+        // Shell mode: run the command string directly
+        const cmd = params.command
+          ? String(params.command)
+          : `${toolConfig.name} ${paramValues.join(' ')}`;
 
-      // If cancelled, kill the child process
-      const checkCancel = setInterval(() => {
-        if (this.cancelled) {
-          child.kill('SIGTERM');
-          clearInterval(checkCancel);
-        }
-      }, 500);
+        const { exec: execShell } = require('node:child_process');
+        const child = execShell(
+          cmd,
+          {
+            cwd: this.workspaceDir,
+            timeout: this.timeout * 1000,
+            maxBuffer: 10 * 1024 * 1024,
+            env: { ...process.env, HOME: process.env.HOME || '/root' },
+          },
+          (error: Error | null, stdout: string, stderr: string) => {
+            if (error) {
+              reject(new Error(`Tool '${toolConfig.name}' failed: ${error.message}\n${stderr}`));
+            } else {
+              resolve(stdout);
+            }
+          },
+        );
 
-      child.on('close', () => clearInterval(checkCancel));
+        const checkCancel = setInterval(() => {
+          if (this.cancelled) { child.kill('SIGTERM'); clearInterval(checkCancel); }
+        }, 500);
+        child.on('close', () => clearInterval(checkCancel));
+      } else {
+        // execFile mode: binary + --key=value args
+        const args = Object.entries(params).map(([k, v]) => `--${k}=${String(v)}`);
+
+        const child = execFile(
+          toolConfig.name,
+          args,
+          {
+            cwd: this.workspaceDir,
+            timeout: this.timeout * 1000,
+            maxBuffer: 10 * 1024 * 1024,
+            env: { ...process.env, HOME: process.env.HOME || '/root' },
+          },
+          (error, stdout, stderr) => {
+            if (error) {
+              reject(new Error(`Tool '${toolConfig.name}' failed: ${error.message}\n${stderr}`));
+            } else {
+              resolve(stdout);
+            }
+          },
+        );
+
+        const checkCancel = setInterval(() => {
+          if (this.cancelled) { child.kill('SIGTERM'); clearInterval(checkCancel); }
+        }, 500);
+        child.on('close', () => clearInterval(checkCancel));
+      }
     });
 
     this.emitEvent({

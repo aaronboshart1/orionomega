@@ -340,7 +340,7 @@ Given a task description, you produce a WorkflowGraph JSON that orchestrates mul
 ## Rules
 1. **Maximise parallelism.** If two sub-tasks have no data dependency, they MUST be in the same layer (no dependsOn between them).
 2. **One deliverable per worker.** Each AGENT node should have a single, well-scoped task that produces one clear output.
-3. **Use TOOL nodes sparingly** — only for shell commands (e.g. exec). For file operations, writing documents, web searches, etc., use AGENT nodes — they have built-in tools: exec (shell), read (files), write (files), edit (files). Skills may also provide: web_search, web_fetch.
+3. **NEVER use TOOL nodes** unless you need a pure, no-LLM shell command with known arguments. TOOL nodes run a single binary via execFile — they cannot handle complex commands, pipes, or multi-step logic. For virtually ALL tasks, use AGENT nodes (which have built-in shell exec, file read/write/edit) or CODING_AGENT nodes (which have Bash, plus the full Claude Code toolset). If a task involves SSH, curl, git, or any interactive/multi-step command, use AGENT or CODING_AGENT — NOT TOOL.
 4. **Use CODING_AGENT nodes for coding tasks.** When a task involves writing code, refactoring, debugging, building features, or any software engineering work, use CODING_AGENT instead of AGENT. CODING_AGENT nodes run via the Claude Agent SDK and have access to the full Claude Code toolset: Read, Write, Edit, Bash, Glob, Grep, WebSearch, WebFetch, and Task (subagents). They are significantly more capable at coding than generic AGENT nodes. CODING_AGENT nodes also support subagent definitions for complex multi-part coding tasks.
 5. **Use LOOP nodes for iterative tasks.** When a task requires repeated attempts until success (e.g. "build → test → fix until tests pass", "retry with different approaches"), wrap the iterative portion in a LOOP node. The LOOP node's body contains the nodes to repeat. Set a reasonable maxIterations (default 5), and choose an exitCondition:
    - "all_pass": exit when all body nodes succeed without error
@@ -423,8 +423,8 @@ Respond with a JSON object matching this schema:
         }
       },
       "tool": {
-        "name": "shell-command-to-execute (e.g. curl, grep, cat — NOT built-in tools like write/read)",
-        "params": { "key": "value" }
+        "name": "BINARY_NAME (executed via execFile, NOT a shell — no pipes, no &&, no complex args)",
+        "params": { "key": "value — converted to --key=value flags" }
       },
       "router": {
         "condition": "state-key-to-check",
