@@ -1167,13 +1167,25 @@ export async function runSetup(): Promise<void> {
     // Save config
     writeConfig(config);
 
-    // Auto-restart gateway if it's running
+    // Auto-restart gateway if it's running.
+    // Uses sudo for systemctl — required for system-level services.
+    // Falls back to SIGTERM via PID file if systemctl isn't available.
     try {
       const out = execSync('systemctl is-active orionomega 2>/dev/null', { encoding: 'utf-8' }).trim();
       if (out === 'active') {
         print('  Restarting gateway to apply new config... ');
-        execSync('systemctl restart orionomega', { stdio: 'ignore' });
-        println(`${GREEN}✓${RESET} Gateway restarted`);
+        try {
+          execSync('sudo systemctl restart orionomega', { stdio: 'ignore', timeout: 15000 });
+          println(`${GREEN}✓${RESET} Gateway restarted`);
+        } catch {
+          // sudo may not be available or user may lack permissions — try without
+          try {
+            execSync('systemctl restart orionomega', { stdio: 'ignore', timeout: 15000 });
+            println(`${GREEN}✓${RESET} Gateway restarted`);
+          } catch {
+            println(`${YELLOW}⚠${RESET} Could not restart gateway. Run: sudo systemctl restart orionomega`);
+          }
+        }
       }
     } catch {
       try {
