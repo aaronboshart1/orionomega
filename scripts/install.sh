@@ -367,53 +367,47 @@ else
         $SUDO mkdir -p "$HINDSIGHT_DATA"
         $SUDO chmod 777 "$HINDSIGHT_DATA"
 
-        # Prompt for Anthropic API key if not already in config
-        # Hindsight needs an LLM for memory extraction/synthesis
+        # Check for Anthropic API key — Hindsight requires one to start
         ANTHROPIC_KEY=""
         if [[ -f "$CONFIG_DIR/config.yaml" ]]; then
             ANTHROPIC_KEY="$(grep 'apiKey:' "$CONFIG_DIR/config.yaml" 2>/dev/null | head -1 | awk '{print $2}' | tr -d "'\"")"
         fi
 
-        HINDSIGHT_ENV=()
-        if [[ -n "$ANTHROPIC_KEY" ]]; then
-            HINDSIGHT_ENV+=(
-                -e "HINDSIGHT_API_LLM_API_KEY=$ANTHROPIC_KEY"
-                -e "HINDSIGHT_API_LLM_PROVIDER=anthropic"
-                -e "HINDSIGHT_API_LLM_MODEL=claude-haiku-4-5-20251001"
-            )
-            ok "Hindsight will use Anthropic API for memory synthesis"
-        else
-            warn "No Anthropic API key found — Hindsight LLM features will be configured during 'orionomega setup'"
-            info "You can also set HINDSIGHT_API_LLM_API_KEY manually on the container later"
-        fi
+        if [[ -n "$ANTHROPIC_KEY" && "$ANTHROPIC_KEY" != "''" && "$ANTHROPIC_KEY" != "\"\"" ]]; then
+            info "Starting Hindsight container with Anthropic API key..."
+            $SUDO docker run -d \
+                --name hindsight \
+                --restart unless-stopped \
+                -p 8888:8888 \
+                -p 9999:9999 \
+                -e "HINDSIGHT_API_LLM_API_KEY=$ANTHROPIC_KEY" \
+                -e "HINDSIGHT_API_LLM_PROVIDER=anthropic" \
+                -e "HINDSIGHT_API_LLM_MODEL=claude-haiku-4-5-20251001" \
+                -v "$HINDSIGHT_DATA:/home/hindsight/.pg0" \
+                ghcr.io/vectorize-io/hindsight:latest >/dev/null 2>&1
 
-        info "Starting Hindsight container..."
-        $SUDO docker run -d \
-            --name hindsight \
-            --restart unless-stopped \
-            -p 8888:8888 \
-            -p 9999:9999 \
-            "${HINDSIGHT_ENV[@]}" \
-            -v "$HINDSIGHT_DATA:/home/hindsight/.pg0" \
-            ghcr.io/vectorize-io/hindsight:latest >/dev/null 2>&1
+            # Wait for Hindsight to initialize (embedded Postgres + model loading)
+            info "Waiting for Hindsight to initialize (this can take 30-60s on first run)..."
+            HINDSIGHT_READY=false
+            for i in $(seq 1 45); do
+                if curl -sf http://localhost:8888/health &>/dev/null 2>&1; then
+                    ok "Hindsight running on localhost:8888"
+                    ok "Control plane at http://localhost:9999"
+                    HINDSIGHT_READY=true
+                    break
+                fi
+                sleep 2
+            done
 
-        # Wait for Hindsight to initialize (embedded Postgres + model loading)
-        info "Waiting for Hindsight to initialize (this can take 30-60s on first run)..."
-        HINDSIGHT_READY=false
-        for i in $(seq 1 45); do
-            if curl -sf http://localhost:8888/health &>/dev/null 2>&1; then
-                ok "Hindsight running on localhost:8888"
-                ok "Control plane at http://localhost:9999"
-                HINDSIGHT_READY=true
-                break
+            if [[ "$HINDSIGHT_READY" != "true" ]]; then
+                warn "Hindsight container started but API not yet responding."
+                info "It may still be loading embedding models. Check: docker logs hindsight"
+                info "Typical first-start time: 30-90 seconds"
             fi
-            sleep 2
-        done
-
-        if [[ "$HINDSIGHT_READY" != "true" ]]; then
-            warn "Hindsight container started but API not yet responding."
-            info "It may still be loading embedding models. Check: docker logs hindsight"
-            info "Typical first-start time: 30-90 seconds"
+        else
+            ok "Hindsight image pulled and data directory prepared"
+            info "Hindsight requires an Anthropic API key to start."
+            info "Run 'orionomega setup' to configure your API key — Hindsight will be started automatically."
         fi
     else
         warn "Docker not available — Hindsight not installed"

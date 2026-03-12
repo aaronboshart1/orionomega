@@ -453,33 +453,103 @@ async function stepHindsight(config: OrionOmegaConfig, stepIdx: number, totalSte
 
   print('  Testing connection... ');
   try {
-    const res = await fetch(`${url}/v1/default/banks`, { signal: AbortSignal.timeout(5000) });
+    const res = await fetch(`${url}/health`, { signal: AbortSignal.timeout(5000) });
     if (res.ok) {
       success('Hindsight is reachable!');
-
-      print('  Creating default memory bank... ');
-      try {
-        const bankRes = await fetch(`${url}/v1/default/banks`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ bank_id: config.hindsight.defaultBank }),
-        });
-        if (bankRes.ok || bankRes.status === 409) {
-          success('Memory bank ready.');
-        } else {
-          warn(`Bank creation returned ${bankRes.status} — may already exist.`);
-        }
-      } catch {
-        warn('Could not create memory bank. You can do this later.');
-      }
     } else {
-      fail(`Hindsight returned ${res.status}. You can configure it later.`);
+      fail(`Hindsight returned ${res.status}.`);
+      // Try to start/restart the local Docker container if it exists
+      if (url.includes('localhost') || url.includes('127.0.0.1')) {
+        await tryStartHindsightContainer(config);
+      }
     }
   } catch {
-    fail('Hindsight is not reachable. You can start it later.');
+    println(`${YELLOW}not reachable${RESET}`);
+    // Try to start/restart the local Docker container
+    if (url.includes('localhost') || url.includes('127.0.0.1')) {
+      await tryStartHindsightContainer(config);
+    } else {
+      warn('Remote Hindsight is not reachable. Check the URL and try again.');
+    }
   }
 
   return nav(stepIdx, totalSteps);
+}
+
+/**
+ * Attempt to start or restart the local Hindsight Docker container.
+ * Requires: Docker installed, API key set in config.
+ */
+async function tryStartHindsightContainer(config: OrionOmegaConfig): Promise<void> {
+  // Check if Docker is available
+  try {
+    execSync('docker --version', { stdio: 'pipe', timeout: 5000 });
+  } catch {
+    warn('Docker not found — cannot start Hindsight automatically.');
+    println(`  ${DIM}Install Docker or point to a remote Hindsight instance.${RESET}`);
+    return;
+  }
+
+  if (!config.models.apiKey) {
+    warn('No Anthropic API key configured — Hindsight requires one to start.');
+    println(`  ${DIM}Complete step 1 (API Key) first, then revisit this step.${RESET}`);
+    return;
+  }
+
+  const startIt = await confirm('  Start Hindsight Docker container?', true);
+  if (!startIt) return;
+
+  print('  Stopping existing container... ');
+  try {
+    execSync('sudo docker stop hindsight 2>/dev/null; sudo docker rm hindsight 2>/dev/null', { stdio: 'pipe', timeout: 15000 });
+  } catch {}
+  println('done');
+
+  // Ensure data directory exists with correct permissions
+  try {
+    execSync('sudo mkdir -p /opt/hindsight-data && sudo chmod 777 /opt/hindsight-data', { stdio: 'pipe', timeout: 5000 });
+  } catch {}
+
+  print('  Starting Hindsight... ');
+  try {
+    const dockerCmd = [
+      'sudo docker run -d',
+      '--name hindsight',
+      '--restart unless-stopped',
+      '-p 8888:8888 -p 9999:9999',
+      `-e "HINDSIGHT_API_LLM_API_KEY=${config.models.apiKey}"`,
+      '-e "HINDSIGHT_API_LLM_PROVIDER=anthropic"',
+      '-e "HINDSIGHT_API_LLM_MODEL=claude-haiku-4-5-20251001"',
+      '-v /opt/hindsight-data:/home/hindsight/.pg0',
+      'ghcr.io/vectorize-io/hindsight:latest',
+    ].join(' ');
+    execSync(dockerCmd, { stdio: 'pipe', timeout: 30000 });
+    println('started');
+
+    // Wait for it to become healthy
+    print('  Waiting for Hindsight to initialize (this can take 30-60s)... ');
+    let ready = false;
+    for (let i = 0; i < 30; i++) {
+      try {
+        const res = await fetch('http://localhost:8888/health', { signal: AbortSignal.timeout(3000) });
+        if (res.ok) {
+          ready = true;
+          break;
+        }
+      } catch {}
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+
+    if (ready) {
+      success('Hindsight is running!');
+    } else {
+      warn('Hindsight started but not yet responding. Check: docker logs hindsight');
+      println(`  ${DIM}It may still be loading embedding models (30-90s on first run).${RESET}`);
+    }
+  } catch (err: unknown) {
+    fail(`Failed to start Hindsight: ${err instanceof Error ? err.message : String(err)}`);
+    println(`  ${DIM}Check: docker logs hindsight${RESET}`);
+  }
 }
 
 async function stepWorkspace(config: OrionOmegaConfig, stepIdx: number, totalSteps: number): Promise<StepAction> {
