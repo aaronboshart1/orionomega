@@ -15,6 +15,8 @@ const require = createRequire(import.meta.url);
  * Returns the default configuration path: `~/.orionomega/config.yaml`.
  */
 export function getConfigPath(): string {
+  // Respect CONFIG_PATH env var (set by systemd services running as root)
+  if (process.env.CONFIG_PATH) return process.env.CONFIG_PATH;
   return join(homedir(), '.orionomega', 'config.yaml');
 }
 
