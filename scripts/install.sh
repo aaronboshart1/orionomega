@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # ═══════════════════════════════════════════════════════════════
 #  OrionOmega Installer
-#  Usage: curl -fsSL https://raw.githubusercontent.com/aaronboshart1/orionomega/main/scripts/install.sh | bash
+#  Usage: GITHUB_TOKEN=ghp_xxx curl -fsSL -H "Authorization: token $GITHUB_TOKEN" \
+#    https://raw.githubusercontent.com/aaronboshart1/orionomega/main/scripts/install.sh | bash
 # ═══════════════════════════════════════════════════════════════
 set -euo pipefail
 
@@ -196,24 +197,27 @@ fi
 # ═══════════════════════════════════════════════════════════════
 step "CLI"
 
-cd "$INSTALL_DIR/packages/core"
-$SUDO npm link 2>/dev/null || true
+CLI_JS="$INSTALL_DIR/packages/core/dist/cli.js"
+BIN_SCRIPT="$INSTALL_DIR/packages/core/bin/orionomega"
+BIN_TARGET="/usr/local/bin/orionomega"
+
+# Create a proper wrapper script if the bin entry exists
+if [[ -f "$BIN_SCRIPT" ]]; then
+    $SUDO ln -sf "$BIN_SCRIPT" "$BIN_TARGET" 2>/dev/null || true
+    $SUDO chmod +x "$BIN_SCRIPT" 2>/dev/null || true
+elif [[ -f "$CLI_JS" ]]; then
+    # Fallback: create a shell wrapper that invokes node
+    $SUDO tee "$BIN_TARGET" >/dev/null <<WRAPPER
+#!/usr/bin/env bash
+exec node "$CLI_JS" "\$@"
+WRAPPER
+    $SUDO chmod +x "$BIN_TARGET"
+fi
 
 if command -v orionomega &>/dev/null; then
     ok "orionomega command available"
 else
-    # Symlink fallback
-    BIN_TARGET="/usr/local/bin/orionomega"
-    CLI_JS="$INSTALL_DIR/packages/core/dist/cli.js"
-    if [[ -f "$CLI_JS" ]]; then
-        $SUDO ln -sf "$CLI_JS" "$BIN_TARGET" 2>/dev/null || true
-        $SUDO chmod +x "$BIN_TARGET" 2>/dev/null || true
-        if command -v orionomega &>/dev/null; then
-            ok "orionomega command available (via symlink)"
-        else
-            warn "Could not add orionomega to PATH. Run manually: node $CLI_JS"
-        fi
-    fi
+    warn "Could not add orionomega to PATH. Run manually: node $CLI_JS"
 fi
 
 # ═══════════════════════════════════════════════════════════════
@@ -357,33 +361,59 @@ else
         info "Pulling Hindsight image..."
         $SUDO docker pull ghcr.io/vectorize-io/hindsight:latest 2>&1 | tail -2
 
+        # Prepare data directory with correct permissions
+        # Embedded PostgreSQL runs as non-root inside the container
+        HINDSIGHT_DATA="/opt/hindsight-data"
+        $SUDO mkdir -p "$HINDSIGHT_DATA"
+        $SUDO chmod 777 "$HINDSIGHT_DATA"
+
+        # Prompt for Anthropic API key if not already in config
+        # Hindsight needs an LLM for memory extraction/synthesis
+        ANTHROPIC_KEY=""
+        if [[ -f "$CONFIG_DIR/config.yaml" ]]; then
+            ANTHROPIC_KEY="$(grep 'apiKey:' "$CONFIG_DIR/config.yaml" 2>/dev/null | head -1 | awk '{print $2}' | tr -d "'\"")"
+        fi
+
+        HINDSIGHT_ENV=()
+        if [[ -n "$ANTHROPIC_KEY" ]]; then
+            HINDSIGHT_ENV+=(
+                -e "HINDSIGHT_API_LLM_API_KEY=$ANTHROPIC_KEY"
+                -e "HINDSIGHT_API_LLM_PROVIDER=anthropic"
+                -e "HINDSIGHT_API_LLM_MODEL=claude-haiku-4-5-20251001"
+            )
+            ok "Hindsight will use Anthropic API for memory synthesis"
+        else
+            warn "No Anthropic API key found — Hindsight LLM features will be configured during 'orionomega setup'"
+            info "You can also set HINDSIGHT_API_LLM_API_KEY manually on the container later"
+        fi
+
         info "Starting Hindsight container..."
         $SUDO docker run -d \
             --name hindsight \
             --restart unless-stopped \
             -p 8888:8888 \
             -p 9999:9999 \
-            -e HINDSIGHT_ENABLE_CP=true \
-            -e HINDSIGHT_ENABLE_API=true \
-            -e HINDSIGHT_API_HOST=0.0.0.0 \
-            -e HINDSIGHT_API_PORT=8888 \
-            -e HINDSIGHT_API_LOG_LEVEL=info \
-            -v hindsight-data:/opt/hindsight-data \
+            "${HINDSIGHT_ENV[@]}" \
+            -v "$HINDSIGHT_DATA:/home/hindsight/.pg0" \
             ghcr.io/vectorize-io/hindsight:latest >/dev/null 2>&1
 
-        # Wait for Hindsight to initialize (embedded Postgres + migrations)
-        info "Waiting for Hindsight to initialize..."
-        for i in $(seq 1 30); do
-            if curl -sf http://localhost:8888/v1/default/banks &>/dev/null 2>&1; then
+        # Wait for Hindsight to initialize (embedded Postgres + model loading)
+        info "Waiting for Hindsight to initialize (this can take 30-60s on first run)..."
+        HINDSIGHT_READY=false
+        for i in $(seq 1 45); do
+            if curl -sf http://localhost:8888/health &>/dev/null 2>&1; then
                 ok "Hindsight running on localhost:8888"
                 ok "Control plane at http://localhost:9999"
+                HINDSIGHT_READY=true
                 break
             fi
             sleep 2
         done
 
-        if ! curl -sf http://localhost:8888/v1/default/banks &>/dev/null 2>&1; then
-            warn "Hindsight container started but API not yet responding. Check: docker logs hindsight"
+        if [[ "$HINDSIGHT_READY" != "true" ]]; then
+            warn "Hindsight container started but API not yet responding."
+            info "It may still be loading embedding models. Check: docker logs hindsight"
+            info "Typical first-start time: 30-90 seconds"
         fi
     else
         warn "Docker not available — Hindsight not installed"
