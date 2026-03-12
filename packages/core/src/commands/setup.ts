@@ -892,6 +892,24 @@ async function runAuthSetup(
   return { success: true, skipped: false, type: method.type };
 }
 
+/**
+ * Build an env object that includes stored skill config fields.
+ * Validation commands like Linear's use process.env.LINEAR_API_KEY —
+ * we must inject the value from skill config into the child process.
+ */
+function buildSkillEnv(skillsDir: string, skillName: string): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  try {
+    const cfg = readSkillConfig(skillsDir, skillName);
+    for (const [key, value] of Object.entries(cfg.fields)) {
+      if (typeof value === 'string' && value) {
+        env[key] = value;
+      }
+    }
+  } catch {}
+  return env;
+}
+
 async function validateAuth(
   method: SkillAuthMethod,
   skillsDir: string,
@@ -900,7 +918,8 @@ async function validateAuth(
 ): Promise<AuthResult> {
   print('  Validating... ');
   try {
-    execSync(method.validateCommand!, { encoding: 'utf-8', timeout: 15000, stdio: 'pipe' });
+    const env = buildSkillEnv(skillsDir, skillName);
+    execSync(method.validateCommand!, { encoding: 'utf-8', timeout: 15000, stdio: 'pipe', env });
     success('Auth is valid!');
     return { success: true, skipped: false, type: method.type };
   } catch {
@@ -954,7 +973,8 @@ async function handleAuthFailure(
     if (method.validateCommand) {
       print('  Validating... ');
       try {
-        execSync(method.validateCommand, { encoding: 'utf-8', timeout: 15000, stdio: 'pipe' });
+        const env = buildSkillEnv(skillsDir, skillName);
+        execSync(method.validateCommand, { encoding: 'utf-8', timeout: 15000, stdio: 'pipe', env });
         success('Auth is valid!');
         return { success: true, skipped: false, type: method.type };
       } catch {
