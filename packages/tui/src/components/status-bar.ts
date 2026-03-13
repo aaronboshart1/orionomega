@@ -30,6 +30,10 @@ export interface SessionStatus {
   workflowElapsed?: number;
   /** Short labels describing what each active worker is doing. */
   workerSummaries?: string[];
+  /** Whether hindsight is connected. */
+  hindsightConnected?: boolean;
+  /** Whether hindsight I/O is in progress. */
+  hindsightBusy?: boolean;
 }
 
 /**
@@ -39,8 +43,10 @@ export interface SessionStatus {
 export class StatusBar extends Text {
   private _connected = false;
   private _thinking = false;
+  private _hindsightBusy = false;
   private _status: SessionStatus = {};
   private unsubSpinner: (() => void) | null = null;
+  private unsubHindsightSpinner: (() => void) | null = null;
 
   /** Called when the status bar updates itself (e.g. spinner tick). Wire to tui.requestRender(). */
   onUpdate?: () => void;
@@ -76,6 +82,23 @@ export class StatusBar extends Text {
     this.updateDisplay();
   }
 
+  set hindsightBusy(value: boolean) {
+    if (this._hindsightBusy === value) return;
+    this._hindsightBusy = value;
+    if (value) {
+      if (!this.unsubHindsightSpinner) {
+        this.unsubHindsightSpinner = omegaSpinner.subscribe(() => {
+          this.updateDisplay();
+          this.onUpdate?.();
+        });
+      }
+    } else if (this.unsubHindsightSpinner) {
+      this.unsubHindsightSpinner();
+      this.unsubHindsightSpinner = null;
+    }
+    this.updateDisplay();
+  }
+
   updateStatus(status: Partial<SessionStatus>): void {
     Object.assign(this._status, status);
     this.updateDisplay();
@@ -85,6 +108,10 @@ export class StatusBar extends Text {
     if (this.unsubSpinner) {
       this.unsubSpinner();
       this.unsubSpinner = null;
+    }
+    if (this.unsubHindsightSpinner) {
+      this.unsubHindsightSpinner();
+      this.unsubHindsightSpinner = null;
     }
   }
 
@@ -97,6 +124,28 @@ export class StatusBar extends Text {
       parts.push(chalk.hex(palette.success)(icons.connected) + chalk.hex(palette.dim)(' connected'));
     } else {
       parts.push(chalk.hex(palette.error)(icons.disconnected) + chalk.hex(palette.dim)(' disconnected'));
+    }
+
+    // ── Hindsight status ──
+    const hsConnected = this._status.hindsightConnected;
+    if (hsConnected === true) {
+      if (this._hindsightBusy) {
+        parts.push(
+          chalk.hex(palette.accent)(omegaSpinner.current) + ' ' +
+          chalk.hex(palette.success)(icons.hindsight) +
+          chalk.hex(palette.dim)(' Hindsight')
+        );
+      } else {
+        parts.push(
+          chalk.hex(palette.success)(icons.hindsight) +
+          chalk.hex(palette.dim)(' Hindsight')
+        );
+      }
+    } else if (hsConnected === false) {
+      parts.push(
+        chalk.hex(palette.error)(icons.hindsight) +
+        chalk.hex(palette.dim)(' Hindsight')
+      );
     }
 
     // ── Thinking indicator ──

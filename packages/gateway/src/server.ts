@@ -230,6 +230,13 @@ async function initMainAgent(): Promise<void> {
         commandResult: result,
       });
     },
+    onHindsightActivity(status) {
+      wsHandler.broadcast({
+        id: randomBytes(8).toString('hex'),
+        type: 'hindsight_status',
+        hindsightStatus: status,
+      });
+    },
 
     // DAG lifecycle callbacks — route through EventStreamer for subscription filtering
     onDAGDispatched(dispatch) {
@@ -277,6 +284,56 @@ async function initMainAgent(): Promise<void> {
 }
 
 initMainAgent();
+
+// ---------------------------------------------------------------------------
+// Periodic Hindsight Health Check
+// ---------------------------------------------------------------------------
+
+let lastHindsightConnected: boolean | null = null;
+
+/** Poll hindsight health every 15 seconds and broadcast changes. */
+const hindsightHealthTimer = setInterval(async () => {
+  let connected = false;
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 2000);
+    const resp = await fetch(`${hindsightUrl}/health`, { signal: controller.signal });
+    clearTimeout(timeout);
+    connected = resp.ok;
+  } catch {
+    connected = false;
+  }
+
+  // Only broadcast on state change (or first check)
+  if (connected !== lastHindsightConnected) {
+    lastHindsightConnected = connected;
+    wsHandler.broadcast({
+      id: randomBytes(8).toString('hex'),
+      type: 'hindsight_status',
+      hindsightStatus: { connected, busy: false },
+    });
+  }
+}, 15_000);
+
+// Run an initial check immediately
+(async () => {
+  let connected = false;
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 2000);
+    const resp = await fetch(`${hindsightUrl}/health`, { signal: controller.signal });
+    clearTimeout(timeout);
+    connected = resp.ok;
+  } catch {
+    connected = false;
+  }
+  lastHindsightConnected = connected;
+  wsHandler.broadcast({
+    id: randomBytes(8).toString('hex'),
+    type: 'hindsight_status',
+    hindsightStatus: { connected, busy: false },
+  });
+})();
 
 // ---------------------------------------------------------------------------
 // CORS Helpers
@@ -399,6 +456,7 @@ async function shutdown(signal: string): Promise<void> {
     }
   }
 
+  clearInterval(hindsightHealthTimer);
   sessionManager.shutdown();
   wsHandler.shutdown();
   eventStreamer.destroy();

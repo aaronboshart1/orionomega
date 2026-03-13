@@ -77,6 +77,9 @@ export interface MainAgentCallbacks {
   onDAGProgress?: (progress: DAGProgressInfo) => void;
   onDAGComplete?: (result: DAGCompleteInfo) => void;
   onDAGConfirm?: (confirm: DAGConfirmInfo) => void;
+
+  /** Hindsight I/O activity state change (connected/busy). */
+  onHindsightActivity?: (status: { connected: boolean; busy: boolean }) => void;
 }
 
 // ── History ────────────────────────────────────────────────────────────────
@@ -179,6 +182,12 @@ export class MainAgent {
     // 1b. Attach Hindsight client to context assembler (now that memory is initialised)
     if (this.memory.client) {
       this.context.setHindsightClient(this.memory.client);
+
+      // Wire hindsight I/O activity tracking to gateway callback
+      if (this.callbacks.onHindsightActivity) {
+        this.memory.client.onActivity = this.callbacks.onHindsightActivity;
+      }
+
       // Ensure the conversation bank exists in Hindsight
       let convBank = this.context['conversationBank'] as string | null;
       if (!convBank) {

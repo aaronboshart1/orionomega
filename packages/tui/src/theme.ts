@@ -116,6 +116,7 @@ export const icons = {
   skipped: '⊘',
   paused: '⏸',
   files: '📁',
+  hindsight: '◈',
 
   // Punctuation
   separator: '│',

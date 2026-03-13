@@ -26,6 +26,17 @@ const log = createLogger('hindsight-client');
 export class HindsightClient {
   private readonly baseUrl: string;
   private readonly namespace: string;
+  private _activeOps = 0;
+  private _connected = false;
+
+  /** Callback invoked when I/O activity state changes (busy/idle or connected/disconnected). */
+  onActivity?: (status: { connected: boolean; busy: boolean }) => void;
+
+  /** Number of in-flight API requests. */
+  get activeOps(): number { return this._activeOps; }
+
+  /** Whether the last request succeeded (connection is alive). */
+  get connected(): boolean { return this._connected; }
 
   /**
    * Create a new Hindsight client.
@@ -212,6 +223,11 @@ export class HindsightClient {
     return `/v1/${this.namespace}/banks/${bankId}`;
   }
 
+  /** Notify activity listeners of state change. */
+  private emitActivity(): void {
+    this.onActivity?.({ connected: this._connected, busy: this._activeOps > 0 });
+  }
+
   /** Make an HTTP request to the Hindsight API. */
   private async request<T>(
     method: string,
@@ -230,16 +246,27 @@ export class HindsightClient {
 
     log.debug(`HTTP ${method} ${path}`);
 
+    this._activeOps++;
+    this.emitActivity();
+
     let res: Response;
     try {
       res = await fetch(url, init);
     } catch (err) {
+      this._activeOps--;
+      const wasConnected = this._connected;
+      this._connected = false;
+      if (wasConnected) this.emitActivity();
+      else this.emitActivity();
       const msg = err instanceof Error ? err.message : 'Network error';
       log.error(`Hindsight request failed: ${method} ${path}`, { error: msg });
       throw new HindsightError(msg, 0, `${method} ${path}`);
     }
 
     if (!res.ok) {
+      this._activeOps--;
+      this._connected = true; // server responded, just an error status
+      this.emitActivity();
       let message: string;
       try {
         const errorBody = (await res.json()) as Record<string, unknown>;
@@ -255,6 +282,10 @@ export class HindsightClient {
       log.error(`Hindsight API error: ${method} ${path} → ${res.status}`, { message });
       throw new HindsightError(message, res.status, `${method} ${path}`);
     }
+
+    this._activeOps--;
+    this._connected = true;
+    this.emitActivity();
 
     // Some endpoints return no body (204, etc.)
     const text = await res.text();

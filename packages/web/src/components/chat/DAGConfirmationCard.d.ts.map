@@ -1,0 +1,1 @@
+{"version":3,"file":"DAGConfirmationCard.d.ts","sourceRoot":"","sources":["DAGConfirmationCard.tsx"],"names":[],"mappings":"AAGA,OAAO,KAAK,EAAE,eAAe,EAAE,MAAM,wBAAwB,CAAC;AAE9D,UAAU,wBAAwB;IAChC,YAAY,EAAE,eAAe,CAAC;IAC9B,SAAS,EAAE,CAAC,KAAK,EAAE,MAAM,EAAE,QAAQ,EAAE,OAAO,KAAK,IAAI,CAAC;CACvD;AAED,wBAAgB,mBAAmB,CAAC,EAAE,YAAY,EAAE,SAAS,EAAE,EAAE,wBAAwB,+BAyCxF"}

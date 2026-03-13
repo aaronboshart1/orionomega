@@ -24,7 +24,7 @@ export interface ClientMessage {
 interface ServerMessage {
   id: string;
   workflowId?: string;
-  type: 'text' | 'thinking' | 'plan' | 'event' | 'status' | 'command_result' | 'session_status' | 'error' | 'ack' | 'history';
+  type: 'text' | 'thinking' | 'plan' | 'event' | 'status' | 'command_result' | 'session_status' | 'hindsight_status' | 'error' | 'ack' | 'history';
   content?: string;
   streaming?: boolean;
   done?: boolean;
@@ -36,6 +36,7 @@ interface ServerMessage {
   commandResult?: { command: string; success: boolean; message: string };
   error?: string;
   sessionStatus?: { model: string; inputTokens: number; outputTokens: number; maxContextTokens: number };
+  hindsightStatus?: { connected: boolean; busy: boolean };
   history?: Array<{ id: string; role: string; content: string; timestamp: string }>;
 }
 
@@ -67,6 +68,7 @@ export interface GatewayClientEvents {
   graphState: [GraphState, string?];
   event: [WorkerEvent, string?];
   sessionStatus: [{ model: string; inputTokens: number; outputTokens: number; maxContextTokens: number }];
+  hindsightStatus: [{ connected: boolean; busy: boolean }];
   history: [Array<{ id: string; role: string; content: string; timestamp: string }>];
 }
 
@@ -312,6 +314,12 @@ export class GatewayClient extends EventEmitter<GatewayClientEvents> {
       case "session_status":
         if (msg.sessionStatus) {
           this.emit("sessionStatus", msg.sessionStatus);
+        }
+        break;
+
+      case 'hindsight_status':
+        if (msg.hindsightStatus) {
+          this.emit('hindsightStatus', msg.hindsightStatus);
         }
         break;
 

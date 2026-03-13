@@ -340,6 +340,15 @@ export async function start(): Promise<void> {
     tui.requestRender();
   });
 
+  client.on('hindsightStatus', (status) => {
+    statusBar.updateStatus({
+      hindsightConnected: status.connected,
+      hindsightBusy: status.busy,
+    });
+    statusBar.hindsightBusy = status.busy;
+    tui.requestRender();
+  });
+
   client.on('event', (event, workflowId?: string) => {
     const wfId = workflowId ?? event.workflowId;
     if (wfId) {

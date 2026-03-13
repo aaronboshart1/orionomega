@@ -42,7 +42,9 @@ export interface ServerMessage {
     | 'text' | 'thinking' | 'plan' | 'event' | 'status'
     | 'command_result' | 'session_status' | 'error' | 'ack' | 'history'
     // New DAG lifecycle message types
-    | 'dag_dispatched' | 'dag_progress' | 'dag_complete' | 'dag_confirm';
+    | 'dag_dispatched' | 'dag_progress' | 'dag_complete' | 'dag_confirm'
+    // Hindsight connectivity & I/O status
+    | 'hindsight_status';
   /** Identifies which workflow this message relates to (events, status updates, plans). */
   workflowId?: string;
   content?: string;
@@ -55,6 +57,7 @@ export interface ServerMessage {
   status?: SystemStatus;
   commandResult?: CommandResult;
   sessionStatus?: { model: string; inputTokens: number; outputTokens: number; maxContextTokens: number };
+  hindsightStatus?: { connected: boolean; busy: boolean };
   error?: string;
   history?: Array<{ id: string; role: string; content: string; timestamp: string }>;
 
