@@ -6,16 +6,8 @@
 
 import type { PlannerOutput } from '@orionomega/core';
 import chalk from 'chalk';
-
-const palette = {
-  border: '#F6C453',
-  dim: '#5C6370',
-  text: '#ABB2BF',
-  green: '#7DD3A5',
-  blue: '#61AFEF',
-  purple: '#C678DD',
-  accent: '#F6C453',
-};
+import { palette, box, icons } from '../theme.js';
+import { wrapText, shortenModel, formatDuration, formatCost } from '../utils/format.js';
 
 /**
  * Format a plan as a styled string for inline display in the chat log.
@@ -23,29 +15,28 @@ const palette = {
  */
 export function formatPlan(plan: PlannerOutput): string {
   const graph = plan.graph;
-  const W = 60;
+  const W = Math.min(60, (process.stdout.columns ?? 80) - 4);
   const lines: string[] = [];
 
-  const bdr = chalk.hex(palette.border);
+  const bdr = chalk.hex(palette.borderAccent);
   const dim = chalk.hex(palette.dim);
   const txt = chalk.hex(palette.text);
   const acc = chalk.hex(palette.accent);
-  const blu = chalk.hex(palette.blue);
+  const blu = chalk.hex(palette.info);
   const pur = chalk.hex(palette.purple);
-  const grn = chalk.hex(palette.green);
 
   lines.push('');
-  lines.push(bdr('┌' + '─'.repeat(W) + '┐'));
-  lines.push(bdr('│') + ' ' + acc.bold('📋 Execution Plan') + ' '.repeat(W - 19) + bdr('│'));
-  lines.push(bdr('├' + '─'.repeat(W) + '┤'));
+  lines.push(bdr(box.topLeft + box.horizontal.repeat(W) + box.topRight));
+  lines.push(bdr(box.vertical) + ' ' + acc.bold(`${icons.plan} Execution Plan`) + ' '.repeat(W - 19) + bdr(box.vertical));
+  lines.push(bdr(box.teeRight + box.horizontal.repeat(W) + box.teeLeft));
 
   // Summary (wraps to fit)
   const summaryText = plan.summary ?? graph.name;
   for (const sl of wrapText(summaryText, W - 2)) {
-    lines.push(bdr('│') + ' ' + txt(sl) + ' '.repeat(Math.max(1, W - 1 - sl.length)) + bdr('│'));
+    lines.push(bdr(box.vertical) + ' ' + txt(sl) + ' '.repeat(Math.max(1, W - 1 - sl.length)) + bdr(box.vertical));
   }
 
-  lines.push(bdr('├' + '─'.repeat(W) + '┤'));
+  lines.push(bdr(box.teeRight + box.horizontal.repeat(W) + box.teeLeft));
 
   // Nodes grouped by layer
   const nodes = graph.nodes instanceof Map
@@ -59,9 +50,9 @@ export function formatPlan(plan: PlannerOutput): string {
     const isParallel = layerNodes.length > 1;
 
     const layerText = isParallel
-      ? ` ═══ Layer ${layerIdx + 1} (parallel) ═══`
-      : ` ─── Layer ${layerIdx + 1} ───`;
-    lines.push(bdr('│') + blu(layerText) + ' '.repeat(Math.max(1, W - layerText.length)) + bdr('│'));
+      ? ` ${box.doubleHorizontal.repeat(3)} Layer ${layerIdx + 1} (parallel) ${box.doubleHorizontal.repeat(3)}`
+      : ` ${box.horizontal.repeat(3)} Layer ${layerIdx + 1} ${box.horizontal.repeat(3)}`;
+    lines.push(bdr(box.vertical) + blu(layerText) + ' '.repeat(Math.max(1, W - layerText.length)) + bdr(box.vertical));
 
     for (const nodeId of layerNodes) {
       taskNum++;
@@ -71,18 +62,18 @@ export function formatPlan(plan: PlannerOutput): string {
       const label = node.label ?? nodeId;
       const model = shortenModel(node.agent?.model ?? node.codingAgent?.model ?? '');
       const nodeType = node.type ?? 'AGENT';
-      const icon = nodeType === 'CODING_AGENT' ? '💻' : nodeType === 'LOOP' ? '🔁' : '🔧';
+      const icon = nodeType === 'CODING_AGENT' ? icons.codingAgent : nodeType === 'LOOP' ? icons.loopNode : icons.agentNode;
 
       const taskText = ` ${taskNum}. ${icon} ${label}${model ? ` [${model}]` : ''}`;
       const styledTask = ' ' + acc.bold(`${taskNum}.`) + txt.bold(` ${icon} ${label}`) +
         (model ? pur(` [${model}]`) : '');
-      lines.push(bdr('│') + styledTask + ' '.repeat(Math.max(1, W - taskText.length)) + bdr('│'));
+      lines.push(bdr(box.vertical) + styledTask + ' '.repeat(Math.max(1, W - taskText.length)) + bdr(box.vertical));
 
       // Dependencies (compact, same line style)
       const deps = node.dependsOn ?? [];
       if (deps.length) {
-        const depStr = `     → ${deps.join(', ')}`;
-        lines.push(bdr('│') + dim(depStr) + ' '.repeat(Math.max(1, W - depStr.length)) + bdr('│'));
+        const depStr = `     ${icons.arrow} ${deps.join(', ')}`;
+        lines.push(bdr(box.vertical) + dim(depStr) + ' '.repeat(Math.max(1, W - depStr.length)) + bdr(box.vertical));
       }
     }
   }
@@ -95,54 +86,26 @@ export function formatPlan(plan: PlannerOutput): string {
       const n = nodeVal as any;
       const nLabel = n.label ?? nodeId;
       const nModel = shortenModel(n.agent?.model ?? n.codingAgent?.model ?? '');
-      const taskText = ` ${taskNum}. 🔧 ${nLabel}${nModel ? ` [${nModel}]` : ''}`;
-      const styled = ' ' + acc.bold(`${taskNum}.`) + txt.bold(` 🔧 ${nLabel}`) +
+      const taskText = ` ${taskNum}. ${icons.agentNode} ${nLabel}${nModel ? ` [${nModel}]` : ''}`;
+      const styled = ' ' + acc.bold(`${taskNum}.`) + txt.bold(` ${icons.agentNode} ${nLabel}`) +
         (nModel ? pur(` [${nModel}]`) : '');
-      lines.push(bdr('│') + styled + ' '.repeat(Math.max(1, W - taskText.length)) + bdr('│'));
+      lines.push(bdr(box.vertical) + styled + ' '.repeat(Math.max(1, W - taskText.length)) + bdr(box.vertical));
     }
   }
 
-  lines.push(bdr('├' + '─'.repeat(W) + '┤'));
+  lines.push(bdr(box.teeRight + box.horizontal.repeat(W) + box.teeLeft));
 
   // Estimates footer
   const estimates: string[] = [];
-  if (plan.estimatedTime) estimates.push(`⏱ ~${Math.ceil(plan.estimatedTime)}s`);
-  if (plan.estimatedCost) estimates.push(`💰 ~$${plan.estimatedCost.toFixed(3)}`);
+  if (plan.estimatedTime) estimates.push(`${icons.time} ~${formatDuration(plan.estimatedTime)}`);
+  if (plan.estimatedCost) estimates.push(`${icons.cost}~${formatCost(plan.estimatedCost)}`);
   estimates.push(`${taskNum} task${taskNum !== 1 ? 's' : ''}`);
   estimates.push(`${layers.length} layer${layers.length !== 1 ? 's' : ''}`);
-  const estLine = ' ' + estimates.join('  •  ');
-  lines.push(bdr('│') + dim(estLine) + ' '.repeat(Math.max(1, W - estLine.length)) + bdr('│'));
+  const estLine = ' ' + estimates.join(` ${icons.dot} `);
+  lines.push(bdr(box.vertical) + dim(estLine) + ' '.repeat(Math.max(1, W - estLine.length)) + bdr(box.vertical));
 
-  // Reasoning — omitted from display, available in logs
-
-  lines.push(bdr('└' + '─'.repeat(W) + '┘'));
+  lines.push(bdr(box.bottomLeft + box.horizontal.repeat(W) + box.bottomRight));
   lines.push('');
 
   return lines.join('\n');
-}
-
-function wrapText(text: string, width: number): string[] {
-  const words = text.split(/\s+/);
-  const lines: string[] = [];
-  let current = '';
-  for (const word of words) {
-    if (current.length + word.length + 1 > width) {
-      lines.push(current);
-      current = word;
-    } else {
-      current = current ? current + ' ' + word : word;
-    }
-  }
-  if (current) lines.push(current);
-  return lines;
-}
-
-function shortenModel(model: string): string {
-  const match = model.match(/claude-(\w+)-([\d.-]+)/);
-  if (match) {
-    const name = match[1].charAt(0).toUpperCase() + match[1].slice(1);
-    const ver = match[2].replace(/-\d{8}$/, '').replace(/-/g, '.');
-    return `${name} ${ver}`;
-  }
-  return model.length > 20 ? model.slice(0, 20) + '…' : model;
 }

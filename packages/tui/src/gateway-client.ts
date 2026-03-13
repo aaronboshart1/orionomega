@@ -6,6 +6,7 @@
 
 import type { GraphState, WorkerEvent, PlannerOutput } from '@orionomega/core';
 import { EventEmitter } from 'node:events';
+import { icons } from './theme.js';
 
 /** Client → Gateway message envelope. */
 export interface ClientMessage {
@@ -170,7 +171,7 @@ export class GatewayClient extends EventEmitter<GatewayClientEvents> {
       role: 'system',
       content: `/${command}`,
       timestamp: new Date().toISOString(),
-      emoji: '⚡',
+      emoji: icons.command,
     };
     this.send({ id, type: 'command', command });
     this.emit('message', msg);
@@ -181,7 +182,12 @@ export class GatewayClient extends EventEmitter<GatewayClientEvents> {
   respondToPlan(planId: string, action: 'approve' | 'reject' | 'modify', modification?: string): void {
     const id = nextId();
     this.send({ id, type: 'plan_response', planId, action, modification });
-    const label = action === 'approve' ? '✅ Approved' : action === 'reject' ? '❌ Rejected' : '✏️ Modified';
+    const labelMap: Record<string, string> = {
+      approve: `${icons.approved} Approved`,
+      reject: `${icons.rejected} Rejected`,
+      modify: `${icons.modified} Modified`,
+    };
+    const label = labelMap[action] ?? action;
     this.emit('message', {
       id,
       role: 'system',
@@ -264,13 +270,17 @@ export class GatewayClient extends EventEmitter<GatewayClientEvents> {
         if (event) {
           this.emit('event', event, msg.workflowId ?? event.workflowId);
           if (event.type === 'finding' || event.type === 'error' || event.type === 'done') {
-            const emojiMap: Record<string, string> = { finding: '💡', error: '❌', done: '✅' };
+            const emojiMap: Record<string, string> = {
+              finding: icons.finding,
+              error: icons.error,
+              done: icons.complete,
+            };
             this.emit('message', {
               id: nextId(),
               role: 'system',
               content: `[${event.nodeId}] ${event.message ?? 'Complete'}`,
               timestamp: event.timestamp,
-              emoji: emojiMap[event.type] ?? '📊',
+              emoji: emojiMap[event.type] ?? icons.info,
             });
           } else if (event.type === 'tool_call' && event.tool) {
             this.emit('thinking', `${event.nodeId}: ${event.tool.name}${event.tool.summary ? ' — ' + event.tool.summary : ''}`);
@@ -293,7 +303,7 @@ export class GatewayClient extends EventEmitter<GatewayClientEvents> {
             role: 'system',
             content: msg.commandResult.message,
             timestamp: new Date().toISOString(),
-            emoji: msg.commandResult.success ? '✅' : '❌',
+            emoji: msg.commandResult.success ? icons.complete : icons.error,
           });
         }
         break;
@@ -304,7 +314,7 @@ export class GatewayClient extends EventEmitter<GatewayClientEvents> {
           role: 'system',
           content: msg.error ?? 'Unknown error',
           timestamp: new Date().toISOString(),
-          emoji: '⚠️',
+          emoji: icons.error,
         });
         break;
 

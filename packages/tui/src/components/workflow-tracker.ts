@@ -1,25 +1,16 @@
 /**
  * @module components/workflow-tracker
  * Displays workflow progress aligned to the approved plan.
- * Shows each task with status: ⏳ pending, Ω running, ✅ done, ❌ failed.
+ * Shows each task with status indicators using shared theme constants.
  * Rendered as a persistent block in the chat log when a workflow is active.
  */
 
-import { Container, Text, Spacer } from '@mariozechner/pi-tui';
+import { Container, Text } from '@mariozechner/pi-tui';
 import type { GraphState } from '@orionomega/core';
 import chalk from 'chalk';
+import { palette, spacing, icons } from '../theme.js';
+import { shortenModel, truncate, formatDuration } from '../utils/format.js';
 import { omegaSpinner } from './omega-spinner.js';
-
-const palette = {
-  dim: '#5C6370',
-  text: '#ABB2BF',
-  accent: '#F6C453',
-  green: '#7DD3A5',
-  red: '#F97066',
-  blue: '#61AFEF',
-  purple: '#C678DD',
-  yellow: '#E5C07B',
-};
 
 interface TrackedNode {
   id: string;
@@ -99,7 +90,7 @@ export class WorkflowTracker extends Container {
       const tracked: TrackedNode = {
         id,
         label: n.label ?? id,
-        model: this.shortenModel(n.agent?.model ?? ''),
+        model: shortenModel(n.agent?.model ?? ''),
         status: this.mapStatus(n.status),
         layer: n.layer ?? 0,
         lastMessage: undefined,
@@ -127,7 +118,7 @@ export class WorkflowTracker extends Container {
         this.trackedNodes.set(id, {
           id,
           label: n.label ?? id,
-          model: this.shortenModel(n.agent?.model ?? ''),
+          model: shortenModel(n.agent?.model ?? ''),
           status: this.mapStatus(n.status),
           layer: n.layer ?? 0,
           progress: n.progress,
@@ -178,7 +169,6 @@ export class WorkflowTracker extends Container {
   private startSpinner(): void {
     if (this.unsubSpinner) return;
     this.unsubSpinner = omegaSpinner.subscribe(() => {
-      // Re-render running node lines with updated spinner frame
       this.rebuildNodeLines();
       this.onUpdate?.();
     });
@@ -200,17 +190,17 @@ export class WorkflowTracker extends Container {
     const failed = Array.from(this.trackedNodes.values()).filter(n => n.status === 'error').length;
 
     const headerParts = [
-      chalk.hex(palette.accent).bold(`⚡ ${this.workflowName}`),
-      chalk.hex(palette.dim)(`${elapsed}s`),
-      chalk.hex(palette.green)(`✅ ${done}`) +
+      chalk.hex(palette.accent).bold(`${icons.workflowName} ${this.workflowName}`),
+      chalk.hex(palette.dim)(formatDuration(elapsed)),
+      chalk.hex(palette.success)(`${icons.complete} ${done}`) +
         chalk.hex(palette.dim)('/') +
         chalk.hex(palette.text)(`${total}`),
     ];
-    if (running > 0) headerParts.push(chalk.hex(palette.blue)(`${omegaSpinner.current} ${running} running`));
-    if (failed > 0) headerParts.push(chalk.hex(palette.red)(`❌ ${failed} failed`));
+    if (running > 0) headerParts.push(chalk.hex(palette.info)(`${omegaSpinner.current} ${running} running`));
+    if (failed > 0) headerParts.push(chalk.hex(palette.error)(`${icons.error} ${failed} failed`));
     headerParts.push(chalk.hex(palette.dim)(`layer ${this.completedLayers}/${this.totalLayers}`));
 
-    this.headerText.setText('  ' + headerParts.join(chalk.hex(palette.dim)(' · ')));
+    this.headerText.setText(spacing.indent1 + headerParts.join(chalk.hex(palette.dim)(spacing.dot)));
 
     // Manage spinner subscription based on running state
     if (this.hasRunningNodes()) {
@@ -233,13 +223,18 @@ export class WorkflowTracker extends Container {
 
     for (const node of sorted) {
       const icon = this.statusIcon(node.status);
-      const name = chalk.hex(node.status === 'complete' ? palette.green : node.status === 'error' ? palette.red : node.status === 'running' ? palette.blue : palette.dim)(node.label);
+      const name = chalk.hex(
+        node.status === 'complete' ? palette.success :
+        node.status === 'error' ? palette.error :
+        node.status === 'running' ? palette.info :
+        palette.dim
+      )(node.label);
       const model = node.model ? chalk.hex(palette.purple)(` [${node.model}]`) : '';
       const msg = node.lastMessage
-        ? chalk.hex(palette.dim)(` — ${node.lastMessage.length > 50 ? node.lastMessage.slice(0, 50) + '…' : node.lastMessage}`)
+        ? chalk.hex(palette.dim)(` — ${truncate(node.lastMessage, 50)}`)
         : '';
 
-      const line = `    ${icon} ${name}${model}${msg}`;
+      const line = `${spacing.indent2}${icon} ${name}${model}${msg}`;
 
       const existing = this.nodeTexts.get(node.id);
       if (existing) {
@@ -259,10 +254,10 @@ export class WorkflowTracker extends Container {
 
   private statusIcon(status: string): string {
     switch (status) {
-      case 'complete': return '✅';
-      case 'error': return '❌';
-      case 'running': return chalk.hex(palette.blue)(omegaSpinner.current);
-      default: return '⏳';
+      case 'complete': return chalk.hex(palette.success)(icons.complete);
+      case 'error': return chalk.hex(palette.error)(icons.error);
+      case 'running': return chalk.hex(palette.info)(omegaSpinner.current);
+      default: return chalk.hex(palette.dim)(icons.pending);
     }
   }
 
@@ -273,16 +268,6 @@ export class WorkflowTracker extends Container {
       case 'running': case 'in_progress': return 'running';
       default: return 'pending';
     }
-  }
-
-  private shortenModel(model: string): string {
-    const match = model.match(/claude-(\w+)-([\d.-]+)/);
-    if (match) {
-      const name = match[1].charAt(0).toUpperCase() + match[1].slice(1);
-      const ver = match[2].replace(/-\d{8}$/, '').replace(/-/g, '.');
-      return `${name} ${ver}`;
-    }
-    return model.length > 15 ? model.slice(0, 15) + '…' : model;
   }
 }
 

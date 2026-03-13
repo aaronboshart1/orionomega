@@ -7,7 +7,8 @@
 import { Container, Markdown, Spacer, Text } from '@mariozechner/pi-tui';
 import type { Component } from '@mariozechner/pi-tui';
 import type { DisplayMessage } from '../gateway-client.js';
-import { markdownTheme, theme } from '../theme.js';
+import { markdownTheme, theme, spacing } from '../theme.js';
+import { truncate } from '../utils/format.js';
 import { omegaSpinner } from './omega-spinner.js';
 
 /** A rendered message component with metadata. */
@@ -42,27 +43,27 @@ export class ChatLog extends Container {
     this.addChild(spacer);
 
     if (msg.role === 'user') {
-      const label = new Text(theme.userLabel() + '  ' + theme.user(msg.content), 1, 0);
+      const label = new Text(theme.userLabel() + spacing.labelGap + theme.user(msg.content), spacing.componentMarginX, spacing.componentMarginY);
       this.addChild(label);
       this.entries.push({ component: label, role: 'user' });
     } else if (msg.raw) {
       // Pre-formatted ANSI content — render each line as a Text component
       const rawLines = msg.raw.split('\n');
       for (const line of rawLines) {
-        const t = new Text(line, 1, 0);
+        const t = new Text(line, spacing.componentMarginX, spacing.componentMarginY);
         this.addChild(t);
       }
       this.entries.push({ component: new Text('', 0, 0), role: 'system' });
     } else if (msg.role === 'system') {
       const prefix = msg.emoji ? `${msg.emoji} ` : '';
-      const text = new Text(theme.system(prefix + msg.content), 1, 0);
+      const text = new Text(theme.system(prefix + msg.content), spacing.componentMarginX, spacing.componentMarginY);
       this.addChild(text);
       this.entries.push({ component: text, role: 'system' });
     } else {
       // Assistant — render as markdown
-      const label = new Text(theme.assistantLabel(), 1, 0);
+      const label = new Text(theme.assistantLabel(), spacing.componentMarginX, spacing.componentMarginY);
       this.addChild(label);
-      const md = new Markdown(msg.content, 1, 0, markdownTheme);
+      const md = new Markdown(msg.content, spacing.componentMarginX, spacing.componentMarginY, markdownTheme);
       this.addChild(md);
       this.entries.push({ component: md, role: 'assistant' });
     }
@@ -75,9 +76,9 @@ export class ChatLog extends Container {
     if (!this.streamingComponent) {
       const spacer = new Spacer(1);
       this.addChild(spacer);
-      const label = new Text(theme.assistantLabel(), 1, 0);
+      const label = new Text(theme.assistantLabel(), spacing.componentMarginX, spacing.componentMarginY);
       this.addChild(label);
-      this.streamingComponent = new Markdown(content, 1, 0, markdownTheme);
+      this.streamingComponent = new Markdown(content, spacing.componentMarginX, spacing.componentMarginY, markdownTheme);
       this.addChild(this.streamingComponent);
     } else {
       this.streamingComponent.setText(content);
@@ -108,16 +109,16 @@ export class ChatLog extends Container {
     }
 
     this.thinkingText = text;
-    const truncated = text.length > 100 ? text.slice(0, 100) + '…' : text;
+    const truncated = truncate(text, 100);
     const display = theme.dim(`${omegaSpinner.current} ${truncated}`);
 
     if (!this.thinkingComponent) {
-      this.thinkingComponent = new Text(display, 1, 0);
+      this.thinkingComponent = new Text(display, spacing.componentMarginX, spacing.componentMarginY);
       this.addChild(this.thinkingComponent);
       // Subscribe to spinner ticks for animation
       this.unsubSpinner = omegaSpinner.subscribe(() => {
         if (this.thinkingComponent && this.thinkingText) {
-          const t = this.thinkingText.length > 100 ? this.thinkingText.slice(0, 100) + '…' : this.thinkingText;
+          const t = truncate(this.thinkingText, 100);
           this.thinkingComponent.setText(theme.dim(`${omegaSpinner.current} ${t}`));
           this.onUpdate?.();
         }
