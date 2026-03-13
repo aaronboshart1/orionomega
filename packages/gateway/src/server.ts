@@ -108,6 +108,10 @@ async function initMainAgent(): Promise<void> {
   let currentTextId = randomBytes(8).toString('hex');
   let currentThinkingId = randomBytes(8).toString('hex');
 
+  // Accumulate streamed text so we can persist the FULL response,
+  // not just the empty "done" signal.
+  let streamBuffer = '';
+
   const callbacks: MainAgentCallbacks = {
     onText(text, streaming, done) {
       wsHandler.broadcast({
@@ -117,21 +121,33 @@ async function initMainAgent(): Promise<void> {
         streaming,
         done,
       });
-      // Store completed (non-streaming) messages in session history
-      if (done || !streaming) {
-        const sid = sessionManager.listSessions()[0]?.id;
-        if (sid) {
-          sessionManager.addMessage(sid, {
-            id: currentTextId,
-            role: 'assistant',
-            content: text,
-            timestamp: new Date().toISOString(),
-            type: 'text',
-          });
-        }
+
+      // Accumulate streamed chunks
+      if (streaming && !done) {
+        streamBuffer += text;
       }
-      // Rotate ID when this stream is complete, ready for the next response
+
+      // Store the full accumulated response when the stream completes
       if (done || !streaming) {
+        // For non-streaming messages, use the text directly.
+        // For streaming, use the accumulated buffer.
+        const fullContent = streaming ? streamBuffer : text;
+
+        if (fullContent) {
+          const sid = sessionManager.listSessions()[0]?.id;
+          if (sid) {
+            sessionManager.addMessage(sid, {
+              id: currentTextId,
+              role: 'assistant',
+              content: fullContent,
+              timestamp: new Date().toISOString(),
+              type: 'text',
+            });
+          }
+        }
+
+        // Reset buffer and rotate ID for the next response
+        streamBuffer = '';
         currentTextId = randomBytes(8).toString('hex');
       }
     },

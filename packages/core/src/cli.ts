@@ -72,7 +72,14 @@ const COMMANDS: Record<string, () => Promise<void>> = {
       process.exitCode = 1;
     }
   },
-  setup: async () => (await import('./commands/setup.js')).runSetup(),
+  setup: async () => {
+    const sub = process.argv[3];
+    if (sub === 'skills') {
+      (await import('./commands/setup-skills.js')).runSetupSkills(process.argv.slice(4));
+    } else {
+      (await import('./commands/setup.js')).runSetup();
+    }
+  },
   status: async () => (await import('./commands/status.js')).runStatus(),
   doctor: async () => (await import('./commands/doctor.js')).runDoctor(),
   gateway: async () => (await import('./commands/gateway.js')).runGateway(process.argv.slice(3)),

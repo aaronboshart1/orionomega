@@ -93,11 +93,14 @@ export async function runSkill(args: string[]): Promise<void> {
   const sub = args[0];
 
   if (!sub || !['list', 'install', 'create', 'test', 'setup', 'enable', 'disable'].includes(sub)) {
-    process.stdout.write(`\n${BOLD}Usage:${RESET} orionomega skill <list|install|create|test> [args]\n\n`);
+    process.stdout.write(`\n${BOLD}Usage:${RESET} orionomega skill <command> [args]\n\n`);
     process.stdout.write(`  ${BOLD}list${RESET}              List installed skills\n`);
+    process.stdout.write(`  ${BOLD}setup${RESET} [name]       Configure skill(s) interactively\n`);
     process.stdout.write(`  ${BOLD}install${RESET} <path>     Install a skill from a directory\n`);
     process.stdout.write(`  ${BOLD}create${RESET} <name>      Scaffold a new skill\n`);
-    process.stdout.write(`  ${BOLD}test${RESET} <name>        Run a skill's health check\n\n`);
+    process.stdout.write(`  ${BOLD}test${RESET} <name>        Run a skill's health check\n`);
+    process.stdout.write(`  ${BOLD}enable${RESET} <name>      Enable a skill\n`);
+    process.stdout.write(`  ${BOLD}disable${RESET} <name>     Disable a skill\n\n`);
     return;
   }
 
@@ -109,7 +112,15 @@ export async function runSkill(args: string[]): Promise<void> {
       case 'install': await installSkill(args[1], config.skills.directory); break;
       case 'create': await createSkill(args[1], config.skills.directory); break;
       case 'test': await testSkill(args[1], config.skills.directory); break;
-      case 'setup': await setupSkill(args[1], config.skills.directory); break;
+      case 'setup': {
+        if (args[1]) {
+          await setupSkill(args[1], config.skills.directory);
+        } else {
+          const { runSetupSkills } = await import('./setup-skills.js');
+          await runSetupSkills([]);
+        }
+        break;
+      }
       case 'enable': await toggleSkill(args[1], config.skills.directory, true); break;
       case 'disable': await toggleSkill(args[1], config.skills.directory, false); break;
     }
