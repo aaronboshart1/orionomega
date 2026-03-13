@@ -49,6 +49,11 @@ const ORCHESTRATE_FAST = [
   /\b(refactor|rewrite|redesign|migrate|upgrade)\b/i,
   /\b(deploy|provision|set\s*up|configure|install)\b.*\b(on|to|for|in)\b/i,
   /\b(research|find|gather)\b.*\b(write|create|save|output|report)\b/i,
+  /\b(fix|update|change|modify|patch|add|remove)\b.*\b(the|this|our|all|every|each)\b/i,
+  /\b(implement|execute|run|do)\b.*\b(plan|tasks?|items?|steps?|list|checklist)\b/i,
+  /\bwe\s+need\s+to\b.*\b(fix|change|update|implement|add|create|build)\b/i,
+  /\b(fix|implement|add|create)\b.*\b(now|immediately|asap|today)\b/i,
+  /\b(make|ensure)\b.*\b(work|function|run|pass|compile|build)\b/i,
 ];
 
 /** Patterns for guarded (destructive/expensive) operations that require confirmation. */
@@ -63,12 +68,12 @@ const GUARDED_PATTERNS = [
 const CLASSIFY_PROMPT = `You are an intent classifier for an AI orchestration system.
 Given a user message, classify it as one of:
 - CHAT: Conversational, simple questions, greetings, opinions, or answers the assistant can give directly without using tools. Examples: "what is 2+2?", "explain quantum computing", "tell me a joke", "what do you think about X?"
-- CHAT_ASYNC: Tasks that require tool use, file operations, command execution, research, or any work that benefits from running in the background. Examples: "read config.yaml", "run npm test", "build a landing page", "search for X in the codebase", "research X and write a report"
+- CHAT_ASYNC: Single-step tasks that require tool use — file reads, command execution, quick lookups. Examples: "read config.yaml", "run npm test", "search for X in the codebase"
+- ORCHESTRATE: Multi-step tasks requiring planning, multiple file changes, research-then-action, building features, fixing bugs across files, implementing plans, or any request that involves more than 2-3 tool calls in sequence. Examples: "fix the orchestration system", "implement the readiness plan", "build a landing page", "refactor the auth module", "we need to fix X and Y"
 
-Bias: When in doubt between CHAT and CHAT_ASYNC, prefer CHAT_ASYNC. Only classify as CHAT when no tools or external actions are needed.
+Bias: Prefer ORCHESTRATE for anything involving code changes across multiple files, bug fixes, feature implementation, or multi-step plans. Prefer CHAT_ASYNC for single-tool tasks. Only use CHAT when no tools are needed.
 
-Respond with ONLY the word CHAT or CHAT_ASYNC.`;
-
+Respond with ONLY the word CHAT, CHAT_ASYNC, or ORCHESTRATE.`;
 /** Tool definitions available to the main agent for conversational responses. */
 export const MAIN_AGENT_TOOLS = [
   {
@@ -139,7 +144,7 @@ export function isFastTask(content: string): boolean {
 }
 
 /** Intent type returned by the 2-tier classifier. */
-export type IntentType = 'CHAT' | 'CHAT_ASYNC';
+export type IntentType = 'CHAT' | 'CHAT_ASYNC' | 'ORCHESTRATE';
 
 /** LLM-based intent classification for ambiguous messages. */
 export async function classifyIntent(
@@ -159,7 +164,8 @@ export async function classifyIntent(
     const text = response.content?.[0]?.text?.trim().toUpperCase() ?? 'CHAT';
     log.info('Intent classified', { message: message.slice(0, 80), intent: text });
 
-    if (text.includes('CHAT_ASYNC') || text.includes('ACTION') || text.includes('ORCHESTRATE') || text.includes('TASK')) return 'CHAT_ASYNC';
+    if (text.includes('ORCHESTRATE')) return 'ORCHESTRATE';
+    if (text.includes('CHAT_ASYNC') || text.includes('ACTION') || text.includes('TASK')) return 'CHAT_ASYNC';
     return 'CHAT';
   } catch (err) {
     log.warn('Intent classification failed, defaulting to CHAT', {

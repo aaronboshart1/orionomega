@@ -375,6 +375,14 @@ export class MainAgent {
         case 'CHAT':
           await this.respondConversationally(trimmed);
           break;
+        case 'ORCHESTRATE':
+          log.verbose('Route: ORCHESTRATE (LLM classified)', { guarded: isGuardedRequest(trimmed) });
+          await this.orchestration.dispatchFullDAG(
+            trimmed,
+            (e) => this.pushHistory(e as HistoryEntry),
+            { requireConfirmation: isGuardedRequest(trimmed) },
+          );
+          break;
         case 'CHAT_ASYNC':
           // Fire-and-forget: returns immediately, async work continues in background
           void this.respondConversationally(trimmed).catch((err) => {
