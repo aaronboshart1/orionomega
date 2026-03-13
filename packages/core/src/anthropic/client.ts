@@ -73,6 +73,23 @@ import { createLogger } from '../logging/logger.js';
 
 const log = createLogger('anthropic-api');
 
+/**
+ * Returns the maximum output tokens supported for a given model.
+ *
+ * Claude Opus/Sonnet 4+ support up to 16 384 output tokens by default.
+ * Haiku models support up to 8 192. Older / unknown models fall back to 8 192.
+ *
+ * This is used throughout the codebase to set appropriate `max_tokens` values
+ * and prevent unnecessary output truncation.
+ */
+export function maxOutputTokensForModel(model: string): number {
+  const lower = model.toLowerCase();
+  // Opus and Sonnet 4+ support 16K output tokens
+  if (lower.includes('opus') || lower.includes('sonnet')) return 16_384;
+  // Haiku and unknown models — 8K
+  return 8_192;
+}
+
 const API_URL = 'https://api.anthropic.com/v1/messages';
 const API_VERSION = '2023-06-01';
 const MAX_RETRIES = 3;

@@ -20,6 +20,7 @@ import type {
   ContentBlock,
   ToolDefinition,
 } from './client.js';
+import { maxOutputTokensForModel } from './client.js';
 import type { BuiltInTool, ToolContext } from './tools.js';
 
 /** Options for running the agent loop. */
@@ -97,7 +98,7 @@ export async function runAgentLoop(
     tools,
     messages,
     maxTurns = 50,
-    maxTokens = 8192,
+    maxTokens = maxOutputTokensForModel(model),
     workingDir,
     onThinking,
     onText,
@@ -198,6 +199,20 @@ export async function runAgentLoop(
     for (const block of contentBlocks) {
       if (block.type === 'text' && block.text) {
         finalText = block.text;
+      }
+    }
+
+    // If the model hit the output token limit without requesting tool use,
+    // ask it to continue rather than silently truncating.
+    if (stopReason === 'max_tokens') {
+      const textBlocks = contentBlocks.filter((b) => b.type === 'text');
+      const hasToolUse = contentBlocks.some((b) => b.type === 'tool_use');
+      if (!hasToolUse && textBlocks.length > 0) {
+        conversation.push({
+          role: 'user',
+          content: 'Continue where you left off.',
+        });
+        continue;
       }
     }
 

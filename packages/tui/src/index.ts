@@ -132,6 +132,7 @@ export async function start(): Promise<void> {
   const root = new Container();
   root.addChild(header);
   root.addChild(chatLog);
+  root.addChild(workflowPanel);
   root.addChild(editor);
   root.addChild(statusBar);
 
@@ -155,7 +156,6 @@ export async function start(): Promise<void> {
   const client = new GatewayClient(gatewayUrl, token);
   client.sessionId = loadSessionId();
   const pendingPlans = new Map<string, { plan: PlannerOutput; receivedAt: string }>();
-  let trackerAttached = false;
 
   const updateHeader = () => {
     header.setText(theme.header(`  orionomega — ${gatewayUrl}`));
@@ -287,12 +287,6 @@ export async function start(): Promise<void> {
   client.on('graphState', (state: GraphState, workflowId?: string) => {
     const wfId = workflowId ?? state.workflowId ?? state.name;
     const isNew = !workflowPanel.boxes.has(wfId);
-
-    // Attach multi-tracker to chat log once
-    if (!trackerAttached) {
-      chatLog.addChild(workflowPanel);
-      trackerAttached = true;
-    }
 
     if (isNew) {
       workflowPanel.addWorkflow(wfId, state);

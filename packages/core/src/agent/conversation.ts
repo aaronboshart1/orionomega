@@ -7,6 +7,7 @@
  */
 
 import type { AnthropicClient, AnthropicMessage, AnthropicStreamEvent } from '../anthropic/client.js';
+import { maxOutputTokensForModel } from '../anthropic/client.js';
 import { createLogger } from '../logging/logger.js';
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -304,6 +305,12 @@ export async function streamConversation(opts: {
   let totalCacheCreationTokens = 0;
   let totalCacheReadTokens = 0;
 
+  // Model-aware output token limit (prevents unnecessary truncation)
+  const maxTokens = maxOutputTokensForModel(model);
+  // Maximum auto-continuation rounds when the model hits the token limit
+  const MAX_CONTINUATIONS = 3;
+  let continuationCount = 0;
+
   // Circuit breaker: track consecutive failures by signature and category
   const failuresBySignature = new Map<string, number>();
   const failuresByCategory = new Map<string, number>();
@@ -313,6 +320,7 @@ export async function streamConversation(opts: {
     model,
     messageCount: messages.length,
     systemPromptLength: systemPrompt.length,
+    maxTokens,
   });
 
   for (let round = 0; ; round++) {
@@ -328,7 +336,7 @@ export async function streamConversation(opts: {
       model,
       system: systemPrompt,
       messages,
-      maxTokens: 4096,
+      maxTokens,
       temperature: 0.7,
       tools: MAIN_AGENT_TOOLS,
     });
@@ -403,12 +411,28 @@ export async function streamConversation(opts: {
       outputTokens: totalOutputTokens,
     });
 
+    // Auto-continuation: if the model hit the output token limit mid-response,
+    // append what we have so far and ask it to continue (up to MAX_CONTINUATIONS).
+    if (stopReason === 'max_tokens' && toolCalls.length === 0 && continuationCount < MAX_CONTINUATIONS) {
+      continuationCount++;
+      log.verbose(`Output hit max_tokens — auto-continuing (${continuationCount}/${MAX_CONTINUATIONS})`);
+
+      // Append the partial assistant response and ask to continue
+      messages = [
+        ...messages,
+        { role: 'assistant', content: roundText },
+        { role: 'user', content: 'Continue where you left off.' },
+      ];
+      continue;
+    }
+
     if (stopReason !== 'tool_use' || toolCalls.length === 0) {
       log.verbose('Conversation complete', {
         totalRounds: round + 1,
         totalInputTokens,
         totalOutputTokens,
         responseLength: fullText.length,
+        continuations: continuationCount,
       });
       onThinking?.('', false, true);
       onText('', true, true);

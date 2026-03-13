@@ -188,9 +188,52 @@ export class WorkflowTracker extends Container {
   private startSpinner(): void {
     if (this.unsubSpinner) return;
     this.unsubSpinner = omegaSpinner.subscribe(() => {
-      this.rebuildNodeLines();
+      this.updateSpinnerTexts();
       this.onUpdate?.();
     });
+  }
+
+  /** Lightweight spinner tick: update only header + running node main-line text in-place. */
+  private updateSpinnerTexts(): void {
+    // Update header with current spinner frame + elapsed
+    const elapsed = Math.round((Date.now() - this.startTime) / 1000);
+    const done = Array.from(this.trackedNodes.values()).filter(n => n.status === 'complete').length;
+    const total = this.trackedNodes.size;
+    const running = Array.from(this.trackedNodes.values()).filter(n => n.status === 'running').length;
+    const failed = Array.from(this.trackedNodes.values()).filter(n => n.status === 'error').length;
+
+    const headerParts = [
+      chalk.hex(palette.accent).bold(`${icons.workflowName} ${this.workflowName}`),
+      chalk.hex(palette.dim)(formatDuration(elapsed)),
+      chalk.hex(palette.success)(`${icons.complete} ${done}`) +
+        chalk.hex(palette.dim)('/') +
+        chalk.hex(palette.text)(`${total}`),
+    ];
+    if (running > 0) headerParts.push(chalk.hex(palette.info)(`${omegaSpinner.current} ${running} running`));
+    if (failed > 0) headerParts.push(chalk.hex(palette.error)(`${icons.error} ${failed} failed`));
+    headerParts.push(chalk.hex(palette.dim)(`layer ${this.completedLayers}/${this.totalLayers}`));
+    this.headerText.setText(spacing.indent1 + headerParts.join(chalk.hex(palette.dim)(spacing.dot)));
+
+    // Update running node main lines in-place (first Text in the array)
+    for (const node of this.trackedNodes.values()) {
+      if (node.status !== 'running') continue;
+      const texts = this.nodeTexts.get(node.id);
+      if (!texts || texts.length === 0) continue;
+
+      const icon = chalk.hex(palette.info)(omegaSpinner.current);
+      const name = chalk.hex(palette.info)(node.label);
+      const model = node.model ? chalk.hex(palette.purple)(` [${node.model}]`) : '';
+
+      if (node.activity) {
+        const nodeElapsed = Math.round((Date.now() - node.activity.startedAt) / 1000);
+        texts[0].setText(`${spacing.indent2}${icon} ${name}${model} ${chalk.hex(palette.dim)('— ' + formatDuration(nodeElapsed) + ' elapsed')}`);
+      } else {
+        const msg = node.lastMessage
+          ? chalk.hex(palette.dim)(` — ${truncate(node.lastMessage, 50)}`)
+          : '';
+        texts[0].setText(`${spacing.indent2}${icon} ${name}${model}${msg}`);
+      }
+    }
   }
 
   private stopSpinner(): void {

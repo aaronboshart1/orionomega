@@ -591,9 +591,10 @@ export class OrchestrationBridge {
 
   /**
    * Maximum total characters for the final output message.
-   * Must leave room for TUI rendering without overflow.
+   * Sized for comfortable TUI rendering. The previous value of 8 000
+   * was too aggressive and truncated meaningful workflow output.
    */
-  private static readonly OUTPUT_BUDGET = 8000;
+  private static readonly OUTPUT_BUDGET = 16_000;
 
   /** Process workflow completion, emit summary text. */
   private async onExecutionComplete(
