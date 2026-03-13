@@ -213,6 +213,8 @@ export interface ExecutionResult {
   findings: string[];
   errors: { worker: string; message: string; resolution?: string }[];
   nodeOutputs?: Record<string, string>;
+  /** Concise final results per node (from SDK result message). Prefer over nodeOutputs for display. */
+  nodeFinalResults?: Record<string, string>;
   infraChanges?: string[];
   /** Per-model token usage breakdown. */
   modelUsage?: ModelUsage[];

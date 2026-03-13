@@ -589,6 +589,12 @@ export class OrchestrationBridge {
 
   // ── Completion ──────────────────────────────────────────────────
 
+  /**
+   * Maximum total characters for the final output message.
+   * Must leave room for TUI rendering without overflow.
+   */
+  private static readonly OUTPUT_BUDGET = 8000;
+
   /** Process workflow completion, emit summary text. */
   private async onExecutionComplete(
     result: ExecutionResult,
@@ -612,7 +618,7 @@ export class OrchestrationBridge {
       }).catch(() => {});
     }
 
-    const { status, durationSec, workerCount, findings, errors, taskSummary, outputPaths, decisions, nodeOutputs } = result;
+    const { status, durationSec, workerCount, findings, errors, taskSummary, outputPaths, decisions, nodeOutputs, nodeFinalResults } = result;
 
     // Emit DAGCompleteInfo callback for inline UI
     const nodeOutputEntries = nodeOutputs ? Object.entries(nodeOutputs) : [];
@@ -633,70 +639,152 @@ export class OrchestrationBridge {
     };
     this.callbacks.onDAGComplete?.(completeInfo);
 
-    // --- Inline result formatting for simple DAGs (1-2 nodes) ---
-    if (workerCount <= 2 && status === 'complete') {
-      // Conversational output — just show the result directly
-      const output = lastOutput ?? taskSummary;
-      const maxLen = 32000;
-      const text = output.length > maxLen ? output.slice(0, maxLen) + '\n\n... [truncated]' : output;
-      this.callbacks.onText(text, false, true);
-      pushHistory({ role: 'assistant', content: text });
+    // ── Budget-aware output formatting ──────────────────────────────
+    //
+    // Strategy: build the footer (run details) first, then fit the body
+    // into the remaining budget. Prefer the concise finalResult from
+    // the SDK over the full accumulated output. Never truncate with
+    // "... [truncated]" — always produce complete, readable output.
+
+    const budget = OrchestrationBridge.OUTPUT_BUDGET;
+
+    // 1. Build the footer (always shown)
+    const footerLines: string[] = [];
+
+    if (errors.length > 0) {
+      footerLines.push('', '**Errors:**');
+      for (const e of errors.slice(0, 5)) footerLines.push(`  ${e.worker}: ${e.message}`);
+    }
+
+    const costStr = result.totalCostUsd != null && result.totalCostUsd > 0
+      ? ` | $${result.totalCostUsd.toFixed(2)}`
+      : '';
+    footerLines.push('', `${durationSec.toFixed(1)}s | ${workerCount} workers${costStr}`);
+    const footer = footerLines.join('\n');
+
+    // 2. Build metadata sections (findings, decisions, output files)
+    const metaLines: string[] = [];
+
+    if (findings.length > 0) {
+      metaLines.push('', '**Key findings:**');
+      for (const f of findings.slice(0, 8)) metaLines.push(`  - ${f}`);
+    }
+
+    if (decisions.length > 0) {
+      metaLines.push('', '**Decisions:**');
+      for (const d of decisions.slice(0, 5)) metaLines.push(`  - ${d}`);
+    }
+
+    if (outputPaths.length > 0) {
+      metaLines.push('', '**Output files:**');
+      for (const p of outputPaths) metaLines.push(`  ${p}`);
+    }
+
+    const meta = metaLines.join('\n');
+
+    // 3. Build the header
+    let header: string;
+    if (status === 'complete') header = 'Workflow complete.';
+    else if (status === 'error') header = 'Workflow finished with errors.';
+    else header = 'Workflow stopped.';
+
+    // 4. Calculate remaining budget for the body
+    const reservedLen = header.length + meta.length + footer.length + 10;
+    const bodyBudget = Math.max(200, budget - reservedLen);
+
+    // 5. Select the best body text — prefer concise finalResult over full output
+    const finalResultEntries = nodeFinalResults ? Object.entries(nodeFinalResults) : [];
+    const lastFinalResult = finalResultEntries.length > 0
+      ? finalResultEntries[finalResultEntries.length - 1][1]
+      : undefined;
+
+    let body: string;
+    if (lastFinalResult && lastFinalResult.length <= bodyBudget) {
+      body = lastFinalResult;
+    } else if (lastFinalResult) {
+      body = this.fitToBudget(lastFinalResult, bodyBudget);
+    } else if (lastOutput && lastOutput.length <= bodyBudget) {
+      body = lastOutput;
+    } else if (lastOutput) {
+      body = this.fitToBudget(lastOutput, bodyBudget);
     } else {
-      // --- Full workflow report for complex DAGs ---
-      const lines: string[] = [];
+      body = taskSummary;
+    }
 
-      if (status === 'complete') lines.push('Workflow complete.');
-      else if (status === 'error') lines.push('Workflow finished with errors.');
-      else lines.push('Workflow stopped.');
-
-      if (lastOutput) {
-        const maxLen = 32000;
-        lines.push('');
-        lines.push(lastOutput.length > maxLen ? lastOutput.slice(0, maxLen) + '\n\n... [truncated]' : lastOutput);
-      } else if (taskSummary) {
-        lines.push('');
-        lines.push(taskSummary);
-      }
-
-      if (findings.length > 0) {
-        lines.push('', '**Key findings:**');
-        for (const f of findings.slice(0, 8)) lines.push(`  - ${f}`);
-      }
-
-      if (decisions.length > 0) {
-        lines.push('', '**Decisions:**');
-        for (const d of decisions.slice(0, 5)) lines.push(`  - ${d}`);
-      }
-
-      if (outputPaths.length > 0) {
-        lines.push('', '**Output files:**');
-        for (const p of outputPaths) {
-          lines.push(`  ${p}`);
+    // 6. Optionally include file previews if budget allows
+    let filePreview = '';
+    if (outputPaths.length > 0) {
+      const previewBudget = budget - header.length - body.length - meta.length - footer.length - 20;
+      if (previewBudget > 200) {
+        const previewLines: string[] = [];
+        let used = 0;
+        for (const p of outputPaths.slice(0, 3)) {
           try {
             const resolved = p.startsWith('/') ? p : `${this.config.workspaceDir}/${p}`;
             if (existsSync(resolved)) {
               const fileContent = await readFile(resolved, 'utf-8');
-              const preview = fileContent.length > 8000 ? fileContent.slice(0, 8000) + '\n... [truncated]' : fileContent;
-              lines.push('', '```', preview, '```');
+              const maxPreview = Math.min(previewBudget - used - 20, 2000);
+              if (maxPreview > 100) {
+                const preview = fileContent.length > maxPreview
+                  ? fileContent.slice(0, maxPreview).trimEnd()
+                  : fileContent;
+                const block = '\n```\n' + preview + '\n```';
+                used += block.length;
+                if (used <= previewBudget) previewLines.push(block);
+              }
             }
           } catch { /* non-fatal */ }
         }
+        filePreview = previewLines.join('');
       }
-
-      if (errors.length > 0) {
-        lines.push('', '**Errors:**');
-        for (const e of errors.slice(0, 5)) lines.push(`  ${e.worker}: ${e.message}`);
-      }
-
-      lines.push('', `${durationSec.toFixed(1)}s | ${workerCount} workers`);
-
-      const summary = lines.join('\n');
-      this.callbacks.onText(summary, false, true);
-      pushHistory({ role: 'assistant', content: `[Workflow result] ${summary}` });
     }
+
+    // 7. Assemble final output
+    const parts = [header, '', body];
+    if (meta) parts.push(meta);
+    if (filePreview) parts.push(filePreview);
+    parts.push(footer);
+
+    const summary = parts.join('\n');
+    this.callbacks.onText(summary, false, true);
+    pushHistory({ role: 'assistant', content: `[Workflow result] ${summary}` });
 
     // Final state snapshot
     if (wf) this.callbacks.onGraphState(wf.executor.getState());
+  }
+
+  /**
+   * Fit text to a character budget by truncating at the last clean paragraph
+   * or sentence boundary. Never appends "... [truncated]".
+   */
+  private fitToBudget(text: string, budget: number): string {
+    if (text.length <= budget) return text;
+
+    const slice = text.slice(0, budget);
+
+    // Try to break at a double-newline (paragraph boundary)
+    const lastPara = slice.lastIndexOf('\n\n');
+    if (lastPara > budget * 0.3) {
+      return slice.slice(0, lastPara).trimEnd();
+    }
+
+    // Try to break at a sentence boundary
+    const lastSentence = Math.max(
+      slice.lastIndexOf('. '),
+      slice.lastIndexOf('.\n'),
+      slice.lastIndexOf('\n'),
+    );
+    if (lastSentence > budget * 0.3) {
+      return slice.slice(0, lastSentence + 1).trimEnd();
+    }
+
+    // Last resort: break at last space
+    const lastSpace = slice.lastIndexOf(' ');
+    if (lastSpace > budget * 0.5) {
+      return slice.slice(0, lastSpace).trimEnd();
+    }
+
+    return slice.trimEnd();
   }
 
   // ── Lifecycle ───────────────────────────────────────────────────

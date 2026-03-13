@@ -44,6 +44,11 @@ export interface WorkerResult {
   cacheCreationTokens?: number;
   /** Cost in USD. */
   costUsd?: number;
+  /**
+   * Concise final summary from the SDK result message.
+   * Prefer this over output for display; output contains all intermediate text.
+   */
+  finalResult?: string;
 }
 
 /**
@@ -367,6 +372,7 @@ export class WorkerProcess {
       findings: [],
       outputPaths: result.outputPaths,
       costUsd: result.costUsd,
+      finalResult: result.finalResult,
     };
   }
 

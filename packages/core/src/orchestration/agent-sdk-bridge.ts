@@ -134,6 +134,11 @@ export interface AgentExecutionResult {
   outputPaths: string[];
   /** Parsed structured output when outputFormat was provided. */
   structuredOutput?: unknown;
+  /**
+   * The SDK result text (concise final summary), separate from the full
+   * accumulated output. Prefer this for display; fall back to output if empty.
+   */
+  finalResult?: string;
 }
 
 /**
@@ -365,6 +370,7 @@ export async function executeAgent(
 
   const startTime = Date.now();
   let output = '';
+  let finalResult = '';
   let toolCalls = 0;
   let costUsd: number | undefined;
   let structuredOutput: unknown;
@@ -483,8 +489,10 @@ export async function executeAgent(
           // P6: Prefer structured output over raw text when available
           if (successMsg.structured_output !== undefined) {
             structuredOutput = successMsg.structured_output;
-            output += '\n' + JSON.stringify(successMsg.structured_output, null, 2);
+            finalResult = JSON.stringify(successMsg.structured_output, null, 2);
+            output += '\n' + finalResult;
           } else if (successMsg.result) {
+            finalResult = successMsg.result;
             output += '\n' + successMsg.result;
           }
         } else {
@@ -512,6 +520,7 @@ export async function executeAgent(
       costUsd,
       outputPaths,
       ...(structuredOutput !== undefined ? { structuredOutput } : {}),
+      ...(finalResult ? { finalResult } : {}),
     };
   } catch (err) {
     const durationSec = (Date.now() - startTime) / 1000;

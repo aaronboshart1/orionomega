@@ -1012,9 +1012,13 @@ export class GraphExecutor {
   ): ExecutionResult {
     // Collect text outputs from all completed nodes
     const nodeOutputs: Record<string, string> = {};
+    const nodeFinalResults: Record<string, string> = {};
     for (const [nodeId, result] of this.nodeResults) {
       if (result.output && typeof result.output === "string") {
         nodeOutputs[nodeId] = result.output;
+      }
+      if (result.finalResult && typeof result.finalResult === "string") {
+        nodeFinalResults[nodeId] = result.finalResult;
       }
     }
 
@@ -1061,6 +1065,7 @@ export class GraphExecutor {
       findings: this.findings,
       errors: this.errors,
       nodeOutputs,
+      nodeFinalResults: Object.keys(nodeFinalResults).length > 0 ? nodeFinalResults : undefined,
       modelUsage,
       totalCostUsd,
     };
