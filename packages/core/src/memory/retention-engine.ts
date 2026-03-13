@@ -17,6 +17,8 @@ export interface RetentionConfig {
   retainOnComplete: boolean;
   /** Retain memories when a workflow encounters errors. */
   retainOnError: boolean;
+  /** Default bank for event-driven retention when no project bank is known. */
+  defaultBank?: string;
 }
 
 /** Outcome data for workflow completion retention. */
@@ -69,6 +71,8 @@ const REMEMBER_PATTERNS = [
  */
 export class RetentionEngine {
   private unsubscribe: (() => void) | null = null;
+  /** Map workflowId → bankId, set by the orchestration bridge when dispatching. */
+  private workflowBanks = new Map<string, string>();
 
   constructor(
     private readonly hs: HindsightClient,
@@ -99,6 +103,21 @@ export class RetentionEngine {
       this.unsubscribe = null;
       log.info('Retention engine stopped');
     }
+  }
+
+  /**
+   * Register a workflow → bank mapping so event-driven retention
+   * routes memories to the correct project bank.
+   */
+  registerWorkflowBank(workflowId: string, bankId: string): void {
+    this.workflowBanks.set(workflowId, bankId);
+  }
+
+  /**
+   * Unregister a workflow → bank mapping (call on workflow completion).
+   */
+  unregisterWorkflowBank(workflowId: string): void {
+    this.workflowBanks.delete(workflowId);
   }
 
   /**
@@ -209,13 +228,34 @@ export class RetentionEngine {
   }
 
   /**
+   * Resolve the correct bank ID for event-driven retention.
+   * Uses the workflow → bank mapping if available, otherwise falls back
+   * to the configured default bank.
+   */
+  private resolveBankForEvent(event: WorkerEvent): string {
+    // Try workflow → bank mapping first
+    if (event.workflowId) {
+      const mapped = this.workflowBanks.get(event.workflowId);
+      if (mapped) return mapped;
+    }
+    // Fall back to configured default
+    return this.config.defaultBank ?? 'default';
+  }
+
+  /**
    * Handle a worker event from the EventBus.
-   * Retains findings and (optionally) errors.
+   * Retains findings and (optionally) errors to the correct bank.
+   *
+   * Previously this used event.nodeId as the bank ID — that was a bug since
+   * node IDs are UUIDs like "micro-65262f46c5268f8e", not valid bank names.
+   * Now resolves the bank via workflow → bank mapping or falls back to 'default'.
    */
   private handleEvent(event: WorkerEvent): void {
+    const bankId = this.resolveBankForEvent(event);
+
     if (event.type === 'finding' && event.message) {
       this.retain(
-        event.nodeId,
+        bankId,
         event.message,
         'lesson',
       ).catch(() => {});
@@ -223,7 +263,7 @@ export class RetentionEngine {
 
     if (event.type === 'error' && this.config.retainOnError && event.error) {
       this.retain(
-        event.nodeId,
+        bankId,
         `Worker ${event.workerId} error: ${event.error}`,
         'lesson',
       ).catch(() => {});
@@ -234,7 +274,7 @@ export class RetentionEngine {
       if (Array.isArray(data.findings)) {
         for (const finding of data.findings) {
           if (typeof finding === 'string') {
-            this.retain(event.nodeId, finding, 'lesson').catch(() => {});
+            this.retain(bankId, finding, 'lesson').catch(() => {});
           }
         }
       }

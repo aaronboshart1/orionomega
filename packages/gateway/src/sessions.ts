@@ -1,9 +1,31 @@
 /**
  * @module sessions
- * In-memory session management for gateway connections.
+ * Session management with disk persistence for the gateway.
+ *
+ * Sessions are persisted to ~/.orionomega/sessions/{id}.json so that
+ * conversations survive gateway restarts — the TUI reconnects with its
+ * saved session ID and gets the full history back, like a console session.
  */
 
 import { randomBytes } from 'node:crypto';
+import { readFileSync, writeFileSync, readdirSync, mkdirSync, unlinkSync, statSync } from 'node:fs';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
+import { createLogger } from '@orionomega/core';
+
+const log = createLogger('sessions');
+
+/** Directory where session files are persisted. */
+const SESSIONS_DIR = join(homedir(), '.orionomega', 'sessions');
+
+/** Maximum messages per session before oldest are pruned. */
+const MAX_MESSAGES_PER_SESSION = 500;
+
+/** Maximum age (ms) before a session is eligible for archival — 24 hours. */
+const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+/** How often to run the cleanup sweep (ms) — every 30 minutes. */
+const CLEANUP_INTERVAL_MS = 30 * 60 * 1000;
 
 /** A chat message within a session. */
 export interface Message {
@@ -11,8 +33,18 @@ export interface Message {
   role: 'user' | 'assistant' | 'system';
   content: string;
   timestamp: string;
-  type?: 'text' | 'plan' | 'orchestration-update' | 'command-result';
+  type?: 'text' | 'plan' | 'orchestration-update' | 'command-result' | 'event' | 'dag-update' | 'workflow-result';
   metadata?: Record<string, unknown>;
+}
+
+/** Serializable session shape (written to disk). */
+interface SessionData {
+  id: string;
+  createdAt: string;
+  updatedAt: string;
+  messages: Message[];
+  activeWorkflows: string[];
+  hindsightBank?: string;
 }
 
 /** A gateway session grouping one or more client connections. */
@@ -28,11 +60,22 @@ export interface Session {
 }
 
 /**
- * Manages in-memory sessions. Each session can have multiple client connections
- * (e.g. a TUI and a web dashboard viewing the same workflow).
+ * Manages sessions with automatic disk persistence.
+ * Each session is saved to a JSON file on every mutation so that
+ * conversations survive gateway restarts.
  */
 export class SessionManager {
   private sessions: Map<string, Session> = new Map();
+  private cleanupTimer: ReturnType<typeof setInterval> | null = null;
+  private writeQueue: Map<string, ReturnType<typeof setTimeout>> = new Map();
+
+  constructor() {
+    this.ensureSessionsDir();
+    this.loadAllFromDisk();
+    this.startCleanupLoop();
+  }
+
+  // ─── Session CRUD ───────────────────────────────────────────
 
   /**
    * Create a new session and return it.
@@ -50,6 +93,8 @@ export class SessionManager {
       clients: new Set(),
     };
     this.sessions.set(id, session);
+    this.schedulePersist(id);
+    log.info(`Session created: ${id}`);
     return session;
   }
 
@@ -72,6 +117,7 @@ export class SessionManager {
 
   /**
    * Append a message to a session's history.
+   * Automatically prunes oldest messages if the cap is exceeded.
    * @param sessionId - Target session ID.
    * @param message - The message to add.
    */
@@ -80,6 +126,14 @@ export class SessionManager {
     if (!session) return;
     session.messages.push(message);
     session.updatedAt = new Date().toISOString();
+
+    // Prune oldest messages if over cap
+    if (session.messages.length > MAX_MESSAGES_PER_SESSION) {
+      const excess = session.messages.length - MAX_MESSAGES_PER_SESSION;
+      session.messages.splice(0, excess);
+    }
+
+    this.schedulePersist(sessionId);
   }
 
   /**
@@ -116,6 +170,7 @@ export class SessionManager {
     if (!session) return;
     session.activeWorkflows.add(workflowId);
     session.updatedAt = new Date().toISOString();
+    this.schedulePersist(sessionId);
   }
 
   /**
@@ -128,14 +183,17 @@ export class SessionManager {
     if (!session) return;
     session.activeWorkflows.delete(workflowId);
     session.updatedAt = new Date().toISOString();
+    this.schedulePersist(sessionId);
   }
 
   /**
-   * Delete a session entirely.
+   * Delete a session entirely (from memory and disk).
    * @param id - Session identifier.
    */
   deleteSession(id: string): void {
     this.sessions.delete(id);
+    this.deleteFromDisk(id);
+    log.info(`Session deleted: ${id}`);
   }
 
   /**
@@ -153,5 +211,153 @@ export class SessionManager {
       hindsightBank: session.hindsightBank ?? null,
       clientCount: session.clients.size,
     };
+  }
+
+  /**
+   * Flush all pending writes and stop the cleanup timer.
+   * Call this during graceful shutdown.
+   */
+  shutdown(): void {
+    // Flush all pending debounced writes immediately
+    for (const [sessionId, timer] of this.writeQueue) {
+      clearTimeout(timer);
+      this.persistToDisk(sessionId);
+    }
+    this.writeQueue.clear();
+
+    if (this.cleanupTimer) {
+      clearInterval(this.cleanupTimer);
+      this.cleanupTimer = null;
+    }
+    log.info('SessionManager shut down — all sessions persisted');
+  }
+
+  // ─── Disk Persistence ───────────────────────────────────────
+
+  /** Ensure the sessions directory exists. */
+  private ensureSessionsDir(): void {
+    try {
+      mkdirSync(SESSIONS_DIR, { recursive: true });
+    } catch (err) {
+      log.error('Failed to create sessions directory', { error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  /** Get the file path for a session. */
+  private sessionFilePath(id: string): string {
+    return join(SESSIONS_DIR, `${id}.json`);
+  }
+
+  /**
+   * Schedule a debounced write to disk for a session.
+   * Coalesces rapid mutations (e.g. streaming) into a single write
+   * with a 500ms delay. Ensures we don't thrash the disk during
+   * high-frequency message additions.
+   */
+  private schedulePersist(sessionId: string): void {
+    const existing = this.writeQueue.get(sessionId);
+    if (existing) clearTimeout(existing);
+
+    const timer = setTimeout(() => {
+      this.writeQueue.delete(sessionId);
+      this.persistToDisk(sessionId);
+    }, 500);
+
+    this.writeQueue.set(sessionId, timer);
+  }
+
+  /** Write a session to disk. */
+  private persistToDisk(sessionId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+
+    const data: SessionData = {
+      id: session.id,
+      createdAt: session.createdAt,
+      updatedAt: session.updatedAt,
+      messages: session.messages,
+      activeWorkflows: [...session.activeWorkflows],
+      hindsightBank: session.hindsightBank,
+    };
+
+    try {
+      writeFileSync(this.sessionFilePath(sessionId), JSON.stringify(data, null, 2), 'utf-8');
+    } catch (err) {
+      log.error(`Failed to persist session ${sessionId}`, { error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  /** Load all session files from disk on startup. */
+  private loadAllFromDisk(): void {
+    try {
+      const files = readdirSync(SESSIONS_DIR).filter(
+        (f) => f.endsWith('.json') && f !== 'hot-window.json',
+      );
+
+      for (const file of files) {
+        try {
+          const raw = readFileSync(join(SESSIONS_DIR, file), 'utf-8');
+          const data: SessionData = JSON.parse(raw);
+
+          const session: Session = {
+            id: data.id,
+            createdAt: data.createdAt,
+            updatedAt: data.updatedAt,
+            messages: data.messages ?? [],
+            activeWorkflows: new Set(data.activeWorkflows ?? []),
+            hindsightBank: data.hindsightBank,
+            clients: new Set(), // No clients on startup — they reconnect
+          };
+
+          this.sessions.set(session.id, session);
+          log.verbose(`Loaded session from disk: ${session.id} (${session.messages.length} messages)`);
+        } catch (err) {
+          log.warn(`Failed to load session file ${file}`, { error: err instanceof Error ? err.message : String(err) });
+        }
+      }
+
+      log.info(`Loaded ${this.sessions.size} session(s) from disk`);
+    } catch (err) {
+      log.warn('Could not read sessions directory', { error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  /** Delete a session file from disk. */
+  private deleteFromDisk(id: string): void {
+    try {
+      unlinkSync(this.sessionFilePath(id));
+    } catch {
+      // File may not exist — that's fine
+    }
+  }
+
+  // ─── Cleanup / Rotation ─────────────────────────────────────
+
+  /** Start the periodic cleanup loop. */
+  private startCleanupLoop(): void {
+    this.cleanupTimer = setInterval(() => this.cleanupStaleSessions(), CLEANUP_INTERVAL_MS);
+  }
+
+  /**
+   * Archive (delete) sessions that are older than SESSION_MAX_AGE_MS
+   * and have no active clients connected.
+   */
+  private cleanupStaleSessions(): void {
+    const now = Date.now();
+    let cleaned = 0;
+
+    for (const [id, session] of this.sessions) {
+      const age = now - new Date(session.updatedAt).getTime();
+      const hasClients = session.clients.size > 0;
+
+      if (age > SESSION_MAX_AGE_MS && !hasClients) {
+        this.deleteSession(id);
+        cleaned++;
+      }
+    }
+
+    if (cleaned > 0) {
+      log.info(`Cleaned up ${cleaned} stale session(s)`);
+    }
   }
 }
