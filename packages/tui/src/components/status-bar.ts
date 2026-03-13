@@ -2,6 +2,10 @@
  * @module components/status-bar
  * Rich status bar showing gateway status, model, tokens, tasks, and workers.
  * Sits below the editor as a fixed-height bar.
+ *
+ * When the agent is thinking, the animated omega spinner replaces the green ●
+ * to the left of "OmegaClaw". Similarly, when Hindsight is busy the spinner
+ * replaces the ◈ icon to the left of "Hindsight".
  */
 
 import { Text } from '@mariozechner/pi-tui';
@@ -38,7 +42,7 @@ export interface SessionStatus {
 
 /**
  * Status bar component that renders a single line with key metrics.
- * Layout: [connection] | [model] | [cost] | [tasks] | [workers]
+ * Layout: [connection] | [hindsight] | [model] | [cost] | [tasks] | [workers]
  */
 export class StatusBar extends Text {
   private _connected = false;
@@ -119,38 +123,30 @@ export class StatusBar extends Text {
     const parts: string[] = [];
     const sep = chalk.hex(palette.dim)(spacing.separator);
 
-    // ── Connection status ──
+    // ── Connection / Agent status ──
+    // When thinking, the animated spinner replaces the static ● icon.
     if (this._connected) {
-      parts.push(chalk.hex(palette.success)(icons.connected) + chalk.hex(palette.dim)(' connected'));
+      const icon = this._thinking
+        ? chalk.hex(palette.accent)(omegaSpinner.current)
+        : chalk.hex(palette.success)(icons.connected);
+      parts.push(icon + chalk.hex(palette.dim)(' OmegaClaw'));
     } else {
-      parts.push(chalk.hex(palette.error)(icons.disconnected) + chalk.hex(palette.dim)(' disconnected'));
+      parts.push(chalk.hex(palette.error)(icons.disconnected) + chalk.hex(palette.dim)(' OmegaClaw'));
     }
 
     // ── Hindsight status ──
+    // When busy, the animated spinner replaces the static ◈ icon.
     const hsConnected = this._status.hindsightConnected;
     if (hsConnected === true) {
-      if (this._hindsightBusy) {
-        parts.push(
-          chalk.hex(palette.accent)(omegaSpinner.current) + ' ' +
-          chalk.hex(palette.success)(icons.hindsight) +
-          chalk.hex(palette.dim)(' Hindsight')
-        );
-      } else {
-        parts.push(
-          chalk.hex(palette.success)(icons.hindsight) +
-          chalk.hex(palette.dim)(' Hindsight')
-        );
-      }
+      const icon = this._hindsightBusy
+        ? chalk.hex(palette.accent)(omegaSpinner.current)
+        : chalk.hex(palette.success)(icons.hindsight);
+      parts.push(icon + chalk.hex(palette.dim)(' Hindsight'));
     } else if (hsConnected === false) {
       parts.push(
         chalk.hex(palette.error)(icons.hindsight) +
         chalk.hex(palette.dim)(' Hindsight')
       );
-    }
-
-    // ── Thinking indicator ──
-    if (this._thinking) {
-      parts.push(chalk.hex(palette.accent)(omegaSpinner.current));
     }
 
     // ── Model (shown when no workflow is active, to save space) ──

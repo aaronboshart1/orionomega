@@ -3,6 +3,12 @@
  * Shared braille omega spinner for TUI components.
  * 4×4 pixel grid rendered as 2 braille characters.
  * Animation: spiral fill → solid → dissolve → reveal omega → fade.
+ *
+ * The omega glyph includes inner foot dots for a truer Ω shape:
+ *   ·██·
+ *   █··█
+ *   ·██·
+ *   ████
  */
 
 type Listener = () => void;
@@ -11,7 +17,7 @@ const OMEGA = [
   [0, 1, 1, 0],
   [1, 0, 0, 1],
   [0, 1, 1, 0],
-  [1, 0, 0, 1],
+  [1, 1, 1, 1],
 ];
 
 const SPIRAL: [number, number][] = [
