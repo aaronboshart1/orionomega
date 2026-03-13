@@ -179,9 +179,22 @@ export class MainAgent {
     // 1b. Attach Hindsight client to context assembler (now that memory is initialised)
     if (this.memory.client) {
       this.context.setHindsightClient(this.memory.client);
-      // Ensure the conversation bank exists
-      if (!this.context['conversationBank']) {
-        this.context.setConversationBank(`conversation-${Date.now().toString(36)}`);
+      // Ensure the conversation bank exists in Hindsight
+      let convBank = this.context['conversationBank'] as string | null;
+      if (!convBank) {
+        convBank = `conversation-${Date.now().toString(36)}`;
+        this.context.setConversationBank(convBank);
+      }
+      try {
+        await this.memory.client.createBank(convBank, {
+          name: `Conversation session ${new Date().toISOString().slice(0, 19)}`,
+        });
+        log.info('Conversation bank created in Hindsight', { bank: convBank });
+      } catch (err) {
+        log.warn('Failed to create conversation bank (may already exist)', {
+          bank: convBank,
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
     }
 

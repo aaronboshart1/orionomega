@@ -66,23 +66,26 @@ export class HindsightClient {
 
   /** List all banks in the current namespace. */
   async listBanks(): Promise<BankInfo[]> {
-    return this.request<BankInfo[]>('GET', `/v1/${this.namespace}/banks`);
+    const res = await this.request<{ banks: BankInfo[] }>('GET', `/v1/${this.namespace}/banks`);
+    return res.banks;
   }
 
   /**
    * Check whether a bank exists.
+   * Uses the list endpoint since the API does not support GET on individual banks.
    * @param bankId - The bank identifier.
    * @returns `true` if the bank exists, `false` otherwise.
    */
   async bankExists(bankId: string): Promise<boolean> {
     try {
-      await this.getBank(bankId);
-      return true;
+      const banks = await this.listBanks();
+      return banks.some((b) => b.bank_id === bankId);
     } catch (err) {
-      if (err instanceof HindsightError && (err.statusCode === 404 || err.statusCode === 405)) {
-        return false;
-      }
-      throw err;
+      log.warn('bankExists check failed', {
+        bankId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return false;
     }
   }
 
@@ -142,7 +145,7 @@ export class HindsightClient {
       maxTokens: opts?.maxTokens ?? 4096,
       budget: opts?.budget ?? 'mid',
     });
-    const result = await this.request<RecallResult>(
+    const raw = await this.request<{ results: Array<Record<string, unknown>> }>(
       'POST',
       `${this.bankPath(bankId)}/memories/recall`,
       {
@@ -151,9 +154,21 @@ export class HindsightClient {
         budget: opts?.budget ?? 'mid',
       },
     );
+
+    // Normalize API response: the API returns `text` but our types use `content`
+    const result: RecallResult = {
+      results: (raw.results ?? []).map((r) => ({
+        content: (r.text as string) ?? (r.content as string) ?? '',
+        context: (r.context as string) ?? '',
+        timestamp: (r.mentioned_at as string) ?? (r.timestamp as string) ?? '',
+        relevance: (r.relevance as number) ?? 0,
+      })),
+      tokens_used: (raw as unknown as Record<string, unknown>).tokens_used as number ?? 0,
+    };
+
     log.verbose(`Recall ← ${bankId}`, {
       durationMs: Date.now() - start,
-      resultChars: JSON.stringify(result).length,
+      resultCount: result.results.length,
     });
     return result;
   }

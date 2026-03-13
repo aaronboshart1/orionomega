@@ -12,10 +12,11 @@ export interface BankConfig {
 
 /** Summary information about a memory bank. */
 export interface BankInfo {
-  id: string;
+  bank_id: string;
   name: string;
   created_at: string;
-  memory_count: number;
+  updated_at?: string;
+  memory_count?: number;
 }
 
 /** A single memory item to retain. */

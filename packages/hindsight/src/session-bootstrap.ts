@@ -36,22 +36,27 @@ export class SessionBootstrap {
    * @returns Populated bootstrap context (empty strings for unavailable data).
    */
   async bootstrap(projectBank?: string): Promise<BootstrapContext> {
-    const [userProfile, sessionContext, infraContext, projectMemories] =
+    const [userProfile, sessionContext, infraContext, projectMemories, recentSessions] =
       await Promise.all([
         this.getMentalModel('core', 'user-profile'),
         this.getMentalModel('core', 'session-context'),
         this.getMentalModel('infra', 'infra-map'),
         projectBank ? this.recallProjectMemories(projectBank) : Promise.resolve(''),
+        this.recallCoreMemories(),
       ]);
+
+    // Use mental model for session context if available, fall back to raw session recall
+    const effectiveSessionContext = sessionContext || recentSessions;
 
     log.debug('Bootstrap complete', {
       hasUserProfile: userProfile.length > 0,
-      hasSessionContext: sessionContext.length > 0,
+      hasSessionContext: effectiveSessionContext.length > 0,
+      usedSessionFallback: !sessionContext && recentSessions.length > 0,
       hasInfraContext: infraContext.length > 0,
       hasProjectMemories: projectMemories.length > 0,
     });
 
-    return { userProfile, sessionContext, projectMemories, infraContext };
+    return { userProfile, sessionContext: effectiveSessionContext, projectMemories, infraContext };
   }
 
   /**
@@ -91,8 +96,34 @@ export class SessionBootstrap {
     try {
       const model = await this.hs.getMentalModel(bankId, modelId);
       return model.content ?? '';
-    } catch {
-      log.debug('Mental model not available', { bankId, modelId });
+    } catch (err) {
+      log.warn('Mental model not available', {
+        bankId,
+        modelId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return '';
+    }
+  }
+
+  /**
+   * Recalls recent session summaries from the core bank as a fallback
+   * when the session-context mental model is not yet available.
+   */
+  private async recallCoreMemories(): Promise<string> {
+    try {
+      const result = await this.hs.recall(
+        'core',
+        'recent session summaries, what was accomplished, key decisions',
+        { maxTokens: 2048, budget: 'mid' },
+      );
+      return result.results
+        .map((m) => `[${m.context}] ${m.content}`)
+        .join('\n');
+    } catch (err) {
+      log.warn('Core bank recall not available', {
+        error: err instanceof Error ? err.message : String(err),
+      });
       return '';
     }
   }
@@ -110,8 +141,11 @@ export class SessionBootstrap {
       return result.results
         .map((m) => `[${m.context}] ${m.content}`)
         .join('\n');
-    } catch {
-      log.debug('Project memories not available', { bankId });
+    } catch (err) {
+      log.warn('Project memories not available', {
+        bankId,
+        error: err instanceof Error ? err.message : String(err),
+      });
       return '';
     }
   }
