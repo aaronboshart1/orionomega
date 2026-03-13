@@ -225,7 +225,7 @@ export class StatusBar extends Text {
     }
 
     // Cost
-    if (this._status.estimatedCost && this._status.estimatedCost > 0) {
+    if (this._status.estimatedCost && this._status.estimatedCost > 0 && isFinite(this._status.estimatedCost)) {
       parts.push(chalk.hex(palette.dim)('$' + this._status.estimatedCost.toFixed(3)));
     }
 
