@@ -11,8 +11,9 @@
 import { Text } from '@mariozechner/pi-tui';
 import chalk from 'chalk';
 import { palette, spacing, icons } from '../theme.js';
-import { shortenModel, formatCost, formatDuration, truncate } from '../utils/format.js';
+import { shortenModel, formatCost, formatDuration } from '../utils/format.js';
 import { omegaSpinner } from './omega-spinner.js';
+import { VERSION_STRING } from '../version.js';
 
 export interface SessionStatus {
   model?: string;
@@ -42,7 +43,7 @@ export interface SessionStatus {
 
 /**
  * Status bar component that renders a single line with key metrics.
- * Layout: [connection] | [hindsight] | [model] | [cost] | [tasks] | [workers]
+ * Layout: [connection] | [hindsight] | [model] | [cost] | [tasks] | [workers] | [version]
  */
 export class StatusBar extends Text {
   private _connected = false;
@@ -124,7 +125,6 @@ export class StatusBar extends Text {
     const sep = chalk.hex(palette.dim)(spacing.separator);
 
     // ── Connection / Agent status ──
-    // When thinking, the animated spinner replaces the static ● icon.
     if (this._connected) {
       const icon = this._thinking
         ? chalk.hex(palette.accent)(omegaSpinner.current)
@@ -135,7 +135,6 @@ export class StatusBar extends Text {
     }
 
     // ── Hindsight status ──
-    // When busy, the animated spinner replaces the static ◈ icon.
     const hsConnected = this._status.hindsightConnected;
     if (hsConnected === true) {
       const icon = this._hindsightBusy
@@ -209,23 +208,11 @@ export class StatusBar extends Text {
       parts.push(chalk.hex(palette.dim)(formatCost(0)));
     }
 
-    const mainLine = spacing.indent1 + parts.join(sep);
+    // ── Version (far right, dim) ──
+    const version = chalk.hex(palette.dim)(VERSION_STRING);
+    const mainLine = spacing.indent1 + parts.join(sep) + sep + version;
 
-    // ── Worker activity line (second line, only when workers are active) ──
-    const summaries = this._status.workerSummaries ?? [];
-    if (summaries.length > 0) {
-      const workerParts = summaries
-        .slice(0, 4)
-        .map((label, i) =>
-          chalk.hex(palette.info)(icons.worker) + ' ' +
-          chalk.hex(palette.dim)(`Worker ${i + 1}:`) + ' ' +
-          chalk.hex(palette.text)(truncate(label, 30))
-        );
-      const workerLine = spacing.indent1 + workerParts.join(chalk.hex(palette.dim)(spacing.dot));
-      this.setText(workerLine + '\n' + mainLine);
-    } else {
-      this.setText(mainLine);
-    }
+    this.setText(mainLine);
   }
 
   /**
