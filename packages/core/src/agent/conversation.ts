@@ -265,7 +265,7 @@ export async function streamConversation(opts: {
   onThinking?: (text: string, streaming: boolean, done: boolean) => void;
   maxToolRounds?: number;
 }): Promise<{ text: string; inputTokens: number; outputTokens: number }> {
-  const { client, model, systemPrompt, workspaceDir, onText, onThinking, maxToolRounds = 10 } = opts;
+  const { client, model, systemPrompt, workspaceDir, onText, onThinking } = opts;
   let messages = [...opts.messages];
   let fullText = '';
   let totalInputTokens = 0;
@@ -280,15 +280,14 @@ export async function streamConversation(opts: {
     model,
     messageCount: messages.length,
     systemPromptLength: systemPrompt.length,
-    maxToolRounds,
   });
 
-  for (let round = 0; round <= maxToolRounds; round++) {
+  for (let round = 0; ; round++) {
     const roundStart = Date.now();
     if (round > 0) {
       onThinking?.(`Thinking… (round ${round + 1})`, true, false);
     }
-    log.verbose(`Conversation round ${round + 1}/${maxToolRounds + 1}`, {
+    log.verbose(`Conversation round ${round + 1}`, {
       messageCount: messages.length,
     });
 
