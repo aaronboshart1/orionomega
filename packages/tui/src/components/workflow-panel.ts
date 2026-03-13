@@ -5,11 +5,28 @@
  *
  * Supports focus mode: when focusedId is set, unfocused workflows
  * collapse to a compact header + summary line.
+ *
+ * Provides aggregate statistics across all active workflows for the status bar.
  */
 
 import { Container } from '@mariozechner/pi-tui';
 import type { GraphState, WorkerEvent } from '@orionomega/core';
 import { WorkflowBox } from './workflow-box.js';
+
+/** Aggregated statistics across all active workflows. */
+export interface AggregateWorkflowStats {
+  activeWorkflows: number;
+  totalRunningWorkers: number;
+  totalCompletedNodes: number;
+  totalNodes: number;
+  combinedCost: number;
+  totalCompletedLayers: number;
+  totalLayers: number;
+  /** Worker summaries from all active workflows. */
+  workerSummaries: string[];
+  /** Elapsed time of the longest-running active workflow. */
+  maxElapsed: number;
+}
 
 export class WorkflowPanel extends Container {
   readonly boxes = new Map<string, WorkflowBox>();
@@ -72,13 +89,47 @@ export class WorkflowPanel extends Container {
     return [...this.boxes.values()].filter(b => b.isActive).length;
   }
 
-  /** Total number of running workers across all workflows. */
-  get totalRunningWorkers(): number {
-    let count = 0;
+  /**
+   * Compute aggregate statistics across all active workflows.
+   * Used by the status bar to show unified metrics.
+   */
+  getAggregateStats(): AggregateWorkflowStats {
+    let totalRunningWorkers = 0;
+    let totalCompletedNodes = 0;
+    let totalNodes = 0;
+    let combinedCost = 0;
+    let totalCompletedLayers = 0;
+    let totalLayers = 0;
+    let maxElapsed = 0;
+    const workerSummaries: string[] = [];
+    let activeWorkflows = 0;
+
     for (const box of this.boxes.values()) {
-      if (box.isActive) count++;
+      const stats = box.getStats();
+      if (box.isActive) {
+        activeWorkflows++;
+      }
+      totalRunningWorkers += stats.runningWorkers;
+      totalCompletedNodes += stats.completedNodes;
+      totalNodes += stats.totalNodes;
+      combinedCost += stats.estimatedCost;
+      totalCompletedLayers += stats.completedLayers;
+      totalLayers += stats.totalLayers;
+      if (stats.elapsed > maxElapsed) maxElapsed = stats.elapsed;
+      workerSummaries.push(...stats.workerSummaries);
     }
-    return count;
+
+    return {
+      activeWorkflows,
+      totalRunningWorkers,
+      totalCompletedNodes,
+      totalNodes,
+      combinedCost,
+      totalCompletedLayers,
+      totalLayers,
+      workerSummaries,
+      maxElapsed,
+    };
   }
 
   private updateVisibility(): void {

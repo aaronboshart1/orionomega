@@ -116,13 +116,14 @@ async function initMainAgent(): Promise<void> {
   let streamBuffer = '';
 
   const callbacks: MainAgentCallbacks = {
-    onText(text, streaming, done) {
+    onText(text, streaming, done, workflowId) {
       wsHandler.broadcast({
         id: currentTextId,
         type: 'text',
         content: text,
         streaming,
         done,
+        workflowId,
       });
 
       // Accumulate streamed chunks

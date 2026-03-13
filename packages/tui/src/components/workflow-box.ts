@@ -96,6 +96,7 @@ export class WorkflowBox extends Container {
   private _expanded = true;
   private unsubSpinner: (() => void) | null = null;
   private summaryLine: Text | null = null;
+  private resultText: Text | null = null;
 
   /** Wire this to tui.requestRender() for spinner-driven re-renders. */
   onUpdate?: () => void;
@@ -248,6 +249,65 @@ export class WorkflowBox extends Container {
     this.stopSpinner();
   }
 
+  // ── Stats & Result Rendering ───────────────────────────────────
+
+  /**
+   * Expose per-workflow statistics for aggregate computation.
+   * Called by WorkflowPanel.getAggregateStats().
+   */
+  getStats(): {
+    runningWorkers: number;
+    completedNodes: number;
+    totalNodes: number;
+    estimatedCost: number;
+    completedLayers: number;
+    totalLayers: number;
+    elapsed: number;
+    workerSummaries: string[];
+  } {
+    let runningWorkers = 0;
+    let completedNodes = 0;
+    const workerSummaries: string[] = [];
+    for (const nd of this.nodeDisplays.values()) {
+      switch (nd.state.status) {
+        case 'running':
+          runningWorkers++;
+          workerSummaries.push(nd.state.label);
+          break;
+        case 'complete': case 'skipped':
+          completedNodes++;
+          break;
+      }
+    }
+    return {
+      runningWorkers,
+      completedNodes,
+      totalNodes: this.nodeDisplays.size,
+      estimatedCost: this.estimatedCost,
+      completedLayers: this.completedLayers,
+      totalLayers: this.totalLayers,
+      elapsed: Math.round((Date.now() - this.startTime) / 1000),
+      workerSummaries,
+    };
+  }
+
+  /**
+   * Add a result text section to the workflow box (rendered on completion).
+   * Used to display workflow output inside the box instead of the chat log.
+   */
+  addResult(text: string): void {
+    if (!this.resultText) {
+      this.resultText = new Text('', 1, 0);
+    }
+    const maxLen = 2000;
+    const display = text.length > maxLen ? text.slice(0, maxLen) + '\n... [truncated]' : text;
+    const lines = display.split('\n').map(line =>
+      `${spacing.indent2}${chalk.hex(palette.text)(line)}`,
+    );
+    this.resultText.setText(lines.join('\n'));
+    this.rebuildStructure();
+  }
+
   // ── Layer Group Management ─────────────────────────────────────
 
   private buildLayerGroups(): void {
@@ -389,6 +449,17 @@ export class WorkflowBox extends Container {
       }
     }
 
+    // Result section (workflow output rendered inside the box)
+    if (this.resultText) {
+      this.addChild(new Spacer(1));
+      const resultHeader = new Text(
+        `${spacing.indent2}${chalk.hex(palette.info)(icons.worker)} ${chalk.hex(palette.info)('Result:')}`,
+        1, 0,
+      );
+      this.addChild(resultHeader);
+      this.addChild(this.resultText);
+    }
+
     // Spacer before bottom border
     this.addChild(new Spacer(1));
 
@@ -404,6 +475,7 @@ export class WorkflowBox extends Container {
     if (this.summaryLine) try { this.removeChild(this.summaryLine); } catch {}
     if (this.findingsText) try { this.removeChild(this.findingsText); } catch {}
     if (this.statsText) try { this.removeChild(this.statsText); } catch {}
+    if (this.resultText) try { this.removeChild(this.resultText); } catch {}
 
     // Remove layer groups
     for (const lg of this.layerGroups.values()) {

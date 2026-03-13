@@ -49,6 +49,8 @@ export interface DisplayMessage {
   emoji?: string;
   /** Pre-formatted ANSI string — rendered as-is, bypassing markdown. */
   raw?: string;
+  /** Workflow ID if this message originated from a workflow. */
+  workflowId?: string;
 }
 
 let messageCounter = 0;
@@ -226,6 +228,7 @@ export class GatewayClient extends EventEmitter<GatewayClientEvents> {
             role: 'assistant',
             content: this.streamingAcc!.content,
             timestamp: new Date().toISOString(),
+            workflowId: msg.workflowId,
           });
         } else if (msg.done) {
           this.emit('thinking', '');
@@ -240,6 +243,7 @@ export class GatewayClient extends EventEmitter<GatewayClientEvents> {
                 role: 'assistant',
                 content: finalContent,
                 timestamp: new Date().toISOString(),
+                workflowId: msg.workflowId,
               });
             }
           }
@@ -253,6 +257,7 @@ export class GatewayClient extends EventEmitter<GatewayClientEvents> {
               role: 'assistant',
               content: msg.content ?? '',
               timestamp: new Date().toISOString(),
+              workflowId: msg.workflowId,
             });
           }
         }

@@ -59,7 +59,7 @@ export interface MainAgentConfig {
 
 /** Callbacks through which the agent communicates outward (typically to the gateway). */
 export interface MainAgentCallbacks {
-  onText: (text: string, streaming: boolean, done: boolean) => void;
+  onText: (text: string, streaming: boolean, done: boolean, workflowId?: string) => void;
   onThinking: (text: string, streaming: boolean, done: boolean) => void;
   /** @deprecated Use onDAGConfirm for guarded plans. Kept for backward compat during migration. */
   onPlan: (plan: PlannerOutput) => void;

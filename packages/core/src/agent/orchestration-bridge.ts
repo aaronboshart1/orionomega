@@ -257,7 +257,7 @@ export class OrchestrationBridge {
       this.callbacks.onText('Approved. Starting execution…', false, true);
       void this.dispatchAsync(pending.plan, pending.pushHistory);
     } else {
-      this.callbacks.onText('Cancelled.', false, true);
+      this.callbacks.onText('Cancelled.', false, true, targetId);
       pending.pushHistory({ role: 'assistant', content: '[Cancelled by user]' });
     }
   }
@@ -511,7 +511,7 @@ export class OrchestrationBridge {
     this.callbacks.onWorkflowStart?.(workflowId, workflowName);
     this.commands.addWorkflow(workflowId, executor, workflowName);
 
-    this.callbacks.onText('Workflow started. I\'ll keep you posted on progress.', false, true);
+    this.callbacks.onText('Workflow started. I\'ll keep you posted on progress.', false, true, workflowId);
     pushHistory({ role: 'assistant', content: '[Workflow execution started]' });
 
     try {
@@ -746,7 +746,7 @@ export class OrchestrationBridge {
     parts.push(footer);
 
     const summary = parts.join('\n');
-    this.callbacks.onText(summary, false, true);
+    this.callbacks.onText(summary, false, true, workflowId);
     pushHistory({ role: 'assistant', content: `[Workflow result] ${summary}` });
 
     // Final state snapshot

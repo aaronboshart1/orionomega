@@ -214,7 +214,14 @@ export async function start(): Promise<void> {
     chatLog.updateThinking('');
     chatLog.clearStreaming();
     statusBar.thinking = false;
-    chatLog.addMessage(msg);
+
+    // Route workflow-scoped messages to the WorkflowBox instead of chat log
+    if (msg.workflowId && workflowPanel.boxes.has(msg.workflowId)) {
+      workflowPanel.boxes.get(msg.workflowId)!.addResult(msg.content);
+    } else {
+      chatLog.addMessage(msg);
+    }
+
     tui.requestRender();
   });
 
@@ -279,6 +286,7 @@ export async function start(): Promise<void> {
 
   client.on('graphState', (state: GraphState, workflowId?: string) => {
     const wfId = workflowId ?? state.workflowId ?? state.name;
+    const isNew = !workflowPanel.boxes.has(wfId);
 
     // Attach multi-tracker to chat log once
     if (!trackerAttached) {
@@ -286,36 +294,41 @@ export async function start(): Promise<void> {
       trackerAttached = true;
     }
 
-    if (!workflowPanel.boxes.has(wfId)) {
+    if (isNew) {
       workflowPanel.addWorkflow(wfId, state);
+
+      // Chat-level notification when a new workflow starts while others are running
+      const activeCount = workflowPanel.activeCount;
+      if (activeCount > 1) {
+        chatLog.addMessage({
+          id: `wf-notify-${wfId}`,
+          role: 'system',
+          content: `New workflow started: "${state.name}" (${activeCount} workflows now active)`,
+          timestamp: new Date().toISOString(),
+          emoji: '\u26A1',
+        });
+      }
     } else {
       workflowPanel.updateWorkflow(wfId, state);
     }
 
-    // Aggregate stats across all workflows
-    const nodes = state.nodes ?? {};
-    const nodeList = Object.values(nodes) as any[];
-    const runningNodes = nodeList.filter((n: any) => n.status === 'running' || n.status === 'in_progress');
-    const complete = nodeList.filter((n: any) => n.status === 'complete' || n.status === 'done').length;
-    const total = nodeList.length;
-
-    // Extract short labels for each active worker
-    const workerSummaries = runningNodes.map((n: any) => n.label ?? n.id);
+    // Aggregate stats across ALL active workflows (not just the one that sent this event)
+    const agg = workflowPanel.getAggregateStats();
 
     statusBar.updateStatus({
-      activeTasks: workflowPanel.activeCount,
-      activeWorkers: runningNodes.length,
-      completedTasks: complete,
-      totalTasks: total,
-      estimatedCost: state.estimatedCost,
-      completedLayers: state.completedLayers,
-      totalLayers: state.totalLayers,
-      workflowElapsed: state.elapsed,
-      workerSummaries,
+      activeTasks: agg.activeWorkflows,
+      activeWorkers: agg.totalRunningWorkers,
+      completedTasks: agg.totalCompletedNodes,
+      totalTasks: agg.totalNodes,
+      estimatedCost: agg.combinedCost,
+      completedLayers: agg.totalCompletedLayers,
+      totalLayers: agg.totalLayers,
+      workflowElapsed: agg.maxElapsed,
+      workerSummaries: agg.workerSummaries,
     });
 
     if (state.status === 'complete' || state.status === 'error' || state.status === 'stopped') {
-      if (workflowPanel.activeCount === 0) {
+      if (agg.activeWorkflows === 0) {
         statusBar.updateStatus({
           activeTasks: 0,
           activeWorkers: 0,
