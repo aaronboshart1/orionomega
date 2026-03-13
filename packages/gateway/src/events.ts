@@ -12,7 +12,11 @@ import type { ClientConnection, ServerMessage } from './types.js';
 import { randomBytes } from 'node:crypto';
 
 /** Event types that bypass batching and fire immediately for TUI clients. */
-const IMMEDIATE_TYPES = new Set(['done', 'error', 'finding']);
+const IMMEDIATE_TYPES = new Set([
+  'done', 'error', 'finding',
+  'thinking', 'tool_call', 'tool_result',
+  'status', 'loop_iteration', 'replan',
+]);
 
 /** Default batch interval for TUI clients (milliseconds). */
 const TUI_BATCH_INTERVAL_MS = 10_000;
@@ -148,6 +152,27 @@ export class EventStreamer {
           }
         }
       }
+    }
+  }
+
+  /**
+   * Emit a DAG lifecycle message to all connected clients.
+   * DAG messages always fire immediately (never batched) since they represent
+   * inline conversational progress updates.
+   *
+   * @param message - The DAG message to broadcast.
+   */
+  emitDAGMessage(message: ServerMessage): void {
+    for (const [, client] of this.clients) {
+      // Apply per-client workflow subscription filter
+      if (
+        message.workflowId &&
+        client.workflowSubscriptions.size > 0 &&
+        !client.workflowSubscriptions.has(message.workflowId)
+      ) {
+        continue;
+      }
+      this.sendToClient(client, message);
     }
   }
 

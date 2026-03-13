@@ -45,15 +45,52 @@ export interface PlanData {
   graph: { nodes: Record<string, GraphNode> };
 }
 
+export type InlineDAGStatus = 'dispatched' | 'running' | 'complete' | 'error';
+
+export interface InlineDAGNode {
+  id: string;
+  label: string;
+  type: string;
+  status: 'pending' | 'running' | 'done' | 'error' | 'skipped';
+  progress?: number;
+  output?: string;
+}
+
+export interface InlineDAG {
+  dagId: string;
+  summary: string;
+  status: InlineDAGStatus;
+  nodes: InlineDAGNode[];
+  completedCount: number;
+  totalCount: number;
+  elapsed: number;
+  result?: string;
+  error?: string;
+}
+
+export interface DAGConfirmation {
+  dagId: string;
+  summary: string;
+  reason: string;
+  guardedNodes: { id: string; label: string; risk: string }[];
+}
+
 interface OrchestrationStore {
   graphState: GraphState | null;
   events: WorkerEvent[];
   activePlan: PlanData | null;
   selectedWorker: string | null;
+  inlineDAGs: Record<string, InlineDAG>;
+  pendingConfirmation: DAGConfirmation | null;
   setGraphState: (s: GraphState) => void;
   addEvent: (e: WorkerEvent) => void;
   setActivePlan: (p: PlanData | null) => void;
   selectWorker: (id: string | null) => void;
+  upsertInlineDAG: (dag: InlineDAG) => void;
+  updateDAGNode: (dagId: string, nodeId: string, update: Partial<InlineDAGNode>) => void;
+  completeDAG: (dagId: string, result?: string, error?: string) => void;
+  removeInlineDAG: (dagId: string) => void;
+  setPendingConfirmation: (c: DAGConfirmation | null) => void;
   reset: () => void;
 }
 
@@ -62,9 +99,61 @@ export const useOrchestrationStore = create<OrchestrationStore>((set) => ({
   events: [],
   activePlan: null,
   selectedWorker: null,
+  inlineDAGs: {},
+  pendingConfirmation: null,
   setGraphState: (graphState) => set({ graphState }),
   addEvent: (event) => set((s) => ({ events: [...s.events.slice(-999), event] })),
   setActivePlan: (activePlan) => set({ activePlan }),
   selectWorker: (selectedWorker) => set({ selectedWorker }),
-  reset: () => set({ graphState: null, events: [], activePlan: null, selectedWorker: null }),
+  upsertInlineDAG: (dag) =>
+    set((s) => ({ inlineDAGs: { ...s.inlineDAGs, [dag.dagId]: dag } })),
+  updateDAGNode: (dagId, nodeId, update) =>
+    set((s) => {
+      const dag = s.inlineDAGs[dagId];
+      if (!dag) return s;
+      const nodes = dag.nodes.map((n) =>
+        n.id === nodeId ? { ...n, ...update } : n,
+      );
+      const completedCount = nodes.filter(
+        (n) => n.status === 'done' || n.status === 'error' || n.status === 'skipped',
+      ).length;
+      return {
+        inlineDAGs: {
+          ...s.inlineDAGs,
+          [dagId]: { ...dag, nodes, completedCount, status: 'running' },
+        },
+      };
+    }),
+  completeDAG: (dagId, result, error) =>
+    set((s) => {
+      const dag = s.inlineDAGs[dagId];
+      if (!dag) return s;
+      return {
+        inlineDAGs: {
+          ...s.inlineDAGs,
+          [dagId]: {
+            ...dag,
+            status: error ? 'error' : 'complete',
+            result,
+            error,
+            completedCount: dag.totalCount,
+          },
+        },
+      };
+    }),
+  removeInlineDAG: (dagId) =>
+    set((s) => {
+      const { [dagId]: _, ...rest } = s.inlineDAGs;
+      return { inlineDAGs: rest };
+    }),
+  setPendingConfirmation: (pendingConfirmation) => set({ pendingConfirmation }),
+  reset: () =>
+    set({
+      graphState: null,
+      events: [],
+      activePlan: null,
+      selectedWorker: null,
+      inlineDAGs: {},
+      pendingConfirmation: null,
+    }),
 }));

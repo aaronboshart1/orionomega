@@ -12,9 +12,13 @@ export {
   isImmediateExecution,
   isFastConversational,
   isFastTask,
+  isActionRequest,
+  isOrchestrateRequest,
+  isGuardedRequest,
   streamConversation,
   executeMainTool,
 } from './conversation.js';
+export type { IntentType } from './conversation.js';
 
 // Re-export prompt builder (existing module)
 export { buildSystemPrompt } from './prompt-builder.js';

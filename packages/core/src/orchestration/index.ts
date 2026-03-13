@@ -57,4 +57,7 @@ export type { CodingAgentResult, CodingAgentConfig } from "./agent-sdk-bridge.js
 
 // Checkpoint
 export { CheckpointManager } from './checkpoint.js';
-export type { WorkflowCheckpoint, LoopNodeConfig, LoopExitCondition, AutonomousConfig, HumanGateAction } from './types.js';
+export type {
+  WorkflowCheckpoint, LoopNodeConfig, LoopExitCondition, AutonomousConfig, HumanGateAction,
+  IntentTier, DAGDispatchInfo, DAGProgressInfo, DAGCompleteInfo, DAGConfirmInfo,
+} from './types.js';

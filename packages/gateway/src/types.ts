@@ -24,19 +24,25 @@ export interface ClientConnection {
 /** Client → Gateway message envelope. */
 export interface ClientMessage {
   id: string;
-  type: 'chat' | 'command' | 'plan_response' | 'subscribe';
+  type: 'chat' | 'command' | 'plan_response' | 'subscribe' | 'dag_response';
   content?: string;
   command?: string;
   planId?: string;
   action?: 'approve' | 'reject' | 'modify';
   modification?: string;
   workflowId?: string;
+  /** DAG confirmation response fields. */
+  dagAction?: 'approve' | 'reject';
 }
 
 /** Gateway → Client message envelope. */
 export interface ServerMessage {
   id: string;
-  type: 'text' | 'thinking' | 'plan' | 'event' | 'status' | 'command_result' | 'session_status' | 'error' | 'ack' | 'history';
+  type:
+    | 'text' | 'thinking' | 'plan' | 'event' | 'status'
+    | 'command_result' | 'session_status' | 'error' | 'ack' | 'history'
+    // New DAG lifecycle message types
+    | 'dag_dispatched' | 'dag_progress' | 'dag_complete' | 'dag_confirm';
   /** Identifies which workflow this message relates to (events, status updates, plans). */
   workflowId?: string;
   content?: string;
@@ -51,6 +57,46 @@ export interface ServerMessage {
   sessionStatus?: { model: string; inputTokens: number; outputTokens: number; maxContextTokens: number };
   error?: string;
   history?: Array<{ id: string; role: string; content: string; timestamp: string }>;
+
+  // New DAG lifecycle fields
+  dagDispatch?: {
+    workflowId: string;
+    workflowName: string;
+    nodeCount: number;
+    estimatedTime: number;
+    estimatedCost: number;
+    summary: string;
+    nodes: Array<{ id: string; label: string; type: string }>;
+  };
+  dagProgress?: {
+    workflowId: string;
+    nodeId: string;
+    nodeLabel: string;
+    status: 'started' | 'progress' | 'done' | 'error';
+    message?: string;
+    progress?: number;
+    layerProgress?: { completed: number; total: number };
+  };
+  dagComplete?: {
+    workflowId: string;
+    status: 'complete' | 'error' | 'stopped';
+    summary: string;
+    output?: string;
+    findings?: string[];
+    outputPaths?: string[];
+    durationSec: number;
+    workerCount: number;
+    totalCostUsd: number;
+  };
+  dagConfirm?: {
+    workflowId: string;
+    summary: string;
+    reasoning: string;
+    estimatedCost: number;
+    estimatedTime: number;
+    nodes: Array<{ id: string; label: string; type: string }>;
+    guardedActions: string[];
+  };
 }
 
 /** Aggregate system health status. */

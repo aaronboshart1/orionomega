@@ -232,6 +232,9 @@ export class WebSocketHandler {
       case 'plan_response':
         this.handlePlanResponse(conn, session, msg);
         break;
+      case 'dag_response':
+        this.handleDAGResponse(conn, msg);
+        break;
       case 'subscribe':
         this.handleSubscribe(conn, msg);
         break;
@@ -344,6 +347,28 @@ export class WebSocketHandler {
         id: randomBytes(8).toString('hex'),
         type: 'ack',
         content: `Plan response (${msg.action}) for ${msg.planId} received. Orchestration engine not yet connected.`,
+      });
+    }
+  }
+
+  /** Handle a DAG confirmation response (approve/reject for guarded operations). */
+  private handleDAGResponse(conn: ClientConnection, msg: ClientMessage): void {
+    if (this.mainAgent && msg.workflowId && msg.dagAction) {
+      this.mainAgent
+        .handleDAGResponse(msg.workflowId, msg.dagAction)
+        .catch((err) => {
+          log.error('MainAgent.handleDAGResponse error', { error: err instanceof Error ? err.message : String(err) });
+          this.send(conn.ws, {
+            id: randomBytes(8).toString('hex'),
+            type: 'error',
+            error: 'Internal DAG response error',
+          });
+        });
+    } else {
+      this.send(conn.ws, {
+        id: randomBytes(8).toString('hex'),
+        type: 'ack',
+        content: `DAG response (${msg.dagAction}) received. Agent not connected or missing fields.`,
       });
     }
   }

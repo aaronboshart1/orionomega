@@ -13,12 +13,17 @@ import type { ExecutorConfig } from '../orchestration/executor.js';
 import { EventBus } from '../orchestration/event-bus.js';
 import { OrchestratorCommands } from '../orchestration/commands.js';
 import { CheckpointManager } from '../orchestration/checkpoint.js';
+import { buildGraph } from '../orchestration/graph.js';
 import type {
   PlannerOutput,
+  WorkflowNode,
   WorkerEvent,
   GraphState,
   ExecutionResult,
   WorkflowCheckpoint,
+  DAGDispatchInfo,
+  DAGCompleteInfo,
+  DAGConfirmInfo,
 } from '../orchestration/types.js';
 import type { MemoryBridge } from './memory-bridge.js';
 import type { MainAgentCallbacks } from './main-agent.js';
@@ -89,6 +94,13 @@ export class OrchestrationBridge {
   /** Human gate requests awaiting approval, keyed by gate ID. */
   private readonly pendingGates = new Map<string, HumanGateRequest>();
 
+  /** Guarded DAG confirmations awaiting user approval, keyed by workflow ID. */
+  private readonly pendingConfirmations = new Map<string, {
+    plan: PlannerOutput;
+    task: string;
+    pushHistory: (entry: { role: string; content: string }) => void;
+  }>();
+
   constructor(
     private readonly config: OrchestrationConfig,
     private readonly callbacks: MainAgentCallbacks,
@@ -123,6 +135,176 @@ export class OrchestrationBridge {
 
   /** Whether there are any human gate requests awaiting approval. */
   get hasPendingGates(): boolean { return this.pendingGates.size > 0; }
+
+  /** Whether there are any guarded DAG confirmations awaiting approval. */
+  get hasPendingConfirmations(): boolean { return this.pendingConfirmations.size > 0; }
+
+  // ── Micro-DAG builder ─────────────────────────────────────────────
+
+  /**
+   * Build a minimal 1-node DAG for a single-step ACTION task.
+   * Avoids calling the planner LLM entirely — saves ~2-5s and ~$0.01-0.03.
+   */
+  buildMicroDAG(task: string): PlannerOutput {
+    const node: WorkflowNode = {
+      id: `micro-${randomBytes(8).toString('hex')}`,
+      type: 'AGENT',
+      label: task.slice(0, 60),
+      agent: {
+        model: this.planner.model,
+        task,
+        tokenBudget: 50_000,
+      },
+      dependsOn: [],
+      status: 'pending',
+    };
+    return {
+      graph: buildGraph([node], task.slice(0, 80)),
+      reasoning: 'Single-step task — executing directly.',
+      estimatedCost: 0,
+      estimatedTime: 10,
+      summary: task.slice(0, 120),
+    };
+  }
+
+  // ── Fast-path dispatch (ACTION tier) ──────────────────────────────
+
+  /**
+   * Build a micro-DAG and dispatch it immediately in the background.
+   * The caller (handleMessage) returns immediately — agent loop is freed.
+   */
+  async dispatchMicroDAG(
+    task: string,
+    pushHistory: (entry: { role: string; content: string }) => void,
+  ): Promise<void> {
+    const plan = this.buildMicroDAG(task);
+    await this.dispatchAsync(plan, pushHistory);
+  }
+
+  // ── Full DAG dispatch (ORCHESTRATE tier) ──────────────────────────
+
+  /**
+   * Generate a full planner DAG and dispatch it.
+   * If `requireConfirmation` is set, pause for user approval before executing.
+   */
+  async dispatchFullDAG(
+    task: string,
+    pushHistory: (entry: { role: string; content: string }) => void,
+    opts: { requireConfirmation?: boolean } = {},
+  ): Promise<void> {
+    this.callbacks.onThinking('Planning…', true, false);
+
+    try {
+      const memories = await this.memory.recallForPlanning(task);
+      const plan = await this.planner.plan(task, {
+        ...(memories.length ? { memories } : {}),
+        ...(this.availableSkills.length ? { availableSkills: this.availableSkills } : {}),
+      });
+      this.callbacks.onThinking('', true, true);
+
+      if (opts.requireConfirmation) {
+        // Store for confirmation and emit confirm event
+        this.pendingConfirmations.set(plan.graph.id, { plan, task, pushHistory });
+
+        const confirmInfo: DAGConfirmInfo = {
+          workflowId: plan.graph.id,
+          summary: plan.summary,
+          reasoning: plan.reasoning,
+          estimatedCost: plan.estimatedCost,
+          estimatedTime: plan.estimatedTime,
+          nodes: [...plan.graph.nodes.values()].map((n) => ({ id: n.id, label: n.label, type: n.type })),
+          guardedActions: [],
+        };
+        this.callbacks.onDAGConfirm?.(confirmInfo);
+        // Also send a text message for TUI/backward compat
+        this.callbacks.onText(
+          `This task involves potentially destructive operations. ${plan.summary}\nSay **yes** to approve or **no** to cancel.`,
+          false, true,
+        );
+        pushHistory({ role: 'assistant', content: `[Awaiting confirmation] ${plan.summary}` });
+        return;
+      }
+
+      await this.dispatchAsync(plan, pushHistory);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log.error('dispatchFullDAG error', { error: msg });
+      this.callbacks.onThinking('', true, true);
+      this.callbacks.onText(`Failed to plan: ${msg}`, false, true);
+    }
+  }
+
+  // ── Async dispatch (shared by micro and full DAGs) ────────────────
+
+  /**
+   * Dispatch a plan for background execution. Returns the workflow ID immediately.
+   * The agent loop is freed — execution happens asynchronously.
+   */
+  private async dispatchAsync(
+    plan: PlannerOutput,
+    pushHistory: (entry: { role: string; content: string }) => void,
+  ): Promise<string> {
+    const workflowId = plan.graph.id;
+
+    // Emit dispatch info
+    const dispatchInfo: DAGDispatchInfo = {
+      workflowId,
+      workflowName: plan.graph.name,
+      nodeCount: plan.graph.nodes.size,
+      estimatedTime: plan.estimatedTime,
+      estimatedCost: plan.estimatedCost,
+      summary: plan.summary,
+      nodes: [...plan.graph.nodes.values()].map((n) => ({ id: n.id, label: n.label, type: n.type })),
+    };
+    this.callbacks.onDAGDispatched?.(dispatchInfo);
+    pushHistory({ role: 'assistant', content: `[Dispatched] ${plan.summary}` });
+
+    // Fire-and-forget: execute in the background
+    void this.executeBackground(plan, pushHistory).catch((err) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      log.error('Background execution failed', { error: msg, workflowId });
+      this.callbacks.onText(`Workflow failed: ${msg}`, false, true);
+    });
+
+    return workflowId;
+  }
+
+  /**
+   * Execute a plan in the background via the GraphExecutor.
+   * Identical to executePlan but designed to be called via fire-and-forget.
+   */
+  private async executeBackground(
+    plan: PlannerOutput,
+    pushHistory: (entry: { role: string; content: string }) => void,
+  ): Promise<void> {
+    await this.executePlan(plan, pushHistory);
+  }
+
+  // ── Confirmation resolution ───────────────────────────────────────
+
+  /**
+   * Resolve a pending guarded DAG confirmation.
+   * Called when the user says "yes"/"no" to a guarded operation.
+   * If workflowId is provided, resolves that specific confirmation.
+   * Otherwise resolves the most recent one.
+   */
+  resolveConfirmation(approved: boolean, workflowId?: string): void {
+    const targetId = workflowId ?? [...this.pendingConfirmations.keys()].pop();
+    if (!targetId) return;
+
+    const pending = this.pendingConfirmations.get(targetId);
+    if (!pending) return;
+
+    this.pendingConfirmations.delete(targetId);
+
+    if (approved) {
+      this.callbacks.onText('Approved. Starting execution…', false, true);
+      void this.dispatchAsync(pending.plan, pending.pushHistory);
+    } else {
+      this.callbacks.onText('Cancelled.', false, true);
+      pending.pushHistory({ role: 'assistant', content: '[Cancelled by user]' });
+    }
+  }
 
   // ── Plan generation ─────────────────────────────────────────────
 
@@ -390,13 +572,63 @@ export class OrchestrationBridge {
 
   // ── Event handling ──────────────────────────────────────────────
 
-  /** Relay a worker event to callbacks, also triggering a state snapshot. */
+  /** Per-node progress throttle timestamps for DAG progress events. */
+  private readonly progressThrottleMap = new Map<string, number>();
+
+  /** Relay a worker event to callbacks, also triggering a state snapshot and inline progress. */
   private handleWorkerEvent(event: WorkerEvent, workflowId: string): void {
     this.callbacks.onEvent(event);
+
     if (event.type === 'done' || event.type === 'error' || event.type === 'status') {
       const wf = this.activeWorkflows.get(workflowId);
       if (wf) this.callbacks.onGraphState(wf.executor.getState());
     }
+
+    // Emit throttled inline DAG progress
+    this.emitThrottledDAGProgress(event, workflowId);
+  }
+
+  /**
+   * Emit throttled DAG progress events from worker events.
+   * Max 1 update per node per 5 seconds to prevent flooding.
+   * Terminal events (done/error) always pass through.
+   */
+  private emitThrottledDAGProgress(event: WorkerEvent, workflowId: string): void {
+    if (!this.callbacks.onDAGProgress) return;
+
+    const nodeId = event.nodeId;
+    const throttleKey = `${workflowId}:${nodeId}`;
+    const now = Date.now();
+    const lastEmit = this.progressThrottleMap.get(throttleKey) ?? 0;
+
+    const isTerminal = event.type === 'done' || event.type === 'error';
+    if (!isTerminal && now - lastEmit < 5_000) return;
+
+    this.progressThrottleMap.set(throttleKey, now);
+    // Cleanup old entries
+    if (isTerminal) this.progressThrottleMap.delete(throttleKey);
+
+    const wf = this.activeWorkflows.get(workflowId);
+    const state = wf?.executor.getState();
+    const nodeState = state?.nodes?.[nodeId];
+
+    let status: 'started' | 'progress' | 'done' | 'error' = 'progress';
+    if (event.type === 'done') status = 'done';
+    else if (event.type === 'error') status = 'error';
+    else if (lastEmit === 0) status = 'started';
+
+    this.callbacks.onDAGProgress({
+      workflowId,
+      nodeId,
+      nodeLabel: nodeState?.label ?? nodeId,
+      status,
+      message: event.message ?? event.thinking?.slice(0, 100),
+      progress: event.progress ?? nodeState?.progress,
+      layerProgress: state ? {
+        completed: state.completedLayers,
+        total: state.totalLayers,
+      } : undefined,
+    });
   }
 
   // ── Completion ──────────────────────────────────────────────────
@@ -425,59 +657,87 @@ export class OrchestrationBridge {
     }
 
     const { status, durationSec, workerCount, findings, errors, taskSummary, outputPaths, decisions, nodeOutputs } = result;
-    const lines: string[] = [];
 
-    if (status === 'complete') lines.push('✅ Workflow complete.');
-    else if (status === 'error') lines.push('⚠️ Workflow finished with errors.');
-    else lines.push('🛑 Workflow stopped.');
-
-    // Primary answer from exit node
+    // Emit DAGCompleteInfo callback for inline UI
     const nodeOutputEntries = nodeOutputs ? Object.entries(nodeOutputs) : [];
-    if (nodeOutputEntries.length > 0) {
-      const [, lastOutput] = nodeOutputEntries[nodeOutputEntries.length - 1];
+    const lastOutput = nodeOutputEntries.length > 0
+      ? nodeOutputEntries[nodeOutputEntries.length - 1][1]
+      : undefined;
+
+    const completeInfo: DAGCompleteInfo = {
+      workflowId,
+      status,
+      summary: taskSummary,
+      output: lastOutput,
+      findings: findings.length > 0 ? findings.slice(0, 8) : undefined,
+      outputPaths: outputPaths.length > 0 ? outputPaths : undefined,
+      durationSec,
+      workerCount,
+      totalCostUsd: result.totalCostUsd ?? result.estimatedCost,
+    };
+    this.callbacks.onDAGComplete?.(completeInfo);
+
+    // --- Inline result formatting for simple DAGs (1-2 nodes) ---
+    if (workerCount <= 2 && status === 'complete') {
+      // Conversational output — just show the result directly
+      const output = lastOutput ?? taskSummary;
       const maxLen = 32000;
-      lines.push('');
-      lines.push(lastOutput.length > maxLen ? lastOutput.slice(0, maxLen) + '\n\n... [truncated]' : lastOutput);
-    } else if (taskSummary) {
-      lines.push('');
-      lines.push(taskSummary);
-    }
+      const text = output.length > maxLen ? output.slice(0, maxLen) + '\n\n... [truncated]' : output;
+      this.callbacks.onText(text, false, true);
+      pushHistory({ role: 'assistant', content: text });
+    } else {
+      // --- Full workflow report for complex DAGs ---
+      const lines: string[] = [];
 
-    if (findings.length > 0) {
-      lines.push('', '**Key findings:**');
-      for (const f of findings.slice(0, 8)) lines.push(`  • ${f}`);
-    }
+      if (status === 'complete') lines.push('Workflow complete.');
+      else if (status === 'error') lines.push('Workflow finished with errors.');
+      else lines.push('Workflow stopped.');
 
-    if (decisions.length > 0) {
-      lines.push('', '**Decisions:**');
-      for (const d of decisions.slice(0, 5)) lines.push(`  • ${d}`);
-    }
-
-    if (outputPaths.length > 0) {
-      lines.push('', '**Output files:**');
-      for (const p of outputPaths) {
-        lines.push(`  📄 ${p}`);
-        try {
-          const resolved = p.startsWith('/') ? p : `${this.config.workspaceDir}/${p}`;
-          if (existsSync(resolved)) {
-            const fileContent = await readFile(resolved, 'utf-8');
-            const preview = fileContent.length > 8000 ? fileContent.slice(0, 8000) + '\n... [truncated]' : fileContent;
-            lines.push('', '```', preview, '```');
-          }
-        } catch { /* non-fatal */ }
+      if (lastOutput) {
+        const maxLen = 32000;
+        lines.push('');
+        lines.push(lastOutput.length > maxLen ? lastOutput.slice(0, maxLen) + '\n\n... [truncated]' : lastOutput);
+      } else if (taskSummary) {
+        lines.push('');
+        lines.push(taskSummary);
       }
+
+      if (findings.length > 0) {
+        lines.push('', '**Key findings:**');
+        for (const f of findings.slice(0, 8)) lines.push(`  - ${f}`);
+      }
+
+      if (decisions.length > 0) {
+        lines.push('', '**Decisions:**');
+        for (const d of decisions.slice(0, 5)) lines.push(`  - ${d}`);
+      }
+
+      if (outputPaths.length > 0) {
+        lines.push('', '**Output files:**');
+        for (const p of outputPaths) {
+          lines.push(`  ${p}`);
+          try {
+            const resolved = p.startsWith('/') ? p : `${this.config.workspaceDir}/${p}`;
+            if (existsSync(resolved)) {
+              const fileContent = await readFile(resolved, 'utf-8');
+              const preview = fileContent.length > 8000 ? fileContent.slice(0, 8000) + '\n... [truncated]' : fileContent;
+              lines.push('', '```', preview, '```');
+            }
+          } catch { /* non-fatal */ }
+        }
+      }
+
+      if (errors.length > 0) {
+        lines.push('', '**Errors:**');
+        for (const e of errors.slice(0, 5)) lines.push(`  ${e.worker}: ${e.message}`);
+      }
+
+      lines.push('', `${durationSec.toFixed(1)}s | ${workerCount} workers`);
+
+      const summary = lines.join('\n');
+      this.callbacks.onText(summary, false, true);
+      pushHistory({ role: 'assistant', content: `[Workflow result] ${summary}` });
     }
-
-    if (errors.length > 0) {
-      lines.push('', '**Errors:**');
-      for (const e of errors.slice(0, 5)) lines.push(`  ❌ ${e.worker}: ${e.message}`);
-    }
-
-    lines.push('', `⏱️ ${durationSec.toFixed(1)}s | ${workerCount} workers`);
-
-    const summary = lines.join('\n');
-    this.callbacks.onText(summary, false, true);
-    pushHistory({ role: 'assistant', content: `[Workflow result] ${summary}` });
 
     // Final state snapshot
     if (wf) this.callbacks.onGraphState(wf.executor.getState());

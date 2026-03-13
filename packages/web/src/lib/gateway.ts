@@ -39,12 +39,89 @@ export function useGateway(url: string = defaultGatewayUrl()) {
         case 'plan':
           orchStore.setActivePlan(msg.plan);
           break;
+        case 'dag_dispatched': {
+          const d = msg.dagDispatch;
+          if (!d) break;
+          orchStore.upsertInlineDAG({
+            dagId: d.workflowId,
+            summary: d.summary,
+            status: 'dispatched',
+            nodes: d.nodes.map((n: { id: string; label: string; type: string }) => ({
+              ...n, status: 'pending' as const,
+            })),
+            completedCount: 0,
+            totalCount: d.nodeCount,
+            elapsed: 0,
+          });
+          chatStore.addMessage({
+            id: crypto.randomUUID(),
+            role: 'assistant',
+            content: d.summary || 'Working on it...',
+            timestamp: new Date().toISOString(),
+            type: 'dag-dispatched',
+            dagId: d.workflowId,
+          });
+          chatStore.setStreaming(false);
+          break;
+        }
+        case 'dag_progress': {
+          const p = msg.dagProgress;
+          if (!p) break;
+          const statusMap: Record<string, 'pending' | 'running' | 'done' | 'error'> = {
+            started: 'running', progress: 'running', done: 'done', error: 'error',
+          };
+          orchStore.updateDAGNode(p.workflowId, p.nodeId, {
+            status: statusMap[p.status] ?? 'running',
+            progress: p.progress,
+          });
+          break;
+        }
+        case 'dag_complete': {
+          const c = msg.dagComplete;
+          if (!c) break;
+          orchStore.completeDAG(
+            c.workflowId,
+            c.output ?? c.summary,
+            c.status === 'error' ? c.summary : undefined,
+          );
+          chatStore.addMessage({
+            id: crypto.randomUUID(),
+            role: 'assistant',
+            content: c.status === 'error'
+              ? `Something went wrong: ${c.summary}`
+              : c.output || c.summary || 'Done.',
+            timestamp: new Date().toISOString(),
+            type: 'dag-complete',
+            dagId: c.workflowId,
+          });
+          break;
+        }
+        case 'dag_confirm': {
+          const cf = msg.dagConfirm;
+          if (!cf) break;
+          orchStore.setPendingConfirmation({
+            dagId: cf.workflowId,
+            summary: cf.summary,
+            reason: cf.reasoning,
+            guardedNodes: cf.guardedActions.map((a: string, i: number) => ({
+              id: `guard-${i}`, label: a, risk: 'high',
+            })),
+          });
+          chatStore.addMessage({
+            id: crypto.randomUUID(),
+            role: 'assistant',
+            content: cf.summary,
+            timestamp: new Date().toISOString(),
+            type: 'dag-confirmation',
+            dagId: cf.workflowId,
+          });
+          break;
+        }
         case 'event':
           if (msg.event) orchStore.addEvent(msg.event);
           if (msg.graphState) orchStore.setGraphState(msg.graphState);
           break;
         case 'status':
-          // Gateway status updates (connected, workflow active/idle, etc.)
           if (msg.graphState) orchStore.setGraphState(msg.graphState);
           break;
         case 'command_result':
@@ -67,7 +144,6 @@ export function useGateway(url: string = defaultGatewayUrl()) {
           chatStore.setStreaming(false);
           break;
         case 'ack':
-          // Server acknowledged receipt — no UI action needed
           break;
         default:
           console.debug('[gateway] unhandled message type:', msg.type, msg);
@@ -115,5 +191,20 @@ export function useGateway(url: string = defaultGatewayUrl()) {
     [send, orchStore],
   );
 
-  return { send, sendChat, sendCommand, respondToPlan };
+  const respondToDAG = useCallback(
+    (workflowId: string, action: 'approve' | 'reject') => {
+      send({ id: crypto.randomUUID(), type: 'dag_response', workflowId, dagAction: action });
+      orchStore.setPendingConfirmation(null);
+    },
+    [send, orchStore],
+  );
+
+  const respondToConfirmation = useCallback(
+    (dagId: string, approved: boolean) => {
+      respondToDAG(dagId, approved ? 'approve' : 'reject');
+    },
+    [respondToDAG],
+  );
+
+  return { send, sendChat, sendCommand, respondToPlan, respondToDAG, respondToConfirmation };
 }

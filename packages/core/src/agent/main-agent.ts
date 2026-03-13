@@ -19,7 +19,10 @@ import { createLogger } from '../logging/logger.js';
 import { SkillLoader, readSkillConfig, writeSkillConfig } from '@orionomega/skills-sdk';
 import type { OrionOmegaConfig } from '../config/types.js';
 
-import type { PlannerOutput, WorkerEvent, GraphState, WorkflowCheckpoint } from '../orchestration/types.js';
+import type {
+  PlannerOutput, WorkerEvent, GraphState, WorkflowCheckpoint,
+  DAGDispatchInfo, DAGProgressInfo, DAGCompleteInfo, DAGConfirmInfo,
+} from '../orchestration/types.js';
 import { EventBus } from '../orchestration/event-bus.js';
 
 // Sub-modules
@@ -27,6 +30,9 @@ import {
   isFastConversational,
   isFastTask,
   isImmediateExecution,
+  isActionRequest,
+  isOrchestrateRequest,
+  isGuardedRequest,
   classifyIntent,
   streamConversation,
 } from './conversation.js';
@@ -57,6 +63,7 @@ export interface MainAgentConfig {
 export interface MainAgentCallbacks {
   onText: (text: string, streaming: boolean, done: boolean) => void;
   onThinking: (text: string, streaming: boolean, done: boolean) => void;
+  /** @deprecated Use onDAGConfirm for guarded plans. Kept for backward compat during migration. */
   onPlan: (plan: PlannerOutput) => void;
   onEvent: (event: WorkerEvent) => void;
   onGraphState: (state: GraphState) => void;
@@ -64,6 +71,12 @@ export interface MainAgentCallbacks {
   onSessionStatus?: (status: { model: string; inputTokens: number; outputTokens: number; maxContextTokens: number }) => void;
   onWorkflowStart?: (workflowId: string, workflowName: string) => void;
   onWorkflowEnd?: (workflowId: string) => void;
+
+  // New DAG lifecycle callbacks
+  onDAGDispatched?: (dispatch: DAGDispatchInfo) => void;
+  onDAGProgress?: (progress: DAGProgressInfo) => void;
+  onDAGComplete?: (result: DAGCompleteInfo) => void;
+  onDAGConfirm?: (confirm: DAGConfirmInfo) => void;
 }
 
 // ── History ────────────────────────────────────────────────────────────────
@@ -219,7 +232,9 @@ export class MainAgent {
   /**
    * Handle an incoming user message.
    *
-   * Routes to: conversation, immediate execution, plan generation, or command.
+   * 3-tier routing: CHAT → direct response, ACTION → micro-DAG,
+   * ORCHESTRATE → full planner DAG. All DAG execution is async —
+   * the agent loop returns immediately after dispatch.
    */
   async handleMessage(content: string): Promise<void> {
     // Ensure init() has completed before processing any message
@@ -246,7 +261,7 @@ export class MainAgent {
     }
 
     try {
-      // 0a. Human gate resolution
+      // 0a. Human gate / DAG confirmation resolution
       if (this.orchestration.hasPendingGates && /^(allow|approve|yes|y|deny|reject|no|n)$/i.test(trimmed)) {
         const gates = this.orchestration.listPendingGates();
         if (gates.length > 0) {
@@ -256,7 +271,27 @@ export class MainAgent {
         }
       }
 
-      // 0b. Checkpoint resume / discard
+      // 0a'. DAG confirmation resolution (guarded operations)
+      if (this.orchestration.hasPendingConfirmations) {
+        const confirmed = /^(allow|approve|yes|y|go|do\s*it|lgtm)$/i.test(trimmed);
+        const rejected = /^(deny|reject|no|n|cancel|stop)$/i.test(trimmed);
+        if (confirmed || rejected) {
+          this.orchestration.resolveConfirmation(confirmed);
+          return;
+        }
+      }
+
+      // 0b. Pending plan + "do it" (backward compat for old plan approval flow)
+      if (this.orchestration.hasPendingPlans && this.orchestration.latestPendingPlanId && isImmediateExecution(trimmed)) {
+        log.verbose('Route: approve pending plan (legacy)', { planId: this.orchestration.latestPendingPlanId });
+        await this.orchestration.handlePlanResponse(
+          this.orchestration.latestPendingPlanId, 'approve',
+          (e) => this.pushHistory(e as HistoryEntry),
+        );
+        return;
+      }
+
+      // 0c. Checkpoint resume / discard
       if (this.interruptedWorkflows.length > 0) {
         const lower = trimmed.toLowerCase().trim();
         if (/^resume( all)?$/.test(lower)) {
@@ -286,52 +321,84 @@ export class MainAgent {
         return;
       }
 
-      // 2. Fast-path conversational
+      // 2. CHAT fast-path
       if (isFastConversational(trimmed)) {
-        log.verbose('Route: fast conversational');
+        log.verbose('Route: CHAT fast-path');
         this.callbacks.onThinking('Thinking…', true, false);
         await this.respondConversationally(trimmed);
         return;
       }
 
-      // 3. Pending plan + "do it"
-      if (this.orchestration.hasPendingPlans && this.orchestration.latestPendingPlanId && isImmediateExecution(trimmed)) {
-        log.verbose('Route: approve pending plan', { planId: this.orchestration.latestPendingPlanId });
-        await this.orchestration.handlePlanResponse(
-          this.orchestration.latestPendingPlanId, 'approve',
+      // 3. ACTION fast-path — single-step micro-DAG
+      if (isActionRequest(trimmed)) {
+        log.verbose('Route: ACTION fast-path');
+        await this.orchestration.dispatchMicroDAG(
+          trimmed,
           (e) => this.pushHistory(e as HistoryEntry),
         );
-        return;
+        return; // Returns immediately — DAG runs async
       }
 
-      // 4. Immediate execution
-      if (isImmediateExecution(trimmed)) {
-        log.verbose('Route: immediate execution');
-        await this.orchestration.planAndExecute(trimmed, (e) => this.pushHistory(e as HistoryEntry));
-        return;
+      // 4. ORCHESTRATE fast-path — full planner DAG
+      if (isOrchestrateRequest(trimmed)) {
+        log.verbose('Route: ORCHESTRATE fast-path', { guarded: isGuardedRequest(trimmed) });
+        const guarded = isGuardedRequest(trimmed);
+        await this.orchestration.dispatchFullDAG(
+          trimmed,
+          (e) => this.pushHistory(e as HistoryEntry),
+          { requireConfirmation: guarded },
+        );
+        return; // Returns immediately — DAG runs async
       }
 
-      // 5. Fast-path task
-      if (isFastTask(trimmed)) {
-        log.verbose('Route: fast task (orchestration)');
-        await this.orchestration.planOnly(trimmed, (e) => this.pushHistory(e as HistoryEntry));
-        return;
-      }
-
-      // 6. Ambiguous — LLM classifier
+      // 5. Ambiguous — LLM 3-tier classifier
       log.verbose('Route: LLM intent classification');
       this.callbacks.onThinking('Classifying intent…', true, false);
       const intent = await classifyIntent(this.anthropic, this.config.model, trimmed);
       log.verbose(`Intent classified: ${intent}`);
-      if (intent === 'TASK') {
-        await this.orchestration.planOnly(trimmed, (e) => this.pushHistory(e as HistoryEntry));
-      } else {
-        await this.respondConversationally(trimmed);
+
+      switch (intent) {
+        case 'CHAT':
+          await this.respondConversationally(trimmed);
+          break;
+        case 'ACTION':
+          await this.orchestration.dispatchMicroDAG(
+            trimmed,
+            (e) => this.pushHistory(e as HistoryEntry),
+          );
+          break;
+        case 'ORCHESTRATE': {
+          const guarded = isGuardedRequest(trimmed);
+          await this.orchestration.dispatchFullDAG(
+            trimmed,
+            (e) => this.pushHistory(e as HistoryEntry),
+            { requireConfirmation: guarded },
+          );
+          break;
+        }
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       log.error('handleMessage error', { error: msg });
       this.callbacks.onText(`Something went wrong: ${msg}`, false, true);
+    }
+  }
+
+  /**
+   * Handle a DAG confirmation response (approve/reject for guarded operations).
+   * Called from the gateway when a client sends a dag_response message.
+   */
+  async handleDAGResponse(workflowId: string, action: 'approve' | 'reject'): Promise<void> {
+    try {
+      if (action === 'approve') {
+        this.orchestration.resolveConfirmation(true, workflowId);
+      } else {
+        this.orchestration.resolveConfirmation(false, workflowId);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log.error('handleDAGResponse error', { error: msg });
+      this.callbacks.onText(`Error handling DAG response: ${msg}`, false, true);
     }
   }
 

@@ -178,12 +178,8 @@ async function initMainAgent(): Promise<void> {
       });
     },
     onEvent(event) {
-      wsHandler.broadcast({
-        id: randomBytes(8).toString('hex'),
-        type: 'event',
-        workflowId: (event as { workflowId?: string }).workflowId,
-        event,
-      });
+      const workerEvent = event as { workflowId?: string; type?: string };
+      eventStreamer.emit(event, workerEvent.type, workerEvent.workflowId);
     },
     onGraphState(state) {
       wsHandler.broadcast({
@@ -213,6 +209,40 @@ async function initMainAgent(): Promise<void> {
         id: randomBytes(8).toString('hex'),
         type: 'command_result',
         commandResult: result,
+      });
+    },
+
+    // DAG lifecycle callbacks — route through EventStreamer for subscription filtering
+    onDAGDispatched(dispatch) {
+      eventStreamer.emitDAGMessage({
+        id: randomBytes(8).toString('hex'),
+        type: 'dag_dispatched',
+        workflowId: dispatch.workflowId,
+        dagDispatch: dispatch,
+      });
+    },
+    onDAGProgress(progress) {
+      eventStreamer.emitDAGMessage({
+        id: randomBytes(8).toString('hex'),
+        type: 'dag_progress',
+        workflowId: progress.workflowId,
+        dagProgress: progress,
+      });
+    },
+    onDAGComplete(result) {
+      eventStreamer.emitDAGMessage({
+        id: randomBytes(8).toString('hex'),
+        type: 'dag_complete',
+        workflowId: result.workflowId,
+        dagComplete: result,
+      });
+    },
+    onDAGConfirm(confirm) {
+      eventStreamer.emitDAGMessage({
+        id: randomBytes(8).toString('hex'),
+        type: 'dag_confirm',
+        workflowId: confirm.workflowId,
+        dagConfirm: confirm,
       });
     },
   };

@@ -156,6 +156,7 @@ export class GraphExecutor {
             node.output = result.value.output;
             node.progress = 100;
             this.nodeResults.set(nodeId, result.value);
+            this.totalCostUsd += result.value.costUsd ?? 0;
             this.state.setNodeOutput(nodeId, result.value.output);
             if (result.value.output && typeof result.value.output === 'string') {
               this.nodeOutputs.set(nodeId, result.value.output);
@@ -269,6 +270,7 @@ export class GraphExecutor {
       recentEvents: this.eventBus.getRecentEvents(20),
       completedLayers: this.completedLayers,
       totalLayers: this.graph.layers.length,
+      estimatedCost: this.totalCostUsd,
     };
   }
 
@@ -488,7 +490,7 @@ export class GraphExecutor {
           codingOutputDir,
           (event) => {
             const typeMap: Record<string, string> = {
-              'status': 'status', 'tool': 'tool_call', 'done': 'done', 'error': 'error',
+              'status': 'status', 'tool': 'tool_call', 'thinking': 'thinking', 'done': 'done', 'error': 'error',
             };
             this.eventBus.emit({
               workflowId: this.graph.id,
@@ -497,6 +499,7 @@ export class GraphExecutor {
               timestamp: new Date().toISOString(),
               type: (typeMap[event.type] ?? 'status') as WorkerEvent['type'],
               message: event.message,
+              thinking: event.thinking,
               progress: event.progress ?? 0,
             });
           },

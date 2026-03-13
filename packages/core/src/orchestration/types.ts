@@ -254,6 +254,57 @@ export interface WorkflowCheckpoint {
   errors: { worker: string; message: string; resolution?: string }[];
 }
 
+// ── DAG Dispatch Info ────────────────────────────────────────────────────────
+
+/** Intent classification tiers for the conversational DAG system. */
+export type IntentTier = 'CHAT' | 'ACTION' | 'ORCHESTRATE';
+
+/** Info emitted when a DAG is dispatched for execution. */
+export interface DAGDispatchInfo {
+  workflowId: string;
+  workflowName: string;
+  nodeCount: number;
+  estimatedTime: number;
+  estimatedCost: number;
+  summary: string;
+  nodes: Array<{ id: string; label: string; type: string }>;
+}
+
+/** Info emitted for inline DAG progress updates. */
+export interface DAGProgressInfo {
+  workflowId: string;
+  nodeId: string;
+  nodeLabel: string;
+  status: 'started' | 'progress' | 'done' | 'error';
+  message?: string;
+  progress?: number;
+  layerProgress?: { completed: number; total: number };
+}
+
+/** Info emitted when a DAG execution completes. */
+export interface DAGCompleteInfo {
+  workflowId: string;
+  status: 'complete' | 'error' | 'stopped';
+  summary: string;
+  output?: string;
+  findings?: string[];
+  outputPaths?: string[];
+  durationSec: number;
+  workerCount: number;
+  totalCostUsd: number;
+}
+
+/** Info emitted when a guarded DAG needs user confirmation. */
+export interface DAGConfirmInfo {
+  workflowId: string;
+  summary: string;
+  reasoning: string;
+  estimatedCost: number;
+  estimatedTime: number;
+  nodes: Array<{ id: string; label: string; type: string }>;
+  guardedActions: string[];
+}
+
 // ── Autonomous Mode ─────────────────────────────────────────────────────────
 
 /** Actions that require human approval before proceeding. */

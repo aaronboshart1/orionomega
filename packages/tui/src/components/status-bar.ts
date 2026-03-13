@@ -191,20 +191,18 @@ export class StatusBar extends Text {
       parts.push(chalk.hex(palette.purple)('⬡') + ' ' + chalk.hex(palette.text)(shortModel));
     }
 
-    // Token usage
+    // Session cost — computed from tokens + model pricing
     const input = this._status.inputTokens ?? 0;
     const output = this._status.outputTokens ?? 0;
-    const total = input + output;
-    const max = this._status.maxContextTokens ?? 200000;
-    if (total > 0) {
-      const pct = Math.round((total / max) * 100);
-      const color = pct > 80 ? palette.red : pct > 60 ? palette.accent : palette.text;
-      parts.push(
-        chalk.hex(palette.dim)('ctx ') +
-        chalk.hex(color)(this.formatTokens(total)) +
-        chalk.hex(palette.dim)('/') +
-        chalk.hex(palette.dim)(this.formatTokens(max)),
-      );
+    const sessionCost = this.computeCost(input, output, this._status.model);
+    const displayCost = (this._status.estimatedCost ?? 0) + sessionCost;
+    if (displayCost > 0 && isFinite(displayCost)) {
+      parts.push(chalk.hex(palette.dim)('$') + chalk.hex(palette.text)(displayCost.toFixed(2)));
+    } else {
+      // Always show $0.00 once connected and model is known
+      if (this._status.model) {
+        parts.push(chalk.hex(palette.dim)('$0.00'));
+      }
     }
 
     // Workflows / tasks
@@ -224,10 +222,7 @@ export class StatusBar extends Text {
       parts.push(chalk.hex(palette.green)('⚙') + ' ' + chalk.hex(palette.text)(`workers ${workers}`));
     }
 
-    // Cost
-    if (this._status.estimatedCost && this._status.estimatedCost > 0 && isFinite(this._status.estimatedCost)) {
-      parts.push(chalk.hex(palette.dim)('$' + this._status.estimatedCost.toFixed(3)));
-    }
+
 
     const separator = chalk.hex(palette.dim)(' │ ');
     this.setText('  ' + parts.join(separator));
@@ -244,6 +239,27 @@ export class StatusBar extends Text {
       return `${name} ${ver}`;
     }
     return model.length > 20 ? model.slice(0, 20) + '…' : model;
+  }
+
+  /**
+   * Estimate cost from token counts + model name.
+   * Prices per million tokens (input / output) as of mid-2025.
+   */
+  private computeCost(inputTokens: number, outputTokens: number, model?: string): number {
+    // Pricing per million tokens [input, output]
+    const pricing: Record<string, [number, number]> = {
+      'opus':    [15.0,  75.0],
+      'sonnet':  [3.0,   15.0],
+      'haiku':   [0.8,   4.0],
+    };
+    let rates: [number, number] = [3.0, 15.0]; // default sonnet
+    if (model) {
+      const lower = model.toLowerCase();
+      for (const [key, val] of Object.entries(pricing)) {
+        if (lower.includes(key)) { rates = val; break; }
+      }
+    }
+    return (inputTokens / 1_000_000) * rates[0] + (outputTokens / 1_000_000) * rates[1];
   }
 
   private formatTokens(n: number): string {

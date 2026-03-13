@@ -5,7 +5,16 @@ export interface ChatMessage {
   role: 'user' | 'assistant' | 'system';
   content: string;
   timestamp: string;
-  type?: 'text' | 'plan' | 'orchestration-update' | 'command-result';
+  type?:
+    | 'text'
+    | 'plan'
+    | 'orchestration-update'
+    | 'command-result'
+    | 'dag-dispatched'
+    | 'dag-progress'
+    | 'dag-complete'
+    | 'dag-confirmation';
+  dagId?: string;
 }
 
 interface ChatStore {

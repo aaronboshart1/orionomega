@@ -546,7 +546,7 @@ export async function executeAgent(
 export async function executeCodingAgent(
   node: WorkflowNode,
   workspaceDir: string,
-  onProgress?: (event: { type: string; message: string; progress?: number }) => void,
+  onProgress?: (event: { type: string; message: string; progress?: number; thinking?: string }) => void,
   abortSignal?: AbortSignal,
 ): Promise<CodingAgentResult> {
   const config = readConfig();
@@ -656,11 +656,19 @@ export async function executeCodingAgent(
     for await (const message of queryResult) {
       // P3: Use message.type discriminator for proper typed handling
 
-      // Assistant message — collect text and tool use
+      // Assistant message — collect text, thinking, and tool use
       if (message.type === 'assistant') {
         const assistantMsg = message as SDKAssistantMessage;
         if (assistantMsg.message?.content) {
           for (const block of assistantMsg.message.content) {
+            if (block.type === 'thinking' && 'thinking' in block) {
+              const thinkingText = (block as { thinking: string }).thinking;
+              onProgress?.({
+                type: 'thinking',
+                message: thinkingText.slice(0, 100),
+                thinking: thinkingText,
+              });
+            }
             if (block.type === 'text') {
               output += block.text + '\n';
             }

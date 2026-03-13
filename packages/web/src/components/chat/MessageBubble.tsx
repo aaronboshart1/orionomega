@@ -1,6 +1,10 @@
 'use client';
 
 import type { ChatMessage } from '@/stores/chat';
+import { useOrchestrationStore } from '@/stores/orchestration';
+import { InlineDAGCard } from './InlineDAGCard';
+import { DAGConfirmationCard } from './DAGConfirmationCard';
+import { useGateway } from '@/lib/gateway';
 
 interface MessageBubbleProps {
   message: ChatMessage;
@@ -9,7 +13,6 @@ interface MessageBubbleProps {
 /** Simple inline formatting: backtick code, bold, and newlines */
 function formatContent(content: string) {
   const parts: (string | JSX.Element)[] = [];
-  // Split into code blocks and inline segments
   const segments = content.split(/(```[\s\S]*?```|`[^`]+`|\*\*[^*]+\*\*)/g);
 
   segments.forEach((seg, i) => {
@@ -39,7 +42,6 @@ function formatContent(content: string) {
         </strong>,
       );
     } else {
-      // Convert newlines
       const lines = seg.split('\n');
       lines.forEach((line, li) => {
         if (li > 0) parts.push(<br key={`${i}-br-${li}`} />);
@@ -52,13 +54,59 @@ function formatContent(content: string) {
 }
 
 export function MessageBubble({ message }: MessageBubbleProps) {
-  const { role, content, type } = message;
+  const { role, content, type, dagId } = message;
+  const inlineDAGs = useOrchestrationStore((s) => s.inlineDAGs);
+  const pendingConfirmation = useOrchestrationStore((s) => s.pendingConfirmation);
+  const { respondToConfirmation } = useGateway();
+
+  // DAG-dispatched messages render with an inline progress card
+  if (type === 'dag-dispatched' && dagId) {
+    const dag = inlineDAGs[dagId];
+    return (
+      <div className="my-3 flex justify-start">
+        <div className="max-w-[85%]">
+          {dag ? (
+            <InlineDAGCard dag={dag} />
+          ) : (
+            <div className="rounded-2xl bg-zinc-800 px-4 py-3 text-sm text-zinc-100">
+              {formatContent(content)}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // DAG-confirmation messages render with approval UI
+  if (type === 'dag-confirmation' && dagId && pendingConfirmation?.dagId === dagId) {
+    return (
+      <div className="my-3 flex justify-start">
+        <div className="max-w-[85%]">
+          <DAGConfirmationCard
+            confirmation={pendingConfirmation}
+            onRespond={respondToConfirmation}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  // DAG-complete messages render as conversational responses
+  if (type === 'dag-complete') {
+    return (
+      <div className="my-3 flex justify-start">
+        <div className="max-w-[80%] rounded-2xl bg-zinc-800 px-4 py-3 text-sm leading-relaxed text-zinc-100">
+          {formatContent(content)}
+        </div>
+      </div>
+    );
+  }
 
   if (role === 'system') {
     return (
       <div className="my-3 flex justify-center">
         <div className="max-w-md rounded-lg bg-zinc-800/50 px-4 py-2 text-center text-xs text-zinc-400">
-          {type === 'command-result' && '⚡ '}
+          {type === 'command-result' && '\u26A1 '}
           {formatContent(content)}
         </div>
       </div>

@@ -40,22 +40,55 @@ const CONVERSATIONAL_FAST = [
   /^(yes|no|yep|nope|yeah|nah)\b/i,
 ];
 
-/** Quick-match patterns that almost certainly need orchestration. */
-const TASK_FAST = [
-  /\b(research|investigate|analyze|compare|build|create|write|generate|deploy|set\s*up|install|configure)\b.*\b(and|then|also|plus|save|output|file)\b/i,
-  /\bstep[- ]by[- ]step\b/i,
-  /\bmulti[- ]?step\b/i,
+/** Quick-match patterns for single-step ACTION tasks (micro-DAG, no planner call). */
+const ACTION_FAST = [
+  // File operations
+  /^(read|show|cat|view|open|display)\s+\S+/i,
+  /^(list|ls|find)\s+(files?|dir|folders?)/i,
+  /^(create|touch|make|write)\s+(a\s+)?(file|script)\b/i,
+  // Shell commands
+  /^(run|execute|exec)\s+/i,
+  // Status queries
+  /^(check|show|get|what('s| is| are))\s+(the\s+)?(status|state|health|logs?|version)/i,
+  // Git single-step
+  /^(git\s+\w+|commit|push|pull|checkout|branch)\b/i,
+  // Lookups
+  /^(how\s+many|count|size\s+of|disk\s+usage)/i,
+  // Search
+  /^(search|grep|find|look\s+(for|up))\s+/i,
+  // Install single package
+  /^(npm|pip|apt|brew|cargo|go)\s+(install|add|get)\s+\S+\s*$/i,
 ];
 
-/** The LLM-based intent classification prompt. */
+/** Quick-match patterns that almost certainly need orchestration (multi-step). */
+const ORCHESTRATE_FAST = [
+  /\b(research|investigate|analyze|compare)\b.*\b(and|then|also|plus)\b/i,
+  /\bstep[- ]by[- ]step\b/i,
+  /\bmulti[- ]?step\b/i,
+  /\b(build|create|write|generate|implement|develop)\s+(a|an|the)\s+/i,
+  /\b(refactor|rewrite|redesign|migrate|upgrade)\b/i,
+  /\b(deploy|provision|set\s*up|configure|install)\b.*\b(on|to|for|in)\b/i,
+  /\b(research|find|gather)\b.*\b(write|create|save|output|report)\b/i,
+];
+
+/** Patterns for guarded (destructive/expensive) operations that require confirmation. */
+const GUARDED_PATTERNS = [
+  /\b(delete|remove|destroy|drop|purge|wipe)\b/i,
+  /\b(deploy|publish|release|push\s+to\s+(prod|production|main|master))\b/i,
+  /\b(merge|force[- ]push)\b/i,
+  /\b(send\s+(email|message|notification))\b/i,
+];
+
+/** The LLM-based intent classification prompt (3-tier). */
 const CLASSIFY_PROMPT = `You are an intent classifier for an AI orchestration system.
 Given a user message, classify it as one of:
-- CHAT: Conversational, simple questions, greetings, opinions, single-step answers the assistant can give directly. Examples: "what is 2+2?", "explain quantum computing", "what's the weather?", "tell me a joke", "what do you think about X?"
-- TASK: Multi-step work requiring research, file operations, code generation, comparisons, or coordinated effort. Examples: "research X and write a report", "build a landing page", "compare A, B, and C with benchmarks", "deploy X to production"
+- CHAT: Conversational, simple questions, greetings, opinions, single-step answers the assistant can give directly. Examples: "what is 2+2?", "explain quantum computing", "tell me a joke", "what do you think about X?"
+- ACTION: Single-step tasks that need one tool call or agent action. Examples: "read config.yaml", "run npm test", "search for X in the codebase", "create a file called Y", "check git status"
+- ORCHESTRATE: Multi-step work requiring research, coordinated effort, or multiple agent actions. Examples: "research X and write a report", "build a landing page", "compare A, B, and C", "refactor the auth module"
 
-Bias: When in doubt, prefer CHAT. Only classify as TASK when the request clearly needs multiple coordinated steps, external research, file creation, or multi-agent work.
+Bias: When in doubt between CHAT and ACTION, prefer ACTION. Only classify as ORCHESTRATE when the request clearly needs multiple coordinated steps.
 
-Respond with ONLY the word CHAT or TASK.`;
+Respond with ONLY the word CHAT, ACTION, or ORCHESTRATE.`;
 
 /** Tool definitions available to the main agent for conversational responses. */
 export const MAIN_AGENT_TOOLS = [
@@ -111,17 +144,35 @@ export function isFastConversational(content: string): boolean {
   return false;
 }
 
-/** Fast-path task check (no LLM needed). */
-export function isFastTask(content: string): boolean {
-  return TASK_FAST.some((p) => p.test(content.trim()));
+/** Fast-path single-step ACTION check (no LLM needed). */
+export function isActionRequest(content: string): boolean {
+  return ACTION_FAST.some((p) => p.test(content.trim()));
 }
+
+/** Fast-path multi-step ORCHESTRATE check (no LLM needed). */
+export function isOrchestrateRequest(content: string): boolean {
+  return ORCHESTRATE_FAST.some((p) => p.test(content.trim()));
+}
+
+/** Check if a message involves guarded (destructive/expensive) operations. */
+export function isGuardedRequest(content: string): boolean {
+  return GUARDED_PATTERNS.some((p) => p.test(content.trim()));
+}
+
+/** @deprecated Use isOrchestrateRequest instead. */
+export function isFastTask(content: string): boolean {
+  return isOrchestrateRequest(content);
+}
+
+/** Intent type returned by the 3-tier classifier. */
+export type IntentType = 'CHAT' | 'ACTION' | 'ORCHESTRATE';
 
 /** LLM-based intent classification for ambiguous messages. */
 export async function classifyIntent(
   client: AnthropicClient,
   model: string,
   message: string,
-): Promise<'CHAT' | 'TASK'> {
+): Promise<IntentType> {
   try {
     const response = await client.createMessage({
       model,
@@ -134,7 +185,8 @@ export async function classifyIntent(
     const text = response.content?.[0]?.text?.trim().toUpperCase() ?? 'CHAT';
     log.info('Intent classified', { message: message.slice(0, 80), intent: text });
 
-    if (text.includes('TASK')) return 'TASK';
+    if (text.includes('ORCHESTRATE') || text.includes('TASK')) return 'ORCHESTRATE';
+    if (text.includes('ACTION')) return 'ACTION';
     return 'CHAT';
   } catch (err) {
     log.warn('Intent classification failed, defaulting to CHAT', {

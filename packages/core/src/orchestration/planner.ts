@@ -37,6 +37,9 @@ export class Planner {
     this.config = config;
   }
 
+  /** The model used for planning. */
+  get model(): string { return this.config.model; }
+
   /**
    * Generates an execution plan for the given task.
    *

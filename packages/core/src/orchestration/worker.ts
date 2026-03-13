@@ -360,6 +360,7 @@ export class WorkerProcess {
       toolCallCount: result.toolCalls,
       findings: [],
       outputPaths: result.outputPaths,
+      costUsd: result.costUsd,
     };
   }
 
