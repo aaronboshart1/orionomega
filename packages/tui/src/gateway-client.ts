@@ -268,22 +268,13 @@ export class GatewayClient extends EventEmitter<GatewayClientEvents> {
       case 'event': {
         const event = msg.event as WorkerEvent;
         if (event) {
+          // Emit the full event — WorkflowPanel handles display in the unified tree.
+          // No longer emit 'message' for finding/error/done (eliminates duplicate chat entries).
           this.emit('event', event, msg.workflowId ?? event.workflowId);
-          if (event.type === 'finding' || event.type === 'error' || event.type === 'done') {
-            const emojiMap: Record<string, string> = {
-              finding: icons.finding,
-              error: icons.error,
-              done: icons.complete,
-            };
-            this.emit('message', {
-              id: nextId(),
-              role: 'system',
-              content: `[${event.nodeId}] ${event.message ?? 'Complete'}`,
-              timestamp: event.timestamp,
-              emoji: emojiMap[event.type] ?? icons.info,
-            });
-          } else if (event.type === 'tool_call' && event.tool) {
-            this.emit('thinking', `${event.nodeId}: ${event.tool.name}${event.tool.summary ? ' — ' + event.tool.summary : ''}`);
+
+          // Keep thinking emissions for status bar indicator
+          if (event.type === 'tool_call' && event.tool) {
+            this.emit('thinking', `${event.nodeId}: ${event.tool.name}${event.tool.summary ? ' \u2014 ' + event.tool.summary : ''}`);
           } else if (event.type === 'status' && event.message) {
             this.emit('thinking', `${event.nodeId}: ${event.message}`);
           }

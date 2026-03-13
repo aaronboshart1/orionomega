@@ -96,7 +96,7 @@ export class Planner {
         const parts: string[] = [];
         for (const r of recalls) {
           if (r.status === 'fulfilled' && r.value) {
-            const memories = r.value.memories ?? ((r.value as unknown as Record<string, unknown>).results as { content: string }[]) ?? [];
+            const memories = r.value.results ?? [];
             for (const m of memories) {
               if (m.content) parts.push(m.content);
             }

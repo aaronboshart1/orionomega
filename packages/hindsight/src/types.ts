@@ -54,7 +54,8 @@ export interface RecalledMemory {
 
 /** Result of a recall (query) operation. */
 export interface RecallResult {
-  memories: RecalledMemory[];
+  /** The API returns recalled memories under the `results` key. */
+  results: RecalledMemory[];
   tokens_used: number;
 }
 

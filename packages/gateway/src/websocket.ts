@@ -396,14 +396,26 @@ export class WebSocketHandler {
     }
   }
 
-  /** Clean up after a client disconnects. */
+  /** Clean up after a client disconnects and summarize session if last client. */
   private handleDisconnect(clientId: string): void {
     const conn = this.connections.get(clientId);
     if (!conn) return;
 
-    this.sessionManager.removeClient(conn.sessionId, clientId);
+    const sessionId = conn.sessionId;
+    this.sessionManager.removeClient(sessionId, clientId);
     this.eventStreamer.removeClient(clientId);
     this.connections.delete(clientId);
+
+    // When the last client disconnects from a session, summarize to persistent memory
+    const session = this.sessionManager.getSession(sessionId);
+    if (session && session.clients.size === 0 && this.mainAgent) {
+      log.info('Last client disconnected — summarizing session', { sessionId });
+      this.mainAgent.summarizeSession().catch((err) => {
+        log.warn('Session summarization failed on disconnect', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+    }
   }
 
   /** Start the ping/pong keep-alive loop. */

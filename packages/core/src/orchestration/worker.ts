@@ -304,11 +304,17 @@ export class WorkerProcess {
           heartbeatToolCalls++;
           // Extract tool name (before the first colon if present)
           const toolName = event.message.split(':')[0].trim();
+          // Extract file path from the message (after "ToolName: ")
+          const afterColon = event.message.includes(':')
+            ? event.message.split(':').slice(1).join(':').trim()
+            : '';
+          const fileMatch = afterColon.match(/((?:\.?\/?)?[\w.\-/@]+\.[\w]+)/);
           this.emitEvent({
             type: 'tool_call',
             tool: {
               name: toolName,
               action: toolName,
+              file: fileMatch?.[1],
               summary: event.message,
             },
             message: event.message,

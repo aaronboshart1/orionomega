@@ -66,6 +66,9 @@ const commandHandler = new CommandHandler(sessionManager);
 const eventStreamer = new EventStreamer();
 const wsHandler = new WebSocketHandler(config, sessionManager, commandHandler, eventStreamer);
 
+/** Module-level reference to the MainAgent for shutdown summarization. */
+let mainAgent: MainAgent | null = null;
+
 // ---------------------------------------------------------------------------
 // Main Agent Integration
 // ---------------------------------------------------------------------------
@@ -264,7 +267,7 @@ async function initMainAgent(): Promise<void> {
   };
 
   try {
-    const mainAgent = new MainAgent(agentConfig, callbacks);
+    mainAgent = new MainAgent(agentConfig, callbacks);
     await mainAgent.init();
     wsHandler.setMainAgent(mainAgent);
     log.info(' MainAgent connected');
@@ -381,8 +384,22 @@ server.listen(config.port, config.bind, () => {
 // Graceful Shutdown
 // ---------------------------------------------------------------------------
 
-function shutdown(signal: string): void {
+async function shutdown(signal: string): Promise<void> {
   log.info(` ${signal} received — shutting down gracefully…`);
+
+  // Summarize session to persistent memory before closing
+  if (mainAgent) {
+    try {
+      await mainAgent.summarizeSession();
+      log.info('Session summarized during shutdown');
+    } catch (err) {
+      log.warn('Session summarization failed during shutdown', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  sessionManager.shutdown();
   wsHandler.shutdown();
   eventStreamer.destroy();
   server.close(() => {

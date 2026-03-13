@@ -316,12 +316,14 @@ export async function streamConversation(opts: {
   onText: (text: string, streaming: boolean, done: boolean) => void;
   onThinking?: (text: string, streaming: boolean, done: boolean) => void;
   maxToolRounds?: number;
-}): Promise<{ text: string; inputTokens: number; outputTokens: number }> {
+}): Promise<{ text: string; inputTokens: number; outputTokens: number; cacheCreationTokens: number; cacheReadTokens: number }> {
   const { client, model, systemPrompt, workspaceDir, onText, onThinking } = opts;
   let messages = [...opts.messages];
   let fullText = '';
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
+  let totalCacheCreationTokens = 0;
+  let totalCacheReadTokens = 0;
 
   // Circuit breaker: track consecutive failures by signature and category
   const failuresBySignature = new Map<string, number>();
@@ -398,7 +400,11 @@ export async function streamConversation(opts: {
       if (event.type === "message_start") {
         const msg = (event as Record<string, unknown>).message as Record<string, unknown> | undefined;
         const usage = msg?.usage as Record<string, number> | undefined;
-        if (usage?.input_tokens) totalInputTokens += usage.input_tokens;
+        if (usage) {
+          if (usage.input_tokens) totalInputTokens += usage.input_tokens;
+          if (usage.cache_creation_input_tokens) totalCacheCreationTokens += usage.cache_creation_input_tokens;
+          if (usage.cache_read_input_tokens) totalCacheReadTokens += usage.cache_read_input_tokens;
+        }
       }
       if (event.type === 'message_delta') {
         const delta = (event as Record<string, unknown>).delta as Record<string, unknown> | undefined;
@@ -427,7 +433,7 @@ export async function streamConversation(opts: {
       });
       onThinking?.('', false, true);
       onText('', true, true);
-      return { text: fullText, inputTokens: totalInputTokens, outputTokens: totalOutputTokens };
+      return { text: fullText, inputTokens: totalInputTokens, outputTokens: totalOutputTokens, cacheCreationTokens: totalCacheCreationTokens, cacheReadTokens: totalCacheReadTokens };
     }
 
     // Execute tools and continue
@@ -510,5 +516,5 @@ export async function streamConversation(opts: {
   }
 
   onText('', true, true);
-  return { text: fullText, inputTokens: totalInputTokens, outputTokens: totalOutputTokens };
+  return { text: fullText, inputTokens: totalInputTokens, outputTokens: totalOutputTokens, cacheCreationTokens: totalCacheCreationTokens, cacheReadTokens: totalCacheReadTokens };
 }

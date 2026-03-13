@@ -1,0 +1,316 @@
+/**
+ * @module components/node-display
+ * Multi-line display for a single workflow node.
+ * Renders 1-3 lines depending on node status:
+ *   Running:  spinner + label + model + elapsed, activity line, progress line
+ *   Complete: checkmark + label + model + duration, summary line
+ *   Pending:  circle + label + model, dependency line
+ *   Error:    x + label + model + duration, error line
+ *   Skipped:  slash + label + model (single line)
+ */
+
+import { Container, Text } from '@mariozechner/pi-tui';
+import type { WorkerEvent } from '@orionomega/core';
+import chalk from 'chalk';
+import { palette, spacing, icons } from '../theme.js';
+import { truncate, formatDuration, renderProgressBar } from '../utils/format.js';
+import { omegaSpinner } from './omega-spinner.js';
+
+// ── Types ────────────────────────────────────────────────────────────
+
+export type NodeStatusType = 'pending' | 'running' | 'complete' | 'error' | 'skipped';
+
+export interface NodeState {
+  id: string;
+  label: string;
+  model: string;
+  type: string;
+  status: NodeStatusType;
+  layer: number;
+  dependsOn: string[];
+  dependencyLabels: string[];
+  progress: number;
+  elapsed: number;
+  startedAt?: number;
+  duration?: number;
+  errorMessage?: string;
+  resultSummary?: string;
+}
+
+export function mapNodeStatus(status: string | undefined): NodeStatusType {
+  switch (status) {
+    case 'done': case 'complete': return 'complete';
+    case 'error': case 'failed': return 'error';
+    case 'running': case 'in_progress': return 'running';
+    case 'skipped': return 'skipped';
+    default: return 'pending';
+  }
+}
+
+// ── Progress Bar (styled) ────────────────────────────────────────────
+
+function styledProgressBar(pct: number, width = 18): string {
+  const clamped = Math.max(0, Math.min(100, pct));
+  const filled = Math.round((clamped / 100) * width);
+  const empty = width - filled;
+  return chalk.hex(palette.info)('\u2588'.repeat(filled)) +
+         chalk.hex(palette.dim)('\u2591'.repeat(empty));
+}
+
+// ── Event Accumulator ────────────────────────────────────────────────
+
+/**
+ * Accumulates WorkerEvents for a single node to derive current activity,
+ * tool call count, findings, and progress.
+ */
+export class NodeEventAccumulator {
+  private _toolCalls: Array<{ name: string; file?: string; summary: string }> = [];
+  private _latestActivity = '';
+  private _latestThinking = '';
+  private _findings: string[] = [];
+
+  processEvent(event: WorkerEvent): void {
+    switch (event.type) {
+      case 'tool_call':
+        if (event.tool) {
+          this._toolCalls.push(event.tool);
+          if (event.tool.file) {
+            const action = event.tool.action ?? event.tool.name;
+            this._latestActivity = `${action.charAt(0).toUpperCase() + action.slice(1)} ${event.tool.file}`;
+          } else if (event.tool.summary) {
+            this._latestActivity = `${event.tool.name} \u2014 ${event.tool.summary}`;
+          } else {
+            this._latestActivity = `Running ${event.tool.name}`;
+          }
+        }
+        break;
+
+      case 'status':
+        if (event.message) this._latestActivity = event.message;
+        break;
+
+      case 'thinking':
+        if (event.thinking) this._latestThinking = event.thinking;
+        break;
+
+      case 'finding':
+        if (event.message) this._findings.push(event.message);
+        break;
+
+      case 'error':
+        this._latestActivity = event.error ?? event.message ?? 'Error';
+        break;
+
+      case 'loop_iteration': {
+        const data = event.data as { iteration?: number; maxIterations?: number } | undefined;
+        if (data) {
+          this._latestActivity = `Iteration ${data.iteration ?? '?'}/${data.maxIterations ?? '?'}`;
+        }
+        break;
+      }
+    }
+  }
+
+  get activity(): string { return this._latestActivity || this._latestThinking; }
+  get toolCount(): number { return this._toolCalls.length; }
+  get findings(): string[] { return this._findings; }
+}
+
+// ── NodeDisplay Component ────────────────────────────────────────────
+
+/**
+ * Renders a single workflow node as 1-3 lines depending on status.
+ * Manages its own Text children for main line and sub-lines.
+ */
+export class NodeDisplay extends Container {
+  private mainLine: Text;
+  private subLine1: Text | null = null;
+  private subLine2: Text | null = null;
+  readonly state: NodeState;
+  readonly accumulator = new NodeEventAccumulator();
+
+  constructor(state: NodeState) {
+    super();
+    this.state = state;
+    this.mainLine = new Text('', 1, 0);
+    this.addChild(this.mainLine);
+    this.rebuild();
+  }
+
+  /** Process an incoming WorkerEvent and update display. */
+  updateFromEvent(event: WorkerEvent): void {
+    this.accumulator.processEvent(event);
+    if (event.progress !== undefined) this.state.progress = event.progress;
+
+    if (event.type === 'done') {
+      this.state.status = 'complete';
+      this.state.resultSummary = event.message;
+      if (this.state.startedAt) {
+        this.state.duration = Math.round((Date.now() - this.state.startedAt) / 1000);
+      }
+    } else if (event.type === 'error') {
+      this.state.status = 'error';
+      this.state.errorMessage = event.error ?? event.message;
+      if (this.state.startedAt) {
+        this.state.duration = Math.round((Date.now() - this.state.startedAt) / 1000);
+      }
+    } else if (this.state.status === 'pending') {
+      this.state.status = 'running';
+      if (!this.state.startedAt) this.state.startedAt = Date.now();
+    }
+
+    this.rebuild();
+  }
+
+  /** Update from a GraphState node snapshot. */
+  updateFromGraphNode(node: any): void {
+    const newStatus = mapNodeStatus(node.status);
+    if (newStatus === 'running' && !this.state.startedAt) {
+      this.state.startedAt = node.startedAt ? new Date(node.startedAt).getTime() : Date.now();
+    }
+    if ((newStatus === 'complete' || newStatus === 'error') && node.completedAt && node.startedAt) {
+      this.state.duration = Math.round(
+        (new Date(node.completedAt).getTime() - new Date(node.startedAt).getTime()) / 1000,
+      );
+    }
+    this.state.status = newStatus;
+    if (node.progress !== undefined) this.state.progress = node.progress;
+    if (node.error) this.state.errorMessage = node.error;
+    this.rebuild();
+  }
+
+  /** Called on spinner tick — updates elapsed time for running nodes. */
+  tickUpdate(): void {
+    if (this.state.status !== 'running') return;
+    if (this.state.startedAt) {
+      this.state.elapsed = Math.round((Date.now() - this.state.startedAt) / 1000);
+    }
+    this.rebuild();
+  }
+
+  /** Rebuild all display lines based on current state. */
+  rebuild(): void {
+    // Remove old sub-lines
+    if (this.subLine1) { this.removeChild(this.subLine1); this.subLine1 = null; }
+    if (this.subLine2) { this.removeChild(this.subLine2); this.subLine2 = null; }
+
+    const { state, accumulator } = this;
+    const model = state.model
+      ? chalk.hex(palette.purple)(` [${state.model}]`)
+      : '';
+
+    switch (state.status) {
+      case 'running':
+        this.renderRunning(model, state, accumulator);
+        break;
+      case 'complete':
+        this.renderComplete(model, state, accumulator);
+        break;
+      case 'pending':
+        this.renderPending(model, state);
+        break;
+      case 'error':
+        this.renderError(model, state);
+        break;
+      case 'skipped':
+        this.renderSkipped(model, state);
+        break;
+    }
+  }
+
+  private renderRunning(model: string, state: NodeState, acc: NodeEventAccumulator): void {
+    if (state.startedAt) {
+      state.elapsed = Math.round((Date.now() - state.startedAt) / 1000);
+    }
+    const icon = chalk.hex(palette.info)(omegaSpinner.current);
+    const label = chalk.hex(palette.info)(state.label);
+    const elapsed = chalk.hex(palette.dim)(formatDuration(state.elapsed));
+    this.mainLine.setText(`${spacing.indent2}${icon} ${label}${model}  ${elapsed}`);
+
+    // Activity line
+    const activity = acc.activity;
+    if (activity) {
+      this.subLine1 = new Text(
+        `${spacing.indent3}${chalk.hex(palette.border)(icons.treeMiddle)} ${chalk.hex(palette.text)(truncate(activity, 60))}`,
+        1, 0,
+      );
+      this.addChild(this.subLine1);
+    }
+
+    // Progress line
+    if (acc.toolCount > 0 || state.progress > 0) {
+      const parts: string[] = [];
+      if (acc.toolCount > 0) parts.push(`${acc.toolCount} tool calls`);
+      let pctPart = '';
+      if (state.progress > 0) {
+        const pct = Math.round(state.progress);
+        pctPart = ` \u00b7 ${chalk.hex(palette.info)(`${pct}%`)}  ${styledProgressBar(state.progress)}`;
+      }
+      this.subLine2 = new Text(
+        `${spacing.indent3}${chalk.hex(palette.border)(icons.treeLast)} ${chalk.hex(palette.dim)(parts.join(' \u00b7 '))}${pctPart}`,
+        1, 0,
+      );
+      this.addChild(this.subLine2);
+    }
+  }
+
+  private renderComplete(model: string, state: NodeState, acc: NodeEventAccumulator): void {
+    const icon = chalk.hex(palette.success)(icons.complete);
+    const label = chalk.hex(palette.success)(state.label);
+    const timeParts: string[] = [];
+    if (state.duration !== undefined) timeParts.push(formatDuration(state.duration));
+    const timeStr = timeParts.length > 0
+      ? `  ${chalk.hex(palette.dim)(timeParts.join(' \u00b7 '))}`
+      : '';
+    this.mainLine.setText(`${spacing.indent2}${icon} ${label}${model}${timeStr}`);
+
+    // Summary line
+    const summaryParts: string[] = [];
+    if (acc.toolCount > 0) summaryParts.push(`${acc.toolCount} tool calls`);
+    if (state.resultSummary) summaryParts.push(truncate(state.resultSummary, 50));
+    else if (summaryParts.length === 0) summaryParts.push('Complete');
+    this.subLine1 = new Text(
+      `${spacing.indent3}${chalk.hex(palette.border)(icons.treeLast)} ${chalk.hex(palette.dim)(summaryParts.join(' \u00b7 '))}`,
+      1, 0,
+    );
+    this.addChild(this.subLine1);
+  }
+
+  private renderPending(model: string, state: NodeState): void {
+    const icon = chalk.hex(palette.dim)(icons.pending);
+    const label = chalk.hex(palette.dim)(state.label);
+    this.mainLine.setText(`${spacing.indent2}${icon} ${label}${model}`);
+
+    const deps = state.dependencyLabels.length > 0
+      ? state.dependencyLabels.join(', ')
+      : '\u2014';
+    this.subLine1 = new Text(
+      `${spacing.indent3}${chalk.hex(palette.border)(icons.treeLast)} ${chalk.hex(palette.dim)(`waiting on: ${deps}`)}`,
+      1, 0,
+    );
+    this.addChild(this.subLine1);
+  }
+
+  private renderError(model: string, state: NodeState): void {
+    const icon = chalk.hex(palette.error)(icons.error);
+    const label = chalk.hex(palette.error)(state.label);
+    const dur = state.duration !== undefined
+      ? `  ${chalk.hex(palette.dim)(formatDuration(state.duration))}`
+      : '';
+    this.mainLine.setText(`${spacing.indent2}${icon} ${label}${model}${dur}`);
+
+    const errMsg = state.errorMessage || 'Unknown error';
+    this.subLine1 = new Text(
+      `${spacing.indent3}${chalk.hex(palette.border)(icons.treeLast)} ${chalk.hex(palette.error)(`${icons.error} Error: ${truncate(errMsg, 55)}`)}`,
+      1, 0,
+    );
+    this.addChild(this.subLine1);
+  }
+
+  private renderSkipped(model: string, state: NodeState): void {
+    const label = chalk.hex(palette.dim)(state.label);
+    this.mainLine.setText(
+      `${spacing.indent2}${chalk.hex(palette.dim)(icons.skipped)} ${label}${model} ${chalk.hex(palette.dim)('\u2014 skipped')}`,
+    );
+  }
+}

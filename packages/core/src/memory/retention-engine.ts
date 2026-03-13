@@ -154,7 +154,7 @@ export class RetentionEngine {
         const stripped = content.replace(pattern, '').trim();
         if (stripped) {
           const bank = projectBank ?? 'core';
-          this.retain(bank, stripped, 'preference').catch(() => {});
+          this.retain(bank, stripped, 'preference').catch((err) => { log.debug('Fire-and-forget retain failed', { error: err instanceof Error ? err.message : String(err) }); });
         }
         return;
       }
@@ -162,13 +162,13 @@ export class RetentionEngine {
 
     // Check for preference phrases
     if (PREFERENCE_PATTERNS.some((p) => p.test(content))) {
-      this.retain('core', content, 'preference').catch(() => {});
+      this.retain('core', content, 'preference').catch((err) => { log.debug('Fire-and-forget retain failed', { error: err instanceof Error ? err.message : String(err) }); });
     }
 
     // Check for decision phrases
     if (DECISION_PATTERNS.some((p) => p.test(content))) {
       const bank = projectBank ?? 'core';
-      this.retain(bank, content, 'decision').catch(() => {});
+      this.retain(bank, content, 'decision').catch((err) => { log.debug('Fire-and-forget retain failed', { error: err instanceof Error ? err.message : String(err) }); });
     }
   }
 
@@ -197,12 +197,12 @@ export class RetentionEngine {
 
       // Retain decisions individually
       for (const decision of decisions) {
-        this.retain(bankId, decision, 'decision').catch(() => {});
+        this.retain(bankId, decision, 'decision').catch((err) => { log.debug('Fire-and-forget retain failed', { error: err instanceof Error ? err.message : String(err) }); });
       }
 
       // Retain findings individually
       for (const finding of findings) {
-        this.retain(bankId, finding, 'lesson').catch(() => {});
+        this.retain(bankId, finding, 'lesson').catch((err) => { log.debug('Fire-and-forget retain failed', { error: err instanceof Error ? err.message : String(err) }); });
       }
 
       // Retain errors as lessons
@@ -210,13 +210,13 @@ export class RetentionEngine {
         const errorContent = error.resolution
           ? `Error in ${error.worker}: ${error.message} — Resolution: ${error.resolution}`
           : `Error in ${error.worker}: ${error.message}`;
-        this.retain(bankId, errorContent, 'lesson').catch(() => {});
+        this.retain(bankId, errorContent, 'lesson').catch((err) => { log.debug('Fire-and-forget retain failed', { error: err instanceof Error ? err.message : String(err) }); });
       }
 
       // Retain infrastructure changes
       if (infraChanges && infraChanges.length > 0) {
         for (const change of infraChanges) {
-          this.retain('infra', change, 'infrastructure').catch(() => {});
+          this.retain('infra', change, 'infrastructure').catch((err) => { log.debug('Fire-and-forget retain failed', { error: err instanceof Error ? err.message : String(err) }); });
         }
       }
     } catch (err) {
@@ -258,7 +258,7 @@ export class RetentionEngine {
         bankId,
         event.message,
         'lesson',
-      ).catch(() => {});
+      ).catch((err) => { log.debug('Fire-and-forget retain failed', { error: err instanceof Error ? err.message : String(err) }); });
     }
 
     if (event.type === 'error' && this.config.retainOnError && event.error) {
@@ -266,7 +266,7 @@ export class RetentionEngine {
         bankId,
         `Worker ${event.workerId} error: ${event.error}`,
         'lesson',
-      ).catch(() => {});
+      ).catch((err) => { log.debug('Fire-and-forget retain failed', { error: err instanceof Error ? err.message : String(err) }); });
     }
 
     if (event.type === 'done' && event.data) {
@@ -274,7 +274,7 @@ export class RetentionEngine {
       if (Array.isArray(data.findings)) {
         for (const finding of data.findings) {
           if (typeof finding === 'string') {
-            this.retain(bankId, finding, 'lesson').catch(() => {});
+            this.retain(bankId, finding, 'lesson').catch((err) => { log.debug('Fire-and-forget retain failed', { error: err instanceof Error ? err.message : String(err) }); });
           }
         }
       }

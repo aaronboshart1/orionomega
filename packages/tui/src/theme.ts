@@ -104,6 +104,19 @@ export const icons = {
   rejected: '✗',
   modified: '✏️',
 
+  // Tree connectors
+  treeMiddle: '├',
+  treeLast: '└',
+
+  // Collapse/expand
+  collapsed: '▸',
+  expanded: '▾',
+
+  // Additional status
+  skipped: '⊘',
+  paused: '⏸',
+  files: '📁',
+
   // Punctuation
   separator: '│',
   dot: '·',

@@ -105,6 +105,21 @@ export class MemoryBridge {
         this.config.model,
       );
 
+      // Ensure the persistent core bank exists
+      try {
+        const coreExists = await this.hindsightClient.bankExists('core');
+        if (!coreExists) {
+          await this.hindsightClient.createBank('core', {
+            name: 'OrionOmega Core — cross-session persistent memory',
+          });
+          log.info('Created persistent core bank');
+        }
+      } catch (err) {
+        log.warn('Failed to ensure core bank exists', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+
       // Bootstrap context
       const ctx = await this.sessionBootstrap.bootstrap(this.activeProjectBank ?? undefined);
       const contextBlock = this.sessionBootstrap.buildContextBlock(ctx);
@@ -133,7 +148,10 @@ export class MemoryBridge {
     try {
       this.activeProjectBank = await this.bankManager.ensureProjectBank(task);
       return this.activeProjectBank;
-    } catch {
+    } catch (err) {
+      log.warn('Failed to ensure project bank', {
+        error: err instanceof Error ? err.message : String(err),
+      });
       return null;
     }
   }
@@ -147,22 +165,28 @@ export class MemoryBridge {
     const memories: string[] = [];
 
     try {
-      const result = await this.hindsightClient.recall('jarvis-core', task, { maxTokens: 1024 });
-      // Hindsight API returns 'results' key (not 'memories' despite typed interface)
-      const items = (result as any)?.results ?? result?.memories ?? [];
-      if (items.length) {
-        memories.push(items.map((m: any) => m.content).join('\n\n'));
+      const result = await this.hindsightClient.recall('core', task, { maxTokens: 1024 });
+      if (result.results.length) {
+        memories.push(result.results.map((m) => m.content).join('\n\n'));
       }
-    } catch { /* non-fatal */ }
+    } catch (err) {
+      log.warn('Core bank recall failed for planning', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
 
     if (this.activeProjectBank) {
       try {
         const result = await this.hindsightClient.recall(this.activeProjectBank, task, { maxTokens: 2048 });
-        const items = (result as any)?.results ?? result?.memories ?? [];
-        if (items.length) {
-          memories.push(items.map((m: any) => m.content).join('\n\n'));
+        if (result.results.length) {
+          memories.push(result.results.map((m) => m.content).join('\n\n'));
         }
-      } catch { /* non-fatal */ }
+      } catch (err) {
+        log.warn('Project bank recall failed for planning', {
+          bank: this.activeProjectBank,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
 
     return memories;

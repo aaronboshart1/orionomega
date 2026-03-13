@@ -297,14 +297,10 @@ export class ContextAssembler {
 
       return this.hs!.recall(bank, query, { maxTokens: budget, budget: this.recallBudget })
         .then((response) => {
-          // API returns 'results' key, but typed interface says 'memories'
-          const raw = response as unknown as Record<string, unknown>;
-          const results = (raw.results ?? raw.memories) as
-            Array<{ content: string }> | undefined;
-          if (!results || results.length === 0) return null;
+          if (!response.results || response.results.length === 0) return null;
           return {
             bank,
-            items: results.map((r) => r.content),
+            items: response.results.map((r) => r.content),
           };
         })
         .catch((err) => {

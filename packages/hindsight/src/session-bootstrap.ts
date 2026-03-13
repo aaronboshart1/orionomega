@@ -107,7 +107,7 @@ export class SessionBootstrap {
         'recent context, active work, key decisions',
         { maxTokens: 4096, budget: 'mid' },
       );
-      return result.memories
+      return result.results
         .map((m) => `[${m.context}] ${m.content}`)
         .join('\n');
     } catch {

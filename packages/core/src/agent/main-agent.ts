@@ -68,7 +68,7 @@ export interface MainAgentCallbacks {
   onEvent: (event: WorkerEvent) => void;
   onGraphState: (state: GraphState) => void;
   onCommandResult: (result: { command: string; success: boolean; message: string }) => void;
-  onSessionStatus?: (status: { model: string; inputTokens: number; outputTokens: number; maxContextTokens: number }) => void;
+  onSessionStatus?: (status: { model: string; inputTokens: number; outputTokens: number; cacheCreationTokens: number; cacheReadTokens: number; maxContextTokens: number }) => void;
   onWorkflowStart?: (workflowId: string, workflowName: string) => void;
   onWorkflowEnd?: (workflowId: string) => void;
 
@@ -108,6 +108,8 @@ export class MainAgent {
   private cachedSystemPrompt: string | null = null;
   private cumulativeInputTokens = 0;
   private cumulativeOutputTokens = 0;
+  private cumulativeCacheCreationTokens = 0;
+  private cumulativeCacheReadTokens = 0;
   private availableSkills: string[] = [];
   private interruptedWorkflows: WorkflowCheckpoint[] = [];
 
@@ -141,7 +143,7 @@ export class MainAgent {
         ? `conversation-${Date.now().toString(36)}`
         : undefined,
       additionalBanks: config.hindsight?.url
-        ? ['jarvis-core']
+        ? ['core']
         : [],
       persistPath: `${configDir}/sessions/hot-window.json`,
     });
@@ -257,7 +259,9 @@ export class MainAgent {
 
     // Evaluate for preference patterns (fire-and-forget)
     if (this.memory.retention) {
-      this.memory.retention.evaluateUserMessage(trimmed, this.memory.projectBank ?? undefined).catch(() => {});
+      this.memory.retention.evaluateUserMessage(trimmed, this.memory.projectBank ?? undefined).catch((err) => {
+        log.debug('User message evaluation failed', { error: err instanceof Error ? err.message : String(err) });
+      });
     }
 
     try {
@@ -644,6 +648,8 @@ export class MainAgent {
       });
       this.cumulativeInputTokens += result.inputTokens;
       this.cumulativeOutputTokens += result.outputTokens;
+      this.cumulativeCacheCreationTokens += result.cacheCreationTokens;
+      this.cumulativeCacheReadTokens += result.cacheReadTokens;
       this.pushHistory({ role: "assistant", content: result.text });
       this.emitSessionStatus();
     } catch (err) {
@@ -661,6 +667,8 @@ export class MainAgent {
       model: this.config.model,
       inputTokens: this.cumulativeInputTokens,
       outputTokens: this.cumulativeOutputTokens,
+      cacheCreationTokens: this.cumulativeCacheCreationTokens,
+      cacheReadTokens: this.cumulativeCacheReadTokens,
       maxContextTokens: 200000,
     });
   }
@@ -692,6 +700,8 @@ export class MainAgent {
     this.context.push({
       role: entry.role as 'user' | 'assistant' | 'system',
       content: entry.content,
-    }).catch(() => {}); // never block on retain
+    }).catch((err) => {
+      log.debug('Context push failed (fire-and-forget)', { error: err instanceof Error ? err.message : String(err) });
+    });
   }
 }

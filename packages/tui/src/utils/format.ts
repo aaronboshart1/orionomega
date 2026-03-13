@@ -105,3 +105,22 @@ export function padRight(s: string, width: number): string {
   if (s.length > width) return s.slice(0, width - 1) + '…';
   return s + ' '.repeat(width - s.length);
 }
+
+/**
+ * Render a progress bar using block characters (unstyled).
+ *   renderProgressBar(45) → "████████░░░░░░░░░░"
+ */
+export function renderProgressBar(pct: number, width = 18): string {
+  const clamped = Math.max(0, Math.min(100, pct));
+  const filled = Math.round((clamped / 100) * width);
+  const empty = width - filled;
+  return '\u2588'.repeat(filled) + '\u2591'.repeat(empty);
+}
+
+/**
+ * Compute the visible length of a string, stripping ANSI escape sequences.
+ */
+export function visibleLength(s: string): number {
+  // eslint-disable-next-line no-control-regex
+  return s.replace(/\x1b\[[0-9;]*m/g, '').length;
+}

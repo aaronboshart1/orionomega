@@ -17,6 +17,7 @@
     "isolatedModules": true,
     "verbatimModuleSyntax": true
   },
+  "files": [],
   "references": [
     { "path": "packages/hindsight" },
     { "path": "packages/core" },

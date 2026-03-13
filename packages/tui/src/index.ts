@@ -24,7 +24,7 @@ import { ChatLog } from './components/chat-log.js';
 import { CustomEditor } from './components/custom-editor.js';
 import { formatPlan } from './components/plan-overlay.js';
 import { StatusBar } from './components/status-bar.js';
-import { MultiWorkflowTracker } from './components/workflow-tracker.js';
+import { WorkflowPanel } from './components/workflow-panel.js';
 import { editorTheme, theme } from './theme.js';
 
 /** Available slash commands. */
@@ -126,8 +126,8 @@ export async function start(): Promise<void> {
   chatLog.onUpdate = () => tui.requestRender();
   const editor = new CustomEditor(tui, editorTheme);
   const statusBar = new StatusBar();
-  const multiTracker = new MultiWorkflowTracker();
-  multiTracker.onUpdate = () => tui.requestRender();
+  const workflowPanel = new WorkflowPanel();
+  workflowPanel.onUpdate = () => tui.requestRender();
 
   const root = new Container();
   root.addChild(header);
@@ -282,34 +282,48 @@ export async function start(): Promise<void> {
 
     // Attach multi-tracker to chat log once
     if (!trackerAttached) {
-      chatLog.addChild(multiTracker);
+      chatLog.addChild(workflowPanel);
       trackerAttached = true;
     }
 
-    if (!multiTracker.trackers.has(wfId)) {
-      multiTracker.addWorkflow(wfId, state);
+    if (!workflowPanel.boxes.has(wfId)) {
+      workflowPanel.addWorkflow(wfId, state);
     } else {
-      multiTracker.updateWorkflow(wfId, state);
+      workflowPanel.updateWorkflow(wfId, state);
     }
 
     // Aggregate stats across all workflows
     const nodes = state.nodes ?? {};
     const nodeList = Object.values(nodes) as any[];
-    const running = nodeList.filter((n: any) => n.status === 'running' || n.status === 'in_progress').length;
+    const runningNodes = nodeList.filter((n: any) => n.status === 'running' || n.status === 'in_progress');
     const complete = nodeList.filter((n: any) => n.status === 'complete' || n.status === 'done').length;
     const total = nodeList.length;
 
+    // Extract short labels for each active worker
+    const workerSummaries = runningNodes.map((n: any) => n.label ?? n.id);
+
     statusBar.updateStatus({
-      activeTasks: multiTracker.activeCount,
-      activeWorkers: running,
+      activeTasks: workflowPanel.activeCount,
+      activeWorkers: runningNodes.length,
       completedTasks: complete,
       totalTasks: total,
       estimatedCost: state.estimatedCost,
+      completedLayers: state.completedLayers,
+      totalLayers: state.totalLayers,
+      workflowElapsed: state.elapsed,
+      workerSummaries,
     });
 
     if (state.status === 'complete' || state.status === 'error' || state.status === 'stopped') {
-      if (multiTracker.activeCount === 0) {
-        statusBar.updateStatus({ activeTasks: 0, activeWorkers: 0 });
+      if (workflowPanel.activeCount === 0) {
+        statusBar.updateStatus({
+          activeTasks: 0,
+          activeWorkers: 0,
+          completedLayers: 0,
+          totalLayers: 0,
+          workflowElapsed: 0,
+          workerSummaries: [],
+        });
       }
     }
 
@@ -329,7 +343,7 @@ export async function start(): Promise<void> {
   client.on('event', (event, workflowId?: string) => {
     const wfId = workflowId ?? event.workflowId;
     if (wfId) {
-      multiTracker.updateNodeEvent(wfId, event.nodeId, event.type, event.message);
+      workflowPanel.updateNodeEvent(wfId, event);
       tui.requestRender();
     }
   });
@@ -414,7 +428,7 @@ export async function start(): Promise<void> {
     // /focus [workflowId] — client-side focus command
     if (normalizedLower.startsWith('/focus')) {
       const arg = normalized.slice('/focus'.length).trim() || null;
-      multiTracker.setFocus(arg);
+      workflowPanel.setFocus(arg);
       tui.requestRender();
       return;
     }

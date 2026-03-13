@@ -135,7 +135,12 @@ export class MentalModelManager {
     try {
       const model = await this.hs.getMentalModel(bankId, modelId);
       return model.content ?? '';
-    } catch {
+    } catch (err) {
+      log.warn('Failed to get mental model', {
+        bankId,
+        modelId,
+        error: err instanceof Error ? err.message : String(err),
+      });
       return '';
     }
   }

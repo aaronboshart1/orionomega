@@ -492,15 +492,34 @@ export class GraphExecutor {
             const typeMap: Record<string, string> = {
               'status': 'status', 'tool': 'tool_call', 'thinking': 'thinking', 'done': 'done', 'error': 'error',
             };
+            const eventType = (typeMap[event.type] ?? 'status') as WorkerEvent['type'];
+
+            // Extract tool info for tool_call events
+            let tool: WorkerEvent['tool'];
+            if (eventType === 'tool_call' && event.message) {
+              const toolName = event.message.split(':')[0].trim();
+              const afterColon = event.message.includes(':')
+                ? event.message.split(':').slice(1).join(':').trim()
+                : '';
+              const fileMatch = afterColon.match(/((?:\.?\/?)?[\w.\-/@]+\.[\w]+)/);
+              tool = {
+                name: toolName,
+                action: toolName,
+                file: fileMatch?.[1],
+                summary: event.message,
+              };
+            }
+
             this.eventBus.emit({
               workflowId: this.graph.id,
               workerId: node.id,
               nodeId: node.id,
               timestamp: new Date().toISOString(),
-              type: (typeMap[event.type] ?? 'status') as WorkerEvent['type'],
+              type: eventType,
               message: event.message,
               thinking: event.thinking,
               progress: event.progress ?? 0,
+              tool,
             });
           },
         );
@@ -896,7 +915,7 @@ export class GraphExecutor {
       const recallPromises = [...banks].map(async (bankId) => {
         try {
           const result = await client.recall(bankId, task, { maxTokens: 1024, budget: 'low' });
-          const memories = result?.memories ?? ((result as unknown as Record<string, unknown>)?.results as { content: string }[]) ?? [];
+          const memories = result?.results ?? [];
           if (memories.length > 0) {
             const text = memories.map((m: { content: string }) => m.content).join('\n');
             return `### Bank: ${bankId}\n${text}`;
