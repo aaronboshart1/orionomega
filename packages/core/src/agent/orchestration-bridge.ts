@@ -13,10 +13,8 @@ import type { ExecutorConfig } from '../orchestration/executor.js';
 import { EventBus } from '../orchestration/event-bus.js';
 import { OrchestratorCommands } from '../orchestration/commands.js';
 import { CheckpointManager } from '../orchestration/checkpoint.js';
-import { buildGraph } from '../orchestration/graph.js';
 import type {
   PlannerOutput,
-  WorkflowNode,
   WorkerEvent,
   GraphState,
   ExecutionResult,
@@ -138,48 +136,6 @@ export class OrchestrationBridge {
 
   /** Whether there are any guarded DAG confirmations awaiting approval. */
   get hasPendingConfirmations(): boolean { return this.pendingConfirmations.size > 0; }
-
-  // ── Micro-DAG builder ─────────────────────────────────────────────
-
-  /**
-   * Build a minimal 1-node DAG for a single-step ACTION task.
-   * Avoids calling the planner LLM entirely — saves ~2-5s and ~$0.01-0.03.
-   */
-  buildMicroDAG(task: string): PlannerOutput {
-    const node: WorkflowNode = {
-      id: `micro-${randomBytes(8).toString('hex')}`,
-      type: 'AGENT',
-      label: task.slice(0, 60),
-      agent: {
-        model: this.planner.model,
-        task,
-        tokenBudget: 50_000,
-      },
-      dependsOn: [],
-      status: 'pending',
-    };
-    return {
-      graph: buildGraph([node], task.slice(0, 80)),
-      reasoning: 'Single-step task — executing directly.',
-      estimatedCost: 0,
-      estimatedTime: 10,
-      summary: task.slice(0, 120),
-    };
-  }
-
-  // ── Fast-path dispatch (ACTION tier) ──────────────────────────────
-
-  /**
-   * Build a micro-DAG and dispatch it immediately in the background.
-   * The caller (handleMessage) returns immediately — agent loop is freed.
-   */
-  async dispatchMicroDAG(
-    task: string,
-    pushHistory: (entry: { role: string; content: string }) => void,
-  ): Promise<void> {
-    const plan = this.buildMicroDAG(task);
-    await this.dispatchAsync(plan, pushHistory);
-  }
 
   // ── Full DAG dispatch (ORCHESTRATE tier) ──────────────────────────
 

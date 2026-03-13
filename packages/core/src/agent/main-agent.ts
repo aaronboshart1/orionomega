@@ -28,9 +28,7 @@ import { EventBus } from '../orchestration/event-bus.js';
 // Sub-modules
 import {
   isFastConversational,
-  isFastTask,
   isImmediateExecution,
-  isActionRequest,
   isOrchestrateRequest,
   isGuardedRequest,
   classifyIntent,
@@ -256,9 +254,9 @@ export class MainAgent {
   /**
    * Handle an incoming user message.
    *
-   * 3-tier routing: CHAT → direct response, ACTION → micro-DAG,
-   * ORCHESTRATE → full planner DAG. All DAG execution is async —
-   * the agent loop returns immediately after dispatch.
+   * 2-tier routing: CHAT → direct response (blocking), CHAT_ASYNC → fire-and-forget.
+   * Fast-path check for ORCHESTRATE still dispatches to full planner DAG.
+   * handleMessage() returns quickly in all cases.
    */
   async handleMessage(content: string): Promise<void> {
     // Ensure init() has completed before processing any message
@@ -355,17 +353,7 @@ export class MainAgent {
         return;
       }
 
-      // 3. ACTION fast-path — single-step micro-DAG
-      if (isActionRequest(trimmed)) {
-        log.verbose('Route: ACTION fast-path');
-        await this.orchestration.dispatchMicroDAG(
-          trimmed,
-          (e) => this.pushHistory(e as HistoryEntry),
-        );
-        return; // Returns immediately — DAG runs async
-      }
-
-      // 4. ORCHESTRATE fast-path — full planner DAG
+      // 3. ORCHESTRATE fast-path — full planner DAG
       if (isOrchestrateRequest(trimmed)) {
         log.verbose('Route: ORCHESTRATE fast-path', { guarded: isGuardedRequest(trimmed) });
         const guarded = isGuardedRequest(trimmed);
@@ -377,7 +365,7 @@ export class MainAgent {
         return; // Returns immediately — DAG runs async
       }
 
-      // 5. Ambiguous — LLM 3-tier classifier
+      // 4. Ambiguous — LLM 2-tier classifier
       log.verbose('Route: LLM intent classification');
       this.callbacks.onThinking('Classifying intent…', true, false);
       const intent = await classifyIntent(this.anthropic, this.config.model, trimmed);
@@ -387,21 +375,14 @@ export class MainAgent {
         case 'CHAT':
           await this.respondConversationally(trimmed);
           break;
-        case 'ACTION':
-          await this.orchestration.dispatchMicroDAG(
-            trimmed,
-            (e) => this.pushHistory(e as HistoryEntry),
-          );
+        case 'CHAT_ASYNC':
+          // Fire-and-forget: returns immediately, async work continues in background
+          void this.respondConversationally(trimmed).catch((err) => {
+            const msg = err instanceof Error ? err.message : String(err);
+            log.error('Async conversational response error', { error: msg });
+            this.callbacks.onText(`Something went wrong: ${msg}`, false, true);
+          });
           break;
-        case 'ORCHESTRATE': {
-          const guarded = isGuardedRequest(trimmed);
-          await this.orchestration.dispatchFullDAG(
-            trimmed,
-            (e) => this.pushHistory(e as HistoryEntry),
-            { requireConfirmation: guarded },
-          );
-          break;
-        }
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

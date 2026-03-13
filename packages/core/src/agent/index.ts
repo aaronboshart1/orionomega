@@ -12,7 +12,6 @@ export {
   isImmediateExecution,
   isFastConversational,
   isFastTask,
-  isActionRequest,
   isOrchestrateRequest,
   isGuardedRequest,
   streamConversation,
