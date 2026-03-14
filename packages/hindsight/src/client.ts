@@ -13,6 +13,31 @@ import type {
 
 const log = createLogger('hindsight-client');
 
+// ── Retry configuration ────────────────────────────────────────────────────
+const HINDSIGHT_MAX_RETRIES = 3;
+const HINDSIGHT_RETRY_DELAYS = [500, 1000, 2000]; // ms, exponential backoff
+
+// ── Circuit breaker configuration ─────────────────────────────────────────
+const CB_FAILURE_THRESHOLD = 5;    // open after N consecutive failures
+const CB_RESET_TIMEOUT_MS = 30_000; // try half-open after 30s
+const CB_SUCCESS_THRESHOLD = 2;    // close after N consecutive successes in half-open
+
+type CircuitState = 'closed' | 'open' | 'half-open';
+
+/**
+ * Fetch with a timeout via AbortController.
+ */
+function fetchWithTimeout(
+  url: string,
+  options: RequestInit & { timeout?: number } = {},
+): Promise<Response> {
+  const { timeout = 10_000, ...fetchOptions } = options;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeout);
+  fetchOptions.signal = controller.signal;
+  return fetch(url, fetchOptions).finally(() => clearTimeout(timer));
+}
+
 /**
  * Client for the Hindsight temporal knowledge graph API.
  *
@@ -28,6 +53,12 @@ export class HindsightClient {
   private readonly namespace: string;
   private _activeOps = 0;
   private _connected = false;
+
+  // ── Circuit breaker state ──────────────────────────────────────────────
+  private _circuitState: CircuitState = 'closed';
+  private _failureCount = 0;
+  private _successCount = 0;
+  private _circuitOpenedAt = 0;
 
   /** Callback invoked when I/O activity state changes (busy/idle or connected/disconnected). */
   onActivity?: (status: { connected: boolean; busy: boolean }) => void;
@@ -51,9 +82,9 @@ export class HindsightClient {
 
   // ── Health ──────────────────────────────────────────────────────────
 
-  /** Check API health and version. */
+  /** Check API health and version. Uses a shorter 5s timeout. */
   async health(): Promise<HealthStatus> {
-    return this.request<HealthStatus>('GET', '/health');
+    return this.request<HealthStatus>('GET', '/health', undefined, 5_000);
   }
 
   // ── Banks ──────────────────────────────────────────────────────────
@@ -228,12 +259,67 @@ export class HindsightClient {
     this.onActivity?.({ connected: this._connected, busy: this._activeOps > 0 });
   }
 
-  /** Make an HTTP request to the Hindsight API. */
+  // ── Circuit breaker helpers ────────────────────────────────────────
+
+  /** Whether the circuit breaker currently allows requests. */
+  private circuitAllows(): boolean {
+    if (this._circuitState === 'closed') return true;
+    if (this._circuitState === 'open') {
+      if (Date.now() - this._circuitOpenedAt >= CB_RESET_TIMEOUT_MS) {
+        this._circuitState = 'half-open';
+        this._successCount = 0;
+        log.info('Circuit breaker: half-open — probing Hindsight');
+        return true;
+      }
+      return false;
+    }
+    // half-open: allow through
+    return true;
+  }
+
+  /** Record a successful request for circuit breaker state. */
+  private circuitRecordSuccess(): void {
+    this._failureCount = 0;
+    if (this._circuitState === 'half-open') {
+      this._successCount++;
+      if (this._successCount >= CB_SUCCESS_THRESHOLD) {
+        this._circuitState = 'closed';
+        log.info('Circuit breaker: closed — Hindsight is healthy');
+      }
+    }
+  }
+
+  /** Record a failed request for circuit breaker state. */
+  private circuitRecordFailure(): void {
+    this._failureCount++;
+    this._successCount = 0;
+    if (this._circuitState === 'half-open') {
+      this._circuitState = 'open';
+      this._circuitOpenedAt = Date.now();
+      log.warn('Circuit breaker: re-opened — Hindsight probe failed');
+    } else if (this._circuitState === 'closed' && this._failureCount >= CB_FAILURE_THRESHOLD) {
+      this._circuitState = 'open';
+      this._circuitOpenedAt = Date.now();
+      log.warn('Circuit breaker: opened — Hindsight unreachable', { failures: this._failureCount });
+    }
+  }
+
+  /** Make an HTTP request to the Hindsight API with timeout, retry, and circuit breaker. */
   private async request<T>(
     method: string,
     path: string,
     body?: unknown,
+    timeoutMs: number = 10_000,
   ): Promise<T> {
+    // Circuit breaker: fail fast when Hindsight is known to be down
+    if (!this.circuitAllows()) {
+      throw new HindsightError(
+        'Hindsight circuit breaker open — service temporarily unavailable',
+        503,
+        `${method} ${path}`,
+      );
+    }
+
     const url = `${this.baseUrl}${path}`;
     const init: RequestInit = {
       method,
@@ -249,49 +335,83 @@ export class HindsightClient {
     this._activeOps++;
     this.emitActivity();
 
-    let res: Response;
-    try {
-      res = await fetch(url, init);
-    } catch (err) {
-      this._activeOps--;
-      const wasConnected = this._connected;
-      this._connected = false;
-      if (wasConnected) this.emitActivity();
-      else this.emitActivity();
-      const msg = err instanceof Error ? err.message : 'Network error';
-      log.error(`Hindsight request failed: ${method} ${path}`, { error: msg });
-      throw new HindsightError(msg, 0, `${method} ${path}`);
-    }
+    let lastError: HindsightError | undefined;
 
-    if (!res.ok) {
-      this._activeOps--;
-      this._connected = true; // server responded, just an error status
-      this.emitActivity();
-      let message: string;
+    for (let attempt = 0; attempt <= HINDSIGHT_MAX_RETRIES; attempt++) {
+      let res: Response;
       try {
-        const errorBody = (await res.json()) as Record<string, unknown>;
-        message =
-          typeof errorBody['error'] === 'string'
-            ? errorBody['error']
-            : typeof errorBody['message'] === 'string'
-              ? errorBody['message']
-              : res.statusText;
-      } catch {
-        message = res.statusText;
+        res = await fetchWithTimeout(url, { ...init, timeout: timeoutMs });
+      } catch (err) {
+        const isAbort = err instanceof Error && err.name === 'AbortError';
+        const msg = isAbort ? `Request timed out after ${timeoutMs}ms` : (err instanceof Error ? err.message : 'Network error');
+        log.warn(`Hindsight request failed: ${method} ${path} (attempt ${attempt + 1})`, { error: msg });
+        lastError = new HindsightError(msg, 0, `${method} ${path}`);
+
+        // Retry on network/timeout errors (but not on last attempt)
+        if (attempt < HINDSIGHT_MAX_RETRIES) {
+          const delay = HINDSIGHT_RETRY_DELAYS[attempt] ?? 2000;
+          await new Promise<void>((r) => setTimeout(r, delay));
+          continue;
+        }
+
+        this._activeOps--;
+        this._connected = false;
+        this.emitActivity(); // emit once: both _activeOps and _connected may have changed
+        this.circuitRecordFailure();
+        log.error(`Hindsight request failed after ${HINDSIGHT_MAX_RETRIES} retries: ${method} ${path}`, { error: msg });
+        throw lastError;
       }
-      log.error(`Hindsight API error: ${method} ${path} → ${res.status}`, { message });
-      throw new HindsightError(message, res.status, `${method} ${path}`);
+
+      if (!res.ok) {
+        // Retry on 503/429/5xx (but not on last attempt, and not on 4xx)
+        const isRetryable = res.status === 429 || res.status === 503 || res.status >= 500;
+        if (isRetryable && attempt < HINDSIGHT_MAX_RETRIES) {
+          const delay = HINDSIGHT_RETRY_DELAYS[attempt] ?? 2000;
+          log.warn(`Hindsight ${res.status} on ${method} ${path} — retrying in ${delay}ms (attempt ${attempt + 1})`);
+          await new Promise<void>((r) => setTimeout(r, delay));
+          continue;
+        }
+
+        this._activeOps--;
+        this._connected = true; // server responded, just an error status
+        this.emitActivity();
+
+        let message: string;
+        try {
+          const errorBody = (await res.json()) as Record<string, unknown>;
+          message =
+            typeof errorBody['error'] === 'string'
+              ? errorBody['error']
+              : typeof errorBody['message'] === 'string'
+                ? errorBody['message']
+                : res.statusText;
+        } catch {
+          message = res.statusText;
+        }
+        log.error(`Hindsight API error: ${method} ${path} → ${res.status}`, { message });
+        if (isRetryable) this.circuitRecordFailure();
+        else this.circuitRecordSuccess(); // 4xx is server healthy, bad request
+        throw new HindsightError(message, res.status, `${method} ${path}`);
+      }
+
+      // Success path
+      this._activeOps--;
+      this._connected = true;
+      this.emitActivity();
+      this.circuitRecordSuccess();
+
+      // Some endpoints return no body (204, etc.)
+      const text = await res.text();
+      if (!text) {
+        return undefined as T;
+      }
+      return JSON.parse(text) as T;
     }
 
+    // Should not reach here, but TypeScript requires a return
     this._activeOps--;
-    this._connected = true;
     this.emitActivity();
-
-    // Some endpoints return no body (204, etc.)
-    const text = await res.text();
-    if (!text) {
-      return undefined as T;
-    }
-    return JSON.parse(text) as T;
+    throw lastError ?? new HindsightError('Request failed after retries', 0, `${method} ${path}`);
   }
+
 }

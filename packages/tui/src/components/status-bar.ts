@@ -39,6 +39,18 @@ export interface SessionStatus {
 /**
  * Status bar component that renders a single line with key metrics.
  * Layout: [connection] | [model] | [cost] | [tasks] | [workers]
+ *
+ * [H2] Per-workflow state isolation:
+ * When multiple workflows run concurrently, each workflow's GraphState
+ * snapshots are stored separately in `_workflowStates` and aggregated
+ * (summed for counters, max for elapsed) before display. This prevents
+ * incoherent mixed-state display (e.g. "Layer 2/8" where 2 comes from
+ * workflow A and 8 from workflow B).
+ *
+ * Callers should prefer `updateWorkflowStatus(workflowId, ...)` for
+ * workflow-scoped updates and `clearWorkflowStatus(workflowId)` when a
+ * workflow ends. The legacy `updateStatus()` continues to work for
+ * non-workflow fields (model, tokens, etc.).
  */
 export class StatusBar extends Text {
   private _connected = false;
@@ -47,6 +59,13 @@ export class StatusBar extends Text {
   private _status: SessionStatus = {};
   private unsubSpinner: (() => void) | null = null;
   private unsubHindsightSpinner: (() => void) | null = null;
+
+  /**
+   * [H2] Per-workflow state store. Each active workflow maintains its own
+   * partial SessionStatus. These are aggregated in aggregate() before rendering
+   * so no two workflows' data are ever mixed into the same displayed metric.
+   */
+  private readonly _workflowStates = new Map<string, Partial<SessionStatus>>();
 
   /** Called when the status bar updates itself (e.g. spinner tick). Wire to tui.requestRender(). */
   onUpdate?: () => void;
@@ -99,9 +118,107 @@ export class StatusBar extends Text {
     this.updateDisplay();
   }
 
+  /**
+   * Update non-workflow-scoped fields (model, tokens, hindsight status, etc.).
+   * These fields are stored on `_status` and preserved across workflow state
+   * aggregation. For workflow-specific metrics use `updateWorkflowStatus`.
+   */
   updateStatus(status: Partial<SessionStatus>): void {
     Object.assign(this._status, status);
     this.updateDisplay();
+  }
+
+  /**
+   * [H2] Update the status for a specific workflow.
+   * Merges the partial status into the per-workflow store and re-aggregates
+   * all active workflow states before rendering. This ensures that concurrent
+   * workflows display coherent, workflow-isolated metrics rather than a
+   * last-write-wins mix of fields from different workflows.
+   *
+   * @param workflowId - The workflow ID (used as the isolation key).
+   * @param status     - Partial status fields from this workflow's GraphState.
+   */
+  updateWorkflowStatus(workflowId: string, status: Partial<SessionStatus>): void {
+    this._workflowStates.set(workflowId, {
+      ...this._workflowStates.get(workflowId),
+      ...status,
+    });
+    this._status = this.aggregate();
+    this.updateDisplay();
+  }
+
+  /**
+   * [H2] Remove a workflow's state from the per-workflow store.
+   * Call this when a workflow ends (completed, error, or stopped) so its
+   * metrics are no longer included in the aggregated display.
+   *
+   * @param workflowId - The workflow ID to clear.
+   */
+  clearWorkflowStatus(workflowId: string): void {
+    this._workflowStates.delete(workflowId);
+    this._status = this.aggregate();
+    this.updateDisplay();
+  }
+
+  /**
+   * [H2] Aggregate per-workflow states into a single SessionStatus for rendering.
+   *
+   * Aggregation rules:
+   * - Numeric counters (layers, workers, tasks, cost): summed across all workflows
+   * - workflowElapsed: max (show the longest-running workflow's elapsed time)
+   * - workerSummaries: concatenated from all workflows
+   * - Non-workflow fields (model, tokens, hindsight): preserved from _status
+   */
+  private aggregate(): SessionStatus {
+    // Preserve non-workflow fields from current _status
+    const base: SessionStatus = {
+      model: this._status.model,
+      inputTokens: this._status.inputTokens,
+      outputTokens: this._status.outputTokens,
+      cacheCreationTokens: this._status.cacheCreationTokens,
+      cacheReadTokens: this._status.cacheReadTokens,
+      maxContextTokens: this._status.maxContextTokens,
+      hindsightConnected: this._status.hindsightConnected,
+      hindsightBusy: this._status.hindsightBusy,
+    };
+
+    if (this._workflowStates.size === 0) return base;
+
+    let completedLayers = 0;
+    let totalLayers = 0;
+    let activeWorkers = 0;
+    let estimatedCost = 0;
+    let completedTasks = 0;
+    let totalTasks = 0;
+    let activeTasks = 0;
+    let workflowElapsed = 0;
+    const workerSummaries: string[] = [];
+
+    for (const s of this._workflowStates.values()) {
+      completedLayers += s.completedLayers ?? 0;
+      totalLayers     += s.totalLayers ?? 0;
+      activeWorkers   += s.activeWorkers ?? 0;
+      estimatedCost   += s.estimatedCost ?? 0;
+      completedTasks  += s.completedTasks ?? 0;
+      totalTasks      += s.totalTasks ?? 0;
+      activeTasks     += s.activeTasks ?? 0;
+      // Show the elapsed time of the longest-running workflow
+      workflowElapsed  = Math.max(workflowElapsed, s.workflowElapsed ?? 0);
+      workerSummaries.push(...(s.workerSummaries ?? []));
+    }
+
+    return {
+      ...base,
+      completedLayers,
+      totalLayers,
+      activeWorkers,
+      estimatedCost,
+      completedTasks,
+      totalTasks,
+      activeTasks,
+      workflowElapsed,
+      workerSummaries,
+    };
   }
 
   dispose(): void {

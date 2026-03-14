@@ -21,6 +21,9 @@ import type {
   ToolDefinition,
 } from './client.js';
 import type { BuiltInTool, ToolContext } from './tools.js';
+import { createLogger } from '../logging/logger.js';
+
+const log = createLogger('agent-loop');
 
 /** Options for running the agent loop. */
 export interface AgentLoopOptions {
@@ -138,6 +141,8 @@ export async function runAgentLoop(
     // Check cancellation
     if (isCancelled?.()) break;
 
+    try {
+
     // Token budget enforcement — hard stop at 100%
     if (maxInputTokens && totalInputTokens >= maxInputTokens) {
       stoppedByBudget = true;
@@ -247,6 +252,17 @@ export async function runAgentLoop(
       role: 'user',
       content: toolResults,
     });
+
+    } catch (err) {
+      // Re-throw cancellation and abort signals — let the caller handle them
+      if (err instanceof Error && (err.name === 'AbortError' || isCancelled?.())) {
+        throw err;
+      }
+      const msg = err instanceof Error ? err.message : String(err);
+      log.error('Agent loop turn error', { turn, error: msg });
+      onText?.(`[Error on turn ${turn + 1}: ${msg}]`);
+      break;
+    }
   }
 
   return {

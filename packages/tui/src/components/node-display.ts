@@ -179,13 +179,21 @@ export class NodeDisplay extends Container {
     this.rebuild();
   }
 
-  /** Called on spinner tick — updates elapsed time for running nodes. */
+  /** Called on spinner tick — updates elapsed time and spinner icon for running nodes.
+   *  Only touches the main line text to avoid removing/re-adding sub-line children
+   *  on every 120 ms tick, which would cause unnecessary differential-render work. */
   tickUpdate(): void {
     if (this.state.status !== 'running') return;
     if (this.state.startedAt) {
       this.state.elapsed = Math.round((Date.now() - this.state.startedAt) / 1000);
     }
-    this.rebuild();
+    const model = this.state.model
+      ? chalk.hex(palette.purple)(` [${this.state.model}]`)
+      : '';
+    const icon = chalk.hex(palette.info)(omegaSpinner.current);
+    const label = chalk.hex(palette.info)(this.state.label);
+    const elapsed = chalk.hex(palette.dim)(formatDuration(this.state.elapsed));
+    this.mainLine.setText(`${spacing.indent2}${icon} ${label}${model}  ${elapsed}`);
   }
 
   /** Rebuild all display lines based on current state. */

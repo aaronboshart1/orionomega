@@ -25,6 +25,7 @@ import { CustomEditor } from './components/custom-editor.js';
 import { formatPlan } from './components/plan-overlay.js';
 import { StatusBar } from './components/status-bar.js';
 import { WorkflowPanel } from './components/workflow-panel.js';
+import { omegaSpinner } from './components/omega-spinner.js';
 import { editorTheme, theme } from './theme.js';
 
 /** Available slash commands. */
@@ -121,13 +122,39 @@ export async function start(): Promise<void> {
 
   const tui = new TUI(new ProcessTerminal());
 
+  // Throttle/debounce rapid render requests to prevent flickering.
+  // Multiple synchronous events in the same tick are coalesced via setImmediate.
+  // A minimum interval cap (~16 ms) prevents render storms across consecutive ticks.
+  let _renderPending = false;
+  let _lastRenderTime = 0;
+  const RENDER_MIN_INTERVAL_MS = 16; // ~60 fps cap
+
+  const scheduleRender = () => {
+    if (_renderPending) return;
+    _renderPending = true;
+    const elapsed = Date.now() - _lastRenderTime;
+    const delay = Math.max(0, RENDER_MIN_INTERVAL_MS - elapsed);
+    const schedule = (fn: () => void) =>
+      delay > 0 ? setTimeout(fn, delay) : setImmediate(fn);
+    schedule(() => {
+      _renderPending = false;
+      _lastRenderTime = Date.now();
+      try {
+        tui.requestRender();
+      } catch (err) {
+        // A render error must never crash the process — log to stderr only
+        process.stderr.write(`[tui] render error: ${(err as Error)?.message ?? String(err)}\n`);
+      }
+    });
+  };
+
   const header = new Text('', 1, 0);
   const chatLog = new ChatLog();
-  chatLog.onUpdate = () => tui.requestRender();
+  chatLog.onUpdate = () => scheduleRender();
   const editor = new CustomEditor(tui, editorTheme);
   const statusBar = new StatusBar();
   const workflowPanel = new WorkflowPanel();
-  workflowPanel.onUpdate = () => tui.requestRender();
+  workflowPanel.onUpdate = () => scheduleRender();
 
   const root = new Container();
   root.addChild(header);
@@ -143,7 +170,7 @@ export async function start(): Promise<void> {
   if (model) statusBar.updateStatus({ model });
 
   // Wire status bar spinner to trigger re-renders
-  statusBar.onUpdate = () => tui.requestRender();
+  statusBar.onUpdate = () => scheduleRender();
 
   // Autocomplete for slash commands
   editor.setAutocompleteProvider(
@@ -172,7 +199,7 @@ export async function start(): Promise<void> {
     }, 100);
     // Clear after 5s in case ack never arrives
     setTimeout(() => clearInterval(saveCheck), 5000);
-    tui.requestRender();
+    scheduleRender();
   });
 
   client.on('history', (messages) => {
@@ -202,12 +229,12 @@ export async function start(): Promise<void> {
         timestamp: msg.timestamp,
       });
     }
-    tui.requestRender();
+    scheduleRender();
   });
 
   client.on('disconnected', () => {
     statusBar.connected = false;
-    tui.requestRender();
+    scheduleRender();
   });
 
   client.on('message', (msg) => {
@@ -215,21 +242,21 @@ export async function start(): Promise<void> {
     chatLog.clearStreaming();
     statusBar.thinking = false;
     chatLog.addMessage(msg);
-    tui.requestRender();
+    scheduleRender();
   });
 
   client.on('streaming', (msg) => {
     chatLog.updateThinking('');
     statusBar.thinking = true;
     chatLog.updateStreaming(msg.content);
-    tui.requestRender();
+    scheduleRender();
   });
 
   client.on('streamingDone', () => {
     statusBar.thinking = false;
     chatLog.updateThinking('');
     chatLog.clearStreaming();
-    tui.requestRender();
+    scheduleRender();
   });
 
   client.on('thinking', (text) => {
@@ -240,7 +267,7 @@ export async function start(): Promise<void> {
       statusBar.thinking = false;
       chatLog.updateThinking('');
     }
-    tui.requestRender();
+    scheduleRender();
   });
 
   client.on('plan', (plan: PlannerOutput, planId: string) => {
@@ -269,12 +296,12 @@ export async function start(): Promise<void> {
       });
     }
 
-    tui.requestRender();
+    scheduleRender();
   });
 
   client.on('planCleared', () => {
     // planCleared fires per-plan after respondToPlan; the map is managed in onSubmit
-    tui.requestRender();
+    scheduleRender();
   });
 
   client.on('graphState', (state: GraphState, workflowId?: string) => {
@@ -327,7 +354,7 @@ export async function start(): Promise<void> {
       }
     }
 
-    tui.requestRender();
+    scheduleRender();
   });
 
   client.on("sessionStatus", (status) => {
@@ -337,7 +364,7 @@ export async function start(): Promise<void> {
       outputTokens: status.outputTokens,
       maxContextTokens: status.maxContextTokens,
     });
-    tui.requestRender();
+    scheduleRender();
   });
 
   client.on('hindsightStatus', (status) => {
@@ -346,14 +373,14 @@ export async function start(): Promise<void> {
       hindsightBusy: status.busy,
     });
     statusBar.hindsightBusy = status.busy;
-    tui.requestRender();
+    scheduleRender();
   });
 
   client.on('event', (event, workflowId?: string) => {
     const wfId = workflowId ?? event.workflowId;
     if (wfId) {
       workflowPanel.updateNodeEvent(wfId, event);
-      tui.requestRender();
+      scheduleRender();
     }
   });
 
@@ -418,7 +445,7 @@ export async function start(): Promise<void> {
         statusBar.thinking = true;
       }
 
-      tui.requestRender();
+      scheduleRender();
       return;
     }
 
@@ -438,7 +465,7 @@ export async function start(): Promise<void> {
     if (normalizedLower.startsWith('/focus')) {
       const arg = normalized.slice('/focus'.length).trim() || null;
       workflowPanel.setFocus(arg);
-      tui.requestRender();
+      scheduleRender();
       return;
     }
 
@@ -463,15 +490,40 @@ export async function start(): Promise<void> {
 
   // ── Lifecycle ─────────────────────────────────────────────────
 
+  // One-shot cleanup guard — ensures terminal state is restored exactly once
+  // regardless of how many signals or errors fire concurrently.
+  let _cleanupDone = false;
   const cleanup = () => {
+    if (_cleanupDone) return;
+    _cleanupDone = true;
     try { statusBar.dispose(); } catch {}
+    try { workflowPanel.dispose(); } catch {}
+    try { omegaSpinner.dispose(); } catch {}
     try { client.dispose(); } catch {}
     try { tui.stop(); } catch {}
     process.exit(0);
   };
 
-  process.on('SIGINT', cleanup);
-  process.on('SIGTERM', cleanup);
+  // Terminal state must be restored on all exit paths — SIGINT, SIGTERM,
+  // and unexpected crashes.  All handlers are registered as one-shot via the
+  // _cleanupDone flag so they cannot double-fire.
+  process.once('SIGINT', cleanup);
+  process.once('SIGTERM', cleanup);
+
+  process.on('uncaughtException', (err) => {
+    process.stderr.write(`[tui] uncaught exception: ${err?.message ?? String(err)}\n`);
+    cleanup();
+  });
+
+  process.on('unhandledRejection', (reason) => {
+    process.stderr.write(`[tui] unhandled rejection: ${String(reason)}\n`);
+    cleanup();
+  });
+
+  // Re-render on terminal resize with bounds checking already inside getBoxWidth()
+  process.stdout.on('resize', () => {
+    scheduleRender();
+  });
 
   updateHeader();
   tui.start();

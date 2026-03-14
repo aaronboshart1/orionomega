@@ -25,6 +25,16 @@ const DEFAULT_BUFFER_SIZE = 1000;
  * - Stores the last 1000 events in a ring buffer.
  * - Throttled subscribers batch events and flush on interval or on immediate-type events.
  * - Handlers may be async (fire-and-forget).
+ *
+ * Routing in emit():
+ *   1. channel matching event.nodeId   — per-node subscriptions
+ *   2. channel matching event.workerId — per-worker subscriptions
+ *   3. channel matching event.workflowId — per-workflow subscriptions (L1 fix)
+ *   4. wildcard '*'                    — global subscriptions
+ *
+ * [L1] Adding workflowId-keyed routing allows OrchestrationBridge to subscribe
+ * per-workflow instead of on '*', eliminating the O(N) wildcard fan-out where
+ * every event is delivered to all N workflow handlers.
  */
 export class EventBus {
   private readonly channels = new Map<string, Set<EventHandler>>();
@@ -44,7 +54,11 @@ export class EventBus {
   /**
    * Subscribe to events on a channel.
    *
-   * @param channel - Channel name to subscribe to (e.g. 'workflow-123' or '*' for all).
+   * @param channel - Channel name to subscribe to. Common values:
+   *   - A node ID to receive events from a specific node.
+   *   - A workflow ID to receive all events from a specific workflow (preferred
+   *     over '*' when per-workflow isolation is needed — avoids O(N) fan-out).
+   *   - '*' to receive all events (use sparingly; scales linearly with workflows).
    * @param handler - Callback invoked for each event.
    * @returns An unsubscribe function.
    */
@@ -64,7 +78,13 @@ export class EventBus {
   }
 
   /**
-   * Emit an event to all subscribers on the matching channel and the '*' wildcard channel.
+   * Emit an event to all subscribers on the matching channels.
+   *
+   * Dispatches to (in order):
+   *   1. channel keyed by event.nodeId
+   *   2. channel keyed by event.workerId
+   *   3. channel keyed by event.workflowId  ← [L1] workflow-scoped routing
+   *   4. wildcard '*' channel
    *
    * @param event - The worker event to emit.
    */
@@ -78,10 +98,13 @@ export class EventBus {
       this.bufferStart = (this.bufferStart + 1) % this.bufferSize;
     }
 
-    // Dispatch to channel-specific and wildcard subscribers
+    // [L1] Dispatch to channel-specific, workflow-scoped, and wildcard subscribers.
+    // workflowId routing lets subscribers use subscribe(workflowId, handler) instead
+    // of subscribe('*', handler) + manual workflowId filter, cutting fan-out to O(1).
     const targets = [
       this.channels.get(event.nodeId),
       this.channels.get(event.workerId),
+      event.workflowId !== undefined ? this.channels.get(event.workflowId) : undefined,
       this.channels.get('*'),
     ];
 
@@ -183,6 +206,10 @@ export class EventBus {
   /**
    * Clears all events from the ring buffer and removes all subscribers.
    * Also clears any active throttle timers.
+   *
+   * Note: pending batched events in throttled subscriptions are dropped.
+   * Do not call clear() while active workflows are running unless a hard
+   * reset is intended (e.g. session teardown).
    */
   clear(): void {
     this.bufferStart = 0;

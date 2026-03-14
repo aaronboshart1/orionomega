@@ -110,18 +110,22 @@ export class AnthropicClient {
 
     const body = this.buildRequestBody(options, false);
     const response = await this.fetchWithRetry(body);
-    const data = await response.json();
 
     if (!response.ok) {
-      const errorMsg = (data as Record<string, unknown>)?.error
-        ? JSON.stringify((data as Record<string, unknown>).error)
-        : response.statusText;
+      let errorMsg: string;
+      try {
+        const errData = await response.json() as Record<string, unknown>;
+        errorMsg = errData?.error
+          ? JSON.stringify(errData.error)
+          : response.statusText;
+      } catch {
+        errorMsg = await response.text().catch(() => response.statusText);
+      }
       log.error(`API error (${response.status})`, { error: errorMsg, model: options.model });
-      throw new Error(
-        `Anthropic API error (${response.status}): ${errorMsg}`,
-      );
+      throw new Error(`Anthropic API error (${response.status}): ${errorMsg}`);
     }
 
+    const data = await response.json();
     const result = data as MessageResponse;
     const durationMs = Date.now() - start;
     log.verbose('API response (non-streaming)', {
@@ -277,6 +281,7 @@ export class AnthropicClient {
 
   /**
    * Fetches the Anthropic API with retry logic for 429 and 5xx errors.
+   * Each attempt has a 2-minute AbortController timeout to prevent indefinite hangs.
    */
   private async fetchWithRetry(
     body: Record<string, unknown>,
@@ -284,6 +289,9 @@ export class AnthropicClient {
     let lastError: Error | undefined;
 
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 120_000); // 2 min timeout
+
       try {
         const response = await fetch(API_URL, {
           method: 'POST',
@@ -293,7 +301,10 @@ export class AnthropicClient {
             'content-type': 'application/json',
           },
           body: JSON.stringify(body),
+          signal: controller.signal,
         });
+
+        clearTimeout(timer);
 
         // Retry on rate limit or server error (but not on last attempt)
         if (
@@ -308,9 +319,15 @@ export class AnthropicClient {
 
         return response;
       } catch (err) {
-        lastError = err instanceof Error ? err : new Error(String(err));
+        clearTimeout(timer);
+        const isTimeout = err instanceof Error && err.name === 'AbortError';
+        lastError = isTimeout
+          ? new Error('Anthropic API request timed out after 120s')
+          : (err instanceof Error ? err : new Error(String(err)));
+
         if (attempt < MAX_RETRIES) {
           const delay = RETRY_DELAYS[attempt] ?? 4000;
+          log.warn(`API request failed (attempt ${attempt + 1}/${MAX_RETRIES})${isTimeout ? ' [timeout]' : ''} — retrying in ${delay}ms`);
           await this.sleep(delay);
         }
       }

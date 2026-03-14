@@ -6,3 +6,8 @@ packages:
   - 'packages/tui'
   # Web dashboard is optional — install with: pnpm --filter @orionomega/web install
   - 'packages/web'
+
+onlyBuiltDependencies:
+  - esbuild
+  - koffi
+  - sharp

@@ -78,6 +78,16 @@ export class GraphExecutor {
   private pauseResolve: (() => void) | null = null;
   private pausePromise: Promise<void> | null = null;
 
+  /**
+   * [C2] Flag set by resume() when it fires BEFORE waitForResume() is called.
+   * waitForResume() checks this flag and returns immediately (no-op) instead of
+   * creating a new Promise that would never resolve, preventing a deadlock when:
+   *   1. pauseRequested is set
+   *   2. emitOrchestrator() synchronously triggers a resume() call
+   *   3. waitForResume() runs — finds resume already fired, skips the wait
+   */
+  private resumeCalledBeforePause = false;
+
   constructor(
     graph: WorkflowGraph,
     eventBus: EventBus,
@@ -228,6 +238,11 @@ export class GraphExecutor {
 
   /**
    * Resumes a paused executor.
+   *
+   * [C2] If resume() is called before waitForResume() (e.g. from a synchronous
+   * event handler during emitOrchestrator), we set resumeCalledBeforePause so
+   * waitForResume() can detect the early call and skip the wait entirely,
+   * preventing a deadlock where the pause Promise would never resolve.
    */
   resume(): void {
     this.pauseRequested = false;
@@ -235,6 +250,10 @@ export class GraphExecutor {
       this.pauseResolve();
       this.pauseResolve = null;
       this.pausePromise = null;
+    } else {
+      // [C2] resume() fired before waitForResume() created the Promise.
+      // Mark it so waitForResume() returns immediately without waiting.
+      this.resumeCalledBeforePause = true;
     }
     log.info('Resume requested');
   }
@@ -485,44 +504,60 @@ export class GraphExecutor {
         };
 
         const startMs = Date.now();
-        const codingResult = await executeCodingAgent(
-          codingNode,
-          codingOutputDir,
-          (event) => {
-            const typeMap: Record<string, string> = {
-              'status': 'status', 'tool': 'tool_call', 'thinking': 'thinking', 'done': 'done', 'error': 'error',
-            };
-            const eventType = (typeMap[event.type] ?? 'status') as WorkerEvent['type'];
 
-            // Extract tool info for tool_call events
-            let tool: WorkerEvent['tool'];
-            if (eventType === 'tool_call' && event.message) {
-              const toolName = event.message.split(':')[0].trim();
-              const afterColon = event.message.includes(':')
-                ? event.message.split(':').slice(1).join(':').trim()
-                : '';
-              const fileMatch = afterColon.match(/((?:\.?\/?)?[\w.\-/@]+\.[\w]+)/);
-              tool = {
-                name: toolName,
-                action: toolName,
-                file: fileMatch?.[1],
-                summary: event.message,
+        // [M4] Register a sentinel in activeWorkers so CODING_AGENT nodes are
+        // visible to getActiveWorkers(), the /workers command, and activeWorkers
+        // count in the status bar. Without this, CODING_AGENT execution is
+        // invisible to all monitoring and cancellation paths.
+        this.activeWorkers.set(node.id, {
+          getStatus: () => ({ status: 'running', progress: 0 }),
+        } as unknown as WorkerProcess);
+
+        let codingResult: Awaited<ReturnType<typeof executeCodingAgent>>;
+        try {
+          codingResult = await executeCodingAgent(
+            codingNode,
+            codingOutputDir,
+            (event) => {
+              const typeMap: Record<string, string> = {
+                'status': 'status', 'tool': 'tool_call', 'thinking': 'thinking', 'done': 'done', 'error': 'error',
               };
-            }
+              const eventType = (typeMap[event.type] ?? 'status') as WorkerEvent['type'];
 
-            this.eventBus.emit({
-              workflowId: this.graph.id,
-              workerId: node.id,
-              nodeId: node.id,
-              timestamp: new Date().toISOString(),
-              type: eventType,
-              message: event.message,
-              thinking: event.thinking,
-              progress: event.progress ?? 0,
-              tool,
-            });
-          },
-        );
+              // Extract tool info for tool_call events
+              let tool: WorkerEvent['tool'];
+              if (eventType === 'tool_call' && event.message) {
+                const toolName = event.message.split(':')[0].trim();
+                const afterColon = event.message.includes(':')
+                  ? event.message.split(':').slice(1).join(':').trim()
+                  : '';
+                const fileMatch = afterColon.match(/((?:\.?\/?)?[\w.\-/@]+\.[\w]+)/);
+                tool = {
+                  name: toolName,
+                  action: toolName,
+                  file: fileMatch?.[1],
+                  summary: event.message,
+                };
+              }
+
+              this.eventBus.emit({
+                workflowId: this.graph.id,
+                workerId: node.id,
+                nodeId: node.id,
+                timestamp: new Date().toISOString(),
+                type: eventType,
+                message: event.message,
+                thinking: event.thinking,
+                progress: event.progress ?? 0,
+                tool,
+              });
+            },
+          );
+        } finally {
+          // [M4] Always remove the sentinel — even on error — so activeWorkers
+          // accurately reflects live execution state.
+          this.activeWorkers.delete(node.id);
+        }
 
         return {
           nodeId: node.id,
@@ -839,8 +874,18 @@ export class GraphExecutor {
     }
   }
 
-  /** Waits until resume() is called. */
+  /**
+   * Waits until resume() is called.
+   *
+   * [C2] Checks resumeCalledBeforePause first. If resume() already fired before
+   * this method was entered (race window between pauseRequested check and this
+   * call), we reset the flag and return immediately — no deadlock.
+   */
   private waitForResume(): Promise<void> {
+    if (this.resumeCalledBeforePause) {
+      this.resumeCalledBeforePause = false;
+      return Promise.resolve();
+    }
     if (!this.pausePromise) {
       this.pausePromise = new Promise<void>((resolve) => {
         this.pauseResolve = resolve;

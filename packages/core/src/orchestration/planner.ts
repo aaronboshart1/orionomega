@@ -287,6 +287,35 @@ export class Planner {
         `Plan generated: ${nodes.length} nodes, ${graph.layers.length} layers`,
       );
 
+      // ── DAG structure logging ─────────────────────────────────────
+      // Log the full plan graph so operators can inspect node layout,
+      // model assignments, layer placement, and dependency edges.
+      log.verbose('Plan DAG structure:', {
+        summary,
+        layers: graph.layers.map((layer, idx) => ({
+          layer: idx,
+          nodes: layer.map((nodeId) => {
+            const n = nodes.find((nd) => nd.id === nodeId);
+            return {
+              id: nodeId,
+              type: n?.type,
+              label: n?.label,
+              model: n?.agent?.model ?? n?.codingAgent?.model ?? undefined,
+              dependsOn: n?.dependsOn ?? [],
+              timeout: n?.timeout,
+              retries: n?.retries,
+              tokenBudget: n?.agent?.tokenBudget,
+            };
+          }),
+        })),
+        edges: nodes
+          .filter((n) => n.dependsOn.length > 0)
+          .map((n) => n.dependsOn.map((dep) => `${dep} → ${n.id}`))
+          .flat(),
+        estimatedCost,
+        estimatedTime,
+      });
+
       return {
         graph,
         reasoning,

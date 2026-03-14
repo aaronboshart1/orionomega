@@ -104,16 +104,25 @@ class OmegaSpinnerTicker {
     return FRAMES.length;
   }
 
-  /** Subscribe to tick updates. Returns unsubscribe function. */
+  /**
+   * Subscribe to tick updates. Returns an idempotent unsubscribe function.
+   * Safe to call multiple times — the same listener will not be double-added.
+   */
   subscribe(fn: Listener): () => void {
     this.listeners.add(fn);
     if (!this.timer) {
       this.timer = setInterval(() => {
         this.frame = (this.frame + 1) % FRAMES.length;
-        for (const l of this.listeners) l();
+        // Iterate over a snapshot to guard against mid-tick unsubscribes
+        for (const l of [...this.listeners]) {
+          try { l(); } catch { /* never let a listener crash the ticker */ }
+        }
       }, this.intervalMs);
     }
+    let unsubscribed = false;
     return () => {
+      if (unsubscribed) return;
+      unsubscribed = true;
       this.listeners.delete(fn);
       if (this.listeners.size === 0 && this.timer) {
         clearInterval(this.timer);
@@ -121,6 +130,19 @@ class OmegaSpinnerTicker {
         this.frame = 0;
       }
     };
+  }
+
+  /**
+   * Force-stop the ticker and clear all subscriptions.
+   * Called during process shutdown to prevent keeping the event loop alive.
+   */
+  dispose(): void {
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
+    this.listeners.clear();
+    this.frame = 0;
   }
 }
 

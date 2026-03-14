@@ -43,8 +43,8 @@ export class WorkflowPanel extends Container {
         const timer = setTimeout(() => {
           const b = this.boxes.get(id);
           if (b) {
-            b.dispose();
-            this.removeChild(b);
+            try { b.dispose(); } catch {}
+            try { this.removeChild(b); } catch {}
             this.boxes.delete(id);
           }
           this.removalTimers.delete(id);
@@ -52,6 +52,13 @@ export class WorkflowPanel extends Container {
           this.updateVisibility();
         }, 30_000);
         this.removalTimers.set(id, timer);
+      }
+    } else {
+      // Workflow resumed / restarted — cancel any pending removal
+      const existing = this.removalTimers.get(id);
+      if (existing !== undefined) {
+        clearTimeout(existing);
+        this.removalTimers.delete(id);
       }
     }
   }
@@ -79,6 +86,21 @@ export class WorkflowPanel extends Container {
       if (box.isActive) count++;
     }
     return count;
+  }
+
+  /**
+   * Dispose all workflows and cancel all pending removal timers.
+   * Called during TUI shutdown to prevent timer-based activity after exit.
+   */
+  dispose(): void {
+    for (const timer of this.removalTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.removalTimers.clear();
+    for (const box of this.boxes.values()) {
+      try { box.dispose(); } catch {}
+    }
+    this.boxes.clear();
   }
 
   private updateVisibility(): void {

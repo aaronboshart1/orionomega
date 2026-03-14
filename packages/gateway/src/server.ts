@@ -474,4 +474,19 @@ async function shutdown(signal: string): Promise<void> {
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
 
+process.on('unhandledRejection', (reason, _promise) => {
+  log.error('Unhandled rejection', {
+    reason: reason instanceof Error ? reason.message : String(reason),
+    stack: reason instanceof Error ? reason.stack : undefined,
+  });
+});
+
+process.on('uncaughtException', (error) => {
+  log.error('Uncaught exception — initiating shutdown', {
+    error: error.message,
+    stack: error.stack,
+  });
+  process.kill(process.pid, 'SIGTERM');
+});
+
 export { server, sessionManager, commandHandler, eventStreamer, wsHandler };

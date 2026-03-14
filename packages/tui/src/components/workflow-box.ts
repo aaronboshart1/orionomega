@@ -22,9 +22,16 @@ import { omegaSpinner } from './omega-spinner.js';
 import { NodeDisplay, mapNodeStatus, type NodeState, type NodeStatusType } from './node-display.js';
 import { LayerGroup, type LayerStatus } from './layer-group.js';
 
-/** Compute display width for the workflow box. */
+/** Maximum number of findings to display to prevent unbounded output. */
+const MAX_FINDINGS = 50;
+/** Minimum box width for very narrow terminals. */
+const MIN_BOX_WIDTH = 20;
+
+/** Compute display width for the workflow box — clamped to a safe range. */
 function getBoxWidth(): number {
-  return Math.min(72, (process.stdout.columns ?? 80) - 4);
+  const cols = process.stdout.columns ?? 80;
+  // Guard against very small or undefined terminal widths
+  return Math.max(MIN_BOX_WIDTH, Math.min(72, cols - 4));
 }
 
 /**
@@ -96,6 +103,11 @@ export class WorkflowBox extends Container {
   private _expanded = true;
   private unsubSpinner: (() => void) | null = null;
   private summaryLine: Text | null = null;
+  // Tracks the last elapsed-seconds value used to render the top border.
+  // The top border is only redrawn when this changes (≈once per second) so that
+  // the 120 ms spinner tick does not move `firstChanged` above the viewport and
+  // trigger a full-screen clear + redraw in pi-tui's differential renderer.
+  private _lastTopBorderElapsedSec = -1;
 
   /** Wire this to tui.requestRender() for spinner-driven re-renders. */
   onUpdate?: () => void;
@@ -124,9 +136,10 @@ export class WorkflowBox extends Container {
 
   /** Initialize from a new workflow's graph state. */
   initFromGraphState(state: GraphState): void {
-    this.workflowName = state.name;
+    this.workflowName = state.name || '(unnamed)';
     this.workflowStatus = state.status;
     this.startTime = Date.now();
+    this._lastTopBorderElapsedSec = -1;
     this.completedLayers = state.completedLayers;
     this.totalLayers = state.totalLayers;
     this.estimatedCost = state.estimatedCost ?? 0;
@@ -190,6 +203,10 @@ export class WorkflowBox extends Container {
     const nodes = state.nodes ?? {};
     const layerMap = computeNodeLayers(nodes);
 
+    // Track whether the component tree needs a full structural rebuild.
+    // Adding new nodes requires rebuilding; updating existing ones does not.
+    let structureChanged = false;
+
     // Update existing nodes and add new ones
     for (const [id, node] of Object.entries(nodes)) {
       const n = node as any;
@@ -197,6 +214,7 @@ export class WorkflowBox extends Container {
       if (existing) {
         existing.updateFromGraphNode(n);
       } else {
+        structureChanged = true;
         const nodeState: NodeState = {
           id,
           label: n.label ?? id,
@@ -227,10 +245,36 @@ export class WorkflowBox extends Container {
       if (nd) nd.accumulator.processEvent(evt);
     }
 
-    // Rebuild layer groups and structure
+    // Capture collapse states before rebuilding layer groups so we can
+    // detect whether any layer's visibility changed.
+    const prevCollapseStates = new Map(
+      [...this.layerGroups.entries()].map(([k, lg]) => [k, lg.collapsed]),
+    );
+
     this.buildLayerGroups();
+
+    // If layer groups were added/removed or any layer changed collapse state,
+    // a full structural rebuild is required.
+    if (!structureChanged) {
+      if (prevCollapseStates.size !== this.layerGroups.size) {
+        structureChanged = true;
+      } else {
+        for (const [k, lg] of this.layerGroups) {
+          if (prevCollapseStates.get(k) !== lg.collapsed) {
+            structureChanged = true;
+            break;
+          }
+        }
+      }
+    }
+
     this.updateSpinner();
-    this.rebuildStructure();
+
+    if (structureChanged) {
+      this.rebuildStructure();
+    } else {
+      this.updateBorders();
+    }
   }
 
   /** Update a single node from a worker event. */
@@ -251,6 +295,12 @@ export class WorkflowBox extends Container {
   // ── Layer Group Management ─────────────────────────────────────
 
   private buildLayerGroups(): void {
+    // Handle empty workflow — nothing to group
+    if (this.nodeDisplays.size === 0) {
+      this.layerGroups.clear();
+      return;
+    }
+
     // Group nodes by layer
     const layerNodes = new Map<number, NodeDisplay[]>();
     for (const nd of this.nodeDisplays.values()) {
@@ -342,6 +392,22 @@ export class WorkflowBox extends Container {
 
   /** Full rebuild of the component tree (children of this Container). */
   private rebuildStructure(): void {
+    try {
+      this._rebuildStructureInner();
+    } catch (err) {
+      // Render errors must not crash the process — log and show a minimal fallback
+      process.stderr.write(`[tui] workflow-box render error: ${(err as Error)?.message ?? err}\n`);
+      try {
+        this.clear();
+        this.addChild(this.topBorder);
+        this.topBorder.setText(`  ╭─ workflow ─╮`);
+        this.addChild(this.bottomBorder);
+        this.bottomBorder.setText(`  ╰───────────╯`);
+      } catch { /* best-effort fallback */ }
+    }
+  }
+
+  private _rebuildStructureInner(): void {
     // Detach all children
     this.detachAll();
 
@@ -372,18 +438,24 @@ export class WorkflowBox extends Container {
       this.addChild(lg);
     }
 
-    // Findings section (on completion)
+    // Findings section (on completion) — capped to prevent unbounded output
     if (this.workflowStatus === 'complete' || this.workflowStatus === 'error' || this.workflowStatus === 'stopped') {
       const allFindings = this.collectFindings();
       if (allFindings.length > 0) {
         this.addChild(new Spacer(1));
         if (!this.findingsText) this.findingsText = new Text('', 1, 0);
+        const displayFindings = allFindings.slice(0, MAX_FINDINGS);
         const findingLines = [
           `${spacing.indent2}${chalk.hex(palette.accent)(icons.finding)} ${chalk.hex(palette.accent)('Findings:')}`,
-          ...allFindings.map(f =>
+          ...displayFindings.map(f =>
             `${spacing.indent3}${chalk.hex(palette.dim)('\u2022')} ${chalk.hex(palette.text)(f)}`,
           ),
         ];
+        if (allFindings.length > MAX_FINDINGS) {
+          findingLines.push(
+            `${spacing.indent3}${chalk.hex(palette.dim)(`\u2026 and ${allFindings.length - MAX_FINDINGS} more`)}`,
+          );
+        }
         this.findingsText.setText(findingLines.join('\n'));
         this.addChild(this.findingsText);
       }
@@ -416,9 +488,13 @@ export class WorkflowBox extends Container {
 
   /** Update only border texts (without restructuring). */
   private updateBorders(): void {
-    this.updateTopBorder();
-    this.updateBottomBorder();
-    if (this.summaryLine && !this._expanded) this.updateSummaryLine();
+    try {
+      this.updateTopBorder();
+      this.updateBottomBorder();
+      if (this.summaryLine && !this._expanded) this.updateSummaryLine();
+    } catch (err) {
+      process.stderr.write(`[tui] border update error: ${(err as Error)?.message ?? err}\n`);
+    }
   }
 
   private updateTopBorder(): void {
@@ -435,7 +511,7 @@ export class WorkflowBox extends Container {
       statusIcon = chalk.hex(palette.accent)(icons.workflowName);
     }
 
-    const name = chalk.hex(palette.accent).bold(this.workflowName);
+    const name = chalk.hex(palette.accent).bold(this.workflowName || '(unnamed)');
     const elapsed = Math.round((Date.now() - this.startTime) / 1000);
 
     // Build metadata parts
@@ -448,7 +524,7 @@ export class WorkflowBox extends Container {
     if (this.estimatedCost > 0) metaParts.push(formatCost(this.estimatedCost));
     const meta = metaParts.join(' \u00b7 ');
 
-    // Build border
+    // Build border — ensure fill is at least 1 character wide
     const leftContent = ` ${statusIcon} ${name} `;
     const rightContent = ` ${meta} `;
     const leftLen = visibleLength(leftContent);
@@ -532,8 +608,22 @@ export class WorkflowBox extends Container {
       for (const nd of this.nodeDisplays.values()) {
         nd.tickUpdate();
       }
-      // Update borders (elapsed time in header, spinner in footer)
-      this.updateBorders();
+      // Only redraw the top border when the elapsed-seconds value changes (≈once per
+      // second).  The top border is the topmost line of the workflow box and can scroll
+      // above the visible viewport on long sessions.  When pi-tui detects a changed
+      // line above the viewport it falls back to a full-screen clear + redraw, causing
+      // visible flashing.  Limiting top-border redraws to ~1 Hz eliminates that path
+      // on 7 of every 8 spinner ticks.
+      const elapsedSec = Math.round((Date.now() - this.startTime) / 1000);
+      if (elapsedSec !== this._lastTopBorderElapsedSec) {
+        this._lastTopBorderElapsedSec = elapsedSec;
+        try { this.updateTopBorder(); } catch {}
+      }
+      // The bottom border contains the animated spinner icon; always update it.
+      try { this.updateBottomBorder(); } catch {}
+      if (this.summaryLine && !this._expanded) {
+        try { this.updateSummaryLine(); } catch {}
+      }
       this.onUpdate?.();
     });
   }

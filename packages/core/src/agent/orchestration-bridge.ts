@@ -74,6 +74,14 @@ interface HumanGateRequest {
   timestamp: string;
 }
 
+/** A guarded DAG confirmation awaiting user approval. */
+interface PendingConfirmation {
+  plan: PlannerOutput;
+  task: string;
+  pushHistory: (entry: { role: string; content: string }) => void;
+  createdAt: string;
+}
+
 /**
  * Manages the lifecycle of workflow planning and execution.
  *
@@ -95,11 +103,16 @@ export class OrchestrationBridge {
   private readonly pendingGates = new Map<string, HumanGateRequest>();
 
   /** Guarded DAG confirmations awaiting user approval, keyed by workflow ID. */
-  private readonly pendingConfirmations = new Map<string, {
-    plan: PlannerOutput;
-    task: string;
-    pushHistory: (entry: { role: string; content: string }) => void;
-  }>();
+  private readonly pendingConfirmations = new Map<string, PendingConfirmation>();
+
+  /**
+   * TTL for unactioned pending plans and confirmations.
+   * Entries older than this are swept away to prevent unbounded accumulation (H4).
+   */
+  private readonly PENDING_TTL_MS = 30 * 60 * 1000; // 30 minutes
+
+  /** Periodic sweep timer for expired pending entries. */
+  private readonly sweepTimer: ReturnType<typeof setInterval>;
 
   constructor(
     private readonly config: OrchestrationConfig,
@@ -111,6 +124,9 @@ export class OrchestrationBridge {
     this.planner = new Planner({ model });
     this.eventBus = new EventBus();
     this.commands = new OrchestratorCommands();
+
+    // Sweep expired pending entries every 5 minutes (H4)
+    this.sweepTimer = setInterval(() => this.sweepExpiredPending(), 5 * 60 * 1000);
   }
 
   // ── Public getters ──────────────────────────────────────────────
@@ -204,7 +220,12 @@ export class OrchestrationBridge {
 
       if (opts.requireConfirmation) {
         // Store for confirmation and emit confirm event
-        this.pendingConfirmations.set(plan.graph.id, { plan, task, pushHistory });
+        this.pendingConfirmations.set(plan.graph.id, {
+          plan,
+          task,
+          pushHistory,
+          createdAt: new Date().toISOString(),
+        });
 
         const confirmInfo: DAGConfirmInfo = {
           workflowId: plan.graph.id,
@@ -286,9 +307,21 @@ export class OrchestrationBridge {
    * Resolve a pending guarded DAG confirmation.
    * Called when the user says "yes"/"no" to a guarded operation.
    * If workflowId is provided, resolves that specific confirmation.
-   * Otherwise resolves the most recent one.
+   * Otherwise resolves the most recent one (only when exactly one is pending).
+   *
+   * [M2] When multiple confirmations are pending, explicit workflowId is required
+   * to avoid non-deterministic targeting.
    */
   resolveConfirmation(approved: boolean, workflowId?: string): void {
+    // [M2] Guard: require explicit ID when multiple confirmations are pending
+    if (!workflowId && this.pendingConfirmations.size > 1) {
+      this.callbacks.onText(
+        `Multiple workflows await confirmation. Please specify a workflow ID to approve or cancel.`,
+        false, true,
+      );
+      return;
+    }
+
     const targetId = workflowId ?? [...this.pendingConfirmations.keys()].pop();
     if (!targetId) return;
 
@@ -390,6 +423,9 @@ export class OrchestrationBridge {
 
     switch (action) {
       case 'approve':
+        // [C1] Delete from pendingPlans BEFORE the first await to prevent TOCTOU
+        // double-execution if a second approval arrives during ensureProjectBank.
+        this.pendingPlans.delete(planId);
         if (this.memory.banks && pending.task) {
           await this.memory.ensureProjectBank(pending.task);
         }
@@ -399,6 +435,8 @@ export class OrchestrationBridge {
       case 'modify': {
         if (!modification) {
           // No modification text — treat as approve
+          // [C1] Delete before first await
+          this.pendingPlans.delete(planId);
           if (this.memory.banks && pending.task) {
             await this.memory.ensureProjectBank(pending.task);
           }
@@ -410,12 +448,13 @@ export class OrchestrationBridge {
         const isApprovalWithContext = await this.classifyModification(modification, pending.task);
 
         if (isApprovalWithContext) {
-          // User is approving with additional instructions — execute the plan as-is
-          // and inject the additional context into the task description for workers
+          // [C1] Delete BEFORE any await; work on a local copy to avoid mutating
+          // the shared pending entry (prevents M6 shared mutable state issue).
+          const modifiedTask = `${pending.task}\n\nAdditional instructions: ${modification}`;
+          this.pendingPlans.delete(planId);
           log.verbose('Modification classified as approval-with-context', { modification });
-          pending.task = `${pending.task}\n\nAdditional instructions: ${modification}`;
-          if (this.memory.banks && pending.task) {
-            await this.memory.ensureProjectBank(pending.task);
+          if (this.memory.banks) {
+            await this.memory.ensureProjectBank(modifiedTask);
           }
           await this.executePlan(pending.plan, pushHistory);
         } else {
@@ -528,11 +567,11 @@ export class OrchestrationBridge {
 
     const executor = new GraphExecutor(plan.graph, this.eventBus, executorConfig);
 
-    // Subscribe to '*' and filter to only this workflow's events
-    const eventUnsub = this.eventBus.subscribe('*', (event) => {
-      if (event.workflowId === workflowId) {
-        this.handleWorkerEvent(event, workflowId);
-      }
+    // [L1] Subscribe to the workflow-specific channel instead of '*' wildcard.
+    // This avoids O(N) fan-out — each event is delivered only to its workflow's handler.
+    // EventBus.emit() routes to channels.get(event.workflowId) for this to work.
+    const eventUnsub = this.eventBus.subscribe(workflowId, (event) => {
+      this.handleWorkerEvent(event, workflowId);
     });
 
     // Periodic state snapshot for this workflow
@@ -551,6 +590,18 @@ export class OrchestrationBridge {
       task: plan.summary,
     };
 
+    // [M1] Guard against duplicate workflow registration.
+    // A second call with the same workflowId (e.g. from the TOCTOU window in C1,
+    // or a checkpoint resume race) would otherwise overwrite the existing entry,
+    // leaking its eventUnsubscribe and stateSnapshotTimer.
+    if (this.activeWorkflows.has(workflowId)) {
+      log.warn(`executePlan: workflowId ${workflowId} already active, ignoring duplicate`);
+      // Clean up the resources we just allocated for the duplicate
+      eventUnsub();
+      clearInterval(stateSnapshotTimer);
+      return;
+    }
+
     this.activeWorkflows.set(workflowId, workflow);
     this.callbacks.onWorkflowStart?.(workflowId, workflowName);
     this.commands.addWorkflow(workflowId, executor, workflowName);
@@ -560,7 +611,7 @@ export class OrchestrationBridge {
 
     try {
       const result = await executor.execute();
-      await this.onExecutionComplete(result, workflowId, pushHistory);
+      await this.onExecutionComplete(result, workflowId, workflowName, pushHistory);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       log.error('Execution error', { error: msg });
@@ -637,6 +688,7 @@ export class OrchestrationBridge {
   private async onExecutionComplete(
     result: ExecutionResult,
     workflowId: string,
+    workflowName: string,
     pushHistory: (entry: { role: string; content: string }) => void,
   ): Promise<void> {
     const wf = this.activeWorkflows.get(workflowId);
@@ -677,13 +729,17 @@ export class OrchestrationBridge {
     };
     this.callbacks.onDAGComplete?.(completeInfo);
 
+    // [M3] Prefix output with workflow name when multiple workflows are running
+    // concurrently so the user can attribute results to the correct workflow.
+    const prefix = this.activeWorkflows.size > 1 ? `**[${workflowName}]** ` : '';
+
     // --- Inline result formatting for simple DAGs (1-2 nodes) ---
     if (workerCount <= 2 && status === 'complete') {
       // Conversational output — just show the result directly
       const output = lastOutput ?? taskSummary;
       const maxLen = 32000;
       const text = output.length > maxLen ? output.slice(0, maxLen) + '\n\n... [truncated]' : output;
-      this.callbacks.onText(text, false, true);
+      this.callbacks.onText(prefix + text, false, true);
       pushHistory({ role: 'assistant', content: text });
     } else {
       // --- Full workflow report for complex DAGs ---
@@ -735,7 +791,7 @@ export class OrchestrationBridge {
       lines.push('', `${durationSec.toFixed(1)}s | ${workerCount} workers`);
 
       const summary = lines.join('\n');
-      this.callbacks.onText(summary, false, true);
+      this.callbacks.onText(prefix + summary, false, true);
       pushHistory({ role: 'assistant', content: `[Workflow result] ${summary}` });
     }
 
@@ -748,8 +804,32 @@ export class OrchestrationBridge {
   /**
    * Clean up resources for a single completed or stopped workflow.
    * Does not affect sibling workflows.
+   *
+   * [H1] Drains any pending gates for this workflow (resolves their Promises
+   * with false/deny) so in-flight humanGateCallback Promises can settle and
+   * executor.execute() can return, allowing the finally-block cleanup to run.
+   *
+   * [H3] Purges progressThrottleMap entries for this workflow to prevent
+   * unbounded accumulation when workflows are stopped mid-execution.
    */
   private cleanupWorkflow(workflowId: string): void {
+    // [H1] Resolve any pending gates for this workflow (deny them) so their
+    // awaiting Promises settle instead of hanging indefinitely.
+    for (const [gateId, gate] of this.pendingGates) {
+      if (gate.workflowId === workflowId) {
+        gate.resolve(false);
+        this.pendingGates.delete(gateId);
+      }
+    }
+
+    // [H3] Purge throttle map entries for this workflow to prevent leaks
+    // when nodes never emitted terminal events (e.g. workflow stopped mid-run).
+    for (const key of this.progressThrottleMap.keys()) {
+      if (key.startsWith(`${workflowId}:`)) {
+        this.progressThrottleMap.delete(key);
+      }
+    }
+
     const wf = this.activeWorkflows.get(workflowId);
     if (!wf) return;
     wf.eventUnsubscribe();
@@ -759,9 +839,34 @@ export class OrchestrationBridge {
     this.commands.removeWorkflow(workflowId);
   }
 
-  /** Clear all pending plans (e.g. on /reset). */
+  /**
+   * Clear all pending plans and confirmations (e.g. on /reset).
+   * [H4] Also clears pendingConfirmations to prevent unbounded accumulation.
+   */
   clearPendingPlans(): void {
     this.pendingPlans.clear();
+    this.pendingConfirmations.clear();
+  }
+
+  /**
+   * Sweep pending plans and confirmations that have exceeded the TTL.
+   * Called on a 5-minute interval. Prevents unbounded accumulation in
+   * long-running daemon sessions where users ignore plan/confirm prompts (H4).
+   */
+  private sweepExpiredPending(): void {
+    const cutoff = Date.now() - this.PENDING_TTL_MS;
+    for (const [id, p] of this.pendingPlans) {
+      if (new Date(p.createdAt).getTime() < cutoff) {
+        log.verbose('Sweeping expired pending plan', { id });
+        this.pendingPlans.delete(id);
+      }
+    }
+    for (const [id, c] of this.pendingConfirmations) {
+      if (new Date(c.createdAt).getTime() < cutoff) {
+        log.verbose('Sweeping expired pending confirmation', { id });
+        this.pendingConfirmations.delete(id);
+      }
+    }
   }
 
   /**
@@ -778,6 +883,14 @@ export class OrchestrationBridge {
   /** Stop all running workflows. */
   stopAll(): void {
     for (const [, wf] of this.activeWorkflows) wf.executor.stop();
+  }
+
+  /**
+   * Dispose of the orchestration bridge, clearing the sweep timer.
+   * Call when the bridge is permanently torn down (e.g. session end).
+   */
+  destroy(): void {
+    clearInterval(this.sweepTimer);
   }
 
   // ── Human gate API ──────────────────────────────────────────────
