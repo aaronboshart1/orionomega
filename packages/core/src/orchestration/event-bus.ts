@@ -16,15 +16,29 @@ export interface ThrottleConfig {
   immediateTypes: string[];
 }
 
+/** Options for EventBus construction. */
+export interface EventBusOptions {
+  /** Ring buffer capacity (default 1000). */
+  bufferSize?: number;
+  /**
+   * Optional error callback invoked when a handler throws.
+   * Receives the error, the event type, and the event itself.
+   * If not provided, errors are logged to console.error.
+   */
+  onError?: (error: unknown, eventType: string, event: WorkerEvent) => void;
+}
+
 /** Default ring buffer capacity. */
 const DEFAULT_BUFFER_SIZE = 1000;
 
 /**
  * EventBus distributes WorkerEvents to subscribers with optional throttling.
  *
- * - Stores the last 1000 events in a ring buffer.
+ * - Stores the last N events in a ring buffer.
  * - Throttled subscribers batch events and flush on interval or on immediate-type events.
  * - Handlers may be async (fire-and-forget).
+ * - Handler errors are routed to the optional `onError` callback (H2).
+ * - Ring buffer overflow increments `droppedEventCount` (M3).
  *
  * Routing in emit():
  *   1. channel matching event.nodeId   — per-node subscriptions
@@ -42,13 +56,31 @@ export class EventBus {
   private readonly bufferSize: number;
   private bufferStart = 0;
   private bufferCount = 0;
+  private droppedEventCount = 0;
+
+  /** Optional error handler for subscriber crashes (H2). */
+  private readonly onError: ((error: unknown, eventType: string, event: WorkerEvent) => void) | undefined;
 
   /** Active throttle timers, keyed for cleanup. */
   private readonly throttleTimers = new Set<ReturnType<typeof setInterval>>();
 
-  constructor(bufferSize: number = DEFAULT_BUFFER_SIZE) {
-    this.bufferSize = bufferSize;
-    this.buffer = new Array<WorkerEvent>(bufferSize);
+  constructor(optionsOrBufferSize?: number | EventBusOptions) {
+    if (typeof optionsOrBufferSize === 'number') {
+      // Legacy constructor signature: new EventBus(bufferSize)
+      this.bufferSize = optionsOrBufferSize;
+      this.onError = undefined;
+    } else {
+      this.bufferSize = optionsOrBufferSize?.bufferSize ?? DEFAULT_BUFFER_SIZE;
+      this.onError = optionsOrBufferSize?.onError;
+    }
+    this.buffer = new Array<WorkerEvent>(this.bufferSize);
+  }
+
+  /**
+   * Returns the number of events dropped due to ring buffer overflow.
+   */
+  getDroppedCount(): number {
+    return this.droppedEventCount;
   }
 
   /**
@@ -96,14 +128,16 @@ export class EventBus {
       this.bufferCount++;
     } else {
       this.bufferStart = (this.bufferStart + 1) % this.bufferSize;
+      this.droppedEventCount++;
     }
 
     // [L1] Dispatch to channel-specific, workflow-scoped, and wildcard subscribers.
+    // Guard: only look up channel if the key is defined (prevents Map.get(undefined)).
     // workflowId routing lets subscribers use subscribe(workflowId, handler) instead
     // of subscribe('*', handler) + manual workflowId filter, cutting fan-out to O(1).
     const targets = [
-      this.channels.get(event.nodeId),
-      this.channels.get(event.workerId),
+      event.nodeId !== undefined ? this.channels.get(event.nodeId) : undefined,
+      event.workerId !== undefined ? this.channels.get(event.workerId) : undefined,
       event.workflowId !== undefined ? this.channels.get(event.workflowId) : undefined,
       this.channels.get('*'),
     ];
@@ -113,14 +147,14 @@ export class EventBus {
         for (const handler of handlers) {
           try {
             const result = handler(event);
-            // Fire-and-forget for async handlers
+            // Fire-and-forget for async handlers — route errors to onError
             if (result && typeof (result as Promise<void>).catch === 'function') {
-              (result as Promise<void>).catch(() => {
-                // Swallow async errors in handlers
+              (result as Promise<void>).catch((err) => {
+                this.handleError(err, event);
               });
             }
-          } catch {
-            // Swallow sync errors in handlers
+          } catch (err) {
+            this.handleError(err, event);
           }
         }
       }
@@ -152,10 +186,12 @@ export class EventBus {
         try {
           const result = handler(event);
           if (result && typeof (result as Promise<void>).catch === 'function') {
-            (result as Promise<void>).catch(() => {});
+            (result as Promise<void>).catch((err) => {
+              this.handleError(err, event);
+            });
           }
-        } catch {
-          // Swallow errors
+        } catch (err) {
+          this.handleError(err, event);
         }
       }
     };
@@ -220,5 +256,21 @@ export class EventBus {
     }
     this.throttleTimers.clear();
     this.channels.clear();
+  }
+
+  /**
+   * Route a handler error to the onError callback or console.error.
+   */
+  private handleError(err: unknown, event: WorkerEvent): void {
+    if (this.onError) {
+      try {
+        this.onError(err, event.type, event);
+      } catch {
+        // Prevent onError itself from crashing the emitter
+        console.error('[EventBus] onError callback threw:', err);
+      }
+    } else {
+      console.error('[EventBus] handler error:', err);
+    }
   }
 }

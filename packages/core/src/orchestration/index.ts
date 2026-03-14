@@ -25,7 +25,7 @@ export type { ValidationError } from './graph.js';
 export { buildGraph, topologicalSort, validateGraph } from './graph.js';
 
 // Event bus
-export type { EventHandler, ThrottleConfig } from './event-bus.js';
+export type { EventHandler, ThrottleConfig, EventBusOptions } from './event-bus.js';
 export { EventBus } from './event-bus.js';
 
 // State
