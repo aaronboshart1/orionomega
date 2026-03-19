@@ -1,4 +1,6 @@
 import * as readline from 'node:readline';
+import { readdirSync, chmodSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 
 export const GREEN = '\x1b[32m';
 export const RED = '\x1b[31m';
@@ -118,4 +120,18 @@ export function askSecret(message: string): Promise<string> {
     };
     process.stdin.on('data', onData);
   });
+}
+
+export function chmodJsFiles(dir: string): void {
+  try {
+    const entries = readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        chmodJsFiles(full);
+      } else if (entry.isFile() && entry.name.endsWith('.js')) {
+        chmodSync(full, 0o755);
+      }
+    }
+  } catch { /* ignore missing dirs */ }
 }

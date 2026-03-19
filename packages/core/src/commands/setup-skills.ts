@@ -14,7 +14,7 @@
 
 import { existsSync, cpSync } from 'node:fs';
 import { join } from 'node:path';
-import { execSync } from 'node:child_process';
+import { execSync, execFileSync } from 'node:child_process';
 import { readConfig } from '../config/index.js';
 import { SkillLoader, readSkillConfig, writeSkillConfig } from '@orionomega/skills-sdk';
 import type { SkillManifest, SkillAuthMethod, SkillSetupField, SkillConfig } from '@orionomega/skills-sdk';
@@ -23,6 +23,7 @@ import {
   GREEN, RED, YELLOW, BLUE, BOLD, DIM, RESET,
   print, println, success, fail, warn, heading,
   maskSecret, initRL, closeRL, ask, choose, confirm, askSecret,
+  chmodJsFiles,
 } from './cli-utils.js';
 
 // ── Skill discovery ─────────────────────────────────────────────
@@ -421,7 +422,7 @@ async function setupSingleSkill(manifest: SkillManifest, skillsDir: string): Pro
       print('  Running setup validation... ');
       try {
         const env = buildSkillEnv(skillsDir, manifest.name);
-        const result = execSync(`node ${handlerPath}`, {
+        const result = execFileSync('node', [handlerPath], {
           encoding: 'utf-8',
           timeout: 30000,
           input: JSON.stringify(config),
@@ -466,9 +467,7 @@ function ensureSkillInstalled(manifest: SkillManifest, sourceDir: string, skills
   const src = join(sourceDir, manifest.name);
   if (!existsSync(dest) && existsSync(src)) {
     cpSync(src, dest, { recursive: true });
-    try {
-      execSync(`find ${dest}/handlers -name "*.js" -exec chmod +x {} \\; 2>/dev/null || true`);
-    } catch { /* ignore */ }
+    chmodJsFiles(join(dest, 'handlers'));
     println(`  ${DIM}Installed: ${manifest.name}${RESET}`);
   }
 }

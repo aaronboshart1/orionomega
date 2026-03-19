@@ -17,7 +17,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { execSync } from 'node:child_process';
+import { execSync, execFileSync } from 'node:child_process';
 import { writeConfig, readConfig, getConfigPath, getDefaultConfig } from '../config/index.js';
 import type { OrionOmegaConfig } from '../config/index.js';
 import { SkillLoader, readSkillConfig, writeSkillConfig } from '@orionomega/skills-sdk';
@@ -27,6 +27,7 @@ import {
   GREEN, RED, YELLOW, BLUE, BOLD, DIM, RESET,
   print, println, success, fail, warn, heading,
   maskSecret, initRL, closeRL, ask, choose, confirm,
+  chmodJsFiles,
 } from './cli-utils.js';
 
 // ── Navigation ──────────────────────────────────────────────────
@@ -770,7 +771,7 @@ async function stepSkills(config: OrionOmegaConfig, stepIdx: number, totalSteps:
         if (existsSync(handlerPath)) {
           print('  Running setup validation... ');
           try {
-            const result = execSync(`node ${handlerPath}`, {
+            const result = execFileSync('node', [handlerPath], {
               encoding: 'utf-8',
               timeout: 30000,
               input: JSON.stringify(cfg),
@@ -1155,9 +1156,7 @@ export async function runSetup(): Promise<void> {
           const dest = join(config.skills.directory, skillName);
           if (!existsSync(dest)) {
             cpSync(src, dest, { recursive: true });
-            execSync(
-              `find ${dest}/handlers -name "*.js" -exec chmod +x {} \\; 2>/dev/null || true`,
-            );
+            chmodJsFiles(join(dest, 'handlers'));
             println(`  ${DIM}Installed default skill: ${skillName}${RESET}`);
             installed++;
           }
