@@ -75,9 +75,9 @@ const COMMANDS: Record<string, () => Promise<void>> = {
   setup: async () => {
     const sub = process.argv[3];
     if (sub === 'skills') {
-      (await import('./commands/setup-skills.js')).runSetupSkills(process.argv.slice(4));
+      await (await import('./commands/setup-skills.js')).runSetupSkills(process.argv.slice(4));
     } else {
-      (await import('./commands/setup.js')).runSetup();
+      await (await import('./commands/setup.js')).runSetup();
     }
   },
   status: async () => (await import('./commands/status.js')).runStatus(),

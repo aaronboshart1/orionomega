@@ -26,7 +26,7 @@ import { githubDeviceFlowAuth, isGhWebAuthCommand, extractGitProtocol } from './
 import {
   GREEN, RED, YELLOW, BLUE, BOLD, DIM, RESET,
   print, println, success, fail, warn, heading,
-  maskSecret, initRL, closeRL, ask, choose, confirm,
+  maskSecret, initRL, closeRL, ask, choose, confirm, askSecret,
   chmodJsFiles,
 } from './cli-utils.js';
 
@@ -869,7 +869,7 @@ async function runAuthSetup(
           println(`  Required scopes: ${method.scopes.join(', ')}`);
         }
       }
-      const token = await ask(`  Enter your ${method.type === 'pat' ? 'personal access token' : 'API key'}`);
+      const token = await askSecret(`  Enter your ${method.type === 'pat' ? 'personal access token' : 'API key'}: `);
       if (token && method.envVar) {
         const cfg = readSkillConfig(skillsDir, skillName);
         cfg.fields[method.envVar] = token;
