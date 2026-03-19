@@ -26,7 +26,7 @@ export function getConfigPath(): string {
 export function getDefaultConfig(): OrionOmegaConfig {
   return {
     gateway: {
-      port: 7800,
+      port: 8000,
       bind: '0.0.0.0',
       auth: {
         mode: 'none',

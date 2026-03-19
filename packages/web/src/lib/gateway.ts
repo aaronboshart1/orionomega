@@ -5,14 +5,14 @@ import ReconnectingWebSocket from 'reconnecting-websocket';
 import { useOrchestrationStore } from '@/stores/orchestration';
 import { useChatStore } from '@/stores/chat';
 
-// Gateway port matches core config default (7800)
+// Gateway port matches core config default (8000) — Replit-compatible port
 // Auto-detect gateway URL from current browser location
 function defaultGatewayUrl(): string {
   if (typeof window !== 'undefined') {
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    return `${proto}//${window.location.hostname}:7800/ws`;
+    return `${proto}//${window.location.hostname}:8000/ws`;
   }
-  return 'ws://127.0.0.1:7800/ws';
+  return 'ws://127.0.0.1:8000/ws';
 }
 
 export function useGateway(url: string = defaultGatewayUrl()) {
