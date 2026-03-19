@@ -161,24 +161,42 @@ export async function start(): Promise<void> {
     header.setText(theme.header(`  orionomega — ${gatewayUrl}`));
   };
 
+  let wasConnected = false;
+
   client.on('connected', () => {
     statusBar.connected = true;
-    // Session ID is set from the ack message — save it once available
+    if (wasConnected) {
+      chatLog.addMessage({
+        id: `reconnect-${Date.now()}`,
+        role: 'system',
+        content: 'Reconnected to gateway.',
+        timestamp: new Date().toISOString(),
+      });
+    }
+    wasConnected = true;
     const saveCheck = setInterval(() => {
       if (client.sessionId) {
         saveSessionId(client.sessionId);
         clearInterval(saveCheck);
       }
     }, 100);
-    // Clear after 5s in case ack never arrives
     setTimeout(() => clearInterval(saveCheck), 5000);
+    tui.requestRender();
+  });
+
+  client.on('reconnecting', (attempt) => {
+    chatLog.addMessage({
+      id: `reconnecting-${Date.now()}`,
+      role: 'system',
+      content: `Gateway unreachable — reconnecting (attempt ${attempt})...`,
+      timestamp: new Date().toISOString(),
+    });
     tui.requestRender();
   });
 
   client.on('history', (messages) => {
     for (const msg of messages) {
       const m = msg as any;
-      // Restore plan messages as formatted plans
       if (m.type === 'plan' && m.content) {
         try {
           const plan = JSON.parse(m.content);
@@ -190,7 +208,6 @@ export async function start(): Promise<void> {
             timestamp: msg.timestamp,
             raw: formatted,
           });
-          // Restore pending plan state
           pendingPlans.set(msg.id, { plan, receivedAt: msg.timestamp });
           continue;
         } catch {}

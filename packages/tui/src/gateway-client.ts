@@ -61,6 +61,7 @@ function nextId(): string {
 export interface GatewayClientEvents {
   connected: [];
   disconnected: [];
+  reconnecting: [number];
   message: [DisplayMessage];
   streaming: [DisplayMessage];
   streamingDone: [];
@@ -85,6 +86,8 @@ export class GatewayClient extends EventEmitter<GatewayClientEvents> {
   private streamingAcc: { id: string; content: string } | null = null;
   private seenIds = new Set<string>();
   private disposed = false;
+  private reconnectAttempts = 0;
+  private hasConnectedOnce = false;
 
   connected = false;
 
@@ -119,6 +122,8 @@ export class GatewayClient extends EventEmitter<GatewayClientEvents> {
       ws.on('open', () => {
         if (this.disposed) { ws.close(); return; }
         this.connected = true;
+        this.reconnectAttempts = 0;
+        this.hasConnectedOnce = true;
         this.ws = ws;
         this.emit('connected');
         this.pingTimer = setInterval(() => {
@@ -136,6 +141,8 @@ export class GatewayClient extends EventEmitter<GatewayClientEvents> {
         if (this.pingTimer) clearInterval(this.pingTimer);
         this.emit('disconnected');
         if (!this.disposed) {
+          this.reconnectAttempts++;
+          this.emit('reconnecting', this.reconnectAttempts);
           this.reconnectTimer = setTimeout(doConnect, 3_000);
         }
       });
