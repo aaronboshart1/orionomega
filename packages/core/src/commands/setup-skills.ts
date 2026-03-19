@@ -12,7 +12,6 @@
  * authentication and configuration for each skill.
  */
 
-import { createInterface } from 'node:readline';
 import { existsSync, cpSync } from 'node:fs';
 import { join } from 'node:path';
 import { execSync } from 'node:child_process';
@@ -20,124 +19,11 @@ import { readConfig } from '../config/index.js';
 import { SkillLoader, readSkillConfig, writeSkillConfig } from '@orionomega/skills-sdk';
 import type { SkillManifest, SkillAuthMethod, SkillSetupField, SkillConfig } from '@orionomega/skills-sdk';
 import { githubDeviceFlowAuth, isGhWebAuthCommand, extractGitProtocol } from './github-device-auth.js';
-
-// ── Colour helpers ──────────────────────────────────────────────
-
-const GREEN = '\x1b[32m';
-const RED = '\x1b[31m';
-const YELLOW = '\x1b[33m';
-const BLUE = '\x1b[34m';
-const BOLD = '\x1b[1m';
-const DIM = '\x1b[2m';
-const RESET = '\x1b[0m';
-
-function print(msg: string): void { process.stdout.write(msg); }
-function println(msg: string = ''): void { process.stdout.write(msg + '\n'); }
-function success(msg: string): void { println(`${GREEN}✓${RESET} ${msg}`); }
-function fail(msg: string): void { println(`${RED}✗${RESET} ${msg}`); }
-function warn(msg: string): void { println(`${YELLOW}⚠${RESET} ${msg}`); }
-function heading(msg: string): void { println(`\n${BOLD}${BLUE}${msg}${RESET}\n`); }
-
-// ── Secret masking ──────────────────────────────────────────────
-
-function maskSecret(value: string): string {
-  if (!value) return '';
-  if (value.length < 12) return '***';
-  return value.slice(0, 7) + '***' + value.slice(-4);
-}
-
-// ── Readline helpers ────────────────────────────────────────────
-
-let rl: ReturnType<typeof createInterface>;
-
-function initRL(): void {
-  rl = createInterface({ input: process.stdin, output: process.stdout });
-  rl.on('close', () => {
-    println(`\n${YELLOW}Skill setup cancelled.${RESET}`);
-    process.exit(0);
-  });
-}
-
-function closeRL(): void {
-  rl.removeAllListeners('close');
-  rl.close();
-}
-
-function ask(question: string, opts?: { default?: string }): Promise<string> {
-  return new Promise((resolve) => {
-    const suffix = opts?.default ? ` ${DIM}(${opts.default})${RESET}` : '';
-    const prompt = `${question}${suffix}: `;
-    rl.question(prompt, (answer: string) => {
-      resolve(answer.trim() || opts?.default || '');
-    });
-  });
-}
-
-function choose(question: string, options: { label: string; value: string }[]): Promise<string> {
-  return new Promise((resolve) => {
-    println(question);
-    for (let i = 0; i < options.length; i++) {
-      println(`  ${BOLD}${i + 1}${RESET}) ${options[i].label}`);
-    }
-    const promptForChoice = (): void => {
-      rl.question(`\nChoice [1-${options.length}]: `, (answer: string) => {
-        const idx = parseInt(answer.trim(), 10) - 1;
-        if (idx >= 0 && idx < options.length) {
-          resolve(options[idx].value);
-        } else {
-          warn(`Please enter a number between 1 and ${options.length}.`);
-          promptForChoice();
-        }
-      });
-    };
-    promptForChoice();
-  });
-}
-
-function confirm(question: string, defaultYes: boolean = true): Promise<boolean> {
-  return new Promise((resolve) => {
-    const hint = defaultYes ? 'Y/n' : 'y/N';
-    rl.question(`${question} [${hint}]: `, (answer: string) => {
-      const a = answer.trim().toLowerCase();
-      resolve(a === '' ? defaultYes : a === 'y' || a === 'yes');
-    });
-  });
-}
-
-/** Prompt for masked input (secrets). */
-function askSecret(message: string): Promise<string> {
-  return new Promise((resolve) => {
-    process.stdout.write(message);
-    let value = '';
-    const origWrite = process.stdout.write.bind(process.stdout);
-    process.stdin.setRawMode?.(true);
-    process.stdin.resume();
-    process.stdin.setEncoding('utf-8');
-    const onData = (chunk: string) => {
-      for (const ch of chunk) {
-        if (ch === '\r' || ch === '\n') {
-          process.stdin.setRawMode?.(false);
-          process.stdin.removeListener('data', onData);
-          origWrite('\n');
-          resolve(value);
-          return;
-        } else if (ch === '\u0003') {
-          process.stdin.setRawMode?.(false);
-          process.exit(1);
-        } else if (ch === '\u007f' || ch === '\b') {
-          if (value.length > 0) {
-            value = value.slice(0, -1);
-            origWrite('\b \b');
-          }
-        } else {
-          value += ch;
-          origWrite('•');
-        }
-      }
-    };
-    process.stdin.on('data', onData);
-  });
-}
+import {
+  GREEN, RED, YELLOW, BLUE, BOLD, DIM, RESET,
+  print, println, success, fail, warn, heading,
+  maskSecret, initRL, closeRL, ask, choose, confirm, askSecret,
+} from './cli-utils.js';
 
 // ── Skill discovery ─────────────────────────────────────────────
 

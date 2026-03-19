@@ -53,11 +53,17 @@ The gateway reads from `~/.orionomega/config.yaml`. Defaults:
 - Auth mode: none
 - CORS: http://localhost:*
 
+## CLI Shared Utilities
+
+Shared readline/CLI helpers (colors, `ask`, `choose`, `confirm`, `askSecret`, `maskSecret`, etc.) live in `packages/core/src/commands/cli-utils.ts`. Both `setup.ts` and `setup-skills.ts` import from this module instead of duplicating.
+
 ## Replit-Specific Changes
 
 - Next.js dev/start scripts bind to `0.0.0.0` on port 5000 (Replit's required webview port)
 - Gateway default port changed from 7800 → 8000 (Replit-supported port)
 - Gateway bind address changed from `127.0.0.1` → `0.0.0.0` in fallback config
 - Frontend WebSocket URL updated to port 8000
+- TUI gateway fallback port updated to 8000 (was 7800)
 - `allowedDevOrigins: ['*']` added to `next.config.ts` for Replit's proxied preview
 - Stale pre-compiled `.js` files removed from `src/app/` and `src/lib/`
+- Legacy `workflow-tracker.ts` component removed (replaced by `workflow-panel.ts`)

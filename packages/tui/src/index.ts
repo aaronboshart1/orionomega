@@ -52,10 +52,10 @@ function defaultGatewayUrl(): string {
   try {
     const config = readConfig();
     const host = config.gateway.bind || '127.0.0.1';
-    const port = config.gateway.port || 7800;
+    const port = config.gateway.port || 8000;
     return `ws://${host}:${port}/ws`;
   } catch {
-    return 'ws://127.0.0.1:7800/ws';
+    return 'ws://127.0.0.1:8000/ws';
   }
 }
 

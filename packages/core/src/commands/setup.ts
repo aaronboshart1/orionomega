@@ -13,8 +13,6 @@
  * - Ctrl+C handled gracefully
  */
 
-import * as readline from 'node:readline';
-
 import { createHash } from 'node:crypto';
 import { mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -25,111 +23,11 @@ import type { OrionOmegaConfig } from '../config/index.js';
 import { SkillLoader, readSkillConfig, writeSkillConfig } from '@orionomega/skills-sdk';
 import type { SkillManifest, SkillAuthMethod, SkillSetupField } from '@orionomega/skills-sdk';
 import { githubDeviceFlowAuth, isGhWebAuthCommand, extractGitProtocol } from './github-device-auth.js';
-
-// ── Colour helpers ──────────────────────────────────────────────
-
-const GREEN = '\x1b[32m';
-const RED = '\x1b[31m';
-const YELLOW = '\x1b[33m';
-const BLUE = '\x1b[34m';
-const BOLD = '\x1b[1m';
-const DIM = '\x1b[2m';
-const RESET = '\x1b[0m';
-
-function print(msg: string): void { process.stdout.write(msg); }
-function println(msg: string = ''): void { process.stdout.write(msg + '\n'); }
-function success(msg: string): void { println(`${GREEN}✓${RESET} ${msg}`); }
-function fail(msg: string): void { println(`${RED}✗${RESET} ${msg}`); }
-function warn(msg: string): void { println(`${YELLOW}⚠${RESET} ${msg}`); }
-function heading(msg: string): void { println(`\n${BOLD}${BLUE}${msg}${RESET}\n`); }
-
-// ── Secret masking ──────────────────────────────────────────────
-
-/**
- * Mask a secret for display: show first 7 + last 4 chars, *** in the middle.
- * Short values (< 12 chars) are fully masked as '***'.
- */
-function maskSecret(value: string): string {
-  if (!value) return '';
-  if (value.length < 12) return '***';
-  return value.slice(0, 7) + '***' + value.slice(-4);
-}
-
-// ── Readline helpers ────────────────────────────────────────────
-
-let rl: readline.Interface;
-
-function initRL(): void {
-  rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
-
-  // Graceful Ctrl+C handling
-  rl.on('close', () => {
-    println(`\n${YELLOW}Setup cancelled.${RESET}`);
-    process.exit(0);
-  });
-}
-
-function closeRL(): void {
-  // Remove close listener so normal exit doesn't print cancellation message
-  rl.removeAllListeners('close');
-  rl.close();
-}
-
-/**
- * Prompt for plain text input (no masking).
- * If a default is provided, pressing Enter returns it.
- */
-function ask(question: string, opts?: { default?: string }): Promise<string> {
-  return new Promise((resolve) => {
-    const suffix = opts?.default ? ` ${DIM}(${opts.default})${RESET}` : '';
-    const prompt = `${question}${suffix}: `;
-    rl.question(prompt, (answer: string) => {
-      resolve(answer.trim() || opts?.default || '');
-    });
-  });
-}
-
-/**
- * Prompt user to select from a numbered list.
- * Re-prompts on invalid input instead of silently defaulting.
- */
-function choose(question: string, options: { label: string; value: string }[]): Promise<string> {
-  return new Promise((resolve) => {
-    println(question);
-    for (let i = 0; i < options.length; i++) {
-      println(`  ${BOLD}${i + 1}${RESET}) ${options[i].label}`);
-    }
-
-    const promptForChoice = (): void => {
-      rl.question(`\nChoice [1-${options.length}]: `, (answer: string) => {
-        const idx = parseInt(answer.trim(), 10) - 1;
-        if (idx >= 0 && idx < options.length) {
-          resolve(options[idx].value);
-        } else {
-          warn(`Please enter a number between 1 and ${options.length}.`);
-          promptForChoice();
-        }
-      });
-    };
-    promptForChoice();
-  });
-}
-
-/**
- * Yes/No confirmation.
- */
-function confirm(question: string, defaultYes: boolean = true): Promise<boolean> {
-  return new Promise((resolve) => {
-    const hint = defaultYes ? 'Y/n' : 'y/N';
-    rl.question(`${question} [${hint}]: `, (answer: string) => {
-      const a = answer.trim().toLowerCase();
-      resolve(a === '' ? defaultYes : a === 'y' || a === 'yes');
-    });
-  });
-}
+import {
+  GREEN, RED, YELLOW, BLUE, BOLD, DIM, RESET,
+  print, println, success, fail, warn, heading,
+  maskSecret, initRL, closeRL, ask, choose, confirm,
+} from './cli-utils.js';
 
 // ── Navigation ──────────────────────────────────────────────────
 
