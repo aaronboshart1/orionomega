@@ -669,12 +669,17 @@ async function stepSkills(config: OrionOmegaConfig, stepIdx: number, totalSteps:
     return nav(stepIdx, totalSteps);
   }
 
+  const skip = await confirm('  Skip skill setup for now?', false);
+  if (skip) {
+    println(`  ${DIM}You can configure skills later with: orionomega setup skills${RESET}`);
+    return nav(stepIdx, totalSteps);
+  }
+
   println('  Available skills:');
   println();
   for (let i = 0; i < allManifests.length; i++) {
     const m = allManifests[i];
     const setupTag = m.setup?.required ? ' (requires setup)' : '';
-    // Show current enabled/configured status
     let statusTag = '';
     try {
       const cfg = readSkillConfig(config.skills.directory, m.name);
@@ -685,10 +690,13 @@ async function stepSkills(config: OrionOmegaConfig, stepIdx: number, totalSteps:
   }
   println();
 
-  const selection = await ask("Enable which skills? (comma-separated numbers, or 'all')", { default: 'all' });
+  const selection = await ask("Enable which skills? (comma-separated numbers, 'all', or 'none')", { default: 'all' });
 
   let selectedIndices: number[];
-  if (selection.toLowerCase() === 'all') {
+  if (selection.toLowerCase() === 'none') {
+    println(`  ${DIM}Skipping skill configuration. Run later with: orionomega setup skills${RESET}`);
+    return nav(stepIdx, totalSteps);
+  } else if (selection.toLowerCase() === 'all') {
     selectedIndices = allManifests.map((_, i) => i);
   } else {
     selectedIndices = selection
