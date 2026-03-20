@@ -745,6 +745,14 @@ async function stepSkills(config: OrionOmegaConfig, stepIdx: number, totalSteps:
       if (m.setup.description) println(`  ${m.setup.description}`);
       println();
 
+      const skipThis = await confirm(`  Skip ${m.name} setup for now?`, false);
+      if (skipThis) {
+        cfg.enabled = false;
+        writeSkillConfig(config.skills.directory, cfg);
+        println(`  ${DIM}Skipped. Configure later with: orionomega skill setup ${m.name}${RESET}`);
+        continue;
+      }
+
       // Auth method selection + execution
       let authSucceeded = true;
       if (m.setup.auth?.methods?.length) {
@@ -1071,6 +1079,96 @@ async function showSummary(config: OrionOmegaConfig): Promise<boolean> {
   return await confirm(`${BOLD}Save this configuration?${RESET}`, true);
 }
 
+// ── Post-wizard finalization ─────────────────────────────────────
+
+async function finalizeSetup(config: OrionOmegaConfig): Promise<void> {
+  if (!existsSync(config.skills.directory)) {
+    mkdirSync(config.skills.directory, { recursive: true });
+  }
+
+  try {
+    const repoRoot = new URL('../../../../', import.meta.url).pathname;
+    const defaultSkillsDir = join(repoRoot, 'default-skills');
+    if (existsSync(defaultSkillsDir)) {
+      const { readdirSync, cpSync } = await import('node:fs');
+      const skillNames = readdirSync(defaultSkillsDir);
+      let installed = 0;
+      for (const skillName of skillNames) {
+        const src = join(defaultSkillsDir, skillName);
+        const dest = join(config.skills.directory, skillName);
+        if (!existsSync(dest)) {
+          cpSync(src, dest, { recursive: true });
+          chmodJsFiles(join(dest, 'handlers'));
+          println(`  ${DIM}Installed default skill: ${skillName}${RESET}`);
+          installed++;
+        }
+      }
+      if (installed > 0) {
+        success(`Installed ${installed} default skill(s).`);
+      }
+    }
+  } catch (err) {
+    warn(`Could not install default skills: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  const logDir = join(homedir(), '.orionomega', 'logs');
+  if (!existsSync(logDir)) {
+    mkdirSync(logDir, { recursive: true });
+  }
+
+  writeConfig(config);
+
+  try {
+    const state = execSync('systemctl is-active orionomega 2>/dev/null', { encoding: 'utf-8' }).trim();
+    const action = state === 'active' ? 'restart' : 'start';
+    const verb = state === 'active' ? 'Restarting' : 'Starting';
+    print(`  ${verb} gateway... `);
+    try {
+      execSync(`sudo systemctl ${action} orionomega`, { stdio: 'ignore', timeout: 15000 });
+      println(`${GREEN}✓${RESET} Gateway ${action === 'restart' ? 'restarted' : 'started'}`);
+    } catch {
+      try {
+        execSync(`systemctl ${action} orionomega`, { stdio: 'ignore', timeout: 15000 });
+        println(`${GREEN}✓${RESET} Gateway ${action === 'restart' ? 'restarted' : 'started'}`);
+      } catch {
+        println(`${YELLOW}⚠${RESET} Could not ${action} gateway. Run: sudo systemctl ${action} orionomega`);
+      }
+    }
+  } catch {
+    print('  Starting gateway... ');
+    try {
+      execSync('sudo systemctl start orionomega', { stdio: 'ignore', timeout: 15000 });
+      println(`${GREEN}✓${RESET} Gateway started`);
+    } catch {
+      try {
+        const pidFile = join(homedir(), '.orionomega', 'gateway.pid');
+        if (existsSync(pidFile)) {
+          const pid = parseInt(readFileSync(pidFile, 'utf-8').trim(), 10);
+          if (!isNaN(pid)) {
+            try { process.kill(pid, 'SIGTERM'); } catch {}
+          }
+        }
+      } catch {}
+      println(`${YELLOW}⚠${RESET} Could not start gateway. Run: orionomega gateway start`);
+    }
+  }
+
+  heading('Setup Complete!');
+  success(`Config saved to ${getConfigPath()}`);
+  println();
+  println(`  ${BOLD}Next steps:${RESET}`);
+  println(`  1. Start the gateway:  ${BLUE}orionomega gateway start${RESET}`);
+  println(`  2. Check health:       ${BLUE}orionomega status${RESET}`);
+  println(`  3. Launch the TUI:     ${BLUE}orionomega tui${RESET}`);
+  println(`  4. Or the web UI:      ${BLUE}orionomega ui${RESET}`);
+  println();
+  println(`  Edit your workspace files to personalize the agent:`);
+  println(`  ${DIM}${config.workspace.path}/SOUL.md${RESET}`);
+  println(`  ${DIM}${config.workspace.path}/USER.md${RESET}`);
+  println(`  ${DIM}${config.workspace.path}/TOOLS.md${RESET}`);
+  println();
+}
+
 // ── Main ────────────────────────────────────────────────────────
 
 type StepFn = (config: OrionOmegaConfig, stepIdx: number, totalSteps: number) => Promise<StepAction>;
@@ -1150,101 +1248,7 @@ export async function runSetup(): Promise<void> {
       }
     }
 
-    // ── Post-wizard finalization ──────────────────────────────
-
-    // Ensure skills & logs directories exist
-    if (!existsSync(config.skills.directory)) {
-      mkdirSync(config.skills.directory, { recursive: true });
-    }
-
-    // Install any default skills not yet present in the user directory
-    try {
-      const repoRoot = new URL('../../../../', import.meta.url).pathname;
-      const defaultSkillsDir = join(repoRoot, 'default-skills');
-      if (existsSync(defaultSkillsDir)) {
-        const { readdirSync, cpSync } = await import('node:fs');
-        const skillNames = readdirSync(defaultSkillsDir);
-        let installed = 0;
-        for (const skillName of skillNames) {
-          const src = join(defaultSkillsDir, skillName);
-          const dest = join(config.skills.directory, skillName);
-          if (!existsSync(dest)) {
-            cpSync(src, dest, { recursive: true });
-            chmodJsFiles(join(dest, 'handlers'));
-            println(`  ${DIM}Installed default skill: ${skillName}${RESET}`);
-            installed++;
-          }
-        }
-        if (installed > 0) {
-          success(`Installed ${installed} default skill(s).`);
-        }
-      }
-    } catch (err) {
-      warn(`Could not install default skills: ${err instanceof Error ? err.message : String(err)}`);
-    }
-
-    const logDir = join(homedir(), '.orionomega', 'logs');
-    if (!existsSync(logDir)) {
-      mkdirSync(logDir, { recursive: true });
-    }
-
-    // Save config
-    writeConfig(config);
-
-    // Start or restart the gateway service.
-    // On fresh install the service is enabled but not started — we need to start it.
-    // On re-run the service may already be active — restart to apply new config.
-    try {
-      const state = execSync('systemctl is-active orionomega 2>/dev/null', { encoding: 'utf-8' }).trim();
-      const action = state === 'active' ? 'restart' : 'start';
-      const verb = state === 'active' ? 'Restarting' : 'Starting';
-      print(`  ${verb} gateway... `);
-      try {
-        execSync(`sudo systemctl ${action} orionomega`, { stdio: 'ignore', timeout: 15000 });
-        println(`${GREEN}✓${RESET} Gateway ${action === 'restart' ? 'restarted' : 'started'}`);
-      } catch {
-        try {
-          execSync(`systemctl ${action} orionomega`, { stdio: 'ignore', timeout: 15000 });
-          println(`${GREEN}✓${RESET} Gateway ${action === 'restart' ? 'restarted' : 'started'}`);
-        } catch {
-          println(`${YELLOW}⚠${RESET} Could not ${action} gateway. Run: sudo systemctl ${action} orionomega`);
-        }
-      }
-    } catch {
-      // systemctl is-active failed — service may not be installed
-      // Try starting anyway (covers the case where is-active returns non-zero for 'inactive')
-      print('  Starting gateway... ');
-      try {
-        execSync('sudo systemctl start orionomega', { stdio: 'ignore', timeout: 15000 });
-        println(`${GREEN}✓${RESET} Gateway started`);
-      } catch {
-        try {
-          const pidFile = join(homedir(), '.orionomega', 'gateway.pid');
-          if (existsSync(pidFile)) {
-            const pid = parseInt(readFileSync(pidFile, 'utf-8').trim(), 10);
-            if (!isNaN(pid)) {
-              try { process.kill(pid, 'SIGTERM'); } catch {}
-            }
-          }
-        } catch {}
-        println(`${YELLOW}⚠${RESET} Could not start gateway. Run: orionomega gateway start`);
-      }
-    }
-
-    heading('Setup Complete!');
-    success(`Config saved to ${getConfigPath()}`);
-    println();
-    println(`  ${BOLD}Next steps:${RESET}`);
-    println(`  1. Start the gateway:  ${BLUE}orionomega gateway start${RESET}`);
-    println(`  2. Check health:       ${BLUE}orionomega status${RESET}`);
-    println(`  3. Launch the TUI:     ${BLUE}orionomega tui${RESET}`);
-    println(`  4. Or the web UI:      ${BLUE}orionomega ui${RESET}`);
-    println();
-    println(`  Edit your workspace files to personalize the agent:`);
-    println(`  ${DIM}${config.workspace.path}/SOUL.md${RESET}`);
-    println(`  ${DIM}${config.workspace.path}/USER.md${RESET}`);
-    println(`  ${DIM}${config.workspace.path}/TOOLS.md${RESET}`);
-    println();
+    await finalizeSetup(config);
   } finally {
     closeRL();
   }
