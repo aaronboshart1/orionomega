@@ -22,7 +22,7 @@ import { githubDeviceFlowAuth, isGhWebAuthCommand, extractGitProtocol } from './
 import {
   GREEN, RED, YELLOW, BLUE, BOLD, DIM, RESET,
   print, println, success, fail, warn, heading,
-  maskSecret, initRL, closeRL, ask, choose, confirm, askSecret,
+  maskSecret, initRL, closeRL, ask, choose, confirm,
   chmodJsFiles,
 } from './cli-utils.js';
 
@@ -202,7 +202,7 @@ async function runAuthSetup(
         println(`  ${DIM}Current: ${maskSecret(existing)}${RESET}`);
       }
 
-      const token = await askSecret(`  Enter ${label}: `);
+      const token = await ask(`  Enter ${label}`);
       if (!token?.trim()) {
         if (existing) {
           success(`Keeping existing ${label}.`);
@@ -288,7 +288,7 @@ async function handleAuthFailure(
         println(`  Token URL: ${BLUE}${method.tokenUrl}${RESET}`);
       }
       const label = method.type === 'pat' ? 'personal access token' : 'API key';
-      const token = await askSecret(`  Re-enter ${label}: `);
+      const token = await ask(`  Re-enter ${label}`);
       if (token?.trim() && method.envVar) {
         const cfg = readSkillConfig(skillsDir, skillName);
         cfg.fields[method.envVar] = token.trim();
@@ -351,9 +351,7 @@ async function promptField(field: SkillSetupField, existingValue?: string | numb
   }
 
   const hint = defaultStr ? defaultStr : undefined;
-  const raw = field.mask
-    ? await askSecret(`  ${field.label}${field.description ? ` ${DIM}(${field.description})${RESET}` : ''}${hint ? ` ${DIM}[${maskSecret(hint)}]${RESET}` : ''}: `)
-    : await ask(`  ${field.label}${field.description ? ` ${DIM}(${field.description})${RESET}` : ''}`, { default: hint });
+  const raw = await ask(`  ${field.label}${field.description ? ` ${DIM}(${field.description})${RESET}` : ''}`, { default: hint });
 
   if (!raw && field.required && !existingValue) {
     warn(`Required field "${field.name}" not provided.`);
