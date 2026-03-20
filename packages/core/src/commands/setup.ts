@@ -33,7 +33,7 @@ import {
 // ── Navigation ──────────────────────────────────────────────────
 
 /** Action returned by each wizard step. */
-type StepAction = 'next' | 'back' | 'redo' | 'quit' | 'menu';
+type StepAction = 'next' | 'back' | 'redo' | 'quit' | 'menu' | 'save';
 
 /**
  * Show the step navigation bar and return the user's choice.
@@ -47,7 +47,7 @@ async function nav(stepIdx: number, totalSteps: number): Promise<StepAction> {
   println(`\n${DIM}──────────────────────────────────────────────────${RESET}`);
   const parts: string[] = [`${BOLD}↵${RESET} ${nextWord}`];
   if (!isFirst) parts.push(`${BOLD}b${RESET} back`);
-  parts.push(`${BOLD}r${RESET} redo`, `${BOLD}m${RESET} menu`, `${BOLD}q${RESET} quit`);
+  parts.push(`${BOLD}r${RESET} redo`, `${BOLD}s${RESET} save & exit`, `${BOLD}m${RESET} menu`, `${BOLD}q${RESET} quit`);
   println(`  ${parts.join('   ·   ')}`);
 
   for (;;) {
@@ -56,6 +56,7 @@ async function nav(stepIdx: number, totalSteps: number): Promise<StepAction> {
     if (a === '' || a === 'n' || a === 'f' || a === 'c') return 'next';
     if (a === 'b' && !isFirst) return 'back';
     if (a === 'r') return 'redo';
+    if (a === 's') return 'save';
     if (a === 'm') return 'menu';
     if (a === 'q') {
       const yes = await confirm('Exit setup without saving?', false);
@@ -65,7 +66,7 @@ async function nav(stepIdx: number, totalSteps: number): Promise<StepAction> {
     } else if (a === 'b' && isFirst) {
       warn('Already at the first step.');
     } else {
-      warn(`Unknown input. Press Enter to ${nextWord}, b=back, r=redo, m=menu, q=quit.`);
+      warn(`Unknown input. Press Enter to ${nextWord}, b=back, r=redo, s=save & exit, m=menu, q=quit.`);
     }
   }
 }
@@ -1085,7 +1086,7 @@ export async function runSetup(): Promise<void> {
   println(`${BOLD}║     OrionOmega — Setup Wizard        ║${RESET}`);
   println(`${BOLD}╚══════════════════════════════════════╝${RESET}`);
   println();
-  println(`  Navigate with: ${BOLD}↵${RESET} continue   ${BOLD}b${RESET} back   ${BOLD}r${RESET} redo   ${BOLD}m${RESET} menu   ${BOLD}q${RESET} quit`);
+  println(`  Navigate with: ${BOLD}↵${RESET} continue   ${BOLD}b${RESET} back   ${BOLD}r${RESET} redo   ${BOLD}s${RESET} save & exit   ${BOLD}m${RESET} menu   ${BOLD}q${RESET} quit`);
 
   // Load existing config — re-runs preserve previous settings
   const config = readConfig();
@@ -1112,7 +1113,7 @@ export async function runSetup(): Promise<void> {
     let saved = false;
     while (!saved) {
       // Step loop
-      while (idx < steps.length) {
+      while (idx < steps.length && !saved) {
         const action = await steps[idx](config, idx, steps.length);
         switch (action) {
           case 'next':
@@ -1126,12 +1127,17 @@ export async function runSetup(): Promise<void> {
           case 'menu':
             idx = await showMenu(config);
             break;
+          case 'save':
+            saved = true;
+            break;
           case 'quit':
             println();
             warn('Setup exited without saving.');
             process.exit(0);
         }
       }
+
+      if (saved) break;
 
       // Summary & confirmation
       const confirmed = await showSummary(config);
