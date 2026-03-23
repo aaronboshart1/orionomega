@@ -203,9 +203,11 @@ async function showMenu(config: OrionOmegaConfig): Promise<number> {
   println(`  ${DIM}Enter a step number, or:${RESET}  ${BOLD}↵${RESET} start from 1   ${BOLD}s${RESET} save & exit`);
   const input = await ask(' ');
   const a = input.toLowerCase().trim();
+  if (a === '' || a === '\n') return 0;
   if (a === 's') return -1;
   const idx = parseInt(a, 10) - 1;
   if (idx >= 0 && idx < STEP_INFO.length) return idx;
+  warn(`Invalid step number. Starting from step 1.`);
   return 0;
 }
 
