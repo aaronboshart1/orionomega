@@ -180,6 +180,9 @@ async function showMenu(config: OrionOmegaConfig): Promise<number> {
   const required = STEP_INFO.map((info, i) => ({ info, i })).filter(({ info }) => info.group === 'required');
   const optional = STEP_INFO.map((info, i) => ({ info, i })).filter(({ info }) => info.group === 'optional');
 
+  println(`  ${DIM}${'#'.padEnd(4)}${'Step'.padEnd(24)}${'  '}${'Current Value'}${RESET}`);
+  println(`  ${'─'.repeat(56)}`);
+
   println(`  ${BOLD}${CYAN}Required${RESET}`);
   for (const { info, i } of required) {
     const configured = info.configured(config);
@@ -732,6 +735,20 @@ async function stepSkills(config: OrionOmegaConfig, stepIdx: number, totalSteps:
         }
       }
     } catch {}
+  }
+
+  if (allManifests.length > 0) {
+    let enabledCount = 0, configuredCount = 0;
+    for (const m of allManifests) {
+      try {
+        const cfg = readSkillConfig(config.skills.directory, m.name);
+        if (cfg.enabled) { enabledCount++; if (cfg.configured) configuredCount++; }
+      } catch {}
+    }
+    showCurrentBox([
+      ['Skills directory', config.skills.directory.replace(homedir(), '~')],
+      ['Available', `${allManifests.length} skills (${configuredCount} configured, ${enabledCount} enabled)`],
+    ]);
   }
 
   if (allManifests.length === 0) {
