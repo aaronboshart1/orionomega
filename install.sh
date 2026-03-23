@@ -124,13 +124,7 @@ printf "  ${GREEN}━━━━━━━━━━━━━━━━━━━━�
 printf "  ${BOLD}  Installation complete!${NC}\n"
 printf "  ${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"
 printf "\n"
-printf "  To get started, copy and paste this into your terminal:\n"
+printf "  Launching setup wizard...\n"
 printf "\n"
-if [ -n "${SHELL_RC:-}" ]; then
-  printf "    ${BOLD}source %s && orionomega setup${NC}\n" "$SHELL_RC"
-else
-  printf "    ${BOLD}export PATH=\"\$HOME/.orionomega/bin:\$PATH\" && orionomega setup${NC}\n"
-fi
-printf "\n"
-printf "  ${DIM}After that, any new terminal will have the orionomega command.${NC}\n"
-printf "\n"
+
+exec "$BIN_DIR/orionomega" setup </dev/tty
