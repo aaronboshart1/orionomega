@@ -1,0 +1,79 @@
+aaronboshart@Aarons-MacBook-Air ~ % curl -fsSL https://raw.githubusercontent.com/aaronboshart1/orionomega/main/install.sh | bash
+
+  ╔══════════════════════════════════════╗
+  ║     OrionOmega — Installer           ║
+  ╚══════════════════════════════════════╝
+
+
+Checking prerequisites...
+✓ Node.js v25.5.0
+✓ pnpm 10.32.1
+
+Getting OrionOmega source...
+  Updating existing installation... Already up to date.
+done
+✓ Source ready at /Users/aaronboshart/.orionomega/src
+
+Installing dependencies...
+Scope: all 7 workspace projects
+Lockfile is up to date, resolution step is skipped
+Already up to date
+Done in 269ms using pnpm v10.32.1
+✓ Dependencies installed
+
+Building OrionOmega...
+
+> orionomega@0.1.0 build /Users/aaronboshart/.orionomega/src
+> pnpm -r build
+
+Scope: 6 of 7 workspace projects
+packages/hindsight build$ tsc
+└─ Done in 809ms
+packages/skills-sdk build$ tsc
+└─ Done in 901ms
+packages/web build$ next build
+[11 lines collapsed]
+│    Finalizing page optimization ...
+│    Collecting build traces ...
+│ Route (app)                                 Size  First Load JS
+│ ┌ ○ /                                    69.1 kB         171 kB
+│ └ ○ /_not-found                            993 B         103 kB
+│ + First Load JS shared by all             102 kB
+│   ├ chunks/249dc029-07a84849d1915fba.js  54.2 kB
+│   ├ chunks/760-93f2674f80ce8538.js         46 kB
+│   └ other shared chunks (total)           1.9 kB
+│ ○  (Static)  prerendered as static content
+└─ Done in 7s
+packages/core build$ tsc
+└─ Done in 586ms
+packages/gateway build$ tsc
+└─ Done in 497ms
+packages/tui build$ tsc
+└─ Done in 616ms
+✓ Build complete
+
+Linking orionomega command...
+✓ Added to PATH in /Users/aaronboshart/.zshrc
+✓ orionomega command ready
+
+Verifying installation...
+✓ Installation verified!
+
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    Installation complete!
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Run the setup wizard:
+
+    orionomega setup
+
+  Then launch the TUI:
+
+    orionomega tui
+
+  If 'orionomega' is not found, open a new terminal or run:
+    source /Users/aaronboshart/.zshrc
+
+aaronboshart@Aarons-MacBook-Air ~ % orionomega setup
+zsh: command not found: orionomega
+aaronboshart@Aarons-MacBook-Air ~ % 

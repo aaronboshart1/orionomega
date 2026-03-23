@@ -124,17 +124,13 @@ printf "  ${GREEN}━━━━━━━━━━━━━━━━━━━━�
 printf "  ${BOLD}  Installation complete!${NC}\n"
 printf "  ${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"
 printf "\n"
-printf "  Run the setup wizard:\n"
+printf "  To get started, copy and paste this into your terminal:\n"
 printf "\n"
-printf "    ${BOLD}orionomega setup${NC}\n"
-printf "\n"
-printf "  Then launch the TUI:\n"
-printf "\n"
-printf "    ${BOLD}orionomega tui${NC}\n"
-printf "\n"
-
 if [ -n "${SHELL_RC:-}" ]; then
-  printf "  ${DIM}If 'orionomega' is not found, open a new terminal or run:${NC}\n"
-  printf "    ${DIM}source %s${NC}\n" "$SHELL_RC"
-  printf "\n"
+  printf "    ${BOLD}source %s && orionomega setup${NC}\n" "$SHELL_RC"
+else
+  printf "    ${BOLD}export PATH=\"\$HOME/.orionomega/bin:\$PATH\" && orionomega setup${NC}\n"
 fi
+printf "\n"
+printf "  ${DIM}After that, any new terminal will have the orionomega command.${NC}\n"
+printf "\n"
