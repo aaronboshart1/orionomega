@@ -113,22 +113,27 @@ fi
 export PATH="$BIN_DIR:$PATH"
 info "orionomega command ready"
 
-# ── 7. Verify ────────────────────────────────────────────────────
+# ── 7. Verify and launch ─────────────────────────────────────────
 
 step "Verifying installation..."
 "$BIN_DIR/orionomega" --help >/dev/null 2>&1 && info "Installation verified!" || warn "CLI built but --help check failed"
 
-# ── Done — launch setup ──────────────────────────────────────────
+printf "\n"
+printf "  ${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"
+printf "  ${BOLD}  Installation complete!${NC}\n"
+printf "  ${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"
+printf "\n"
+printf "  Run the setup wizard:\n"
+printf "\n"
+printf "    ${BOLD}orionomega setup${NC}\n"
+printf "\n"
+printf "  Then launch the TUI:\n"
+printf "\n"
+printf "    ${BOLD}orionomega tui${NC}\n"
+printf "\n"
 
-cat <<MSG
-
-${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}
-${BOLD}  Installation complete!${NC}
-${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}
-
-  The ${BOLD}orionomega${NC} command is now available.
-  Launching setup wizard...
-
-MSG
-
-exec "$BIN_DIR/orionomega" setup
+if [ -n "${SHELL_RC:-}" ]; then
+  printf "  ${DIM}If 'orionomega' is not found, open a new terminal or run:${NC}\n"
+  printf "    ${DIM}source %s${NC}\n" "$SHELL_RC"
+  printf "\n"
+fi
