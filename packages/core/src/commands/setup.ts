@@ -173,8 +173,9 @@ async function showMenu(config: OrionOmegaConfig): Promise<number> {
   println(`${BOLD}${BLUE}  OrionOmega Setup${RESET}`);
   println();
 
-  const configuredCount = STEP_INFO.filter((s) => s.configured(config) && s.summary(config) !== 'not set').length;
-  println(`  ${DIM}${configuredCount}/${STEP_INFO.length} steps configured${RESET}`);
+  const requiredDone = STEP_INFO.filter((s) => s.group === 'required' && s.configured(config) && s.summary(config) !== 'not set').length;
+  const requiredTotal = STEP_INFO.filter((s) => s.group === 'required').length;
+  println(`  ${DIM}${requiredDone}/${requiredTotal} required steps configured${RESET}`);
   println();
 
   const required = STEP_INFO.map((info, i) => ({ info, i })).filter(({ info }) => info.group === 'required');
@@ -1195,7 +1196,8 @@ async function showSummary(config: OrionOmegaConfig, initialSnap: ConfigSnapshot
   println(`  ${BOLD}${CYAN}Gateway${RESET}`);
   println(`    Port:                 ${DIM}${config.gateway.port}${RESET}`);
   println(`    Bind:                 ${DIM}${config.gateway.bind}${RESET}`);
-  println(`    Auth:                 ${colorValue(config.gateway.auth.mode)}${config.gateway.auth.keyHash ? ` ${DIM}(key hash: ${maskSecret(config.gateway.auth.keyHash)})${RESET}` : ''}${changedTag(initialSnap.authMode, config.gateway.auth.mode)}`);
+  const authChanged = changedTag(initialSnap.authMode, config.gateway.auth.mode) || changedTag(initialSnap.keyHash, config.gateway.auth.keyHash);
+  println(`    Auth:                 ${colorValue(config.gateway.auth.mode)}${config.gateway.auth.keyHash ? ` ${DIM}(key hash: ${maskSecret(config.gateway.auth.keyHash)})${RESET}` : ''}${authChanged}`);
   println();
 
   println(`  ${BOLD}${CYAN}Memory${RESET}`);
