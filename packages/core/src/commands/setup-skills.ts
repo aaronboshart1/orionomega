@@ -8,8 +8,8 @@
  *   - `orionomega skill setup`          — same as `setup skills`
  *   - `orionomega skill setup github`   — same as `setup skills github`
  *
- * Shows available skills, their configuration status, and guides through
- * authentication and configuration for each skill.
+ * Shows available skills with status and selection numbers in a single unified
+ * listing, then guides through authentication and configuration for each.
  */
 
 import { existsSync, cpSync } from 'node:fs';
@@ -20,7 +20,7 @@ import { SkillLoader, readSkillConfig, writeSkillConfig } from '@orionomega/skil
 import type { SkillManifest, SkillAuthMethod, SkillSetupField, SkillConfig } from '@orionomega/skills-sdk';
 import { githubDeviceFlowAuth, isGhWebAuthCommand, extractGitProtocol } from './github-device-auth.js';
 import {
-  GREEN, RED, YELLOW, BLUE, BOLD, DIM, RESET,
+  GREEN, RED, YELLOW, BLUE, CYAN, BOLD, DIM, RESET,
   print, println, success, fail, warn, heading,
   maskSecret, initRL, closeRL, ask, choose, confirm,
   chmodJsFiles,
@@ -34,18 +34,13 @@ interface DiscoveredSkill {
   sourceDir: string;
 }
 
-/**
- * Discover all available skills from default-skills and user skills directories.
- */
 async function discoverSkills(skillsDir: string): Promise<DiscoveredSkill[]> {
   const dirs: string[] = [];
 
-  // Default skills bundled with the installation
   const repoRoot = new URL('../../../../', import.meta.url).pathname;
   const defaultSkillsDir = join(repoRoot, 'default-skills');
   if (existsSync(defaultSkillsDir)) dirs.push(defaultSkillsDir);
 
-  // User skills directory
   if (existsSync(skillsDir)) dirs.push(skillsDir);
 
   const results: DiscoveredSkill[] = [];
@@ -71,9 +66,6 @@ async function discoverSkills(skillsDir: string): Promise<DiscoveredSkill[]> {
   return results;
 }
 
-/**
- * Get the status string and raw status for a skill.
- */
 function getSkillStatus(skill: DiscoveredSkill): { label: string; raw: 'configured' | 'needs-setup' | 'disabled' | 'no-setup' } {
   const { manifest, config } = skill;
   if (!config.enabled) {
@@ -88,35 +80,33 @@ function getSkillStatus(skill: DiscoveredSkill): { label: string; raw: 'configur
   return { label: `${GREEN}ready${RESET}`, raw: 'no-setup' };
 }
 
-// ── Skill listing ───────────────────────────────────────────────
+// ── Unified skill listing ───────────────────────────────────────
 
-function listSkillsTable(skills: DiscoveredSkill[]): void {
-  println(`  ${BOLD}${'Name'.padEnd(18)}${'Status'.padEnd(22)}Description${RESET}`);
-  println(`  ${'─'.repeat(70)}`);
+function listSkillsNumbered(skills: DiscoveredSkill[]): void {
+  println(`  ${BOLD}${'#'.padEnd(4)}${'Name'.padEnd(18)}${'Status'.padEnd(22)}Description${RESET}`);
+  println(`  ${'─'.repeat(74)}`);
 
-  for (const skill of skills) {
+  for (let i = 0; i < skills.length; i++) {
+    const skill = skills[i];
     const { manifest, config } = skill;
+    const num = `${BOLD}${i + 1}${RESET})`.padEnd(4 + BOLD.length + RESET.length);
     const name = manifest.name.padEnd(18);
     const status = getSkillStatus(skill);
 
-    // Compute padding to account for ANSI escape codes in status label
     const rawLen = status.raw === 'configured' ? 10 : status.raw === 'needs-setup' ? 11 : status.raw === 'disabled' ? 8 : 5;
     const statusPad = status.label + ' '.repeat(Math.max(0, 14 - rawLen));
 
     const authInfo = config.authMethod ? ` ${DIM}(${config.authMethod})${RESET}` : '';
-    const desc = manifest.description.length > 50
-      ? manifest.description.slice(0, 47) + '...'
+    const desc = manifest.description.length > 40
+      ? manifest.description.slice(0, 37) + '...'
       : manifest.description;
 
-    println(`  ${name}${statusPad}${desc}${authInfo}`);
+    println(`  ${num}${name}${statusPad}${desc}${authInfo}`);
   }
 }
 
 // ── Auth setup ──────────────────────────────────────────────────
 
-/**
- * Build an env object that includes stored skill config fields.
- */
 function buildSkillEnv(skillsDir: string, skillName: string): NodeJS.ProcessEnv {
   const env = { ...process.env };
   try {
@@ -136,16 +126,11 @@ interface AuthResult {
   type?: string;
 }
 
-/**
- * Run authentication setup for a skill.
- * Handles oauth, pat, api-key, login, env, and ssh-key methods.
- */
 async function runAuthSetup(
   methods: SkillAuthMethod[],
   skillsDir: string,
   skillName: string,
 ): Promise<AuthResult> {
-  // Pick method: single → use it; multiple → prompt
   let method = methods[0];
   if (methods.length === 1) {
     println(`  Auth: ${BOLD}${method.label}${RESET}`);
@@ -196,7 +181,6 @@ async function runAuthSetup(
       const label = method.type === 'pat' ? 'personal access token' : 'API key';
       const envVar = method.envVar ?? 'API_KEY';
 
-      // Show current value if exists
       const existing = readSkillConfig(skillsDir, skillName).fields[envVar];
       if (existing && typeof existing === 'string') {
         println(`  ${DIM}Current: ${maskSecret(existing)}${RESET}`);
@@ -236,7 +220,6 @@ async function runAuthSetup(
     }
   }
 
-  // Validate
   if (method.validateCommand) {
     return validateAuth(method, skillsDir, skillName, methods);
   }
@@ -282,7 +265,6 @@ async function handleAuthFailure(
       return { success: false, skipped: false, type: method.type };
     }
 
-    // Retry
     if (method.type === 'api-key' || method.type === 'pat') {
       if (method.tokenUrl) {
         println(`  Token URL: ${BLUE}${method.tokenUrl}${RESET}`);
@@ -366,13 +348,9 @@ async function promptField(field: SkillSetupField, existingValue?: string | numb
 
 // ── Single skill setup ──────────────────────────────────────────
 
-/**
- * Run interactive setup for a single skill.
- * Returns true if configuration was successful.
- */
 async function setupSingleSkill(manifest: SkillManifest, skillsDir: string): Promise<boolean> {
   println();
-  heading(`Setting up: ${manifest.name}`);
+  println(`  ${BOLD}${BLUE}Setting up: ${manifest.name}${RESET}`);
   println(`  ${manifest.description}`);
 
   if (manifest.setup?.description) {
@@ -383,7 +361,6 @@ async function setupSingleSkill(manifest: SkillManifest, skillsDir: string): Pro
   const config = readSkillConfig(skillsDir, manifest.name);
   let authSucceeded = true;
 
-  // Auth methods
   if (manifest.setup?.auth?.methods?.length) {
     const authResult = await runAuthSetup(manifest.setup.auth.methods, skillsDir, manifest.name);
     if (authResult.type) config.authMethod = authResult.type;
@@ -401,7 +378,6 @@ async function setupSingleSkill(manifest: SkillManifest, skillsDir: string): Pro
     }
   }
 
-  // Config fields
   if (manifest.setup?.fields?.length) {
     println();
     for (const field of manifest.setup.fields) {
@@ -413,7 +389,6 @@ async function setupSingleSkill(manifest: SkillManifest, skillsDir: string): Pro
     }
   }
 
-  // Run setup handler
   if (manifest.setup?.handler) {
     const handlerPath = join(skillsDir, manifest.name, manifest.setup.handler);
     if (existsSync(handlerPath)) {
@@ -472,16 +447,10 @@ function ensureSkillInstalled(manifest: SkillManifest, sourceDir: string, skills
 
 // ── Main entry point ────────────────────────────────────────────
 
-/**
- * Run the standalone skill setup command.
- *
- * @param args - Optional arguments: [skillName] to configure a specific skill.
- */
 export async function runSetupSkills(args: string[] = []): Promise<void> {
   const config = readConfig();
   const skillsDir = config.skills.directory;
 
-  // Ensure skills directory exists
   if (!existsSync(skillsDir)) {
     const { mkdirSync } = await import('node:fs');
     mkdirSync(skillsDir, { recursive: true });
@@ -501,7 +470,6 @@ export async function runSetupSkills(args: string[] = []): Promise<void> {
 
   try {
     if (targetName) {
-      // ── Configure a specific skill ────────────────────────
       const skill = skills.find((s) => s.manifest.name === targetName);
       if (!skill) {
         fail(`Skill "${targetName}" not found.`);
@@ -513,24 +481,15 @@ export async function runSetupSkills(args: string[] = []): Promise<void> {
       ensureSkillInstalled(skill.manifest, skill.sourceDir, skillsDir);
       await setupSingleSkill(skill.manifest, skillsDir);
     } else {
-      // ── Interactive: list all and configure ───────────────
-      heading('Skill Setup');
-      println('  Configure skills to enable integrations with external services.\n');
-
-      listSkillsTable(skills);
+      println();
+      println(`  ${BOLD}${BLUE}Skill Setup${RESET}`);
+      println(`  ${DIM}Configure skills to enable integrations with external services.${RESET}`);
       println();
 
-      // Prompt for selection
-      println(`  Enter skill numbers to configure (comma-separated), ${BOLD}all${RESET} to configure all,`);
-      println(`  or a skill name directly.`);
+      listSkillsNumbered(skills);
       println();
 
-      for (let i = 0; i < skills.length; i++) {
-        const tag = skills[i].manifest.setup?.required && !skills[i].config.configured
-          ? ` ${YELLOW}← needs setup${RESET}`
-          : '';
-        println(`  ${BOLD}${i + 1}${RESET}) ${skills[i].manifest.name}${tag}`);
-      }
+      println(`  ${DIM}Enter skill numbers (comma-separated), ${BOLD}all${RESET}${DIM} to configure all, or a skill name.${RESET}`);
       println();
 
       const selection = await ask("Select skills to configure", { default: 'all' });
@@ -539,7 +498,6 @@ export async function runSetupSkills(args: string[] = []): Promise<void> {
       if (selection.toLowerCase() === 'all') {
         selected = skills;
       } else {
-        // Try parsing as numbers first, then as skill names
         const parts = selection.split(',').map((s) => s.trim());
         selected = [];
         for (const part of parts) {
@@ -560,7 +518,6 @@ export async function runSetupSkills(args: string[] = []): Promise<void> {
 
       success(`Selected: ${selected.map((s) => s.manifest.name).join(', ')}`);
 
-      // Install and configure each selected skill
       let configured = 0;
       let failed = 0;
 
@@ -568,7 +525,6 @@ export async function runSetupSkills(args: string[] = []): Promise<void> {
         ensureSkillInstalled(skill.manifest, skill.sourceDir, skillsDir);
 
         if (!skill.manifest.setup?.required && !skill.manifest.setup?.auth?.methods?.length) {
-          // No setup needed — just enable
           const cfg = readSkillConfig(skillsDir, skill.manifest.name);
           cfg.enabled = true;
           if (!cfg.configured) {
@@ -581,7 +537,6 @@ export async function runSetupSkills(args: string[] = []): Promise<void> {
           continue;
         }
 
-        // Check if already configured — ask to reconfigure
         if (skill.config.configured) {
           const reconfigure = await confirm(
             `  ${skill.manifest.name} is already configured. Reconfigure?`,
@@ -598,17 +553,17 @@ export async function runSetupSkills(args: string[] = []): Promise<void> {
         else failed++;
       }
 
-      // Summary
       println();
       println(`${DIM}${'─'.repeat(50)}${RESET}`);
-      heading('Skill Setup Summary');
+      println();
+      println(`  ${BOLD}${BLUE}Skill Setup Summary${RESET}`);
+      println();
       if (configured > 0) success(`${configured} skill(s) configured successfully.`);
       if (failed > 0) warn(`${failed} skill(s) failed or were skipped.`);
 
-      // Refresh and show final status
       const updatedSkills = await discoverSkills(skillsDir);
       println();
-      listSkillsTable(updatedSkills);
+      listSkillsNumbered(updatedSkills);
       println();
 
       println(`  ${DIM}Reconfigure anytime with: ${BOLD}orionomega setup skills [name]${RESET}`);

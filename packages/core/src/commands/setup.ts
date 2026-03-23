@@ -3,11 +3,11 @@
  * Interactive setup wizard for OrionOmega.
  *
  * Features:
- * - Step overview menu with jump-to (press 'm' at any nav prompt)
- * - Back / redo / quit / menu navigation at every step
+ * - Visual progress bar and step overview menu with jump-to
+ * - Back / redo / save & exit / menu / quit navigation at every step
  * - Loads existing config on re-run — Enter keeps current values
- * - Current values displayed at the top of each step
- * - Summary confirmation screen before saving
+ * - Boxed current-value display at the top of each step
+ * - Grouped summary with colored values and "changed" indicators
  * - Secrets masked in all displays (first 7 + last 4 chars)
  * - Input validation with re-prompt on errors
  * - Ctrl+C handled gracefully
@@ -24,31 +24,66 @@ import { SkillLoader, readSkillConfig, writeSkillConfig } from '@orionomega/skil
 import type { SkillManifest, SkillAuthMethod, SkillSetupField } from '@orionomega/skills-sdk';
 import { githubDeviceFlowAuth, isGhWebAuthCommand, extractGitProtocol } from './github-device-auth.js';
 import {
-  GREEN, RED, YELLOW, BLUE, BOLD, DIM, RESET,
+  GREEN, RED, YELLOW, BLUE, CYAN, BOLD, DIM, RESET,
   print, println, success, fail, warn, heading,
-  maskSecret, initRL, closeRL, ask, choose, confirm,
+  progressBar, maskSecret, initRL, closeRL, ask, choose, confirm,
   chmodJsFiles,
 } from './cli-utils.js';
 
+// ── Change tracking ─────────────────────────────────────────────
+
+interface ConfigSnapshot {
+  apiKey: string;
+  model: string;
+  planner: string;
+  authMode: string;
+  keyHash: string | undefined;
+  hindsightUrl: string;
+  workspace: string;
+  logLevel: string;
+  logFile: string;
+  agentSdkEnabled: boolean;
+  agentSdkPermission: string;
+  agentSdkEffort: string;
+  agentSdkBudget: number | undefined;
+}
+
+function snapshotConfig(c: OrionOmegaConfig): ConfigSnapshot {
+  return {
+    apiKey: c.models.apiKey,
+    model: c.models.default,
+    planner: c.models.planner,
+    authMode: c.gateway.auth.mode,
+    keyHash: c.gateway.auth.keyHash,
+    hindsightUrl: c.hindsight.url,
+    workspace: c.workspace.path,
+    logLevel: c.logging.level,
+    logFile: c.logging.file,
+    agentSdkEnabled: c.agentSdk.enabled,
+    agentSdkPermission: c.agentSdk.permissionMode,
+    agentSdkEffort: c.agentSdk.effort,
+    agentSdkBudget: c.agentSdk.maxBudgetUsd,
+  };
+}
+
+function changedTag(before: unknown, after: unknown): string {
+  if (before !== after) return ` ${YELLOW}*${RESET}`;
+  return '';
+}
+
 // ── Navigation ──────────────────────────────────────────────────
 
-/** Action returned by each wizard step. */
 type StepAction = 'next' | 'back' | 'redo' | 'quit' | 'menu' | 'save';
 
-/**
- * Show the step navigation bar and return the user's choice.
- * Displayed after each step completes.
- */
 async function nav(stepIdx: number, totalSteps: number): Promise<StepAction> {
   const isFirst = stepIdx === 0;
   const isLast = stepIdx === totalSteps - 1;
-  const nextWord = isLast ? 'finish' : 'continue';
+  const nextWord = isLast ? 'finish' : 'next';
 
-  println(`\n${DIM}──────────────────────────────────────────────────${RESET}`);
-  const parts: string[] = [`${BOLD}↵${RESET} ${nextWord}`];
-  if (!isFirst) parts.push(`${BOLD}b${RESET} back`);
-  parts.push(`${BOLD}r${RESET} redo`, `${BOLD}s${RESET} save & exit`, `${BOLD}m${RESET} menu`, `${BOLD}q${RESET} quit`);
-  println(`  ${parts.join('   ·   ')}`);
+  println();
+  println(`${DIM}──────────────────────────────────────────────────${RESET}`);
+  println(`  ${DIM}Step ${stepIdx + 1}/${totalSteps}${RESET}   ${BOLD}↵${RESET} ${nextWord}${!isFirst ? `   ${BOLD}b${RESET} back` : ''}   ${BOLD}s${RESET} save & exit`);
+  println(`           ${BOLD}r${RESET} redo   ${BOLD}m${RESET} menu   ${BOLD}q${RESET} quit`);
 
   for (;;) {
     const input = await ask(' ');
@@ -61,12 +96,14 @@ async function nav(stepIdx: number, totalSteps: number): Promise<StepAction> {
     if (a === 'q') {
       const yes = await confirm('Exit setup without saving?', false);
       if (yes) return 'quit';
-      println(`\n${DIM}──────────────────────────────────────────────────${RESET}`);
-      println(`  ${parts.join('   ·   ')}`);
+      println();
+      println(`${DIM}──────────────────────────────────────────────────${RESET}`);
+      println(`  ${DIM}Step ${stepIdx + 1}/${totalSteps}${RESET}   ${BOLD}↵${RESET} ${nextWord}${!isFirst ? `   ${BOLD}b${RESET} back` : ''}   ${BOLD}s${RESET} save & exit`);
+      println(`           ${BOLD}r${RESET} redo   ${BOLD}m${RESET} menu   ${BOLD}q${RESET} quit`);
     } else if (a === 'b' && isFirst) {
       warn('Already at the first step.');
     } else {
-      warn(`Unknown input. Press Enter to ${nextWord}, b=back, r=redo, s=save & exit, m=menu, q=quit.`);
+      warn(`Unknown input. Enter=${nextWord}, b=back, s=save, r=redo, m=menu, q=quit.`);
     }
   }
 }
@@ -75,6 +112,7 @@ async function nav(stepIdx: number, totalSteps: number): Promise<StepAction> {
 
 interface StepInfo {
   name: string;
+  group: 'required' | 'optional';
   summary: (config: OrionOmegaConfig) => string;
   configured: (config: OrionOmegaConfig) => boolean;
 }
@@ -82,100 +120,133 @@ interface StepInfo {
 const STEP_INFO: StepInfo[] = [
   {
     name: 'Anthropic API Key',
+    group: 'required',
     summary: (c) => c.models.apiKey ? maskSecret(c.models.apiKey) : 'not set',
     configured: (c) => !!c.models.apiKey,
   },
   {
     name: 'Default Model',
+    group: 'required',
     summary: (c) => c.models.default || 'not set',
     configured: (c) => !!c.models.default,
   },
   {
     name: 'Gateway Security',
+    group: 'required',
     summary: (c) => c.gateway.auth.mode,
-    configured: (_c) => true, // 'none' is a valid choice
+    configured: (_c) => true,
   },
   {
     name: 'Hindsight Memory',
+    group: 'optional',
     summary: (c) => c.hindsight.url || 'not set',
     configured: (c) => !!c.hindsight.url,
   },
   {
     name: 'Workspace',
+    group: 'required',
     summary: (c) => c.workspace.path.replace(homedir(), '~') || 'not set',
     configured: (c) => !!c.workspace.path,
   },
   {
     name: 'Logging',
+    group: 'optional',
     summary: (c) => `${c.logging.level}, ${c.logging.file.replace(homedir(), '~')}`,
     configured: (_c) => true,
   },
   {
     name: 'Claude Agent SDK',
+    group: 'optional',
     summary: (c) => c.agentSdk.enabled ? `enabled (${c.agentSdk.permissionMode})` : 'disabled',
     configured: (_c) => true,
   },
   {
     name: 'Skills',
+    group: 'optional',
     summary: (_c) => 'see step',
     configured: (_c) => true,
   },
 ];
 
-/**
- * Display the step overview menu and return the step index to jump to,
- * or -1 to start from step 1 (sequential).
- */
 async function showMenu(config: OrionOmegaConfig): Promise<number> {
-  heading('OrionOmega Setup');
+  println();
+  println(`${BOLD}${BLUE}  OrionOmega Setup${RESET}`);
+  println();
 
-  for (let i = 0; i < STEP_INFO.length; i++) {
-    const info = STEP_INFO[i];
+  const configuredCount = STEP_INFO.filter((s) => s.configured(config) && s.summary(config) !== 'not set').length;
+  println(`  ${DIM}${configuredCount}/${STEP_INFO.length} steps configured${RESET}`);
+  println();
+
+  const required = STEP_INFO.map((info, i) => ({ info, i })).filter(({ info }) => info.group === 'required');
+  const optional = STEP_INFO.map((info, i) => ({ info, i })).filter(({ info }) => info.group === 'optional');
+
+  println(`  ${BOLD}${CYAN}Required${RESET}`);
+  for (const { info, i } of required) {
+    const configured = info.configured(config);
+    const icon = configured && info.summary(config) !== 'not set' ? `${GREEN}✓${RESET}` : `${RED}○${RESET}`;
+    const summary = info.summary(config);
+    const summaryColor = summary === 'not set' ? `${RED}${summary}${RESET}` : `${DIM}${summary}${RESET}`;
+    println(`    ${BOLD}${i + 1}${RESET}. ${info.name.padEnd(22)}${icon}  ${summaryColor}`);
+  }
+  println();
+
+  println(`  ${BOLD}${CYAN}Optional${RESET}`);
+  for (const { info, i } of optional) {
     const configured = info.configured(config);
     const icon = configured && info.summary(config) !== 'not set' ? `${GREEN}✓${RESET}` : `${DIM}○${RESET}`;
     const summary = info.summary(config);
-    const num = `${BOLD}${i + 1}${RESET}`;
-    const pad = ' '.repeat(24 - info.name.length);
-    println(`  ${num}. ${info.name}${pad}${icon} ${DIM}${summary}${RESET}`);
+    const summaryColor = summary === 'not set' ? `${RED}${summary}${RESET}` : `${DIM}${summary}${RESET}`;
+    println(`    ${BOLD}${i + 1}${RESET}. ${info.name.padEnd(22)}${icon}  ${summaryColor}`);
   }
 
   println();
-  const input = await ask(`Enter step number to jump to, or press Enter to start from step 1`, { default: '1' });
-  const idx = parseInt(input.trim(), 10) - 1;
+  println(`  ${DIM}Enter a step number, or:${RESET}  ${BOLD}↵${RESET} start from 1   ${BOLD}s${RESET} save & exit`);
+  const input = await ask(' ');
+  const a = input.toLowerCase().trim();
+  if (a === 's') return -1;
+  const idx = parseInt(a, 10) - 1;
   if (idx >= 0 && idx < STEP_INFO.length) return idx;
   return 0;
 }
 
-// ── Current value display helper ────────────────────────────────
+// ── Current value display ───────────────────────────────────────
 
-/**
- * Show the current value for a step field. Secrets are masked.
- */
-function showCurrent(label: string, value: string, secret: boolean = false): void {
-  if (!value) return;
-  const display = secret ? maskSecret(value) : value;
-  println(`  ${DIM}Current: ${display}${RESET}`);
+function showCurrentBox(fields: [string, string][]): void {
+  const filtered = fields.filter(([_, v]) => v);
+  if (filtered.length === 0) return;
+  println(`  ${DIM}┌─ current ────────────────────────────────────${RESET}`);
+  for (const [label, value] of filtered) {
+    println(`  ${DIM}│  ${label}: ${value}${RESET}`);
+  }
+  println(`  ${DIM}└──────────────────────────────────────────────${RESET}`);
+  println();
+}
+
+// ── Step heading ────────────────────────────────────────────────
+
+function stepHeading(stepIdx: number, totalSteps: number, title: string): void {
+  println();
+  println(progressBar(stepIdx + 1, totalSteps));
+  println(`  ${BOLD}${BLUE}${title}${RESET}`);
+  println();
 }
 
 // ── Steps ───────────────────────────────────────────────────────
 
 async function stepApiKey(config: OrionOmegaConfig, stepIdx: number, totalSteps: number): Promise<StepAction> {
-  heading(`Step ${stepIdx + 1}/${totalSteps} — Anthropic API Key`);
-
-  showCurrent('API Key', config.models.apiKey, true);
+  stepHeading(stepIdx, totalSteps, 'Anthropic API Key');
+  showCurrentBox([['API Key', config.models.apiKey ? maskSecret(config.models.apiKey) : '']]);
 
   const existing = config.models.apiKey;
   const defaultHint = existing ? 'Enter to keep current' : undefined;
 
   const key = await ask('Enter your Anthropic API key', { default: defaultHint });
 
-  // If user pressed Enter to keep current value
   if (key === defaultHint && existing) {
     success('Keeping existing API key.');
     return nav(stepIdx, totalSteps);
   }
 
-  // If user entered nothing and there's no existing key
   if (!key) {
     warn('No API key set. The gateway will not be able to use Anthropic models.');
     return nav(stepIdx, totalSteps);
@@ -214,11 +285,9 @@ async function stepApiKey(config: OrionOmegaConfig, stepIdx: number, totalSteps:
 }
 
 async function stepModel(config: OrionOmegaConfig, stepIdx: number, totalSteps: number): Promise<StepAction> {
-  heading(`Step ${stepIdx + 1}/${totalSteps} — Default Model`);
+  stepHeading(stepIdx, totalSteps, 'Default Model');
+  showCurrentBox([['Model', config.models.default]]);
 
-  showCurrent('Model', config.models.default);
-
-  // If already configured, offer to keep
   if (config.models.default) {
     const keep = await confirm(`  Keep ${BOLD}${config.models.default}${RESET}?`, true);
     if (keep) {
@@ -228,6 +297,7 @@ async function stepModel(config: OrionOmegaConfig, stepIdx: number, totalSteps: 
   }
 
   let options: { label: string; value: string }[] = [];
+  let recommendedIdx: number | undefined;
 
   if (config.models.apiKey) {
     process.stdout.write(`  Fetching models from Anthropic API... `);
@@ -236,9 +306,9 @@ async function stepModel(config: OrionOmegaConfig, stepIdx: number, totalSteps: 
       const models = await discoverModels(config.models.apiKey);
       if (models.length > 0) {
         println(`${GREEN}found ${models.length} models${RESET}`);
-        options = models.map((m) => {
+        options = models.map((m, i) => {
           let suffix = '';
-          if (m.tier === 'sonnet') suffix = ` ${DIM}(recommended for default)${RESET}`;
+          if (m.tier === 'sonnet') { suffix = ` ${DIM}(balanced)${RESET}`; recommendedIdx = i; }
           else if (m.tier === 'haiku') suffix = ` ${DIM}(lightweight)${RESET}`;
           else if (m.tier === 'opus') suffix = ` ${DIM}(heavyweight)${RESET}`;
           return { label: `${m.displayName}${suffix}`, value: m.id };
@@ -264,7 +334,7 @@ async function stepModel(config: OrionOmegaConfig, stepIdx: number, totalSteps: 
 
   options.push({ label: `${DIM}Enter a model ID manually${RESET}`, value: '__custom__' });
 
-  let model = await choose('Select your default model:', options);
+  let model = await choose('Select your default model:', options, { recommended: recommendedIdx });
 
   if (model === '__custom__') {
     model = await ask('Enter model ID', { default: config.models.default || undefined });
@@ -280,14 +350,12 @@ async function stepModel(config: OrionOmegaConfig, stepIdx: number, totalSteps: 
 }
 
 async function stepGatewaySecurity(config: OrionOmegaConfig, stepIdx: number, totalSteps: number): Promise<StepAction> {
-  heading(`Step ${stepIdx + 1}/${totalSteps} — Gateway Security`);
+  stepHeading(stepIdx, totalSteps, 'Gateway Security');
+  showCurrentBox([
+    ['Auth mode', config.gateway.auth.mode],
+    ['Key hash', config.gateway.auth.keyHash ? maskSecret(config.gateway.auth.keyHash) : ''],
+  ]);
 
-  showCurrent('Auth mode', config.gateway.auth.mode);
-  if (config.gateway.auth.keyHash) {
-    println(`  ${DIM}Key hash: ${maskSecret(config.gateway.auth.keyHash)}${RESET}`);
-  }
-
-  // If already configured, offer to keep
   if (config.gateway.auth.mode) {
     const keep = await confirm(`  Keep ${BOLD}${config.gateway.auth.mode}${RESET} auth mode?`, true);
     if (keep) {
@@ -299,7 +367,7 @@ async function stepGatewaySecurity(config: OrionOmegaConfig, stepIdx: number, to
   const mode = await choose('Authentication mode for the gateway:', [
     { label: 'API Key authentication', value: 'api-key' },
     { label: `No authentication ${DIM}(local use only)${RESET}`, value: 'none' },
-  ]);
+  ], { recommended: 0 });
 
   config.gateway.auth.mode = mode as 'api-key' | 'none';
 
@@ -327,11 +395,9 @@ async function stepGatewaySecurity(config: OrionOmegaConfig, stepIdx: number, to
 }
 
 async function stepHindsight(config: OrionOmegaConfig, stepIdx: number, totalSteps: number): Promise<StepAction> {
-  heading(`Step ${stepIdx + 1}/${totalSteps} — Hindsight Memory`);
+  stepHeading(stepIdx, totalSteps, 'Hindsight Memory');
+  showCurrentBox([['Hindsight URL', config.hindsight.url]]);
 
-  showCurrent('Hindsight URL', config.hindsight.url);
-
-  // If already configured, offer to keep
   if (config.hindsight.url) {
     const keep = await confirm(`  Keep ${BOLD}${config.hindsight.url}${RESET}?`, true);
     if (keep) {
@@ -358,14 +424,12 @@ async function stepHindsight(config: OrionOmegaConfig, stepIdx: number, totalSte
       success('Hindsight is reachable!');
     } else {
       fail(`Hindsight returned ${res.status}.`);
-      // Try to start/restart the local Docker container if it exists
       if (url.includes('localhost') || url.includes('127.0.0.1')) {
         await tryStartHindsightContainer(config);
       }
     }
   } catch {
     println(`${YELLOW}not reachable${RESET}`);
-    // Try to start/restart the local Docker container
     if (url.includes('localhost') || url.includes('127.0.0.1')) {
       await tryStartHindsightContainer(config);
     } else {
@@ -376,12 +440,7 @@ async function stepHindsight(config: OrionOmegaConfig, stepIdx: number, totalSte
   return nav(stepIdx, totalSteps);
 }
 
-/**
- * Attempt to start or restart the local Hindsight Docker container.
- * Requires: Docker installed, API key set in config.
- */
 async function tryStartHindsightContainer(config: OrionOmegaConfig): Promise<void> {
-  // Check if Docker is available
   try {
     execSync('docker --version', { stdio: 'pipe', timeout: 5000 });
   } catch {
@@ -405,7 +464,6 @@ async function tryStartHindsightContainer(config: OrionOmegaConfig): Promise<voi
   } catch {}
   println('done');
 
-  // Ensure data directory exists with correct permissions
   try {
     execSync('sudo mkdir -p /opt/hindsight-data && sudo chmod 777 /opt/hindsight-data', { stdio: 'pipe', timeout: 5000 });
   } catch {}
@@ -426,7 +484,6 @@ async function tryStartHindsightContainer(config: OrionOmegaConfig): Promise<voi
     execSync(dockerCmd, { stdio: 'pipe', timeout: 30000 });
     println('started');
 
-    // Wait for it to become healthy
     print('  Waiting for Hindsight to initialize (this can take 30-60s)... ');
     let ready = false;
     for (let i = 0; i < 30; i++) {
@@ -453,9 +510,16 @@ async function tryStartHindsightContainer(config: OrionOmegaConfig): Promise<voi
 }
 
 async function stepWorkspace(config: OrionOmegaConfig, stepIdx: number, totalSteps: number): Promise<StepAction> {
-  heading(`Step ${stepIdx + 1}/${totalSteps} — Workspace`);
+  stepHeading(stepIdx, totalSteps, 'Workspace');
+  showCurrentBox([['Workspace', config.workspace.path ? config.workspace.path.replace(homedir(), '~') : '']]);
 
-  showCurrent('Workspace', config.workspace.path.replace(homedir(), '~'));
+  if (config.workspace.path) {
+    const keep = await confirm(`  Keep ${BOLD}${config.workspace.path.replace(homedir(), '~')}${RESET}?`, true);
+    if (keep) {
+      success(`Keeping workspace: ${config.workspace.path.replace(homedir(), '~')}`);
+      return nav(stepIdx, totalSteps);
+    }
+  }
 
   const defaultPath = config.workspace.path || join(homedir(), '.orionomega', 'workspace');
   const wsPath = await ask('Workspace directory', { default: defaultPath });
@@ -540,10 +604,11 @@ Your personal cheat sheet for environment-specific details.
 // ── Step 6: Logging ──────────────────────────────────────────────
 
 async function stepLogging(config: OrionOmegaConfig, stepIdx: number, totalSteps: number): Promise<StepAction> {
-  heading(`Step ${stepIdx + 1}/${totalSteps} — Logging`);
-
-  showCurrent('Log level', config.logging.level);
-  showCurrent('Log file', config.logging.file.replace(homedir(), '~'));
+  stepHeading(stepIdx, totalSteps, 'Logging');
+  showCurrentBox([
+    ['Log level', config.logging.level],
+    ['Log file', config.logging.file.replace(homedir(), '~')],
+  ]);
 
   const keep = await confirm(`  Keep current settings?`, true);
   if (keep) {
@@ -553,12 +618,12 @@ async function stepLogging(config: OrionOmegaConfig, stepIdx: number, totalSteps
 
   const levelOptions = [
     { label: `info ${DIM}(default — startup, connections, errors)${RESET}`, value: 'info' },
-    { label: `verbose ${DIM}(recommended for development — conversations, tool calls, Hindsight, tokens)${RESET}`, value: 'verbose' },
+    { label: `verbose ${DIM}(conversations, tool calls, Hindsight, tokens)${RESET}`, value: 'verbose' },
     { label: `debug ${DIM}(everything — full request/response bodies)${RESET}`, value: 'debug' },
     { label: `warn ${DIM}(warnings and errors only)${RESET}`, value: 'warn' },
     { label: `error ${DIM}(errors only)${RESET}`, value: 'error' },
   ];
-  config.logging.level = (await choose('Log level:', levelOptions)) as OrionOmegaConfig['logging']['level'];
+  config.logging.level = (await choose('Log level:', levelOptions, { recommended: 0 })) as OrionOmegaConfig['logging']['level'];
 
   const defaultLogFile = config.logging.file || join(homedir(), '.orionomega', 'logs', 'orionomega.log');
   config.logging.file = await ask('Log file path', { default: defaultLogFile });
@@ -577,14 +642,16 @@ async function stepLogging(config: OrionOmegaConfig, stepIdx: number, totalSteps
 // ── Step 7: Agent SDK ────────────────────────────────────────────
 
 async function stepAgentSdk(config: OrionOmegaConfig, stepIdx: number, totalSteps: number): Promise<StepAction> {
-  heading(`Step ${stepIdx + 1}/${totalSteps} — Claude Agent SDK (Coding Agents)`);
+  stepHeading(stepIdx, totalSteps, 'Claude Agent SDK (Coding Agents)');
 
   const currentStatus = config.agentSdk.enabled
     ? `enabled, ${config.agentSdk.permissionMode}, effort=${config.agentSdk.effort}`
     : 'disabled';
-  showCurrent('Agent SDK', currentStatus);
+  showCurrentBox([
+    ['Agent SDK', currentStatus],
+    ...(config.agentSdk.enabled && config.agentSdk.maxBudgetUsd ? [['Max Budget', `$${config.agentSdk.maxBudgetUsd}`] as [string, string]] : []),
+  ]);
 
-  // If already configured, offer to keep
   const keep = await confirm(`  Keep current settings?`, true);
   if (keep) {
     success(`Keeping Agent SDK: ${currentStatus}`);
@@ -607,22 +674,22 @@ async function stepAgentSdk(config: OrionOmegaConfig, stepIdx: number, totalStep
   }
 
   const permOptions = [
-    { label: `Accept file edits automatically ${DIM}(recommended)${RESET}`, value: 'acceptEdits' },
+    { label: `Accept file edits automatically`, value: 'acceptEdits' },
     { label: 'Bypass all permissions (caution!)', value: 'bypassPermissions' },
     { label: 'Require approval for each tool', value: 'default' },
   ];
   config.agentSdk.permissionMode = (await choose(
-    'Permission mode for coding agents:', permOptions,
+    'Permission mode for coding agents:', permOptions, { recommended: 0 },
   )) as OrionOmegaConfig['agentSdk']['permissionMode'];
 
   const effortOptions = [
-    { label: `High ${DIM}(recommended — good balance of thoroughness and speed)${RESET}`, value: 'high' },
+    { label: `High ${DIM}(good balance of thoroughness and speed)${RESET}`, value: 'high' },
     { label: 'Max (deepest reasoning, slowest)', value: 'max' },
     { label: 'Medium (faster, less thorough)', value: 'medium' },
     { label: 'Low (fastest, minimal reasoning)', value: 'low' },
   ];
   config.agentSdk.effort = (await choose(
-    'Effort level:', effortOptions,
+    'Effort level:', effortOptions, { recommended: 0 },
   )) as OrionOmegaConfig['agentSdk']['effort'];
 
   const currentBudget = config.agentSdk.maxBudgetUsd ? String(config.agentSdk.maxBudgetUsd) : '0';
@@ -639,10 +706,10 @@ async function stepAgentSdk(config: OrionOmegaConfig, stepIdx: number, totalStep
   return nav(stepIdx, totalSteps);
 }
 
-// ── Step 7: Skills ───────────────────────────────────────────────
+// ── Step 8: Skills ───────────────────────────────────────────────
 
 async function stepSkills(config: OrionOmegaConfig, stepIdx: number, totalSteps: number): Promise<StepAction> {
-  heading(`Step ${stepIdx + 1}/${totalSteps} — Skills`);
+  stepHeading(stepIdx, totalSteps, 'Skills');
 
   const skillsDirs: string[] = [];
   const repoRoot = new URL('../../../../', import.meta.url).pathname;
@@ -680,14 +747,15 @@ async function stepSkills(config: OrionOmegaConfig, stepIdx: number, totalSteps:
   println();
   for (let i = 0; i < allManifests.length; i++) {
     const m = allManifests[i];
-    const setupTag = m.setup?.required ? ' (requires setup)' : '';
+    const setupTag = m.setup?.required ? ` ${DIM}(requires setup)${RESET}` : '';
     let statusTag = '';
     try {
       const cfg = readSkillConfig(config.skills.directory, m.name);
-      if (cfg.enabled && cfg.configured) statusTag = ` ${GREEN}✓${RESET}`;
-      else if (cfg.enabled) statusTag = ` ${YELLOW}○${RESET}`;
+      if (cfg.enabled && cfg.configured) statusTag = ` ${GREEN}✓ configured${RESET}`;
+      else if (cfg.enabled) statusTag = ` ${YELLOW}○ needs setup${RESET}`;
+      else statusTag = ` ${DIM}disabled${RESET}`;
     } catch {}
-    println(`  ${BOLD}${i + 1}${RESET}) ${m.name} — ${m.description}${DIM}${setupTag}${RESET}${statusTag}`);
+    println(`  ${BOLD}${i + 1}${RESET}) ${m.name} — ${m.description}${setupTag}${statusTag}`);
   }
   println();
 
@@ -714,7 +782,6 @@ async function stepSkills(config: OrionOmegaConfig, stepIdx: number, totalSteps:
   const selected = selectedIndices.map((i) => allManifests[i]);
   success('Selected: ' + selected.map((m) => m.name).join(', '));
 
-  // Install default skills to user directory if not present
   for (const m of selected) {
     const dest = join(config.skills.directory, m.name);
     const src = join(defaultSkillsDir, m.name);
@@ -725,7 +792,6 @@ async function stepSkills(config: OrionOmegaConfig, stepIdx: number, totalSteps:
     }
   }
 
-  // Disable skills that were NOT selected
   for (const m of allManifests) {
     if (!selected.find((s) => s.name === m.name)) {
       const cfg = readSkillConfig(config.skills.directory, m.name);
@@ -734,14 +800,13 @@ async function stepSkills(config: OrionOmegaConfig, stepIdx: number, totalSteps:
     }
   }
 
-  // Run setup for each selected skill that requires it
   for (const m of selected) {
     const cfg = readSkillConfig(config.skills.directory, m.name);
     cfg.enabled = true;
 
     if (m.setup?.required && !cfg.configured) {
       println();
-      heading(`  Skill Setup: ${m.name}`);
+      println(`  ${BOLD}${BLUE}Skill Setup: ${m.name}${RESET}`);
       if (m.setup.description) println(`  ${m.setup.description}`);
       println();
 
@@ -753,7 +818,6 @@ async function stepSkills(config: OrionOmegaConfig, stepIdx: number, totalSteps:
         continue;
       }
 
-      // Auth method selection + execution
       let authSucceeded = true;
       if (m.setup.auth?.methods?.length) {
         const authResult = await runAuthSetup(m.setup.auth.methods, config.skills.directory, m.name);
@@ -772,7 +836,6 @@ async function stepSkills(config: OrionOmegaConfig, stepIdx: number, totalSteps:
         }
       }
 
-      // Config fields — only prompt if auth succeeded or user chose to continue
       if (m.setup.fields?.length) {
         for (const field of m.setup.fields) {
           const value = await promptField(field);
@@ -782,7 +845,6 @@ async function stepSkills(config: OrionOmegaConfig, stepIdx: number, totalSteps:
         }
       }
 
-      // Run setup handler if present
       if (m.setup.handler) {
         const handlerPath = join(config.skills.directory, m.name, m.setup.handler);
         if (existsSync(handlerPath)) {
@@ -809,6 +871,67 @@ async function stepSkills(config: OrionOmegaConfig, stepIdx: number, totalSteps:
 
       cfg.configured = authSucceeded;
       cfg.configuredAt = new Date().toISOString();
+    } else if (m.setup?.required && cfg.configured) {
+      const reconfigure = await confirm(`  ${m.name} is already configured. Reconfigure?`, false);
+      if (!reconfigure) {
+        println(`  ${DIM}Skipping ${m.name}${RESET}`);
+        writeSkillConfig(config.skills.directory, cfg);
+        continue;
+      }
+
+      let authSucceeded = true;
+      if (m.setup.auth?.methods?.length) {
+        const authResult = await runAuthSetup(m.setup.auth.methods, config.skills.directory, m.name);
+        if (authResult.type) cfg.authMethod = authResult.type;
+        if (authResult.skipped) {
+          cfg.enabled = false;
+          writeSkillConfig(config.skills.directory, cfg);
+          warn(`Skipped ${m.name}. Re-run with: orionomega skill setup ${m.name}`);
+          continue;
+        }
+        if (!authResult.success) {
+          warn(`Auth failed for ${m.name}.`);
+          authSucceeded = false;
+        }
+      }
+      if (m.setup.fields?.length) {
+        for (const field of m.setup.fields) {
+          const value = await promptField(field);
+          if (value !== undefined && value !== '') {
+            cfg.fields[field.name] = value;
+          }
+        }
+      }
+      if (m.setup.handler) {
+        const handlerPath = join(config.skills.directory, m.name, m.setup.handler);
+        if (existsSync(handlerPath)) {
+          print('  Running setup validation... ');
+          try {
+            const result = execFileSync('node', [handlerPath], {
+              encoding: 'utf-8',
+              timeout: 30000,
+              input: JSON.stringify(cfg),
+              env: { ...process.env },
+            }).trim();
+            try {
+              const updates = JSON.parse(result);
+              if (updates.fields) Object.assign(cfg.fields, updates.fields);
+              if (updates.authMethod) cfg.authMethod = updates.authMethod;
+              if (updates.validated === false) {
+                fail('Setup handler rejected the configuration.');
+                authSucceeded = false;
+              }
+            } catch {}
+            if (authSucceeded) success('Validation passed.');
+          } catch (err: unknown) {
+            fail(`Setup handler failed: ${err instanceof Error ? err.message : String(err)}`);
+            warn(`You can retry with: orionomega skill setup ${m.name}`);
+            authSucceeded = false;
+          }
+        }
+      }
+      cfg.configured = authSucceeded;
+      cfg.configuredAt = new Date().toISOString();
     } else {
       cfg.enabled = true;
       if (!cfg.configured && !m.setup?.required) {
@@ -825,7 +948,7 @@ async function stepSkills(config: OrionOmegaConfig, stepIdx: number, totalSteps:
   return nav(stepIdx, totalSteps);
 }
 
-// ── Auth helpers (unchanged logic) ──────────────────────────────
+// ── Auth helpers ────────────────────────────────────────────────
 
 interface AuthResult {
   success: boolean;
@@ -920,11 +1043,6 @@ async function runAuthSetup(
   return { success: true, skipped: false, type: method.type };
 }
 
-/**
- * Build an env object that includes stored skill config fields.
- * Validation commands like Linear's use process.env.LINEAR_API_KEY —
- * we must inject the value from skill config into the child process.
- */
 function buildSkillEnv(skillsDir: string, skillName: string): NodeJS.ProcessEnv {
   const env = { ...process.env };
   try {
@@ -1039,41 +1157,75 @@ async function promptField(field: SkillSetupField): Promise<string | number | bo
 
 // ── Summary screen ──────────────────────────────────────────────
 
-/**
- * Display a full summary of all config settings for review before saving.
- * Returns true if the user confirms, false to go back to the menu.
- */
-async function showSummary(config: OrionOmegaConfig): Promise<boolean> {
-  heading('Configuration Summary');
+function colorValue(value: string | undefined | null, fallback: string = 'not set'): string {
+  if (!value) return `${RED}${fallback}${RESET}`;
+  return `${GREEN}${value}${RESET}`;
+}
 
-  println(`  ${BOLD}Anthropic API Key:${RESET}    ${config.models.apiKey ? maskSecret(config.models.apiKey) : `${RED}not set${RESET}`}`);
-  println(`  ${BOLD}Default Model:${RESET}        ${config.models.default || `${RED}not set${RESET}`}`);
-  println(`  ${BOLD}Planner Model:${RESET}        ${config.models.planner || `${DIM}(same as default)${RESET}`}`);
+async function showSummary(config: OrionOmegaConfig, initialSnap: ConfigSnapshot): Promise<boolean> {
   println();
-  println(`  ${BOLD}Gateway Port:${RESET}         ${config.gateway.port}`);
-  println(`  ${BOLD}Gateway Bind:${RESET}         ${config.gateway.bind}`);
-  println(`  ${BOLD}Gateway Auth:${RESET}         ${config.gateway.auth.mode}${config.gateway.auth.keyHash ? ` (key hash: ${maskSecret(config.gateway.auth.keyHash)})` : ''}`);
+  println(`  ${BOLD}${BLUE}Configuration Summary${RESET}`);
   println();
-  println(`  ${BOLD}Hindsight URL:${RESET}        ${config.hindsight.url}`);
-  println(`  ${BOLD}Default Bank:${RESET}         ${config.hindsight.defaultBank}`);
+
+  println(`  ${BOLD}${CYAN}Models${RESET}`);
+  println(`    Anthropic API Key:    ${config.models.apiKey ? `${GREEN}${maskSecret(config.models.apiKey)}${RESET}` : `${RED}not set${RESET}`}${changedTag(initialSnap.apiKey, config.models.apiKey)}`);
+  println(`    Default Model:        ${colorValue(config.models.default)}${changedTag(initialSnap.model, config.models.default)}`);
+  println(`    Planner Model:        ${config.models.planner ? colorValue(config.models.planner) : `${DIM}(same as default)${RESET}`}${changedTag(initialSnap.planner, config.models.planner)}`);
   println();
-  println(`  ${BOLD}Workspace:${RESET}            ${config.workspace.path.replace(homedir(), '~')}`);
+
+  println(`  ${BOLD}${CYAN}Gateway${RESET}`);
+  println(`    Port:                 ${DIM}${config.gateway.port}${RESET}`);
+  println(`    Bind:                 ${DIM}${config.gateway.bind}${RESET}`);
+  println(`    Auth:                 ${colorValue(config.gateway.auth.mode)}${config.gateway.auth.keyHash ? ` ${DIM}(key hash: ${maskSecret(config.gateway.auth.keyHash)})${RESET}` : ''}${changedTag(initialSnap.authMode, config.gateway.auth.mode)}`);
   println();
-  println(`  ${BOLD}Agent SDK:${RESET}            ${config.agentSdk.enabled ? 'enabled' : 'disabled'}`);
+
+  println(`  ${BOLD}${CYAN}Memory${RESET}`);
+  println(`    Hindsight URL:        ${colorValue(config.hindsight.url)}${changedTag(initialSnap.hindsightUrl, config.hindsight.url)}`);
+  println(`    Default Bank:         ${DIM}${config.hindsight.defaultBank}${RESET}`);
+  println();
+
+  println(`  ${BOLD}${CYAN}Workspace${RESET}`);
+  println(`    Path:                 ${colorValue(config.workspace.path.replace(homedir(), '~'))}${changedTag(initialSnap.workspace, config.workspace.path)}`);
+  println();
+
+  println(`  ${BOLD}${CYAN}Agent SDK${RESET}`);
+  println(`    Enabled:              ${config.agentSdk.enabled ? `${GREEN}yes${RESET}` : `${DIM}no${RESET}`}${changedTag(initialSnap.agentSdkEnabled, config.agentSdk.enabled)}`);
   if (config.agentSdk.enabled) {
-    println(`  ${BOLD}  Permission Mode:${RESET}    ${config.agentSdk.permissionMode}`);
-    println(`  ${BOLD}  Effort:${RESET}             ${config.agentSdk.effort}`);
+    println(`    Permission Mode:      ${DIM}${config.agentSdk.permissionMode}${RESET}${changedTag(initialSnap.agentSdkPermission, config.agentSdk.permissionMode)}`);
+    println(`    Effort:               ${DIM}${config.agentSdk.effort}${RESET}${changedTag(initialSnap.agentSdkEffort, config.agentSdk.effort)}`);
     if (config.agentSdk.maxBudgetUsd) {
-      println(`  ${BOLD}  Max Budget:${RESET}         $${config.agentSdk.maxBudgetUsd}`);
+      println(`    Max Budget:           ${DIM}$${config.agentSdk.maxBudgetUsd}${RESET}${changedTag(initialSnap.agentSdkBudget, config.agentSdk.maxBudgetUsd)}`);
     }
   }
   println();
-  println(`  ${BOLD}Skills Directory:${RESET}     ${config.skills.directory.replace(homedir(), '~')}`);
-  println(`  ${BOLD}Log Level:${RESET}            ${config.logging.level}`);
-  println(`  ${BOLD}Log File:${RESET}             ${config.logging.file.replace(homedir(), '~')}`);
+
+  println(`  ${BOLD}${CYAN}Logging & Skills${RESET}`);
+  println(`    Log Level:            ${DIM}${config.logging.level}${RESET}${changedTag(initialSnap.logLevel, config.logging.level)}`);
+  println(`    Log File:             ${DIM}${config.logging.file.replace(homedir(), '~')}${RESET}${changedTag(initialSnap.logFile, config.logging.file)}`);
+  println(`    Skills Directory:     ${DIM}${config.skills.directory.replace(homedir(), '~')}${RESET}`);
+
+  try {
+    const loader = new SkillLoader(config.skills.directory);
+    const manifests = await loader.discoverAll();
+    let enabled = 0, configured = 0, disabled = 0;
+    for (const m of manifests) {
+      try {
+        const cfg = readSkillConfig(config.skills.directory, m.name);
+        if (!cfg.enabled) disabled++;
+        else if (cfg.configured) { enabled++; configured++; }
+        else enabled++;
+      } catch { disabled++; }
+    }
+    println(`    Skills:               ${GREEN}${configured} configured${RESET}, ${enabled > configured ? `${YELLOW}${enabled - configured} needs setup${RESET}, ` : ''}${DIM}${disabled} disabled${RESET}`);
+  } catch {}
 
   println();
   println(`  ${DIM}Config will be saved to: ${getConfigPath()}${RESET}`);
+
+  const hasChanges = JSON.stringify(initialSnap) !== JSON.stringify(snapshotConfig(config));
+  if (hasChanges) {
+    println(`  ${YELLOW}* = changed during this session${RESET}`);
+  }
   println();
 
   return await confirm(`${BOLD}Save this configuration?${RESET}`, true);
@@ -1173,21 +1325,15 @@ async function finalizeSetup(config: OrionOmegaConfig): Promise<void> {
 
 type StepFn = (config: OrionOmegaConfig, stepIdx: number, totalSteps: number) => Promise<StepAction>;
 
-/**
- * Run the interactive setup wizard.
- * Loads existing config so re-runs preserve previous settings.
- * Steps are navigable: back, redo, menu, and quit available after every step.
- */
 export async function runSetup(): Promise<void> {
   println();
   println(`${BOLD}╔══════════════════════════════════════╗${RESET}`);
   println(`${BOLD}║     OrionOmega — Setup Wizard        ║${RESET}`);
   println(`${BOLD}╚══════════════════════════════════════╝${RESET}`);
   println();
-  println(`  Navigate with: ${BOLD}↵${RESET} continue   ${BOLD}b${RESET} back   ${BOLD}r${RESET} redo   ${BOLD}s${RESET} save & exit   ${BOLD}m${RESET} menu   ${BOLD}q${RESET} quit`);
 
-  // Load existing config — re-runs preserve previous settings
   const config = readConfig();
+  const initialSnap = snapshotConfig(config);
 
   const steps: StepFn[] = [
     stepApiKey,
@@ -1203,14 +1349,15 @@ export async function runSetup(): Promise<void> {
   initRL();
 
   try {
-    // Show step overview menu first
     let idx = await showMenu(config);
 
-    // Main wizard loop — runs steps, then shows summary.
-    // If the user rejects the summary, returns to menu and re-enters the loop.
+    if (idx === -1) {
+      await finalizeSetup(config);
+      return;
+    }
+
     let saved = false;
     while (!saved) {
-      // Step loop
       while (idx < steps.length && !saved) {
         const action = await steps[idx](config, idx, steps.length);
         switch (action) {
@@ -1222,9 +1369,15 @@ export async function runSetup(): Promise<void> {
             break;
           case 'redo':
             break;
-          case 'menu':
-            idx = await showMenu(config);
+          case 'menu': {
+            const menuResult = await showMenu(config);
+            if (menuResult === -1) {
+              saved = true;
+            } else {
+              idx = menuResult;
+            }
             break;
+          }
           case 'save':
             saved = true;
             break;
@@ -1237,14 +1390,18 @@ export async function runSetup(): Promise<void> {
 
       if (saved) break;
 
-      // Summary & confirmation
-      const confirmed = await showSummary(config);
+      const confirmed = await showSummary(config, initialSnap);
       if (confirmed) {
         saved = true;
       } else {
         println();
         warn('Not saved. Returning to menu...');
-        idx = await showMenu(config);
+        const menuResult = await showMenu(config);
+        if (menuResult === -1) {
+          saved = true;
+        } else {
+          idx = menuResult;
+        }
       }
     }
 

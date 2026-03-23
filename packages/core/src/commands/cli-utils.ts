@@ -6,6 +6,7 @@ export const GREEN = '\x1b[32m';
 export const RED = '\x1b[31m';
 export const YELLOW = '\x1b[33m';
 export const BLUE = '\x1b[34m';
+export const CYAN = '\x1b[36m';
 export const BOLD = '\x1b[1m';
 export const DIM = '\x1b[2m';
 export const RESET = '\x1b[0m';
@@ -16,6 +17,13 @@ export function success(msg: string): void { println(`${GREEN}✓${RESET} ${msg}
 export function fail(msg: string): void { println(`${RED}✗${RESET} ${msg}`); }
 export function warn(msg: string): void { println(`${YELLOW}⚠${RESET} ${msg}`); }
 export function heading(msg: string): void { println(`\n${BOLD}${BLUE}${msg}${RESET}\n`); }
+
+export function progressBar(current: number, total: number, width: number = 20): string {
+  const filled = Math.round((current / total) * width);
+  const empty = width - filled;
+  const bar = `${GREEN}${'━'.repeat(filled)}${RESET}${DIM}${'─'.repeat(empty)}${RESET}`;
+  return `  ${bar}  ${BOLD}${current}${RESET}${DIM}/${total}${RESET}`;
+}
 
 export function maskSecret(value: string): string {
   if (!value) return '';
@@ -56,17 +64,19 @@ export function ask(question: string, opts?: { default?: string }): Promise<stri
   });
 }
 
-export function choose(question: string, options: { label: string; value: string }[]): Promise<string> {
+export function choose(question: string, options: { label: string; value: string }[], opts?: { recommended?: number }): Promise<string> {
   return new Promise((resolve) => {
     println(question);
     for (let i = 0; i < options.length; i++) {
-      println(`  ${BOLD}${i + 1}${RESET}) ${options[i].label}`);
+      const star = (opts?.recommended !== undefined && i === opts.recommended) ? ` ${CYAN}★ recommended${RESET}` : '';
+      println(`  ${BOLD}${i + 1}${RESET}) ${options[i].label}${star}`);
     }
 
     const promptForChoice = (): void => {
       rl.question(`\nChoice [1-${options.length}]: `, (answer: string) => {
         const idx = parseInt(answer.trim(), 10) - 1;
         if (idx >= 0 && idx < options.length) {
+          println(`  ${DIM}→ ${options[idx].label.replace(/\x1b\[[0-9;]*m/g, '')}${RESET}`);
           resolve(options[idx].value);
         } else {
           warn(`Please enter a number between 1 and ${options.length}.`);
