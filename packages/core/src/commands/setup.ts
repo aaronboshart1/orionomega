@@ -1218,10 +1218,13 @@ async function showSummary(config: OrionOmegaConfig, initialSnap: ConfigSnapshot
   }
   println();
 
-  println(`  ${BOLD}${CYAN}Logging & Skills${RESET}`);
+  println(`  ${BOLD}${CYAN}Logging${RESET}`);
   println(`    Log Level:            ${DIM}${config.logging.level}${RESET}${changedTag(initialSnap.logLevel, config.logging.level)}`);
   println(`    Log File:             ${DIM}${config.logging.file.replace(homedir(), '~')}${RESET}${changedTag(initialSnap.logFile, config.logging.file)}`);
-  println(`    Skills Directory:     ${DIM}${config.skills.directory.replace(homedir(), '~')}${RESET}`);
+  println();
+
+  println(`  ${BOLD}${CYAN}Skills${RESET}`);
+  println(`    Directory:            ${DIM}${config.skills.directory.replace(homedir(), '~')}${RESET}`);
 
   try {
     const loader = new SkillLoader(config.skills.directory);
@@ -1235,7 +1238,7 @@ async function showSummary(config: OrionOmegaConfig, initialSnap: ConfigSnapshot
         else enabled++;
       } catch { disabled++; }
     }
-    println(`    Skills:               ${GREEN}${configured} configured${RESET}, ${enabled > configured ? `${YELLOW}${enabled - configured} needs setup${RESET}, ` : ''}${DIM}${disabled} disabled${RESET}`);
+    println(`    Status:               ${GREEN}${configured} configured${RESET}, ${enabled > configured ? `${YELLOW}${enabled - configured} needs setup${RESET}, ` : ''}${DIM}${disabled} disabled${RESET}`);
   } catch {}
 
   println();
