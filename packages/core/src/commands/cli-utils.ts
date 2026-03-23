@@ -67,21 +67,39 @@ export function ask(question: string, opts?: { default?: string }): Promise<stri
 export function choose(question: string, options: { label: string; value: string }[], opts?: { recommended?: number }): Promise<string> {
   return new Promise((resolve) => {
     println(question);
+
+    const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, '');
+    const firstLetters = options.map((o) => stripAnsi(o.label)[0]?.toLowerCase() ?? '');
+    const letterCounts: Record<string, number> = {};
+    for (const ch of firstLetters) { letterCounts[ch] = (letterCounts[ch] || 0) + 1; }
+    const hasShortcuts = options.length <= 6 && firstLetters.every((ch) => ch && letterCounts[ch] === 1);
+
     for (let i = 0; i < options.length; i++) {
       const star = (opts?.recommended !== undefined && i === opts.recommended) ? ` ${CYAN}★ recommended${RESET}` : '';
-      println(`  ${BOLD}${i + 1}${RESET}) ${options[i].label}${star}`);
+      const shortcut = hasShortcuts ? ` ${DIM}[${firstLetters[i]}]${RESET}` : '';
+      println(`  ${BOLD}${i + 1}${RESET}) ${options[i].label}${star}${shortcut}`);
     }
 
+    const shortcutHint = hasShortcuts ? `, ${firstLetters.join('/')}` : '';
     const promptForChoice = (): void => {
-      rl.question(`\nChoice [1-${options.length}]: `, (answer: string) => {
-        const idx = parseInt(answer.trim(), 10) - 1;
+      rl.question(`\nChoice [1-${options.length}${shortcutHint}]: `, (answer: string) => {
+        const a = answer.trim();
+        const idx = parseInt(a, 10) - 1;
         if (idx >= 0 && idx < options.length) {
-          println(`  ${DIM}→ ${options[idx].label.replace(/\x1b\[[0-9;]*m/g, '')}${RESET}`);
+          println(`  ${DIM}→ ${stripAnsi(options[idx].label)}${RESET}`);
           resolve(options[idx].value);
-        } else {
-          warn(`Please enter a number between 1 and ${options.length}.`);
-          promptForChoice();
+          return;
         }
+        if (hasShortcuts && a.length === 1) {
+          const letterIdx = firstLetters.indexOf(a.toLowerCase());
+          if (letterIdx >= 0) {
+            println(`  ${DIM}→ ${stripAnsi(options[letterIdx].label)}${RESET}`);
+            resolve(options[letterIdx].value);
+            return;
+          }
+        }
+        warn(`Please enter a number between 1 and ${options.length}${hasShortcuts ? ' or a shortcut letter' : ''}.`);
+        promptForChoice();
       });
     };
     promptForChoice();
