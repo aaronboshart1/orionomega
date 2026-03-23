@@ -3,6 +3,7 @@ set -euo pipefail
 
 REPO="https://github.com/aaronboshart1/orionomega.git"
 INSTALL_DIR="${ORIONOMEGA_DIR:-$HOME/.orionomega/src}"
+BIN_DIR="$HOME/.orionomega/bin"
 MIN_NODE=22
 
 GREEN='\033[0;32m'
@@ -57,8 +58,7 @@ fi
 step "Getting OrionOmega source..."
 
 if [ -d "$INSTALL_DIR/.git" ]; then
-  warn "Existing installation found at $INSTALL_DIR"
-  printf "  Pulling latest changes... "
+  printf "  Updating existing installation... "
   cd "$INSTALL_DIR"
   git pull --ff-only origin main 2>/dev/null || git pull origin main
   printf "done\n"
@@ -78,72 +78,57 @@ step "Installing dependencies..."
 pnpm install --frozen-lockfile 2>/dev/null || pnpm install
 info "Dependencies installed"
 
-# ── 5. Approve and install native builds ─────────────────────────
-
-if pnpm approve-builds --help &>/dev/null 2>&1; then
-  pnpm approve-builds 2>/dev/null || true
-fi
-
-# ── 6. Build ─────────────────────────────────────────────────────
+# ── 5. Build ─────────────────────────────────────────────────────
 
 step "Building OrionOmega..."
 pnpm build
 info "Build complete"
 
-# ── 7. Link CLI globally ─────────────────────────────────────────
+# ── 6. Link CLI globally ─────────────────────────────────────────
 
 step "Linking orionomega command..."
 
+mkdir -p "$BIN_DIR"
+
+cat > "$BIN_DIR/orionomega" <<WRAPPER
+#!/usr/bin/env bash
+exec node "$INSTALL_DIR/packages/core/dist/cli.js" "\$@"
+WRAPPER
+chmod +x "$BIN_DIR/orionomega"
+
 SHELL_RC=""
-if [ -n "${ZSH_VERSION:-}" ] || [ "$SHELL" = "/bin/zsh" ]; then
+if [ -n "${ZSH_VERSION:-}" ] || [ "${SHELL:-}" = "/bin/zsh" ]; then
   SHELL_RC="$HOME/.zshrc"
-elif [ -n "${BASH_VERSION:-}" ] || [ "$SHELL" = "/bin/bash" ]; then
+elif [ -n "${BASH_VERSION:-}" ] || [ "${SHELL:-}" = "/bin/bash" ]; then
   SHELL_RC="$HOME/.bashrc"
 fi
 
-BIN_DIR="$HOME/.orionomega/bin"
-mkdir -p "$BIN_DIR"
-
-cat > "$BIN_DIR/orionomega" <<EOF
-#!/usr/bin/env bash
-exec node "$INSTALL_DIR/packages/core/dist/cli.js" "\$@"
-EOF
-chmod +x "$BIN_DIR/orionomega"
-
-if ! echo "$PATH" | grep -q "$BIN_DIR"; then
-  if [ -n "$SHELL_RC" ] && [ -f "$SHELL_RC" ]; then
-    if ! grep -q 'orionomega/bin' "$SHELL_RC" 2>/dev/null; then
-      printf '\n# OrionOmega\nexport PATH="$HOME/.orionomega/bin:$PATH"\n' >> "$SHELL_RC"
-      info "Added $BIN_DIR to PATH in $SHELL_RC"
-    fi
+if [ -n "$SHELL_RC" ]; then
+  if ! grep -q 'orionomega/bin' "$SHELL_RC" 2>/dev/null; then
+    printf '\n# OrionOmega\nexport PATH="$HOME/.orionomega/bin:$PATH"\n' >> "$SHELL_RC"
+    info "Added to PATH in $SHELL_RC"
   fi
-  export PATH="$BIN_DIR:$PATH"
 fi
 
-info "orionomega command linked"
+export PATH="$BIN_DIR:$PATH"
+info "orionomega command ready"
 
-# ── 8. Verify ────────────────────────────────────────────────────
+# ── 7. Verify ────────────────────────────────────────────────────
 
 step "Verifying installation..."
+"$BIN_DIR/orionomega" --help >/dev/null 2>&1 && info "Installation verified!" || warn "CLI built but --help check failed"
 
-if command -v orionomega &>/dev/null || [ -x "$BIN_DIR/orionomega" ]; then
-  info "Installation successful!"
-else
-  warn "orionomega is installed but may not be in PATH yet."
-  warn "Run: export PATH=\"\$HOME/.orionomega/bin:\$PATH\""
-fi
+# ── Done — launch setup ──────────────────────────────────────────
 
-# ── Done ──────────────────────────────────────────────────────────
+cat <<MSG
 
-cat <<EOF
+${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}
+${BOLD}  Installation complete!${NC}
+${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}
 
-${BOLD}Installation complete!${NC}
+  The ${BOLD}orionomega${NC} command is now available.
+  Launching setup wizard...
 
-  ${BOLD}Next steps:${NC}
-  1. ${GREEN}orionomega setup${NC}     — run the setup wizard
-  2. ${GREEN}orionomega tui${NC}       — launch the terminal UI
+MSG
 
-  If "orionomega" is not found, open a new terminal or run:
-    source ${SHELL_RC:-~/.bashrc}
-
-EOF
+exec "$BIN_DIR/orionomega" setup

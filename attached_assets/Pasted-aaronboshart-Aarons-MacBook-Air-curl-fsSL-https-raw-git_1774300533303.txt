@@ -1,0 +1,64 @@
+aaronboshart@Aarons-MacBook-Air ~ % curl -fsSL https://raw.githubusercontent.com/aaronboshart1/orionomega/main/install.sh | bash
+
+  ╔══════════════════════════════════════╗
+  ║     OrionOmega — Installer           ║
+  ╚══════════════════════════════════════╝
+
+
+Checking prerequisites...
+✓ Node.js v25.5.0
+✓ pnpm 10.32.1
+
+Getting OrionOmega source...
+  Cloning into /Users/aaronboshart/.orionomega/src... Cloning into '/Users/aaronboshart/.orionomega/src'...
+remote: Enumerating objects: 2119, done.
+remote: Counting objects: 100% (294/294), done.
+remote: Compressing objects: 100% (85/85), done.
+remote: Total 2119 (delta 222), reused 244 (delta 209), pack-reused 1825 (from 1)
+Receiving objects: 100% (2119/2119), 992.74 KiB | 4.47 MiB/s, done.
+Resolving deltas: 100% (1132/1132), done.
+done
+✓ Source ready at /Users/aaronboshart/.orionomega/src
+
+Installing dependencies...
+Scope: all 7 workspace projects
+Lockfile is up to date, resolution step is skipped
+Packages: +207
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+Progress: resolved 207, reused 207, downloaded 0, added 207, done
+ WARN  Failed to create bin at /Users/aaronboshart/.orionomega/src/packages/gateway/node_modules/.bin/orionomega. ENOENT: no such file or directory, open '/Users/aaronboshart/.orionomega/src/packages/core/dist/cli.js'
+ WARN  Failed to create bin at /Users/aaronboshart/.orionomega/src/packages/tui/node_modules/.bin/orionomega. ENOENT: no such file or directory, open '/Users/aaronboshart/.orionomega/src/packages/core/dist/cli.js'
+
+dependencies:
++ js-yaml 4.1.1
+
+devDependencies:
++ @eslint/js 9.39.4
++ @types/js-yaml 4.0.9
++ @types/node 22.19.15
++ @types/ws 8.18.1
++ @typescript-eslint/eslint-plugin 8.56.1
++ @typescript-eslint/parser 8.56.1
++ eslint 9.39.4
++ tsx 4.21.0
++ typescript 5.9.3
++ typescript-eslint 8.57.0
++ ws 8.19.0
+
+ WARN  Failed to create bin at /Users/aaronboshart/.orionomega/src/packages/gateway/node_modules/.bin/orionomega. ENOENT: no such file or directory, open '/Users/aaronboshart/.orionomega/src/packages/gateway/node_modules/@orionomega/core/dist/cli.js'
+ WARN  Failed to create bin at /Users/aaronboshart/.orionomega/src/packages/tui/node_modules/.bin/orionomega. ENOENT: no such file or directory, open '/Users/aaronboshart/.orionomega/src/packages/tui/node_modules/@orionomega/core/dist/cli.js'
+╭ Warning ─────────────────────────────────────────────────────────────────╮
+│                                                                          │
+│   Ignored build scripts: esbuild@0.27.3, koffi@2.15.1, sharp@0.34.5.     │
+│   Run "pnpm approve-builds" to pick which dependencies should be         │
+│   allowed to run scripts.                                                │
+│                                                                          │
+╰──────────────────────────────────────────────────────────────────────────╯
+Done in 1.5s using pnpm v10.32.1
+✓ Dependencies installed
+✔ Choose which packages to build (Press <space> to select, <a> to toggle all, <i> to invert selection) · No items were selected
+
+All packages were added to ignoredBuiltDependencies.
+aaronboshart@Aarons-MacBook-Air ~ % orionomega setup
+zsh: command not found: orionomega
+aaronboshart@Aarons-MacBook-Air ~ % 
