@@ -114,7 +114,7 @@ fi
 export PATH="$BIN_DIR:$PATH"
 info "orionomega command ready"
 
-# ── 7. Verify and launch ─────────────────────────────────────────
+# ── 7. Verify ────────────────────────────────────────────────────
 
 step "Verifying installation..."
 "$BIN_DIR/orionomega" --help >/dev/null 2>&1 && info "Installation verified!" || warn "CLI built but --help check failed"
@@ -127,4 +127,7 @@ printf "\n"
 printf "  Launching setup wizard...\n"
 printf "\n"
 
-exec "$BIN_DIR/orionomega" setup </dev/tty
+# ── 8. Spawn a fresh login shell so PATH is live ─────────────────
+# exec replaces this process with a new shell that reads .zshrc/.bashrc,
+# so `orionomega` is immediately available — same pattern as rustup/claude.
+exec "${SHELL:-/bin/sh}" -l -c "orionomega setup" </dev/tty
