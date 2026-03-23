@@ -104,6 +104,7 @@ elif [ -n "${BASH_VERSION:-}" ] || [ "${SHELL:-}" = "/bin/bash" ]; then
 fi
 
 if [ -n "$SHELL_RC" ]; then
+  touch "$SHELL_RC"
   if ! grep -q 'orionomega/bin' "$SHELL_RC" 2>/dev/null; then
     printf '\n# OrionOmega\nexport PATH="$HOME/.orionomega/bin:$PATH"\n' >> "$SHELL_RC"
     info "Added to PATH in $SHELL_RC"
