@@ -49,17 +49,16 @@ function readPid(): number | null {
 
 /** Find the gateway server entry point. */
 function findServerPath(): string {
-  // Try common locations
   const candidates = [
-    join(process.cwd(), 'packages/gateway/dist/server.js'),
+    join(homedir(), '.orionomega', 'src', 'packages', 'gateway', 'dist', 'server.js'),
+    join(process.cwd(), 'packages', 'gateway', 'dist', 'server.js'),
     '/opt/orionomega/packages/gateway/dist/server.js',
-    join(homedir(), '.orionomega', 'packages/gateway/dist/server.js'),
+    join(homedir(), '.orionomega', 'packages', 'gateway', 'dist', 'server.js'),
   ];
   for (const c of candidates) {
     if (existsSync(c)) return c;
   }
-  // Fall back to relative from this module
-  return join(process.cwd(), 'packages/gateway/dist/server.js');
+  return candidates[0];
 }
 
 function startDev(): void {

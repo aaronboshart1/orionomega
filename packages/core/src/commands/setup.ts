@@ -464,27 +464,40 @@ async function tryStartHindsightContainer(config: OrionOmegaConfig): Promise<voi
   const startIt = await confirm('  Start Hindsight Docker container?', true);
   if (!startIt) return;
 
+  const docker = (() => {
+    try { execSync('docker ps 2>/dev/null', { stdio: 'pipe', timeout: 5000 }); return 'docker'; } catch {}
+    try { execSync('sudo docker ps 2>/dev/null', { stdio: 'pipe', timeout: 5000 }); return 'sudo docker'; } catch {}
+    return null;
+  })();
+
+  if (!docker) {
+    warn('Docker not found or not running. Install Docker Desktop and try again.');
+    return;
+  }
+
+  const dataDir = join(homedir(), '.orionomega', 'hindsight-data');
+
   print('  Stopping existing container... ');
   try {
-    execSync('sudo docker stop hindsight 2>/dev/null; sudo docker rm hindsight 2>/dev/null', { stdio: 'pipe', timeout: 15000 });
+    execSync(`${docker} stop hindsight 2>/dev/null; ${docker} rm hindsight 2>/dev/null`, { stdio: 'pipe', timeout: 15000 });
   } catch {}
   println('done');
 
   try {
-    execSync('sudo mkdir -p /opt/hindsight-data && sudo chmod 777 /opt/hindsight-data', { stdio: 'pipe', timeout: 5000 });
+    mkdirSync(dataDir, { recursive: true });
   } catch {}
 
   print('  Starting Hindsight... ');
   try {
     const dockerCmd = [
-      'sudo docker run -d',
+      `${docker} run -d`,
       '--name hindsight',
       '--restart unless-stopped',
       '-p 8888:8888 -p 9999:9999',
       `-e "HINDSIGHT_API_LLM_API_KEY=${config.models.apiKey}"`,
       '-e "HINDSIGHT_API_LLM_PROVIDER=anthropic"',
       '-e "HINDSIGHT_API_LLM_MODEL=claude-haiku-4-5-20251001"',
-      '-v /opt/hindsight-data:/home/hindsight/.pg0',
+      `-v "${dataDir}:/home/hindsight/.pg0"`,
       'ghcr.io/vectorize-io/hindsight:latest',
     ].join(' ');
     execSync(dockerCmd, { stdio: 'pipe', timeout: 30000 });
@@ -1294,39 +1307,12 @@ async function finalizeSetup(config: OrionOmegaConfig): Promise<void> {
 
   writeConfig(config);
 
+  print('  Starting gateway... ');
   try {
-    const state = execSync('systemctl is-active orionomega 2>/dev/null', { encoding: 'utf-8' }).trim();
-    const action = state === 'active' ? 'restart' : 'start';
-    const verb = state === 'active' ? 'Restarting' : 'Starting';
-    print(`  ${verb} gateway... `);
-    try {
-      execSync(`sudo systemctl ${action} orionomega`, { stdio: 'ignore', timeout: 15000 });
-      println(`${GREEN}✓${RESET} Gateway ${action === 'restart' ? 'restarted' : 'started'}`);
-    } catch {
-      try {
-        execSync(`systemctl ${action} orionomega`, { stdio: 'ignore', timeout: 15000 });
-        println(`${GREEN}✓${RESET} Gateway ${action === 'restart' ? 'restarted' : 'started'}`);
-      } catch {
-        println(`${YELLOW}⚠${RESET} Could not ${action} gateway. Run: sudo systemctl ${action} orionomega`);
-      }
-    }
+    execSync('orionomega gateway start', { stdio: 'pipe', timeout: 15000, env: { ...process.env, PATH: `${join(homedir(), '.orionomega', 'bin')}:${process.env.PATH}` } });
+    println(`${GREEN}✓${RESET} Gateway started`);
   } catch {
-    print('  Starting gateway... ');
-    try {
-      execSync('sudo systemctl start orionomega', { stdio: 'ignore', timeout: 15000 });
-      println(`${GREEN}✓${RESET} Gateway started`);
-    } catch {
-      try {
-        const pidFile = join(homedir(), '.orionomega', 'gateway.pid');
-        if (existsSync(pidFile)) {
-          const pid = parseInt(readFileSync(pidFile, 'utf-8').trim(), 10);
-          if (!isNaN(pid)) {
-            try { process.kill(pid, 'SIGTERM'); } catch {}
-          }
-        }
-      } catch {}
-      println(`${YELLOW}⚠${RESET} Could not start gateway. Run: orionomega gateway start`);
-    }
+    println(`${YELLOW}⚠${RESET} Could not start gateway. Run: orionomega gateway start`);
   }
 
   heading('Setup Complete!');
