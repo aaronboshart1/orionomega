@@ -177,14 +177,87 @@ async function checkHindsightReachable(url: string): Promise<boolean> {
   }
 }
 
+async function autoStartHindsight(config: OrionOmegaConfig): Promise<boolean> {
+  if (!config.hindsight.url) return false;
+  if (!config.models.apiKey) return false;
+  if (!(config.hindsight.url.includes('localhost') || config.hindsight.url.includes('127.0.0.1'))) return false;
+
+  try {
+    execSync('docker info', { stdio: 'pipe', timeout: 5000 });
+  } catch {
+    return false;
+  }
+
+  try {
+    const running = execSync('docker ps --format "{{.Names}}"', { stdio: 'pipe', timeout: 5000 }).toString();
+    if (running.split('\n').some(n => n.trim() === 'hindsight')) return true;
+  } catch {
+    return false;
+  }
+
+  try {
+    execSync('docker image inspect ghcr.io/vectorize-io/hindsight:latest', { stdio: 'pipe', timeout: 5000 });
+  } catch {
+    return false;
+  }
+
+  println(`  ${DIM}Starting Hindsight container...${RESET}`);
+  try {
+    execSync('docker stop hindsight 2>/dev/null; docker rm hindsight 2>/dev/null', { stdio: 'pipe', timeout: 15000 });
+  } catch {}
+
+  const dataDir = join(homedir(), '.orionomega', 'hindsight-data');
+  try { mkdirSync(dataDir, { recursive: true }); } catch {}
+
+  try {
+    const dockerCmd = [
+      'docker run -d',
+      '--name hindsight',
+      '--restart unless-stopped',
+      '-p 8888:8888 -p 9999:9999',
+      `-e "HINDSIGHT_API_LLM_API_KEY=${config.models.apiKey}"`,
+      '-e "HINDSIGHT_API_LLM_PROVIDER=anthropic"',
+      '-e "HINDSIGHT_API_LLM_MODEL=claude-haiku-4-5-20251001"',
+      `-v "${dataDir}:/home/hindsight/.pg0"`,
+      'ghcr.io/vectorize-io/hindsight:latest',
+    ].join(' ');
+    execSync(dockerCmd, { stdio: 'pipe', timeout: 60000 });
+
+    print(`  ${DIM}Waiting for Hindsight to initialize...${RESET}`);
+    for (let i = 0; i < 30; i++) {
+      try {
+        const res = await fetch('http://localhost:8888/health', { signal: AbortSignal.timeout(3000) });
+        if (res.ok) {
+          println('');
+          success('Hindsight started automatically.');
+          return true;
+        }
+      } catch {}
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+    println('');
+    println(`  ${DIM}Hindsight started but still initializing. It should be ready shortly.${RESET}`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function showMenu(config: OrionOmegaConfig): Promise<number> {
   println();
   println(`${BOLD}${BLUE}  OrionOmega Setup${RESET}`);
   println();
 
-  const hindsightReachable = config.hindsight.url
+  let hindsightReachable = config.hindsight.url
     ? await checkHindsightReachable(config.hindsight.url)
     : false;
+
+  if (!hindsightReachable && config.hindsight.url && config.models.apiKey) {
+    const started = await autoStartHindsight(config);
+    if (started) {
+      hindsightReachable = await checkHindsightReachable(config.hindsight.url);
+    }
+  }
 
   const requiredDone = STEP_INFO.filter((s) => s.group === 'required' && s.configured(config) && s.summary(config) !== 'not set').length;
   const requiredTotal = STEP_INFO.filter((s) => s.group === 'required').length;
