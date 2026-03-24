@@ -493,7 +493,38 @@ async function tryStartHindsightContainer(config: OrionOmegaConfig): Promise<voi
   } catch {
     const platform = process.platform;
     if (platform === 'darwin') {
-      warn('Docker Desktop is not running. Start Docker Desktop and try again.');
+      try {
+        execSync('command -v colima', { stdio: 'pipe', timeout: 3000 });
+        println(`  ${DIM}Starting Colima...${RESET}`);
+        try {
+          execSync('colima start --cpu 2 --memory 4', { stdio: 'pipe', timeout: 120000 });
+          execSync('docker info', { stdio: 'pipe', timeout: 10000 });
+          docker = 'docker';
+          success('Docker is running via Colima');
+        } catch {
+          warn('Could not start Colima. Try manually: colima start');
+        }
+      } catch {
+        try {
+          execSync('command -v brew', { stdio: 'pipe', timeout: 3000 });
+          const installIt = await confirm('  Docker not found. Install Docker CLI + Colima via Homebrew?', true);
+          if (installIt) {
+            println(`  ${DIM}Installing docker and colima (this may take a minute)...${RESET}`);
+            try {
+              execSync('brew install docker colima', { stdio: 'pipe', timeout: 300000 });
+              println(`  ${DIM}Starting Colima...${RESET}`);
+              execSync('colima start --cpu 2 --memory 4', { stdio: 'pipe', timeout: 120000 });
+              execSync('docker info', { stdio: 'pipe', timeout: 10000 });
+              docker = 'docker';
+              success('Docker installed and running via Colima');
+            } catch (err) {
+              warn(`Install failed: ${err instanceof Error ? err.message : String(err)}`);
+            }
+          }
+        } catch {
+          warn('Docker and Homebrew not found. Install Docker Desktop or Homebrew + Colima.');
+        }
+      }
     } else {
       try {
         execSync('sudo docker info', { stdio: 'pipe', timeout: 10000 });

@@ -122,35 +122,84 @@ step "Hindsight (Memory System)..."
 HINDSIGHT_DATA="$HOME/.orionomega/hindsight-data"
 mkdir -p "$HINDSIGHT_DATA"
 
+install_docker_macos() {
+  if ! command -v brew &>/dev/null; then
+    warn "Homebrew not found — cannot auto-install Docker."
+    printf "    Install Homebrew first: https://brew.sh\n"
+    printf "    Then re-run this installer.\n"
+    return 1
+  fi
+
+  info "Installing Docker CLI and Colima via Homebrew..."
+  brew install docker colima 2>&1 | tail -3
+  info "Starting Colima (lightweight Docker runtime)..."
+  colima start --cpu 2 --memory 4 2>&1 | tail -3
+
+  if docker info &>/dev/null 2>&1; then
+    info "Docker is running via Colima"
+    return 0
+  else
+    warn "Colima started but Docker not responding. Try: colima start"
+    return 1
+  fi
+}
+
+DOCKER_READY=false
+
 if command -v docker &>/dev/null; then
   if docker info &>/dev/null 2>&1; then
     info "Docker is running"
-    if docker image inspect ghcr.io/vectorize-io/hindsight:latest &>/dev/null 2>&1; then
-      info "Hindsight image already available"
-    else
-      printf "  Pulling Hindsight image (this may take a few minutes)... "
-      if docker pull ghcr.io/vectorize-io/hindsight:latest 2>&1 | tail -1; then
-        info "Hindsight image pulled"
-      else
-        warn "Failed to pull Hindsight image — you can pull it manually later:"
-        printf "    docker pull ghcr.io/vectorize-io/hindsight:latest\n"
-      fi
-    fi
+    DOCKER_READY=true
   else
-    warn "Docker is installed but not running."
     if [ "$(uname -s)" = "Darwin" ]; then
-      printf "    Start Docker Desktop and re-run setup to enable Hindsight.\n"
+      if command -v colima &>/dev/null; then
+        info "Starting Colima..."
+        colima start --cpu 2 --memory 4 2>&1 | tail -3
+        if docker info &>/dev/null 2>&1; then
+          info "Docker is running via Colima"
+          DOCKER_READY=true
+        fi
+      else
+        warn "Docker CLI found but daemon not running."
+        install_docker_macos && DOCKER_READY=true
+      fi
     else
+      warn "Docker is installed but not running."
       printf "    Start the Docker daemon and re-run setup to enable Hindsight.\n"
     fi
   fi
 else
-  warn "Docker not found — Hindsight requires Docker to run locally."
   if [ "$(uname -s)" = "Darwin" ]; then
-    printf "    Install Docker Desktop: https://www.docker.com/products/docker-desktop/\n"
+    install_docker_macos && DOCKER_READY=true
   else
-    printf "    Install Docker: curl -fsSL https://get.docker.com | sh\n"
+    warn "Docker not found — installing..."
+    if curl -fsSL https://get.docker.com | sh 2>&1 | tail -3; then
+      sudo systemctl enable --now docker 2>/dev/null || true
+      if docker info &>/dev/null 2>&1; then
+        info "Docker installed and running"
+        DOCKER_READY=true
+      fi
+    else
+      warn "Docker install failed. Install manually: curl -fsSL https://get.docker.com | sh"
+    fi
   fi
+fi
+
+if [ "$DOCKER_READY" = "true" ]; then
+  if docker image inspect ghcr.io/vectorize-io/hindsight:latest &>/dev/null 2>&1; then
+    info "Hindsight image already available"
+  else
+    printf "  Pulling Hindsight image (this may take a few minutes)... "
+    if docker pull ghcr.io/vectorize-io/hindsight:latest 2>&1 | tail -1; then
+      info "Hindsight image pulled"
+    else
+      warn "Failed to pull Hindsight image — you can pull it manually later:"
+      printf "    docker pull ghcr.io/vectorize-io/hindsight:latest\n"
+    fi
+  fi
+else
+  warn "Docker not available — Hindsight will not be started."
+  printf "    You can install Docker later and re-run: orionomega setup\n"
 fi
 
 # ── 8. Verify ────────────────────────────────────────────────────
