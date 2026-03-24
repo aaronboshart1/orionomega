@@ -530,7 +530,7 @@ export async function start(): Promise<void> {
           ? chalk.hex(palette.success)('Connected')
           : chalk.hex(palette.error)('Disconnected');
 
-      let hsUrl = 'http://localhost:3040';
+      let hsUrl = 'http://localhost:8888';
       try {
         const cfg = readConfig();
         if (cfg.hindsight?.url) hsUrl = cfg.hindsight.url;

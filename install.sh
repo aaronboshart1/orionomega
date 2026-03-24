@@ -185,6 +185,8 @@ else
   fi
 fi
 
+HINDSIGHT_RUNNING=false
+
 if [ "$DOCKER_READY" = "true" ]; then
   if docker image inspect ghcr.io/vectorize-io/hindsight:latest &>/dev/null 2>&1; then
     info "Hindsight image already available"
@@ -196,6 +198,13 @@ if [ "$DOCKER_READY" = "true" ]; then
       warn "Failed to pull Hindsight image — you can pull it manually later:"
       printf "    docker pull ghcr.io/vectorize-io/hindsight:latest\n"
     fi
+  fi
+
+  if docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^hindsight$'; then
+    info "Hindsight container already running"
+    HINDSIGHT_RUNNING=true
+  else
+    printf "  ${DIM}Hindsight requires an API key to start. The setup wizard will start it.${NC}\n"
   fi
 else
   warn "Docker not available — Hindsight will not be started."
@@ -211,6 +220,12 @@ printf "\n"
 printf "  ${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"
 printf "  ${BOLD}  Installation complete!${NC}\n"
 printf "  ${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"
+printf "\n"
+printf "  ${BOLD}Available commands:${NC}\n"
+printf "    ${GREEN}orionomega setup${NC}    Configure API keys, Hindsight, workspace\n"
+printf "    ${GREEN}orionomega tui${NC}      Launch the terminal UI\n"
+printf "    ${GREEN}orionomega doctor${NC}   Check system health\n"
+printf "    ${GREEN}orionomega status${NC}   Show current configuration\n"
 printf "\n"
 printf "  Launching setup wizard...\n"
 printf "\n"
