@@ -122,9 +122,9 @@ export class MainAgent {
 
     // Create the memory bridge
     this.memory = new MemoryBridge(
-      { hindsight: config.hindsight, model: config.model },
+      { hindsight: config.hindsight, model: config.model, cheapModel: config.cheapModel },
       this.anthropic,
-      new EventBus(), // shared event bus — orchestration bridge will use the same one
+      new EventBus(),
     );
 
     // Context assembler — replaces raw history array with hot window + Hindsight recall

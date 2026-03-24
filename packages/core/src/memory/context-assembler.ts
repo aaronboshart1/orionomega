@@ -74,7 +74,7 @@ function estimateTokens(text: string): number {
  * on arrival; each turn assembles exactly the right amount of context.
  */
 export class ContextAssembler {
-  /** Ring buffer of recent messages — always included verbatim. */
+  /** Small recency buffer (last few messages for conversational coherence). All older context is query-built per turn via Hindsight. */
   private hotWindow: ConversationMessage[] = [];
   private readonly hotWindowSize: number;
   private readonly recallBudgetTokens: number;

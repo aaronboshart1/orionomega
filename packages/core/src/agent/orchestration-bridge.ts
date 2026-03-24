@@ -152,10 +152,11 @@ export class OrchestrationBridge {
 
     try {
       const memories = await this.memory.recallForPlanning(task);
+      const preRecalledContext = memories.length ? memories.join('\n') : undefined;
       const plan = await this.planner.plan(task, {
         ...(memories.length ? { memories } : {}),
         ...(this.availableSkills.length ? { availableSkills: this.availableSkills } : {}),
-      });
+      }, preRecalledContext);
       this.callbacks.onThinking('', true, true);
 
       if (opts.requireConfirmation) {
@@ -275,10 +276,11 @@ export class OrchestrationBridge {
 
     try {
       const memories = await this.memory.recallForPlanning(task);
+      const preRecalledContext = memories.length ? memories.join('\n') : undefined;
       const plan = await this.planner.plan(task, {
         ...(memories.length ? { memories } : {}),
         ...(this.availableSkills.length ? { availableSkills: this.availableSkills } : {}),
-      });
+      }, preRecalledContext);
 
       this.pendingPlans.set(plan.graph.id, {
         id: plan.graph.id,
@@ -309,10 +311,11 @@ export class OrchestrationBridge {
 
     try {
       const memories = await this.memory.recallForPlanning(task);
+      const preRecalledContext = memories.length ? memories.join('\n') : undefined;
       const plan = await this.planner.plan(task, {
         ...(memories.length ? { memories } : {}),
         ...(this.availableSkills.length ? { availableSkills: this.availableSkills } : {}),
-      });
+      }, preRecalledContext);
       this.callbacks.onThinking('', true, true);
       this.callbacks.onPlan(plan);
       pushHistory({ role: 'assistant', content: `[Plan auto-approved] ${plan.summary}` });

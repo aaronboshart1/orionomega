@@ -22,6 +22,7 @@ const log = createLogger('memory-bridge');
 export interface MemoryConfig {
   hindsight?: OrionOmegaConfig['hindsight'];
   model: string;
+  cheapModel?: string;
 }
 
 /**
@@ -96,13 +97,13 @@ export class MemoryBridge {
       this.sessionSummarizer = new SessionSummarizer(
         this.hindsightClient,
         this.anthropic,
-        this.config.model,
+        this.config.cheapModel || this.config.model,
       );
 
       this.compactionFlush = new CompactionFlush(
         this.hindsightClient,
         this.anthropic,
-        this.config.model,
+        this.config.cheapModel || this.config.model,
       );
 
       // Ensure the persistent core bank exists

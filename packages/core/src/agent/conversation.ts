@@ -134,8 +134,10 @@ export function isFastConversational(content: string): boolean {
   const trimmed = content.trim();
   const wordCount = trimmed.split(/\s+/).length;
   if (TASKY_VERBS.test(trimmed)) return false;
+  if (ORCHESTRATE_FAST.some((p) => p.test(trimmed))) return false;
   if (wordCount <= 2 && CONVERSATIONAL_FAST.some((p) => p.test(trimmed))) return true;
   if (wordCount <= 12 && CONVERSATIONAL_FAST.some((p) => p.test(trimmed))) return true;
+  if (wordCount <= 15 && !TASKY_VERBS.test(trimmed) && !ORCHESTRATE_FAST.some((p) => p.test(trimmed))) return true;
   return false;
 }
 
