@@ -295,10 +295,15 @@ export class AnthropicClient {
           };
         }
         if (Array.isArray(m.content) && m.content.length > 0) {
-          const blocks = [...m.content];
-          const last = { ...blocks[blocks.length - 1], cache_control: { type: 'ephemeral' } };
-          blocks[blocks.length - 1] = last;
-          return { ...m, content: blocks };
+          const blocks = m.content.map((b) => ({ ...b })) as Array<Record<string, unknown>>;
+          let lastTextIdx = -1;
+          for (let j = blocks.length - 1; j >= 0; j--) {
+            if (blocks[j].type === 'text') { lastTextIdx = j; break; }
+          }
+          if (lastTextIdx >= 0) {
+            blocks[lastTextIdx].cache_control = { type: 'ephemeral' };
+          }
+          return { ...m, content: blocks as unknown as ContentBlock[] };
         }
         return m;
       });
