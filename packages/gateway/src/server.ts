@@ -65,6 +65,10 @@ const sessionManager = new SessionManager();
 const commandHandler = new CommandHandler(sessionManager);
 const eventStreamer = new EventStreamer();
 const wsHandler = new WebSocketHandler(config, sessionManager, commandHandler, eventStreamer);
+wsHandler.setHindsightStatusProvider(() => ({
+  connected: lastHindsightConnected ?? false,
+  busy: false,
+}));
 
 /** Module-level reference to the MainAgent for shutdown summarization. */
 let mainAgent: MainAgent | null = null;

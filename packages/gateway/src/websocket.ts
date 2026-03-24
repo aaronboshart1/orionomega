@@ -33,6 +33,7 @@ export class WebSocketHandler {
   private pingTimer: ReturnType<typeof setInterval> | null = null;
 
   private mainAgent: MainAgent | null = null;
+  private getHindsightStatus: (() => { connected: boolean; busy: boolean }) | null = null;
 
   constructor(
     private config: GatewayConfig,
@@ -41,6 +42,10 @@ export class WebSocketHandler {
     private eventStreamer: EventStreamer,
   ) {
     this.wss = new WebSocketServer({ noServer: true });
+  }
+
+  setHindsightStatusProvider(fn: () => { connected: boolean; busy: boolean }): void {
+    this.getHindsightStatus = fn;
   }
 
   /**
@@ -164,6 +169,15 @@ export class WebSocketHandler {
           type: m.type,
         })),
       } as any);
+    }
+
+    if (this.getHindsightStatus) {
+      const status = this.getHindsightStatus();
+      this.send(ws, {
+        id: randomBytes(8).toString('hex'),
+        type: 'hindsight_status',
+        hindsightStatus: status,
+      });
     }
 
     ws.on('message', (data) => {
