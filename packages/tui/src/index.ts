@@ -252,12 +252,7 @@ export async function start(): Promise<void> {
     chatLog.clearStreaming();
     statusBar.thinking = false;
 
-    // Route workflow-scoped messages to the WorkflowBox instead of chat log
-    if (msg.workflowId && workflowPanel.boxes.has(msg.workflowId)) {
-      workflowPanel.boxes.get(msg.workflowId)!.addResult(msg.content);
-    } else {
-      chatLog.addMessage(msg);
-    }
+    chatLog.addMessage(msg);
 
     throttledRender();
   });
