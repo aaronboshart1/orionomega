@@ -18,7 +18,7 @@ import { omegaSpinner } from './omega-spinner.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
-export type NodeStatusType = 'pending' | 'running' | 'complete' | 'error' | 'skipped';
+export type NodeStatusType = 'pending' | 'running' | 'complete' | 'error' | 'skipped' | 'cancelled';
 
 export interface NodeState {
   id: string;
@@ -43,6 +43,7 @@ export function mapNodeStatus(status: string | undefined): NodeStatusType {
     case 'error': case 'failed': return 'error';
     case 'running': case 'in_progress': return 'running';
     case 'skipped': return 'skipped';
+    case 'cancelled': return 'cancelled';
     default: return 'pending';
   }
 }
@@ -168,7 +169,7 @@ export class NodeDisplay extends Container {
     if (newStatus === 'running' && !this.state.startedAt) {
       this.state.startedAt = node.startedAt ? new Date(node.startedAt).getTime() : Date.now();
     }
-    if ((newStatus === 'complete' || newStatus === 'error') && node.completedAt && node.startedAt) {
+    if ((newStatus === 'complete' || newStatus === 'error' || newStatus === 'cancelled') && node.completedAt && node.startedAt) {
       this.state.duration = Math.round(
         (new Date(node.completedAt).getTime() - new Date(node.startedAt).getTime()) / 1000,
       );
@@ -221,6 +222,9 @@ export class NodeDisplay extends Container {
         break;
       case 'skipped':
         this.renderSkipped(model, state);
+        break;
+      case 'cancelled':
+        this.renderCancelled(model, state);
         break;
     }
   }
@@ -312,6 +316,13 @@ export class NodeDisplay extends Container {
       1, 0,
     );
     this.addChild(this.subLine1);
+  }
+
+  private renderCancelled(model: string, state: NodeState): void {
+    const label = chalk.hex(palette.dim)(state.label);
+    this.mainLine.setText(
+      `${spacing.indent2}${chalk.hex(palette.dim)(icons.skipped)} ${label}${model} ${chalk.hex(palette.dim)('\u2014 cancelled')}`,
+    );
   }
 
   private renderSkipped(model: string, state: NodeState): void {

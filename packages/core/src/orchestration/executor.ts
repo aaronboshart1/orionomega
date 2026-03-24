@@ -156,7 +156,10 @@ export class GraphExecutor {
           const result = results[i];
           const node = this.graph.nodes.get(nodeId)!;
 
-          if (result.status === 'fulfilled') {
+          if (result.status === 'fulfilled' && result.value.cancelled) {
+            node.status = 'cancelled';
+            log.info(`Node '${nodeId}' cancelled by stop`);
+          } else if (result.status === 'fulfilled') {
             node.status = 'done';
             node.completedAt = new Date().toISOString();
             node.output = result.value.output;
@@ -325,7 +328,7 @@ export class GraphExecutor {
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       if (this.stopRequested) {
-        return { nodeId, output: null, durationMs: 0, toolCallCount: 0, findings: [], outputPaths: [] };
+        return { nodeId, output: null, durationMs: 0, toolCallCount: 0, findings: [], outputPaths: [], cancelled: true };
       }
 
       try {

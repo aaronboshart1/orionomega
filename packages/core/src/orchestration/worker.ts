@@ -49,6 +49,7 @@ export interface WorkerResult {
    * Prefer this over output for display; output contains all intermediate text.
    */
   finalResult?: string;
+  cancelled?: boolean;
 }
 
 /**
@@ -565,6 +566,7 @@ Use absolute paths when referencing files outside the workspace.${skillDocs}`;
       toolCallCount: 0,
       findings: [],
       outputPaths: [],
+      cancelled: true,
     };
   }
 }
