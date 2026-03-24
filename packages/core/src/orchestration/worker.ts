@@ -108,7 +108,6 @@ export class WorkerProcess {
           result = await this.runTool();
           break;
         default:
-          // ROUTER, PARALLEL, JOIN are structural — pass-through
           result = {
             nodeId: this.node.id,
             output: null,
@@ -120,11 +119,20 @@ export class WorkerProcess {
           break;
       }
 
+      if (this.cancelled) {
+        this.currentStatus = 'done';
+        return this.cancelledResult();
+      }
+
       result.durationMs = Date.now() - start;
       this.currentStatus = 'done';
       this.currentProgress = 100;
       return result;
     } catch (err) {
+      if (this.cancelled) {
+        this.currentStatus = 'done';
+        return this.cancelledResult();
+      }
       this.currentStatus = 'error';
       this.emitEvent({
         type: 'error',

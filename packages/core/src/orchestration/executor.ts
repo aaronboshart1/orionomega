@@ -565,6 +565,13 @@ export class GraphExecutor {
             codingAbort.signal,
           );
 
+          if (this.stopRequested) {
+            return {
+              nodeId: node.id, output: null, durationMs: Date.now() - startMs,
+              toolCallCount: 0, findings: [], outputPaths: [], cancelled: true,
+            };
+          }
+
           return {
             nodeId: node.id,
             output: codingResult.output,
@@ -573,6 +580,14 @@ export class GraphExecutor {
             findings: [],
             outputPaths: [],
           };
+        } catch (err) {
+          if (this.stopRequested) {
+            return {
+              nodeId: node.id, output: null, durationMs: Date.now() - startMs,
+              toolCallCount: 0, findings: [], outputPaths: [], cancelled: true,
+            };
+          }
+          throw err;
         } finally {
           this.activeCodingAborts.delete(node.id);
         }
