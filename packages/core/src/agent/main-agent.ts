@@ -45,6 +45,7 @@ const log = createLogger('main-agent');
 /** Configuration for the main agent. */
 export interface MainAgentConfig {
   model: string;
+  cheapModel?: string;
   apiKey: string;
   systemPrompt: string;
   workspaceDir: string;
@@ -137,7 +138,7 @@ export class MainAgent {
       : `${process.env.HOME || '/root'}/.orionomega`;
 
     this.context = new ContextAssembler(hsClient, {
-      hotWindowSize: 20,
+      hotWindowSize: 6,
       recallBudgetTokens: 30_000,
       maxTurnTokens: 60_000,
       conversationBank: config.hindsight?.url
@@ -368,7 +369,7 @@ export class MainAgent {
       // 4. Ambiguous — LLM 2-tier classifier
       log.verbose('Route: LLM intent classification');
       this.callbacks.onThinking('Classifying intent…', true, false);
-      const intent = await classifyIntent(this.anthropic, this.config.model, trimmed);
+      const intent = await classifyIntent(this.anthropic, this.config.model, trimmed, this.config.cheapModel);
       log.verbose(`Intent classified: ${intent}`);
 
       switch (intent) {
@@ -656,6 +657,7 @@ export class MainAgent {
         workspaceDir: this.config.workspaceDir,
         onText: this.callbacks.onText,
         onThinking: this.callbacks.onThinking,
+        maxInputTokens: 100_000,
       });
       this.cumulativeInputTokens += result.inputTokens;
       this.cumulativeOutputTokens += result.outputTokens;

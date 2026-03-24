@@ -29,7 +29,6 @@ export const IMMEDIATE_PATTERNS = [
   /^\s*(run\s*it|do\s*it|go\s*ahead|build\s*it|just\s*do\s*it|execute\s*it|ship\s*it|yes|yep|yeah|approved?|lgtm)\s*[.!]?\s*$/i,
 ];
 
-/** Quick-match conversational patterns (no LLM call needed). */
 const CONVERSATIONAL_FAST = [
   /^(hi|hello|hey|yo|sup|howdy|greetings)\b/i,
   /^(thanks|thank\s*you|cheers|ta)\b/i,
@@ -39,6 +38,15 @@ const CONVERSATIONAL_FAST = [
   /^help\b/i,
   /^(ok|okay|sure|alright|got\s*it|understood)\b/i,
   /^(yes|no|yep|nope|yeah|nah)\b/i,
+  /^what\s+(is|are|does|do|was|were|can|could|would|should)\b/i,
+  /^(why|when|where|how)\s+(is|are|does|do|did|was|were|can|could|would|should)\b/i,
+  /^(tell\s+me|explain|describe|define|summarize|summarise)\b/i,
+  /^(can|could|would)\s+you\s+(explain|tell|describe|help|clarify)\b/i,
+  /^(what'?s|whats)\s/i,
+  /^(nice|great|awesome|cool|perfect|wonderful|excellent|good\s*job)\b/i,
+  /^(bye|goodbye|see\s+you|later|gotta\s+go|ttyl)\b/i,
+  /^(sorry|my\s+bad|oops|whoops)\b/i,
+  /^(never\s*mind|nvm|forget\s*it|cancel)\b/i,
 ];
 
 /** Quick-match patterns that almost certainly need orchestration (multi-step). */
@@ -120,12 +128,14 @@ export function isImmediateExecution(content: string): boolean {
   return IMMEDIATE_PATTERNS.some((p) => p.test(content));
 }
 
-/** Fast-path conversational check (no LLM needed). */
+const TASKY_VERBS = /^(fix|add|build|create|refactor|deploy|implement|update|change|remove|delete|install|configure|set\s*up|write|generate|migrate|upgrade)\b/i;
+
 export function isFastConversational(content: string): boolean {
   const trimmed = content.trim();
   const wordCount = trimmed.split(/\s+/).length;
-  if (wordCount <= 3 && CONVERSATIONAL_FAST.some((p) => p.test(trimmed))) return true;
-  if (wordCount <= 8 && CONVERSATIONAL_FAST.some((p) => p.test(trimmed))) return true;
+  if (TASKY_VERBS.test(trimmed)) return false;
+  if (wordCount <= 2 && CONVERSATIONAL_FAST.some((p) => p.test(trimmed))) return true;
+  if (wordCount <= 12 && CONVERSATIONAL_FAST.some((p) => p.test(trimmed))) return true;
   return false;
 }
 
@@ -147,15 +157,15 @@ export function isFastTask(content: string): boolean {
 /** Intent type returned by the 2-tier classifier. */
 export type IntentType = 'CHAT' | 'CHAT_ASYNC' | 'ORCHESTRATE';
 
-/** LLM-based intent classification for ambiguous messages. */
 export async function classifyIntent(
   client: AnthropicClient,
   model: string,
   message: string,
+  cheapModel?: string,
 ): Promise<IntentType> {
   try {
     const response = await client.createMessage({
-      model,
+      model: cheapModel || model,
       system: CLASSIFY_PROMPT,
       messages: [{ role: 'user', content: message }],
       maxTokens: 8,
@@ -296,9 +306,33 @@ export async function streamConversation(opts: {
   onText: (text: string, streaming: boolean, done: boolean) => void;
   onThinking?: (text: string, streaming: boolean, done: boolean) => void;
   maxToolRounds?: number;
+  maxInputTokens?: number;
 }): Promise<{ text: string; inputTokens: number; outputTokens: number; cacheCreationTokens: number; cacheReadTokens: number }> {
   const { client, model, systemPrompt, workspaceDir, onText, onThinking } = opts;
   let messages = [...opts.messages];
+
+  if (opts.maxInputTokens && messages.length > 2) {
+    let totalEstimate = Math.ceil(systemPrompt.length / 4);
+    for (const m of messages) {
+      const text = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
+      totalEstimate += Math.ceil(text.length / 4);
+    }
+    while (totalEstimate > opts.maxInputTokens && messages.length > 2) {
+      if (messages[0].role === 'user' && messages.length > 2 && messages[1].role === 'assistant') {
+        const r1 = messages.shift()!;
+        const r2 = messages.shift()!;
+        const t1 = typeof r1.content === 'string' ? r1.content : JSON.stringify(r1.content);
+        const t2 = typeof r2.content === 'string' ? r2.content : JSON.stringify(r2.content);
+        totalEstimate -= Math.ceil(t1.length / 4) + Math.ceil(t2.length / 4);
+        log.info('Token budget: trimmed user+assistant pair', { remaining: messages.length, estimatedTokens: totalEstimate });
+      } else {
+        const removed = messages.shift()!;
+        const removedText = typeof removed.content === 'string' ? removed.content : JSON.stringify(removed.content);
+        totalEstimate -= Math.ceil(removedText.length / 4);
+        log.info('Token budget: trimmed oldest message', { remaining: messages.length, estimatedTokens: totalEstimate });
+      }
+    }
+  }
   let fullText = '';
   let totalInputTokens = 0;
   let totalOutputTokens = 0;

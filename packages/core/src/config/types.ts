@@ -42,6 +42,8 @@ export interface OrionOmegaConfig {
     default: string;
     /** Model used for planning. */
     planner: string;
+    /** Lightweight model for cheap tasks (intent classification, loop judges). */
+    cheap: string;
     /** Profile → model name mapping for workers. */
     workers: Record<string, string>;
   };

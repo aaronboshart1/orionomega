@@ -54,6 +54,7 @@ export class Planner {
       availableSkills?: string[];
       workspaceFiles?: string[];
     },
+    preRecalledContext?: string,
   ): Promise<PlannerOutput> {
     const appConfig = readConfig();
     const apiKey = appConfig.models.apiKey;
@@ -66,7 +67,6 @@ export class Planner {
 
     const client = new AnthropicClient(apiKey);
 
-    // Discover available models dynamically — no hardcoded model names
     let discoveredModels: DiscoveredModel[] = [];
     try {
       discoveredModels = await discoverModels(apiKey);
@@ -74,41 +74,40 @@ export class Planner {
       log.warn('Model discovery failed — planner will use configured defaults');
     }
 
-    // Determine the default worker model (midweight, fallback to main agent model)
     const defaultWorkerModel = discoveredModels.length > 0
       ? (pickModelByTier(discoveredModels, 'sonnet')?.id ?? appConfig.models.default)
       : appConfig.models.default;
 
-    // Pre-planning context recall from Hindsight
-    // This prevents workers from wasting tokens discovering things we already know
-    let infraContext: string | undefined;
-    try {
-      const hindsightUrl = appConfig.hindsight?.url;
-      if (hindsightUrl) {
-        const { HindsightClient } = await import('@orionomega/hindsight');
-        const hsClient = new HindsightClient(hindsightUrl);
+    let infraContext: string | undefined = preRecalledContext;
+    if (!infraContext) {
+      try {
+        const hindsightUrl = appConfig.hindsight?.url;
+        if (hindsightUrl) {
+          const { HindsightClient } = await import('@orionomega/hindsight');
+          const hsClient = new HindsightClient(hindsightUrl);
 
-        const recalls = await Promise.allSettled([
-          hsClient.recall('infra', task, { maxTokens: 1024, budget: 'low' }),
-          hsClient.recall(appConfig.hindsight?.defaultBank ?? 'default', task, { maxTokens: 1024, budget: 'low' }),
-        ]);
+          const recalls = await Promise.allSettled([
+            hsClient.recall('infra', task, { maxTokens: 1024, budget: 'low' }),
+            hsClient.recall(appConfig.hindsight?.defaultBank ?? 'default', task, { maxTokens: 1024, budget: 'low' }),
+          ]);
 
-        const parts: string[] = [];
-        for (const r of recalls) {
-          if (r.status === 'fulfilled' && r.value) {
-            const memories = r.value.results ?? [];
-            for (const m of memories) {
-              if (m.content) parts.push(m.content);
+          const parts: string[] = [];
+          for (const r of recalls) {
+            if (r.status === 'fulfilled' && r.value) {
+              const memories = r.value.results ?? [];
+              for (const m of memories) {
+                if (m.content) parts.push(m.content);
+              }
             }
           }
+          if (parts.length > 0) {
+            infraContext = parts.join('\n');
+            log.debug(`Pre-planning context: ${parts.length} memories, ${infraContext.length} chars`);
+          }
         }
-        if (parts.length > 0) {
-          infraContext = parts.join('\n');
-          log.debug(`Pre-planning context: ${parts.length} memories, ${infraContext.length} chars`);
-        }
+      } catch (err) {
+        log.debug(`Pre-planning recall failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
       }
-    } catch (err) {
-      log.debug(`Pre-planning recall failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
     }
 
     const systemPrompt = this.buildPlannerPrompt(task, context, discoveredModels, appConfig.models.default, infraContext);

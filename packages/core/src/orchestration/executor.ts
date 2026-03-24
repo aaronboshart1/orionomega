@@ -395,14 +395,21 @@ export class GraphExecutor {
         if (node.type === 'AGENT' && node.agent?.task) {
           const contextParts: string[] = [];
 
-          // 1. Upstream worker outputs (from dependencies)
+          // 1. Upstream worker outputs (from dependencies) — compressed if large
           if (node.dependsOn.length > 0) {
             const upstreamOutputs: string[] = [];
             for (const depId of node.dependsOn) {
               const depOutput = this.state.getNodeOutput(depId);
               const depNode = this.graph.nodes.get(depId);
               if (depOutput && typeof depOutput === 'string') {
-                upstreamOutputs.push(`### ${depNode?.label ?? depId}\n${depOutput}`);
+                const label = depNode?.label ?? depId;
+                const estimatedTokens = Math.ceil(depOutput.length / 4);
+                if (estimatedTokens > 2000) {
+                  const compressed = await this.compressOutput(label, depOutput);
+                  upstreamOutputs.push(`### ${label} (compressed)\n${compressed}`);
+                } else {
+                  upstreamOutputs.push(`### ${label}\n${depOutput}`);
+                }
               }
             }
             if (upstreamOutputs.length > 0) {
@@ -705,11 +712,11 @@ export class GraphExecutor {
           const apiKey = config.models?.apiKey;
           if (!apiKey) return !failed;
 
-          // Use a lightweight model for judging
+          const cheapModel = config.models?.cheap || 'claude-haiku-4-5-20251001';
           const { AnthropicClient } = await import('../anthropic/client.js');
           const client = new AnthropicClient(apiKey);
           const response = await client.createMessage({
-            model: 'claude-haiku-4-5-20251001',
+            model: cheapModel,
             messages: [{
               role: 'user',
               content: `${condition.judgePrompt}\n\n## Loop Output (iteration ${iteration}):\n${output}\n\nRespond with ONLY "CONTINUE" or "EXIT".`,
@@ -873,6 +880,39 @@ export class GraphExecutor {
    * Queries the infra bank (always), default bank, and any project-* bank
    * that seems relevant to the task keywords.
    */
+  private async compressOutput(label: string, output: string): Promise<string> {
+    try {
+      const config = readConfig();
+      const apiKey = config.models?.apiKey;
+      if (!apiKey) return output.slice(0, 4000) + '\n... [truncated — no API key for compression]';
+
+      const cheapModel = config.models?.cheap || 'claude-haiku-4-5-20251001';
+      const { AnthropicClient } = await import('../anthropic/client.js');
+      const client = new AnthropicClient(apiKey);
+      const response = await client.createMessage({
+        model: cheapModel,
+        system: 'You are a concise summarizer. Compress the following worker output into key findings, decisions, and data points. Preserve all actionable information, file paths, URLs, code snippets, and specific values. Remove verbose logging, repeated information, and filler text. Output ONLY the compressed summary.',
+        messages: [{ role: 'user', content: `Worker "${label}" produced the following output:\n\n${output}` }],
+        maxTokens: 2048,
+        temperature: 0,
+      });
+
+      const summary = response.content
+        .filter((b) => b.type === 'text')
+        .map((b) => b.text ?? '')
+        .join('')
+        .trim();
+
+      log.info(`Compressed upstream output "${label}": ${output.length} chars → ${summary.length} chars`);
+      return summary || output.slice(0, 4000);
+    } catch (err) {
+      log.warn(`Failed to compress output "${label}", truncating`, {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return output.slice(0, 4000) + '\n... [truncated]';
+    }
+  }
+
   private async recallContext(task: string): Promise<string | undefined> {
     try {
       const config = readConfig();

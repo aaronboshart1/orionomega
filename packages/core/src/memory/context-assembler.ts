@@ -54,7 +54,7 @@ export interface ContextAssemblerConfig {
   persistPath?: string;
 }
 
-const DEFAULT_HOT_WINDOW = 20;
+const DEFAULT_HOT_WINDOW = 6;
 const DEFAULT_RECALL_BUDGET = 30_000;
 const DEFAULT_MAX_TURN_TOKENS = 60_000;
 const DEFAULT_SYSTEM_PROMPT_TOKENS = 4_000;

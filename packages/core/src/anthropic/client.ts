@@ -263,7 +263,6 @@ export class AnthropicClient {
       stream,
     };
 
-    // System prompt with cache_control for prompt caching
     if (options.system) {
       body.system = [
         {
@@ -274,16 +273,29 @@ export class AnthropicClient {
       ];
     }
 
-    // Tools with cache_control on the last tool definition
     if (options.tools && options.tools.length > 0) {
       const tools = options.tools.map((t, i) => {
         if (i === options.tools!.length - 1) {
-          // Cache breakpoint on the last tool — caches the entire tools block
           return { ...t, cache_control: { type: 'ephemeral' } };
         }
         return t;
       });
       body.tools = tools;
+    }
+
+    if (Array.isArray(options.messages) && options.messages.length >= 2) {
+      const msgs = options.messages.map((m, i) => {
+        if (i === options.messages.length - 2 && typeof m.content === 'string') {
+          return {
+            ...m,
+            content: [
+              { type: 'text', text: m.content, cache_control: { type: 'ephemeral' } },
+            ],
+          };
+        }
+        return m;
+      });
+      body.messages = msgs;
     }
 
     if (options.temperature !== undefined) body.temperature = options.temperature;
@@ -307,6 +319,7 @@ export class AnthropicClient {
           headers: {
             'x-api-key': this.apiKey,
             'anthropic-version': API_VERSION,
+            'anthropic-beta': 'prompt-caching-2024-07-31',
             'content-type': 'application/json',
           },
           body: JSON.stringify(body),
