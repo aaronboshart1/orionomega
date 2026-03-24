@@ -15,6 +15,7 @@ const nodeStatusIcon: Record<string, React.ReactNode> = {
   done: <CheckCircle2 size={12} className="text-green-400" />,
   error: <XCircle size={12} className="text-red-400" />,
   skipped: <Circle size={12} className="text-zinc-600" />,
+  cancelled: <XCircle size={12} className="text-zinc-400" />,
 };
 
 function NodeRow({ node }: { node: InlineDAGNode }) {

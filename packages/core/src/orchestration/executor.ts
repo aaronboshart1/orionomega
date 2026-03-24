@@ -59,6 +59,7 @@ export class GraphExecutor {
   private status: WorkflowStatus = 'planned';
   private readonly startedAt: string;
   private readonly activeWorkers = new Map<string, WorkerProcess>();
+  private readonly activeCodingAborts = new Map<string, AbortController>();
   private readonly nodeResults = new Map<string, WorkerResult>();
   private readonly nodeErrors = new Map<string, string>();
   private readonly skippedNodes = new Set<string>();
@@ -113,9 +114,14 @@ export class GraphExecutor {
 
     try {
       for (let layerIdx = 0; layerIdx < this.graph.layers.length; layerIdx++) {
-        // Check stop before each layer
         if (this.stopRequested) {
           this.status = 'stopped';
+          for (let futureIdx = layerIdx; futureIdx < this.graph.layers.length; futureIdx++) {
+            for (const nid of this.graph.layers[futureIdx]) {
+              const n = this.graph.nodes.get(nid);
+              if (n && n.status === 'pending') n.status = 'cancelled';
+            }
+          }
           log.info('Workflow stopped by user');
           return this.buildResult('stopped', startTime);
         }
@@ -167,11 +173,22 @@ export class GraphExecutor {
             const errorMsg = result.reason instanceof Error
               ? result.reason.message
               : String(result.reason);
-            node.status = 'error';
-            node.error = errorMsg;
-            this.nodeErrors.set(nodeId, errorMsg);
-            this.errors.push({ worker: nodeId, message: errorMsg });
-            log.warn(`Node '${nodeId}' failed: ${errorMsg}`);
+
+            const isAbort = this.stopRequested &&
+              (result.reason?.name === 'AbortError' ||
+               errorMsg.includes('aborted') ||
+               errorMsg.includes('abort'));
+
+            if (isAbort) {
+              node.status = 'cancelled';
+              log.info(`Node '${nodeId}' cancelled by stop`);
+            } else {
+              node.status = 'error';
+              node.error = errorMsg;
+              this.nodeErrors.set(nodeId, errorMsg);
+              this.errors.push({ worker: nodeId, message: errorMsg });
+              log.warn(`Node '${nodeId}' failed: ${errorMsg}`);
+            }
           }
         }
 
@@ -240,14 +257,24 @@ export class GraphExecutor {
   }
 
   /**
-   * Requests the executor to stop. Active workers are allowed to finish,
-   * then partial results are returned.
+   * Requests the executor to stop. All active workers are cancelled immediately
+   * via AbortController to terminate in-flight API calls and prevent further costs.
    */
   stop(): void {
     this.stopRequested = true;
-    // Also resume if paused, so the loop can exit
+
+    for (const [id, worker] of this.activeWorkers) {
+      log.info(`Cancelling active worker '${id}'`);
+      worker.cancel();
+    }
+
+    for (const [id, controller] of this.activeCodingAborts) {
+      log.info(`Aborting coding agent '${id}'`);
+      controller.abort();
+    }
+
     this.resume();
-    log.info('Stop requested');
+    log.info('Stop requested — all active workers cancelled');
   }
 
   /**
@@ -491,54 +518,61 @@ export class GraphExecutor {
           },
         };
 
+        const codingAbort = new AbortController();
+        this.activeCodingAborts.set(node.id, codingAbort);
+
         const startMs = Date.now();
-        const codingResult = await executeCodingAgent(
-          codingNode,
-          codingOutputDir,
-          (event) => {
-            const typeMap: Record<string, string> = {
-              'status': 'status', 'tool': 'tool_call', 'thinking': 'thinking', 'done': 'done', 'error': 'error',
-            };
-            const eventType = (typeMap[event.type] ?? 'status') as WorkerEvent['type'];
-
-            // Extract tool info for tool_call events
-            let tool: WorkerEvent['tool'];
-            if (eventType === 'tool_call' && event.message) {
-              const toolName = event.message.split(':')[0].trim();
-              const afterColon = event.message.includes(':')
-                ? event.message.split(':').slice(1).join(':').trim()
-                : '';
-              const fileMatch = afterColon.match(/((?:\.?\/?)?[\w.\-/@]+\.[\w]+)/);
-              tool = {
-                name: toolName,
-                action: toolName,
-                file: fileMatch?.[1],
-                summary: event.message,
+        try {
+          const codingResult = await executeCodingAgent(
+            codingNode,
+            codingOutputDir,
+            (event) => {
+              const typeMap: Record<string, string> = {
+                'status': 'status', 'tool': 'tool_call', 'thinking': 'thinking', 'done': 'done', 'error': 'error',
               };
-            }
+              const eventType = (typeMap[event.type] ?? 'status') as WorkerEvent['type'];
 
-            this.eventBus.emit({
-              workflowId: this.graph.id,
-              workerId: node.id,
-              nodeId: node.id,
-              timestamp: new Date().toISOString(),
-              type: eventType,
-              message: event.message,
-              thinking: event.thinking,
-              progress: event.progress ?? 0,
-              tool,
-            });
-          },
-        );
+              let tool: WorkerEvent['tool'];
+              if (eventType === 'tool_call' && event.message) {
+                const toolName = event.message.split(':')[0].trim();
+                const afterColon = event.message.includes(':')
+                  ? event.message.split(':').slice(1).join(':').trim()
+                  : '';
+                const fileMatch = afterColon.match(/((?:\.?\/?)?[\w.\-/@]+\.[\w]+)/);
+                tool = {
+                  name: toolName,
+                  action: toolName,
+                  file: fileMatch?.[1],
+                  summary: event.message,
+                };
+              }
 
-        return {
-          nodeId: node.id,
-          output: codingResult.output,
-          durationMs: Date.now() - startMs,
-          toolCallCount: codingResult.toolCalls,
-          findings: [],
-          outputPaths: [],
-        };
+              this.eventBus.emit({
+                workflowId: this.graph.id,
+                workerId: node.id,
+                nodeId: node.id,
+                timestamp: new Date().toISOString(),
+                type: eventType,
+                message: event.message,
+                thinking: event.thinking,
+                progress: event.progress ?? 0,
+                tool,
+              });
+            },
+            codingAbort.signal,
+          );
+
+          return {
+            nodeId: node.id,
+            output: codingResult.output,
+            durationMs: Date.now() - startMs,
+            toolCallCount: codingResult.toolCalls,
+            findings: [],
+            outputPaths: [],
+          };
+        } finally {
+          this.activeCodingAborts.delete(node.id);
+        }
       }
 
       case 'ROUTER':

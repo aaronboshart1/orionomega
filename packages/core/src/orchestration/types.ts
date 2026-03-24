@@ -15,7 +15,8 @@ export type NodeStatus =
   | 'running'
   | 'done'
   | 'error'
-  | 'skipped';
+  | 'skipped'
+  | 'cancelled';
 
 /** Overall status of a workflow execution. */
 export type WorkflowStatus =
