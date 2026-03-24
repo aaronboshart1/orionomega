@@ -285,13 +285,20 @@ export class AnthropicClient {
 
     if (Array.isArray(options.messages) && options.messages.length >= 2) {
       const msgs = options.messages.map((m, i) => {
-        if (i === options.messages.length - 2 && typeof m.content === 'string') {
+        if (i !== options.messages.length - 2) return m;
+        if (typeof m.content === 'string') {
           return {
             ...m,
             content: [
               { type: 'text', text: m.content, cache_control: { type: 'ephemeral' } },
             ],
           };
+        }
+        if (Array.isArray(m.content) && m.content.length > 0) {
+          const blocks = [...m.content];
+          const last = { ...blocks[blocks.length - 1], cache_control: { type: 'ephemeral' } };
+          blocks[blocks.length - 1] = last;
+          return { ...m, content: blocks };
         }
         return m;
       });

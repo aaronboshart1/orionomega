@@ -326,12 +326,12 @@ export async function streamConversation(opts: {
         const t1 = typeof r1.content === 'string' ? r1.content : JSON.stringify(r1.content);
         const t2 = typeof r2.content === 'string' ? r2.content : JSON.stringify(r2.content);
         totalEstimate -= Math.ceil(t1.length / 4) + Math.ceil(t2.length / 4);
-        log.info('Token budget: trimmed user+assistant pair', { remaining: messages.length, estimatedTokens: totalEstimate });
+        log.warn('Token budget: trimmed user+assistant pair', { remaining: messages.length, estimatedTokens: totalEstimate });
       } else {
         const removed = messages.shift()!;
         const removedText = typeof removed.content === 'string' ? removed.content : JSON.stringify(removed.content);
         totalEstimate -= Math.ceil(removedText.length / 4);
-        log.info('Token budget: trimmed oldest message', { remaining: messages.length, estimatedTokens: totalEstimate });
+        log.warn('Token budget: trimmed oldest message', { remaining: messages.length, estimatedTokens: totalEstimate });
       }
     }
   }
