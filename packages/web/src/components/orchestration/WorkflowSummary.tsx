@@ -77,8 +77,9 @@ export function WorkflowSummary() {
   const inlineDAGs = useOrchestrationStore((s) => s.inlineDAGs);
 
   const completedDAG = useMemo(() => {
-    const dags = Object.values(inlineDAGs);
-    return dags.find((d) => (d.status === 'complete' || d.status === 'error') && (d.modelUsage || d.totalCostUsd !== undefined));
+    const completed = Object.values(inlineDAGs)
+      .filter((d) => (d.status === 'complete' || d.status === 'error') && (d.modelUsage || d.totalCostUsd !== undefined));
+    return completed.length > 0 ? completed[completed.length - 1] : undefined;
   }, [inlineDAGs]);
 
   const stats = useMemo(() => {

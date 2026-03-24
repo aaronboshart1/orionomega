@@ -160,12 +160,13 @@ export class ChatLog extends Container {
 
     lines.push(rule);
 
-    this.addChild(new Spacer(1));
+    const container = new Container();
+    container.addChild(new Spacer(1));
     for (const line of lines) {
-      const t = new Text(line, spacing.componentMarginX, 0);
-      this.addChild(t);
+      container.addChild(new Text(line, spacing.componentMarginX, 0));
     }
-    this.entries.push({ component: new Text('', 0, 0), role: 'system' });
+    this.addChild(container);
+    this.entries.push({ component: container, role: 'system' });
     this.lastRole = 'system';
     this.pruneOverflow();
   }
