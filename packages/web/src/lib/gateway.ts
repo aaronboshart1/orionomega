@@ -88,6 +88,7 @@ export function useGateway(url: string = defaultGatewayUrl()) {
               workerCount: c.workerCount,
               totalCostUsd: c.totalCostUsd,
               modelUsage: c.modelUsage,
+              stopped: c.status === 'stopped',
             },
           );
           chatStore.addMessage({

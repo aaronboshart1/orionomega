@@ -45,7 +45,7 @@ export interface PlanData {
   graph: { nodes: Record<string, GraphNode> };
 }
 
-export type InlineDAGStatus = 'dispatched' | 'running' | 'complete' | 'error';
+export type InlineDAGStatus = 'dispatched' | 'running' | 'complete' | 'error' | 'stopped';
 
 export interface InlineDAGNode {
   id: string;
@@ -102,7 +102,7 @@ interface OrchestrationStore {
   selectWorker: (id: string | null) => void;
   upsertInlineDAG: (dag: InlineDAG) => void;
   updateDAGNode: (dagId: string, nodeId: string, update: Partial<InlineDAGNode>) => void;
-  completeDAG: (dagId: string, result?: string, error?: string, stats?: { durationSec?: number; workerCount?: number; totalCostUsd?: number; modelUsage?: ModelUsageEntry[] }) => void;
+  completeDAG: (dagId: string, result?: string, error?: string, stats?: { durationSec?: number; workerCount?: number; totalCostUsd?: number; modelUsage?: ModelUsageEntry[]; stopped?: boolean }) => void;
   removeInlineDAG: (dagId: string) => void;
   setPendingConfirmation: (c: DAGConfirmation | null) => void;
   reset: () => void;
@@ -142,12 +142,13 @@ export const useOrchestrationStore = create<OrchestrationStore>((set) => ({
     set((s) => {
       const dag = s.inlineDAGs[dagId];
       if (!dag) return s;
+      const terminalStatus: InlineDAGStatus = error ? 'error' : (stats?.stopped ? 'stopped' : 'complete');
       return {
         inlineDAGs: {
           ...s.inlineDAGs,
           [dagId]: {
             ...dag,
-            status: error ? 'error' : 'complete',
+            status: terminalStatus,
             result,
             error,
             completedCount: dag.totalCount,

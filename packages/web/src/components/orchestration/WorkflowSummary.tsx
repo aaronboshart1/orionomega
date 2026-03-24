@@ -77,9 +77,9 @@ export function WorkflowSummary() {
   const inlineDAGs = useOrchestrationStore((s) => s.inlineDAGs);
 
   const completedDAG = useMemo(() => {
-    const completed = Object.values(inlineDAGs)
-      .filter((d) => (d.status === 'complete' || d.status === 'error') && (d.modelUsage || d.totalCostUsd !== undefined));
-    return completed.length > 0 ? completed[completed.length - 1] : undefined;
+    const terminal = Object.values(inlineDAGs)
+      .filter((d) => (d.status === 'complete' || d.status === 'error' || d.status === 'stopped') && (d.modelUsage || d.totalCostUsd !== undefined));
+    return terminal.length > 0 ? terminal[terminal.length - 1] : undefined;
   }, [inlineDAGs]);
 
   const stats = useMemo(() => {
@@ -102,7 +102,8 @@ export function WorkflowSummary() {
     );
   }
 
-  if (completedDAG && (!graphState || graphState.status === 'complete' || graphState.status === 'error' || graphState.status === 'stopped')) {
+  const isGraphTerminal = !graphState || graphState.status === 'complete' || graphState.status === 'error' || graphState.status === 'stopped';
+  if (completedDAG && isGraphTerminal) {
     const badge = statusBadge[completedDAG.status] || statusBadge.complete;
     return (
       <div className="h-full overflow-y-auto px-6 py-3">

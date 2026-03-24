@@ -57,6 +57,8 @@ export function InlineDAGCard({ dag }: InlineDAGCardProps) {
   const isActive = dag.status === 'dispatched' || dag.status === 'running';
   const isDone = dag.status === 'complete';
   const isError = dag.status === 'error';
+  const isStopped = dag.status === 'stopped';
+  const isTerminal = isDone || isError || isStopped;
 
   const progressPct = dag.totalCount > 0
     ? Math.round((dag.completedCount / dag.totalCount) * 100)
@@ -68,13 +70,16 @@ export function InlineDAGCard({ dag }: InlineDAGCardProps) {
         ? 'border-blue-500/30 bg-zinc-800/80'
         : isDone
           ? 'border-green-500/20 bg-zinc-800/60'
-          : 'border-red-500/20 bg-zinc-800/60'
+          : isError
+            ? 'border-red-500/20 bg-zinc-800/60'
+            : 'border-zinc-500/20 bg-zinc-800/60'
     }`}>
       {/* Header row */}
       <div className="flex items-center gap-2">
         {isActive && <OmegaSpinner size={4} gap={1} interval={180} />}
         {isDone && <CheckCircle2 size={14} className="text-green-400" />}
         {isError && <XCircle size={14} className="text-red-400" />}
+        {isStopped && <Circle size={14} className="text-zinc-400" />}
 
         <span className="flex-1 text-xs font-medium text-zinc-200">
           {dag.summary}
@@ -123,7 +128,7 @@ export function InlineDAGCard({ dag }: InlineDAGCardProps) {
       )}
 
       {/* Run Stats */}
-      {(isDone || isError) && (dag.modelUsage || dag.totalCostUsd !== undefined) && (
+      {isTerminal && (dag.modelUsage || dag.totalCostUsd !== undefined) && (
         <RunStats dag={dag} />
       )}
 
