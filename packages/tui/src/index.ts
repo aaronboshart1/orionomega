@@ -40,7 +40,7 @@ const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/workers', description: 'List active workers' },
   { name: '/skills', description: 'View, enable/disable, configure skills' },
   { name: '/focus', description: 'Focus a workflow by ID (or /focus to show all)' },
-  { name: '/hindsight', description: 'Show Hindsight memory system status' },
+  { name: '/hindsight', description: 'Show Hindsight memory status and troubleshooting' },
   { name: '/exit', description: 'Exit the TUI' },
 ];
 
@@ -72,6 +72,7 @@ function defaultModel(): string {
     return '';
   }
 }
+
 
 const SESSION_FILE = join(homedir(), '.orionomega', '.session');
 
@@ -551,6 +552,7 @@ export async function start(): Promise<void> {
           chalk.hex(palette.text)('    2. Check Docker: docker ps'),
           chalk.hex(palette.text)('    3. macOS: colima status'),
           chalk.hex(palette.text)('    4. Start manually: docker start hindsight'),
+          chalk.hex(palette.text)(`    5. Verify: curl ${hsUrl}/health`),
           '',
         );
       }
