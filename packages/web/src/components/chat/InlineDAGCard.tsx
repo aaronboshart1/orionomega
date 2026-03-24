@@ -173,25 +173,31 @@ function RunStats({ dag }: { dag: InlineDAG }) {
 
       {hasModels && (
         <div className="mt-1.5 space-y-0.5">
-          <div className="grid grid-cols-[1fr_3.5rem_3.5rem_3.5rem] gap-1 text-[9px] text-zinc-600">
+          <div className="grid grid-cols-[1fr_3rem_3rem_3rem_3rem_3.5rem] gap-1 text-[9px] text-zinc-600">
             <span>Model</span>
             <span className="text-right">Input</span>
             <span className="text-right">Output</span>
+            <span className="text-right">Cache R</span>
+            <span className="text-right">Cache W</span>
             <span className="text-right">Cost</span>
           </div>
           {dag.modelUsage!.map((m) => (
-            <div key={m.model} className="grid grid-cols-[1fr_3.5rem_3.5rem_3.5rem] gap-1 text-[10px]">
+            <div key={m.model} className="grid grid-cols-[1fr_3rem_3rem_3rem_3rem_3.5rem] gap-1 text-[10px]">
               <span className="truncate text-purple-400">{m.model}</span>
               <span className="text-right text-zinc-400">{fmtTokens(m.inputTokens)}</span>
               <span className="text-right text-zinc-400">{fmtTokens(m.outputTokens)}</span>
+              <span className="text-right text-zinc-500">{fmtTokens(m.cacheReadTokens)}</span>
+              <span className="text-right text-zinc-500">{fmtTokens(m.cacheCreationTokens)}</span>
               <span className="text-right text-zinc-300">${m.costUsd.toFixed(4)}</span>
             </div>
           ))}
           {totals && (
-            <div className="grid grid-cols-[1fr_3.5rem_3.5rem_3.5rem] gap-1 border-t border-zinc-700/30 pt-0.5 text-[10px] font-medium">
+            <div className="grid grid-cols-[1fr_3rem_3rem_3rem_3rem_3.5rem] gap-1 border-t border-zinc-700/30 pt-0.5 text-[10px] font-medium">
               <span className="text-zinc-400">Total</span>
               <span className="text-right text-zinc-300">{fmtTokens(totals.input)}</span>
               <span className="text-right text-zinc-300">{fmtTokens(totals.output)}</span>
+              <span className="text-right text-zinc-400">{fmtTokens(totals.cacheR)}</span>
+              <span className="text-right text-zinc-400">{fmtTokens(totals.cacheW)}</span>
               <span className="text-right text-green-400">${dag.totalCostUsd?.toFixed(4) ?? '0.0000'}</span>
             </div>
           )}
