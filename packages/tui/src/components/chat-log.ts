@@ -7,11 +7,11 @@
 import { Container, Markdown, Spacer, Text } from '@mariozechner/pi-tui';
 import type { Component } from '@mariozechner/pi-tui';
 import type { DisplayMessage } from '../gateway-client.js';
-import { markdownTheme, theme, spacing } from '../theme.js';
+import { markdownTheme, theme, spacing, palette, box } from '../theme.js';
 import { truncate } from '../utils/format.js';
 import { omegaSpinner } from './omega-spinner.js';
+import chalk from 'chalk';
 
-/** A rendered message component with metadata. */
 interface ChatEntry {
   component: Component;
   role: 'user' | 'assistant' | 'system';
@@ -25,10 +25,13 @@ export class ChatLog extends Container {
   private readonly maxEntries: number;
   private entries: ChatEntry[] = [];
   private streamingComponent: Markdown | null = null;
+  private streamingLabel: Text | null = null;
   private thinkingComponent: Text | null = null;
   private thinkingText = '';
   private unsubSpinner: (() => void) | null = null;
-  /** Wire this to tui.requestRender() for spinner-driven re-renders. */
+  private lastRole: 'user' | 'assistant' | 'system' | null = null;
+  private lastUserMessage: string | null = null;
+  private pendingUserMessages: string[] = [];
   onUpdate?: () => void;
 
   constructor(maxEntries = 200) {
@@ -36,64 +39,138 @@ export class ChatLog extends Container {
     this.maxEntries = maxEntries;
   }
 
-  /** Add a completed message to the log. */
-  addMessage(msg: DisplayMessage): void {
-    // Spacer between messages
-    const spacer = new Spacer(1);
-    this.addChild(spacer);
+  private addDivider(): void {
+    const rule = chalk.hex(palette.border)(box.horizontal.repeat(70));
+    const divider = new Text(rule, spacing.componentMarginX, 0);
+    this.addChild(divider);
+  }
 
+  private addContextReference(userMsg: string): void {
+    const truncMsg = truncate(userMsg, 60);
+    const ref = new Text(
+      chalk.hex(palette.dim)(`  ↳ re: "${truncMsg}"`),
+      spacing.componentMarginX,
+      0,
+    );
+    this.addChild(ref);
+  }
+
+  addMessage(msg: DisplayMessage): void {
     if (msg.role === 'user') {
-      const label = new Text(theme.userLabel() + spacing.labelGap + theme.user(msg.content), spacing.componentMarginX, spacing.componentMarginY);
+      if (this.lastRole !== null) {
+        this.addChild(new Spacer(1));
+        this.addDivider();
+      }
+      this.addChild(new Spacer(1));
+
+      const label = new Text(
+        theme.userLabel() + spacing.labelGap + theme.user(msg.content),
+        spacing.componentMarginX,
+        spacing.componentMarginY,
+      );
       this.addChild(label);
       this.entries.push({ component: label, role: 'user' });
+
+      this.lastUserMessage = msg.content;
+      this.pendingUserMessages.push(msg.content);
+      this.lastRole = 'user';
     } else if (msg.raw) {
-      // Pre-formatted ANSI content — render each line as a Text component
+      this.addChild(new Spacer(1));
       const rawLines = msg.raw.split('\n');
       for (const line of rawLines) {
         const t = new Text(line, spacing.componentMarginX, spacing.componentMarginY);
         this.addChild(t);
       }
       this.entries.push({ component: new Text('', 0, 0), role: 'system' });
+      this.lastRole = 'system';
     } else if (msg.role === 'system') {
+      this.addChild(new Spacer(1));
       const prefix = msg.emoji ? `${msg.emoji} ` : '';
-      const text = new Text(theme.system(prefix + msg.content), spacing.componentMarginX, spacing.componentMarginY);
+      const text = new Text(
+        theme.system(prefix + msg.content),
+        spacing.componentMarginX,
+        spacing.componentMarginY,
+      );
       this.addChild(text);
       this.entries.push({ component: text, role: 'system' });
+      this.lastRole = 'system';
     } else {
-      // Assistant — render as markdown
-      const label = new Text(theme.assistantLabel(), spacing.componentMarginX, spacing.componentMarginY);
+      const needsContext = this.lastRole !== 'user' && this.pendingUserMessages.length > 0;
+
+      this.addChild(new Spacer(1));
+
+      const label = new Text(
+        theme.assistantLabel(),
+        spacing.componentMarginX,
+        spacing.componentMarginY,
+      );
       this.addChild(label);
-      const md = new Markdown(msg.content, spacing.componentMarginX, spacing.componentMarginY, markdownTheme);
+
+      if (needsContext) {
+        const refMsg = this.pendingUserMessages.shift() ?? this.lastUserMessage;
+        if (refMsg) {
+          this.addContextReference(refMsg);
+        }
+      } else {
+        this.pendingUserMessages.shift();
+      }
+
+      const md = new Markdown(
+        msg.content,
+        spacing.componentMarginX,
+        spacing.componentMarginY,
+        markdownTheme,
+      );
       this.addChild(md);
       this.entries.push({ component: md, role: 'assistant' });
+      this.lastRole = 'assistant';
     }
 
     this.pruneOverflow();
   }
 
-  /** Start or update a streaming assistant message. */
   updateStreaming(content: string): void {
     if (!this.streamingComponent) {
-      const spacer = new Spacer(1);
-      this.addChild(spacer);
-      const label = new Text(theme.assistantLabel(), spacing.componentMarginX, spacing.componentMarginY);
-      this.addChild(label);
-      this.streamingComponent = new Markdown(content, spacing.componentMarginX, spacing.componentMarginY, markdownTheme);
+      const needsContext = this.lastRole !== 'user' && this.pendingUserMessages.length > 0;
+
+      this.addChild(new Spacer(1));
+      this.streamingLabel = new Text(
+        theme.assistantLabel(),
+        spacing.componentMarginX,
+        spacing.componentMarginY,
+      );
+      this.addChild(this.streamingLabel);
+
+      if (needsContext) {
+        const refMsg = this.pendingUserMessages[0] ?? this.lastUserMessage;
+        if (refMsg) {
+          this.addContextReference(refMsg);
+        }
+      }
+
+      this.streamingComponent = new Markdown(
+        content,
+        spacing.componentMarginX,
+        spacing.componentMarginY,
+        markdownTheme,
+      );
       this.addChild(this.streamingComponent);
     } else {
       this.streamingComponent.setText(content);
     }
   }
 
-  /** Finalize streaming — the message has been added via addMessage, remove streaming component. */
   clearStreaming(): void {
     if (this.streamingComponent) {
       this.removeChild(this.streamingComponent);
       this.streamingComponent = null;
     }
+    if (this.streamingLabel) {
+      this.removeChild(this.streamingLabel);
+      this.streamingLabel = null;
+    }
   }
 
-  /** Show a thinking indicator with animated omega spinner. */
   updateThinking(text: string): void {
     if (!text) {
       if (this.thinkingComponent) {
@@ -115,7 +192,6 @@ export class ChatLog extends Container {
     if (!this.thinkingComponent) {
       this.thinkingComponent = new Text(display, spacing.componentMarginX, spacing.componentMarginY);
       this.addChild(this.thinkingComponent);
-      // Subscribe to spinner ticks for animation
       this.unsubSpinner = omegaSpinner.subscribe(() => {
         if (this.thinkingComponent && this.thinkingText) {
           const t = truncate(this.thinkingText, 100);
@@ -128,17 +204,20 @@ export class ChatLog extends Container {
     }
   }
 
-  /** Clear all messages. */
   clearAll(): void {
     this.clear();
     this.entries = [];
     this.streamingComponent = null;
+    this.streamingLabel = null;
     if (this.unsubSpinner) {
       this.unsubSpinner();
       this.unsubSpinner = null;
     }
     this.thinkingComponent = null;
     this.thinkingText = '';
+    this.lastRole = null;
+    this.lastUserMessage = null;
+    this.pendingUserMessages = [];
   }
 
   private pruneOverflow(): void {
