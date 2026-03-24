@@ -49,7 +49,7 @@ export class LayerGroup extends Container {
 
     if (!this._collapsed) {
       for (const nd of this.nodeDisplays) {
-        try { this.removeChild(nd); } catch {}
+        this.removeChild(nd);
       }
     }
 

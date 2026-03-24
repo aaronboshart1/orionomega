@@ -409,90 +409,85 @@ export class WorkflowBox extends Container {
 
   // ── Rendering ──────────────────────────────────────────────────
 
+  private topSpacer = new Spacer(1);
+  private bottomSpacer = new Spacer(1);
+  private findingsSpacer = new Spacer(1);
+  private resultSpacer = new Spacer(1);
+  private resultHeader: Text | null = null;
+  private attachedChildren = new Set<Container | Text | Spacer>();
+
   /** Full rebuild of the component tree (children of this Container). */
   private rebuildStructure(): void {
-    // Detach all children
-    this.detachAll();
+    const desired: Array<Container | Text | Spacer> = [];
 
     if (!this._expanded) {
-      // Collapsed: show header + summary + footer
-      this.addChild(this.topBorder);
       this.updateTopBorder();
+      desired.push(this.topBorder);
 
       if (!this.summaryLine) this.summaryLine = new Text('', 1, 0);
       this.updateSummaryLine();
-      this.addChild(this.summaryLine);
+      desired.push(this.summaryLine);
 
-      this.addChild(this.bottomBorder);
       this.updateBottomBorder();
-      return;
+      desired.push(this.bottomBorder);
+    } else {
+      this.updateTopBorder();
+      desired.push(this.topBorder);
+      desired.push(this.topSpacer);
+
+      const sortedLayers = [...this.layerGroups.entries()].sort((a, b) => a[0] - b[0]);
+      for (const [, lg] of sortedLayers) {
+        desired.push(lg);
+      }
+
+      if (this.workflowStatus === 'complete' || this.workflowStatus === 'error' || this.workflowStatus === 'stopped') {
+        const allFindings = this.collectFindings();
+        if (allFindings.length > 0) {
+          desired.push(this.findingsSpacer);
+          if (!this.findingsText) this.findingsText = new Text('', 1, 0);
+          const findingLines = [
+            `${spacing.indent2}${chalk.hex(palette.accent)(icons.finding)} ${chalk.hex(palette.accent)('Findings:')}`,
+            ...allFindings.map(f =>
+              `${spacing.indent3}${chalk.hex(palette.dim)('\u2022')} ${chalk.hex(palette.text)(f)}`,
+            ),
+          ];
+          this.findingsText.setText(findingLines.join('\n'));
+          desired.push(this.findingsText);
+        }
+      }
+
+      if (this.resultText) {
+        desired.push(this.resultSpacer);
+        if (!this.resultHeader) {
+          this.resultHeader = new Text(
+            `${spacing.indent2}${chalk.hex(palette.info)(icons.worker)} ${chalk.hex(palette.info)('Result:')}`,
+            1, 0,
+          );
+        }
+        desired.push(this.resultHeader);
+        desired.push(this.resultText);
+      }
+
+      desired.push(this.bottomSpacer);
+      this.updateBottomBorder();
+      desired.push(this.bottomBorder);
     }
 
-    // Expanded: full display
-    this.addChild(this.topBorder);
-    this.updateTopBorder();
+    const desiredSet = new Set(desired);
 
-    // Spacer after top border
-    this.addChild(new Spacer(1));
-
-    // Layer groups in order
-    const sortedLayers = [...this.layerGroups.entries()].sort((a, b) => a[0] - b[0]);
-    for (const [, lg] of sortedLayers) {
-      this.addChild(lg);
-    }
-
-    // Findings section (on completion)
-    if (this.workflowStatus === 'complete' || this.workflowStatus === 'error' || this.workflowStatus === 'stopped') {
-      const allFindings = this.collectFindings();
-      if (allFindings.length > 0) {
-        this.addChild(new Spacer(1));
-        if (!this.findingsText) this.findingsText = new Text('', 1, 0);
-        const findingLines = [
-          `${spacing.indent2}${chalk.hex(palette.accent)(icons.finding)} ${chalk.hex(palette.accent)('Findings:')}`,
-          ...allFindings.map(f =>
-            `${spacing.indent3}${chalk.hex(palette.dim)('\u2022')} ${chalk.hex(palette.text)(f)}`,
-          ),
-        ];
-        this.findingsText.setText(findingLines.join('\n'));
-        this.addChild(this.findingsText);
+    for (const child of [...this.attachedChildren]) {
+      if (!desiredSet.has(child)) {
+        this.removeChild(child);
+        this.attachedChildren.delete(child);
       }
     }
 
-    // Result section (workflow output rendered inside the box)
-    if (this.resultText) {
-      this.addChild(new Spacer(1));
-      const resultHeader = new Text(
-        `${spacing.indent2}${chalk.hex(palette.info)(icons.worker)} ${chalk.hex(palette.info)('Result:')}`,
-        1, 0,
-      );
-      this.addChild(resultHeader);
-      this.addChild(this.resultText);
-    }
-
-    // Spacer before bottom border
-    this.addChild(new Spacer(1));
-
-    this.addChild(this.bottomBorder);
-    this.updateBottomBorder();
-  }
-
-  /** Detach all children without destroying them. */
-  private detachAll(): void {
-    // Remove top/bottom borders
-    try { this.removeChild(this.topBorder); } catch {}
-    try { this.removeChild(this.bottomBorder); } catch {}
-    if (this.summaryLine) try { this.removeChild(this.summaryLine); } catch {}
-    if (this.findingsText) try { this.removeChild(this.findingsText); } catch {}
-    if (this.statsText) try { this.removeChild(this.statsText); } catch {}
-    if (this.resultText) try { this.removeChild(this.resultText); } catch {}
-
-    // Remove layer groups
-    for (const lg of this.layerGroups.values()) {
-      try { this.removeChild(lg); } catch {}
-    }
-
-    // Remove any spacers (use clear for a fresh start, re-add persistent children)
     this.clear();
+    this.attachedChildren.clear();
+    for (const child of desired) {
+      this.addChild(child);
+      this.attachedChildren.add(child);
+    }
   }
 
   /** Update only border texts (without restructuring). */
