@@ -17,21 +17,18 @@ interface ChatEntry {
   role: 'user' | 'assistant' | 'system';
 }
 
-/**
- * Chat log that holds all messages and renders them as a scrollable document.
- * The container grows downward; pi-tui's differential renderer handles the viewport.
- */
 export class ChatLog extends Container {
   private readonly maxEntries: number;
   private entries: ChatEntry[] = [];
   private streamingComponent: Markdown | null = null;
   private streamingLabel: Text | null = null;
+  private streamingDivider: Text | null = null;
+  private streamingContext: Text | null = null;
   private thinkingComponent: Text | null = null;
   private thinkingText = '';
   private unsubSpinner: (() => void) | null = null;
   private lastRole: 'user' | 'assistant' | 'system' | null = null;
-  private lastUserMessage: string | null = null;
-  private pendingUserMessages: string[] = [];
+  private userMessages = new Map<string, string>();
   onUpdate?: () => void;
 
   constructor(maxEntries = 200) {
@@ -39,27 +36,33 @@ export class ChatLog extends Container {
     this.maxEntries = maxEntries;
   }
 
-  private addDivider(): void {
+  private makeDivider(): Text {
     const rule = chalk.hex(palette.border)(box.horizontal.repeat(70));
-    const divider = new Text(rule, spacing.componentMarginX, 0);
-    this.addChild(divider);
+    return new Text(rule, spacing.componentMarginX, 0);
   }
 
-  private addContextReference(userMsg: string): void {
-    const truncMsg = truncate(userMsg, 60);
-    const ref = new Text(
+  private makeContextRef(userContent: string): Text {
+    const truncMsg = truncate(userContent, 60);
+    return new Text(
       chalk.hex(palette.dim)(`  ↳ re: "${truncMsg}"`),
       spacing.componentMarginX,
       0,
     );
-    this.addChild(ref);
+  }
+
+  private resolveContext(msg: DisplayMessage): string | null {
+    if (msg.replyTo) {
+      const original = this.userMessages.get(msg.replyTo);
+      if (original) return original;
+    }
+    return null;
   }
 
   addMessage(msg: DisplayMessage): void {
     if (msg.role === 'user') {
       if (this.lastRole !== null) {
         this.addChild(new Spacer(1));
-        this.addDivider();
+        this.addChild(this.makeDivider());
       }
       this.addChild(new Spacer(1));
 
@@ -71,10 +74,14 @@ export class ChatLog extends Container {
       this.addChild(label);
       this.entries.push({ component: label, role: 'user' });
 
-      this.lastUserMessage = msg.content;
-      this.pendingUserMessages.push(msg.content);
+      this.userMessages.set(msg.id, msg.content);
       this.lastRole = 'user';
+
     } else if (msg.raw) {
+      if (this.lastRole === 'assistant') {
+        this.addChild(new Spacer(1));
+        this.addChild(this.makeDivider());
+      }
       this.addChild(new Spacer(1));
       const rawLines = msg.raw.split('\n');
       for (const line of rawLines) {
@@ -83,6 +90,7 @@ export class ChatLog extends Container {
       }
       this.entries.push({ component: new Text('', 0, 0), role: 'system' });
       this.lastRole = 'system';
+
     } else if (msg.role === 'system') {
       this.addChild(new Spacer(1));
       const prefix = msg.emoji ? `${msg.emoji} ` : '';
@@ -94,9 +102,12 @@ export class ChatLog extends Container {
       this.addChild(text);
       this.entries.push({ component: text, role: 'system' });
       this.lastRole = 'system';
-    } else {
-      const needsContext = this.lastRole !== 'user' && this.pendingUserMessages.length > 0;
 
+    } else {
+      if (this.lastRole === 'assistant') {
+        this.addChild(new Spacer(1));
+        this.addChild(this.makeDivider());
+      }
       this.addChild(new Spacer(1));
 
       const label = new Text(
@@ -106,13 +117,9 @@ export class ChatLog extends Container {
       );
       this.addChild(label);
 
-      if (needsContext) {
-        const refMsg = this.pendingUserMessages.shift() ?? this.lastUserMessage;
-        if (refMsg) {
-          this.addContextReference(refMsg);
-        }
-      } else {
-        this.pendingUserMessages.shift();
+      const context = this.resolveContext(msg);
+      if (context && this.lastRole !== 'user') {
+        this.addChild(this.makeContextRef(context));
       }
 
       const md = new Markdown(
@@ -131,7 +138,11 @@ export class ChatLog extends Container {
 
   updateStreaming(content: string): void {
     if (!this.streamingComponent) {
-      const needsContext = this.lastRole !== 'user' && this.pendingUserMessages.length > 0;
+      if (this.lastRole === 'assistant') {
+        this.streamingDivider = this.makeDivider();
+        this.addChild(new Spacer(1));
+        this.addChild(this.streamingDivider);
+      }
 
       this.addChild(new Spacer(1));
       this.streamingLabel = new Text(
@@ -140,13 +151,6 @@ export class ChatLog extends Container {
         spacing.componentMarginY,
       );
       this.addChild(this.streamingLabel);
-
-      if (needsContext) {
-        const refMsg = this.pendingUserMessages[0] ?? this.lastUserMessage;
-        if (refMsg) {
-          this.addContextReference(refMsg);
-        }
-      }
 
       this.streamingComponent = new Markdown(
         content,
@@ -168,6 +172,14 @@ export class ChatLog extends Container {
     if (this.streamingLabel) {
       this.removeChild(this.streamingLabel);
       this.streamingLabel = null;
+    }
+    if (this.streamingDivider) {
+      this.removeChild(this.streamingDivider);
+      this.streamingDivider = null;
+    }
+    if (this.streamingContext) {
+      this.removeChild(this.streamingContext);
+      this.streamingContext = null;
     }
   }
 
@@ -209,6 +221,8 @@ export class ChatLog extends Container {
     this.entries = [];
     this.streamingComponent = null;
     this.streamingLabel = null;
+    this.streamingDivider = null;
+    this.streamingContext = null;
     if (this.unsubSpinner) {
       this.unsubSpinner();
       this.unsubSpinner = null;
@@ -216,8 +230,7 @@ export class ChatLog extends Container {
     this.thinkingComponent = null;
     this.thinkingText = '';
     this.lastRole = null;
-    this.lastUserMessage = null;
-    this.pendingUserMessages = [];
+    this.userMessages.clear();
   }
 
   private pruneOverflow(): void {

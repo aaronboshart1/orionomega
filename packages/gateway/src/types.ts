@@ -41,12 +41,12 @@ export interface ServerMessage {
   type:
     | 'text' | 'thinking' | 'plan' | 'event' | 'status'
     | 'command_result' | 'session_status' | 'error' | 'ack' | 'history'
-    // New DAG lifecycle message types
     | 'dag_dispatched' | 'dag_progress' | 'dag_complete' | 'dag_confirm'
-    // Hindsight connectivity & I/O status
     | 'hindsight_status';
   /** Identifies which workflow this message relates to (events, status updates, plans). */
   workflowId?: string;
+  /** The user message ID this response is answering (set by handleChat). */
+  replyTo?: string;
   content?: string;
   streaming?: boolean;
   done?: boolean;

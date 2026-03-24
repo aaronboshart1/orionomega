@@ -24,6 +24,7 @@ export interface ClientMessage {
 interface ServerMessage {
   id: string;
   workflowId?: string;
+  replyTo?: string;
   type: 'text' | 'thinking' | 'plan' | 'event' | 'status' | 'command_result' | 'session_status' | 'hindsight_status' | 'error' | 'ack' | 'history';
   content?: string;
   streaming?: boolean;
@@ -51,6 +52,8 @@ export interface DisplayMessage {
   raw?: string;
   /** Workflow ID if this message originated from a workflow. */
   workflowId?: string;
+  /** The user message ID this response is answering. */
+  replyTo?: string;
 }
 
 let messageCounter = 0;
@@ -83,7 +86,7 @@ export class GatewayClient extends EventEmitter<GatewayClientEvents> {
   private ws: import('ws').WebSocket | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
-  private streamingAcc: { id: string; content: string } | null = null;
+  private streamingAcc: { id: string; content: string; replyTo?: string } | null = null;
   private seenIds = new Set<string>();
   private disposed = false;
   private reconnectAttempts = 0;
@@ -228,7 +231,7 @@ export class GatewayClient extends EventEmitter<GatewayClientEvents> {
           if (acc && acc.id === msg.id) {
             acc.content += msg.content ?? '';
           } else {
-            this.streamingAcc = { id: msg.id, content: msg.content ?? '' };
+            this.streamingAcc = { id: msg.id, content: msg.content ?? '', replyTo: msg.replyTo };
           }
           this.emit('streaming', {
             id: this.streamingAcc!.id,
@@ -236,6 +239,7 @@ export class GatewayClient extends EventEmitter<GatewayClientEvents> {
             content: this.streamingAcc!.content,
             timestamp: new Date().toISOString(),
             workflowId: msg.workflowId,
+            replyTo: this.streamingAcc!.replyTo,
           });
         } else if (msg.done) {
           this.emit('thinking', '');
@@ -251,6 +255,7 @@ export class GatewayClient extends EventEmitter<GatewayClientEvents> {
                 content: finalContent,
                 timestamp: new Date().toISOString(),
                 workflowId: msg.workflowId,
+                replyTo: msg.replyTo ?? acc?.replyTo,
               });
             }
           }
@@ -265,6 +270,7 @@ export class GatewayClient extends EventEmitter<GatewayClientEvents> {
               content: msg.content ?? '',
               timestamp: new Date().toISOString(),
               workflowId: msg.workflowId,
+              replyTo: msg.replyTo,
             });
           }
         }
