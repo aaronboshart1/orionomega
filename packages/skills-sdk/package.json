@@ -2,6 +2,12 @@
   "name": "@orionomega/skills-sdk",
   "version": "0.1.0",
   "description": "Skills system for OrionOmega \u2014 create, install, load, validate, and execute custom agent skills",
+  "keywords": ["skills", "plugins", "sdk", "orionomega"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/aaronboshart1/orionomega.git",
+    "directory": "packages/skills-sdk"
+  },
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

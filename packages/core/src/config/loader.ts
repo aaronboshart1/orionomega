@@ -27,7 +27,7 @@ export function getDefaultConfig(): OrionOmegaConfig {
   return {
     gateway: {
       port: 8000,
-      bind: '0.0.0.0',
+      bind: '127.0.0.1',
       auth: {
         mode: 'none',
       },

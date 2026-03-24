@@ -49,7 +49,7 @@ try {
   // Fallback defaults if core config is unavailable
   config = {
     port: 8000,
-    bind: '0.0.0.0',
+    bind: '127.0.0.1',
     auth: { mode: 'none' },
     cors: { origins: ['http://*:*', 'http://localhost:*'] },
   };

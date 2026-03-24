@@ -1,6 +1,14 @@
 {
   "name": "@orionomega/tui",
   "version": "0.1.0",
+  "description": "Terminal UI for OrionOmega built with Ink",
+  "keywords": ["tui", "terminal", "cli", "ink", "orionomega"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/aaronboshart1/orionomega.git",
+    "directory": "packages/tui"
+  },
+  "license": "MIT",
   "type": "module",
   "main": "dist/index.js",
   "bin": {

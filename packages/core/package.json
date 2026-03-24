@@ -1,6 +1,14 @@
 {
   "name": "@orionomega/core",
   "version": "0.1.0",
+  "description": "Orchestration engine, Anthropic client, config, memory, and CLI for OrionOmega",
+  "keywords": ["ai", "agent", "orchestration", "claude", "anthropic", "dag"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/aaronboshart1/orionomega.git",
+    "directory": "packages/core"
+  },
+  "license": "MIT",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

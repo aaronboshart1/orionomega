@@ -1,6 +1,14 @@
 {
   "name": "@orionomega/gateway",
   "version": "0.1.0",
+  "description": "WebSocket and REST gateway server for OrionOmega",
+  "keywords": ["websocket", "gateway", "api", "orionomega"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/aaronboshart1/orionomega.git",
+    "directory": "packages/gateway"
+  },
+  "license": "MIT",
   "type": "module",
   "main": "dist/server.js",
   "types": "dist/server.d.ts",

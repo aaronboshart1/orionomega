@@ -6,29 +6,19 @@ dist/
 .next/
 *.tsbuildinfo
 
+# Compiled output in source directories
+packages/*/src/**/*.js
+packages/*/src/**/*.js.map
+packages/*/src/**/*.d.ts
+packages/*/src/**/*.d.ts.map
+
 # Environment & secrets
 .env
-.env.local
+.env.*
+config.yaml
 
 # Logs
 *.log
-
-# Research & working files (generated, not source)
-output/
-*.research.md
-hindsight_*.md
-hindsight_*.json
-transfer_*.md
-dragonfly_*.md
-redis_*.md
-redis-*.md
-keydb_*.md
-memcached_*.md
-valkey_*.md
-research_*.md
-research_*.txt
-research_*.py
-research_*.json
 
 # OS files
 .DS_Store
@@ -37,9 +27,26 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+*.swp
+*.swo
+*~
 
 # Workflow output (may contain secrets)
 aaron_*.md
 MIGRATION_*.md
 memory/*.json
 attached_assets/
+
+# Research & working files (generated, not source)
+output/
+*.research.md
+
+# Test reports (generated, not source)
+test/*.log
+test/*_REPORT.md
+
+# Replit
+.local/
+replit.md
+.replit
+replit_agent/

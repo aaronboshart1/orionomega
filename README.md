@@ -371,9 +371,9 @@ orionomega/
 │   ├── web-fetch/      # URL content fetcher
 │   └── web-search/     # DuckDuckGo search
 ├── docs/
-│   ├── architecture.md       # System architecture deep-dive
-│   ├── getting-started.md    # First-time user guide
-│   └── skills-guide.md       # Full skill authoring guide
+│   ├── architecture.md    # System architecture deep-dive
+│   ├── getting-started.md # First-time user guide
+│   └── skills-guide.md    # Full skill authoring guide
 └── scripts/
     └── install.sh      # One-line installer
 ```

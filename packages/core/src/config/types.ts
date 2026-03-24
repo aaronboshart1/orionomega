@@ -8,7 +8,7 @@ export interface OrionOmegaConfig {
   gateway: {
     /** Port to listen on. */
     port: number;
-    /** Bind address (e.g. '0.0.0.0' or '127.0.0.1'). */
+    /** Bind address (default '127.0.0.1'; set to '0.0.0.0' to listen on all interfaces). */
     bind: string;
     auth: {
       /** Authentication mode. */

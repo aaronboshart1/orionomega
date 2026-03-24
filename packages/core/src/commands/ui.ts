@@ -43,7 +43,8 @@ export async function runUI(): Promise<void> {
   process.stdout.write(`\n${BOLD}Starting OrionOmega Web UI${RESET} ${DIM}(${isDev ? 'development' : 'production'} mode)${RESET}\n`);
   process.stdout.write(`${DIM}Press Ctrl+C to stop${RESET}\n\n`);
 
-  const child = spawn('pnpm', [cmd, '-H', '0.0.0.0'], {
+  const host = process.env.HOST || '127.0.0.1';
+  const child = spawn('pnpm', [cmd, '-H', host], {
     cwd: webDir,
     stdio: 'inherit',
     env: { ...process.env },

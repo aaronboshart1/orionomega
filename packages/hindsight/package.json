@@ -1,6 +1,14 @@
 {
   "name": "@orionomega/hindsight",
   "version": "0.1.0",
+  "description": "HTTP client for the Hindsight temporal knowledge graph",
+  "keywords": ["hindsight", "knowledge-graph", "memory", "orionomega"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/aaronboshart1/orionomega.git",
+    "directory": "packages/hindsight"
+  },
+  "license": "MIT",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
