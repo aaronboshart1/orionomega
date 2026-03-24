@@ -476,9 +476,19 @@ export class WorkflowBox extends Container {
     const desiredSet = new Set(desired);
     const currentlyAttached = [...this.attachedChildren];
 
+    const currentInDesiredOrder = currentlyAttached.filter(c => desiredSet.has(c));
+    const orderMatches = currentInDesiredOrder.length === desired.length &&
+      currentInDesiredOrder.every((c, i) => c === desired[i]) &&
+      currentlyAttached.length === desired.length;
+
+    if (orderMatches) {
+      return;
+    }
+
     for (const child of currentlyAttached) {
       if (!desiredSet.has(child)) {
         this.removeChild(child);
+        this.attachedChildren.delete(child);
       }
     }
 
