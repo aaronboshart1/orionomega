@@ -92,6 +92,11 @@ export class GatewayClient extends EventEmitter<GatewayClientEvents> {
   private reconnectAttempts = 0;
   private hasConnectedOnce = false;
 
+  private eventBatchTimer: ReturnType<typeof setTimeout> | null = null;
+  private pendingGraphStates = new Map<string, GraphState>();
+  private pendingWorkerEvents: Array<{ event: WorkerEvent; workflowId?: string }> = [];
+  private static readonly EVENT_BATCH_MS = 50;
+
   connected = false;
 
   /** Session ID persisted across TUI restarts. */
@@ -102,6 +107,26 @@ export class GatewayClient extends EventEmitter<GatewayClientEvents> {
     private readonly token: string,
   ) {
     super();
+  }
+
+  private flushEventBatch(): void {
+    this.eventBatchTimer = null;
+
+    for (const item of this.pendingWorkerEvents) {
+      this.emit('event', item.event, item.workflowId);
+    }
+    this.pendingWorkerEvents = [];
+
+    for (const [wfId, state] of this.pendingGraphStates) {
+      this.emit('graphState', state, wfId);
+    }
+    this.pendingGraphStates.clear();
+  }
+
+  private scheduleEventBatch(): void {
+    if (!this.eventBatchTimer) {
+      this.eventBatchTimer = setTimeout(() => this.flushEventBatch(), GatewayClient.EVENT_BATCH_MS);
+    }
   }
 
   /** Establish the WebSocket connection with auto-reconnect. */
@@ -217,6 +242,7 @@ export class GatewayClient extends EventEmitter<GatewayClientEvents> {
     this.disposed = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     if (this.pingTimer) clearInterval(this.pingTimer);
+    if (this.eventBatchTimer) clearTimeout(this.eventBatchTimer);
     if (this.ws) this.ws.close();
   }
 
@@ -288,23 +314,29 @@ export class GatewayClient extends EventEmitter<GatewayClientEvents> {
       case 'event': {
         const event = msg.event as WorkerEvent;
         if (event) {
-          // Emit the full event — WorkflowPanel handles display in the unified tree.
-          // No longer emit 'message' for finding/error/done (eliminates duplicate chat entries).
-          this.emit('event', event, msg.workflowId ?? event.workflowId);
+          const wfId = msg.workflowId ?? event.workflowId;
+          this.pendingWorkerEvents.push({ event, workflowId: wfId });
 
-          // Keep thinking emissions for status bar indicator
           if (event.type === 'tool_call' && event.tool) {
             this.emit('thinking', `${event.nodeId}: ${event.tool.name}${event.tool.summary ? ' \u2014 ' + event.tool.summary : ''}`);
           } else if (event.type === 'status' && event.message) {
             this.emit('thinking', `${event.nodeId}: ${event.message}`);
           }
         }
-        if (msg.graphState) this.emit('graphState', msg.graphState as GraphState, msg.workflowId ?? (msg.graphState as GraphState).workflowId);
+        if (msg.graphState) {
+          const gsWfId = msg.workflowId ?? (msg.graphState as GraphState).workflowId;
+          this.pendingGraphStates.set(gsWfId, msg.graphState as GraphState);
+        }
+        this.scheduleEventBatch();
         break;
       }
 
       case 'status':
-        if (msg.graphState) this.emit('graphState', msg.graphState as GraphState, msg.workflowId ?? (msg.graphState as GraphState).workflowId);
+        if (msg.graphState) {
+          const gsWfId = msg.workflowId ?? (msg.graphState as GraphState).workflowId;
+          this.pendingGraphStates.set(gsWfId, msg.graphState as GraphState);
+          this.scheduleEventBatch();
+        }
         break;
 
       case 'command_result':

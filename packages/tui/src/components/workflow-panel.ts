@@ -32,6 +32,7 @@ export class WorkflowPanel extends Container {
   readonly boxes = new Map<string, WorkflowBox>();
   private focusedId: string | null = null;
   private removalTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private collapseTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   /** Wire this to tui.requestRender() for spinner-driven re-renders. */
   onUpdate?: () => void;
@@ -54,21 +55,42 @@ export class WorkflowPanel extends Container {
     if (!box) return;
     box.updateFromGraphState(state);
 
-    // Schedule removal after completion
     if (state.status === 'complete' || state.status === 'error' || state.status === 'stopped') {
       if (!this.removalTimers.has(id)) {
-        const timer = setTimeout(() => {
+        const collapseTimer = setTimeout(() => {
+          this.collapseTimers.delete(id);
+          const b = this.boxes.get(id);
+          if (b) b.expanded = false;
+          this.onUpdate?.();
+        }, 10_000);
+
+        const removeTimer = setTimeout(() => {
+          this.removalTimers.delete(id);
+          this.collapseTimers.delete(id);
           const b = this.boxes.get(id);
           if (b) {
             b.dispose();
             this.removeChild(b);
             this.boxes.delete(id);
           }
-          this.removalTimers.delete(id);
           if (this.focusedId === id) this.focusedId = null;
           this.updateVisibility();
+          this.onUpdate?.();
         }, 30_000);
-        this.removalTimers.set(id, timer);
+
+        this.removalTimers.set(id, removeTimer);
+        this.collapseTimers.set(id, collapseTimer);
+      }
+    } else {
+      const existingRemoval = this.removalTimers.get(id);
+      if (existingRemoval) {
+        clearTimeout(existingRemoval);
+        this.removalTimers.delete(id);
+      }
+      const existingCollapse = this.collapseTimers.get(id);
+      if (existingCollapse) {
+        clearTimeout(existingCollapse);
+        this.collapseTimers.delete(id);
       }
     }
   }

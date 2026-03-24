@@ -121,13 +121,33 @@ export async function start(): Promise<void> {
 
   const tui = new TUI(new ProcessTerminal());
 
+  const RENDER_INTERVAL_MS = 50;
+  let renderScheduled = false;
+  let lastRenderTime = 0;
+  const throttledRender = () => {
+    if (renderScheduled) return;
+    const now = Date.now();
+    const elapsed = now - lastRenderTime;
+    if (elapsed >= RENDER_INTERVAL_MS) {
+      lastRenderTime = now;
+      tui.requestRender();
+    } else {
+      renderScheduled = true;
+      setTimeout(() => {
+        renderScheduled = false;
+        lastRenderTime = Date.now();
+        tui.requestRender();
+      }, RENDER_INTERVAL_MS - elapsed);
+    }
+  };
+
   const header = new Text('', 1, 0);
   const chatLog = new ChatLog();
-  chatLog.onUpdate = () => tui.requestRender();
+  chatLog.onUpdate = () => throttledRender();
   const editor = new CustomEditor(tui, editorTheme);
   const statusBar = new StatusBar();
   const workflowPanel = new WorkflowPanel();
-  workflowPanel.onUpdate = () => tui.requestRender();
+  workflowPanel.onUpdate = () => throttledRender();
 
   const root = new Container();
   root.addChild(header);
@@ -144,7 +164,7 @@ export async function start(): Promise<void> {
   if (model) statusBar.updateStatus({ model });
 
   // Wire status bar spinner to trigger re-renders
-  statusBar.onUpdate = () => tui.requestRender();
+  statusBar.onUpdate = () => throttledRender();
 
   // Autocomplete for slash commands
   editor.setAutocompleteProvider(
@@ -181,7 +201,7 @@ export async function start(): Promise<void> {
       }
     }, 100);
     setTimeout(() => clearInterval(saveCheck), 5000);
-    tui.requestRender();
+    throttledRender();
   });
 
   client.on('reconnecting', (attempt) => {
@@ -191,7 +211,7 @@ export async function start(): Promise<void> {
       content: `Gateway unreachable — reconnecting (attempt ${attempt})...`,
       timestamp: new Date().toISOString(),
     });
-    tui.requestRender();
+    throttledRender();
   });
 
   client.on('history', (messages) => {
@@ -219,12 +239,12 @@ export async function start(): Promise<void> {
         timestamp: msg.timestamp,
       });
     }
-    tui.requestRender();
+    throttledRender();
   });
 
   client.on('disconnected', () => {
     statusBar.connected = false;
-    tui.requestRender();
+    throttledRender();
   });
 
   client.on('message', (msg) => {
@@ -239,21 +259,21 @@ export async function start(): Promise<void> {
       chatLog.addMessage(msg);
     }
 
-    tui.requestRender();
+    throttledRender();
   });
 
   client.on('streaming', (msg) => {
     chatLog.updateThinking('');
     statusBar.thinking = true;
     chatLog.updateStreaming(msg.content);
-    tui.requestRender();
+    throttledRender();
   });
 
   client.on('streamingDone', () => {
     statusBar.thinking = false;
     chatLog.updateThinking('');
     chatLog.clearStreaming();
-    tui.requestRender();
+    throttledRender();
   });
 
   client.on('thinking', (text) => {
@@ -264,7 +284,7 @@ export async function start(): Promise<void> {
       statusBar.thinking = false;
       chatLog.updateThinking('');
     }
-    tui.requestRender();
+    throttledRender();
   });
 
   client.on('plan', (plan: PlannerOutput, planId: string) => {
@@ -293,12 +313,11 @@ export async function start(): Promise<void> {
       });
     }
 
-    tui.requestRender();
+    throttledRender();
   });
 
   client.on('planCleared', () => {
-    // planCleared fires per-plan after respondToPlan; the map is managed in onSubmit
-    tui.requestRender();
+    throttledRender();
   });
 
   client.on('graphState', (state: GraphState, workflowId?: string) => {
@@ -351,7 +370,7 @@ export async function start(): Promise<void> {
       }
     }
 
-    tui.requestRender();
+    throttledRender();
   });
 
   client.on("sessionStatus", (status) => {
@@ -361,7 +380,7 @@ export async function start(): Promise<void> {
       outputTokens: status.outputTokens,
       maxContextTokens: status.maxContextTokens,
     });
-    tui.requestRender();
+    throttledRender();
   });
 
   client.on('hindsightStatus', (status) => {
@@ -370,14 +389,14 @@ export async function start(): Promise<void> {
       hindsightBusy: status.busy,
     });
     statusBar.hindsightBusy = status.busy;
-    tui.requestRender();
+    throttledRender();
   });
 
   client.on('event', (event, workflowId?: string) => {
     const wfId = workflowId ?? event.workflowId;
     if (wfId) {
       workflowPanel.updateNodeEvent(wfId, event);
-      tui.requestRender();
+      throttledRender();
     }
   });
 
@@ -442,7 +461,7 @@ export async function start(): Promise<void> {
         statusBar.thinking = true;
       }
 
-      tui.requestRender();
+      throttledRender();
       return;
     }
 
@@ -462,7 +481,7 @@ export async function start(): Promise<void> {
     if (normalizedLower.startsWith('/focus')) {
       const arg = normalized.slice('/focus'.length).trim() || null;
       workflowPanel.setFocus(arg);
-      tui.requestRender();
+      throttledRender();
       return;
     }
 

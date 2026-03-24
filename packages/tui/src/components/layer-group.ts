@@ -43,11 +43,18 @@ export class LayerGroup extends Container {
 
   /** Set the node displays for this layer. Handles add/remove from the Container. */
   setNodes(nodes: NodeDisplay[]): void {
-    // Remove old nodes from container
-    for (const nd of this.nodeDisplays) {
-      this.removeChild(nd);
+    if (this.nodeDisplays.length === nodes.length && this.nodeDisplays.every((nd, i) => nd === nodes[i])) {
+      return;
     }
+
+    if (!this._collapsed) {
+      for (const nd of this.nodeDisplays) {
+        try { this.removeChild(nd); } catch {}
+      }
+    }
+
     this.nodeDisplays = nodes;
+
     if (!this._collapsed) {
       for (const nd of nodes) {
         this.addChild(nd);

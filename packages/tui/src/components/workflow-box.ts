@@ -183,6 +183,7 @@ export class WorkflowBox extends Container {
 
   /** Update from a new graph state snapshot. */
   updateFromGraphState(state: GraphState): void {
+    const prevStatus = this.workflowStatus;
     this.workflowStatus = state.status;
     this.completedLayers = state.completedLayers;
     this.totalLayers = state.totalLayers;
@@ -190,14 +191,16 @@ export class WorkflowBox extends Container {
 
     const nodes = state.nodes ?? {};
     const layerMap = computeNodeLayers(nodes);
+    const prevNodeCount = this.nodeDisplays.size;
 
-    // Update existing nodes and add new ones
+    let hasNewNodes = false;
     for (const [id, node] of Object.entries(nodes)) {
       const n = node as any;
       const existing = this.nodeDisplays.get(id);
       if (existing) {
         existing.updateFromGraphNode(n);
       } else {
+        hasNewNodes = true;
         const nodeState: NodeState = {
           id,
           label: n.label ?? id,
@@ -222,16 +225,22 @@ export class WorkflowBox extends Container {
       }
     }
 
-    // Process recent events
     for (const evt of state.recentEvents ?? []) {
       const nd = this.nodeDisplays.get(evt.nodeId);
       if (nd) nd.accumulator.processEvent(evt);
     }
 
-    // Rebuild layer groups and structure
+    const statusTransitioned = prevStatus !== this.workflowStatus;
+    const structureChanged = hasNewNodes || this.nodeDisplays.size !== prevNodeCount || statusTransitioned;
+
     this.buildLayerGroups();
     this.updateSpinner();
-    this.rebuildStructure();
+
+    if (structureChanged) {
+      this.rebuildStructure();
+    } else {
+      this.updateBorders();
+    }
   }
 
   /** Update a single node from a worker event. */
