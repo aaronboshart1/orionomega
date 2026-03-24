@@ -67,7 +67,7 @@ export interface MainAgentCallbacks {
   onEvent: (event: WorkerEvent) => void;
   onGraphState: (state: GraphState) => void;
   onCommandResult: (result: { command: string; success: boolean; message: string }) => void;
-  onSessionStatus?: (status: { model: string; inputTokens: number; outputTokens: number; cacheCreationTokens: number; cacheReadTokens: number; maxContextTokens: number }) => void;
+  onSessionStatus?: (status: { model: string; inputTokens: number; outputTokens: number; cacheCreationTokens: number; cacheReadTokens: number; maxContextTokens: number; sessionCostUsd: number }) => void;
   onWorkflowStart?: (workflowId: string, workflowName: string) => void;
   onWorkflowEnd?: (workflowId: string) => void;
 
@@ -112,6 +112,7 @@ export class MainAgent {
   private cumulativeOutputTokens = 0;
   private cumulativeCacheCreationTokens = 0;
   private cumulativeCacheReadTokens = 0;
+  private sessionCostUsd = 0;
   private availableSkills: string[] = [];
   private interruptedWorkflows: WorkflowCheckpoint[] = [];
 
@@ -221,6 +222,16 @@ export class MainAgent {
     }
 
     // 3. Create orchestration bridge (needs skills list and memory bridge)
+    const wrappedCallbacks: MainAgentCallbacks = {
+      ...this.callbacks,
+      onDAGComplete: (result) => {
+        if (result.status !== 'stopped') {
+          this.sessionCostUsd += result.totalCostUsd;
+          this.emitSessionStatus();
+        }
+        this.callbacks.onDAGComplete?.(result);
+      },
+    };
     (this as unknown as { orchestration: OrchestrationBridge }).orchestration = new OrchestrationBridge(
       {
         workspaceDir: this.config.workspaceDir,
@@ -228,7 +239,7 @@ export class MainAgent {
         workerTimeout: this.config.workerTimeout,
         maxRetries: this.config.maxRetries,
       },
-      this.callbacks,
+      wrappedCallbacks,
       this.memory,
       this.availableSkills,
       this.config.model,
@@ -515,10 +526,16 @@ export class MainAgent {
         this.orchestration.stopAll();
         this.context.clear();
         this.cachedSystemPrompt = null;
+        this.cumulativeInputTokens = 0;
+        this.cumulativeOutputTokens = 0;
+        this.cumulativeCacheCreationTokens = 0;
+        this.cumulativeCacheReadTokens = 0;
+        this.sessionCostUsd = 0;
         this.callbacks.onCommandResult({
           command: '/reset', success: true,
           message: 'Reset complete. Pending plans cleared, history wiped, executor stopped.',
         });
+        this.emitSessionStatus();
         return;
       }
 
@@ -663,6 +680,10 @@ export class MainAgent {
       this.cumulativeOutputTokens += result.outputTokens;
       this.cumulativeCacheCreationTokens += result.cacheCreationTokens;
       this.cumulativeCacheReadTokens += result.cacheReadTokens;
+      this.sessionCostUsd += this.estimateConversationalCost(
+        result.inputTokens, result.outputTokens,
+        result.cacheCreationTokens, result.cacheReadTokens,
+      );
       this.pushHistory({ role: "assistant", content: result.text });
       this.emitSessionStatus();
     } catch (err) {
@@ -683,7 +704,38 @@ export class MainAgent {
       cacheCreationTokens: this.cumulativeCacheCreationTokens,
       cacheReadTokens: this.cumulativeCacheReadTokens,
       maxContextTokens: 200000,
+      sessionCostUsd: this.sessionCostUsd,
     });
+  }
+
+  private estimateConversationalCost(
+    inputTokens: number, outputTokens: number,
+    cacheCreationTokens: number, cacheReadTokens: number,
+  ): number {
+    const model = this.config.model.toLowerCase();
+    let inputPricePerM: number;
+    let outputPricePerM: number;
+    let cacheReadPricePerM: number;
+    let cacheWritePricePerM: number;
+
+    if (model.includes('opus')) {
+      inputPricePerM = 15; outputPricePerM = 75;
+      cacheReadPricePerM = 1.5; cacheWritePricePerM = 18.75;
+    } else if (model.includes('haiku')) {
+      inputPricePerM = 0.8; outputPricePerM = 4;
+      cacheReadPricePerM = 0.08; cacheWritePricePerM = 1;
+    } else {
+      inputPricePerM = 3; outputPricePerM = 15;
+      cacheReadPricePerM = 0.3; cacheWritePricePerM = 3.75;
+    }
+
+    const uncachedInput = Math.max(0, inputTokens - cacheReadTokens);
+    return (
+      (uncachedInput / 1_000_000) * inputPricePerM +
+      (outputTokens / 1_000_000) * outputPricePerM +
+      (cacheReadTokens / 1_000_000) * cacheReadPricePerM +
+      (cacheCreationTokens / 1_000_000) * cacheWritePricePerM
+    );
   }
 
   private async getSystemPrompt(): Promise<string> {

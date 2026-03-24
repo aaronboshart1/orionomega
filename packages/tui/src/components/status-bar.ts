@@ -27,6 +27,8 @@ export interface SessionStatus {
   completedTasks?: number;
   totalTasks?: number;
   estimatedCost?: number;
+  /** Authoritative cumulative session cost from the server. */
+  sessionCostUsd?: number;
   /** Current layer progress (1-based index of the layer being executed). */
   completedLayers?: number;
   /** Total number of layers in the workflow graph. */
@@ -195,12 +197,9 @@ export class StatusBar extends Text {
     }
 
     // ── Session cost ──
-    const input = this._status.inputTokens ?? 0;
-    const output = this._status.outputTokens ?? 0;
-    const cacheCreation = this._status.cacheCreationTokens ?? 0;
-    const cacheRead = this._status.cacheReadTokens ?? 0;
-    const sessionCost = this.computeCost(input, output, cacheCreation, cacheRead, this._status.model);
-    const displayCost = (this._status.estimatedCost ?? 0) + sessionCost;
+    const accumulatedCost = this._status.sessionCostUsd ?? 0;
+    const inProgressCost = this._status.estimatedCost ?? 0;
+    const displayCost = accumulatedCost + inProgressCost;
     if (displayCost > 0 && isFinite(displayCost)) {
       const costColor = displayCost >= 10 ? palette.error : palette.text;
       parts.push(chalk.hex(palette.dim)(icons.cost) + chalk.hex(costColor)(displayCost.toFixed(2)));
@@ -215,28 +214,4 @@ export class StatusBar extends Text {
     this.setText(mainLine);
   }
 
-  /**
-   * Estimate cost from token counts + model name.
-   * Prices per million tokens as of mid-2025.
-   * Cache reads = 10% of input price, cache creation = 125% of input price (25% premium).
-   */
-  private computeCost(inputTokens: number, outputTokens: number, cacheCreationTokens: number, cacheReadTokens: number, model?: string): number {
-    const pricing: Record<string, [number, number]> = {
-      'opus':    [15.0,  75.0],
-      'sonnet':  [3.0,   15.0],
-      'haiku':   [0.8,   4.0],
-    };
-    let rates: [number, number] = [3.0, 15.0]; // default sonnet
-    if (model) {
-      const lower = model.toLowerCase();
-      for (const [key, val] of Object.entries(pricing)) {
-        if (lower.includes(key)) { rates = val; break; }
-      }
-    }
-    const inputCost = (inputTokens / 1_000_000) * rates[0];
-    const outputCost = (outputTokens / 1_000_000) * rates[1];
-    const cacheCreationCost = (cacheCreationTokens / 1_000_000) * rates[0] * 1.25;
-    const cacheReadCost = (cacheReadTokens / 1_000_000) * rates[0] * 0.1;
-    return inputCost + outputCost + cacheCreationCost + cacheReadCost;
-  }
 }

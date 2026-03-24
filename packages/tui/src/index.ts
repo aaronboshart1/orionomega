@@ -369,6 +369,7 @@ export async function start(): Promise<void> {
           totalLayers: 0,
           workflowElapsed: 0,
           workerSummaries: [],
+          estimatedCost: 0,
         });
       }
     }
@@ -392,7 +393,10 @@ export async function start(): Promise<void> {
       model: status.model,
       inputTokens: status.inputTokens,
       outputTokens: status.outputTokens,
+      cacheCreationTokens: status.cacheCreationTokens,
+      cacheReadTokens: status.cacheReadTokens,
       maxContextTokens: status.maxContextTokens,
+      sessionCostUsd: status.sessionCostUsd,
     });
     throttledRender();
   });

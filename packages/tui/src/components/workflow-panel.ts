@@ -134,7 +134,9 @@ export class WorkflowPanel extends Container {
       totalRunningWorkers += stats.runningWorkers;
       totalCompletedNodes += stats.completedNodes;
       totalNodes += stats.totalNodes;
-      combinedCost += stats.estimatedCost;
+      if (box.isActive) {
+        combinedCost += stats.estimatedCost;
+      }
       totalCompletedLayers += stats.completedLayers;
       totalLayers += stats.totalLayers;
       if (stats.elapsed > maxElapsed) maxElapsed = stats.elapsed;

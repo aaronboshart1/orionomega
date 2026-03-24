@@ -36,7 +36,7 @@ interface ServerMessage {
   status?: unknown;
   commandResult?: { command: string; success: boolean; message: string };
   error?: string;
-  sessionStatus?: { model: string; inputTokens: number; outputTokens: number; maxContextTokens: number };
+  sessionStatus?: { model: string; inputTokens: number; outputTokens: number; cacheCreationTokens: number; cacheReadTokens: number; maxContextTokens: number; sessionCostUsd: number };
   hindsightStatus?: { connected: boolean; busy: boolean };
   dagComplete?: {
     workflowId: string;
@@ -91,7 +91,7 @@ export interface GatewayClientEvents {
   planCleared: [];
   graphState: [GraphState, string?];
   event: [WorkerEvent, string?];
-  sessionStatus: [{ model: string; inputTokens: number; outputTokens: number; maxContextTokens: number }];
+  sessionStatus: [{ model: string; inputTokens: number; outputTokens: number; cacheCreationTokens: number; cacheReadTokens: number; maxContextTokens: number; sessionCostUsd: number }];
   hindsightStatus: [{ connected: boolean; busy: boolean }];
   dagComplete: [NonNullable<ServerMessage['dagComplete']>];
   history: [Array<{ id: string; role: string; content: string; timestamp: string }>];

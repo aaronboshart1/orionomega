@@ -56,7 +56,7 @@ export interface ServerMessage {
   graphState?: unknown;
   status?: SystemStatus;
   commandResult?: CommandResult;
-  sessionStatus?: { model: string; inputTokens: number; outputTokens: number; maxContextTokens: number };
+  sessionStatus?: { model: string; inputTokens: number; outputTokens: number; cacheCreationTokens?: number; cacheReadTokens?: number; maxContextTokens: number; sessionCostUsd?: number };
   hindsightStatus?: { connected: boolean; busy: boolean };
   error?: string;
   history?: Array<{ id: string; role: string; content: string; timestamp: string }>;
