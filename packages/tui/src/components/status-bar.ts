@@ -144,7 +144,7 @@ export class StatusBar extends Text {
     } else if (hsConnected === false) {
       parts.push(
         chalk.hex(palette.error)(icons.hindsight) +
-        chalk.hex(palette.dim)(' Hindsight')
+        chalk.hex(palette.error)(' OFFLINE')
       );
     }
 

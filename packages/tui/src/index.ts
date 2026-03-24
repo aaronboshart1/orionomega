@@ -18,6 +18,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { readConfig } from '@orionomega/core';
 import type { PlannerOutput, GraphState } from '@orionomega/core';
+import chalk from 'chalk';
 
 import { GatewayClient } from './gateway-client.js';
 import { ChatLog } from './components/chat-log.js';
@@ -25,7 +26,7 @@ import { CustomEditor } from './components/custom-editor.js';
 import { formatPlan } from './components/plan-overlay.js';
 import { StatusBar } from './components/status-bar.js';
 import { WorkflowPanel } from './components/workflow-panel.js';
-import { editorTheme, theme } from './theme.js';
+import { editorTheme, theme, palette, icons, box } from './theme.js';
 
 /** Available slash commands. */
 const SLASH_COMMANDS: SlashCommand[] = [
@@ -39,11 +40,12 @@ const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/workers', description: 'List active workers' },
   { name: '/skills', description: 'View, enable/disable, configure skills' },
   { name: '/focus', description: 'Focus a workflow by ID (or /focus to show all)' },
+  { name: '/hindsight', description: 'Show Hindsight memory system status' },
   { name: '/exit', description: 'Exit the TUI' },
 ];
 
 /** Client-side commands that don't go to the gateway. */
-const CLIENT_COMMANDS = new Set(['/exit', '/quit', '/q', '/focus']);
+const CLIENT_COMMANDS = new Set(['/exit', '/quit', '/q', '/focus', '/hindsight']);
 
 /**
  * Build the default gateway WebSocket URL from config.
@@ -148,9 +150,11 @@ export async function start(): Promise<void> {
   const statusBar = new StatusBar();
   const workflowPanel = new WorkflowPanel();
   workflowPanel.onUpdate = () => throttledRender();
+  const hindsightBanner = new Text('', 1, 0);
 
   const root = new Container();
   root.addChild(header);
+  root.addChild(hindsightBanner);
   root.addChild(chatLog);
   root.addChild(workflowPanel);
   root.addChild(editor);
@@ -182,6 +186,9 @@ export async function start(): Promise<void> {
   };
 
   let wasConnected = false;
+  let hindsightConnected: boolean | null = null;
+  let userMessageCount = 0;
+  let hindsightFirstMessageWarned = false;
 
   client.on('connected', () => {
     statusBar.connected = true;
@@ -379,11 +386,39 @@ export async function start(): Promise<void> {
   });
 
   client.on('hindsightStatus', (status) => {
+    const wasHsConnected = hindsightConnected;
+    hindsightConnected = status.connected;
+
     statusBar.updateStatus({
       hindsightConnected: status.connected,
       hindsightBusy: status.busy,
     });
     statusBar.hindsightBusy = status.busy;
+
+    if (status.connected) {
+      hindsightBanner.setText('');
+      if (wasHsConnected === false) {
+        chatLog.addSystemSuccess('Hindsight memory reconnected.');
+      }
+    } else {
+      const rule = chalk.hex(palette.warning)(box.horizontal.repeat(68));
+      const warnIcon = chalk.hex(palette.warning)(icons.warning);
+      const warnText = chalk.hex(palette.warning)(
+        "Memory offline \u2014 agent context is limited to recent messages.\n" +
+        "   Run 'orionomega setup' to configure Hindsight."
+      );
+      hindsightBanner.setText(`${rule}\n ${warnIcon}  ${warnText}\n${rule}`);
+      if (wasHsConnected === true) {
+        chatLog.addSystemWarning('Hindsight memory went offline. Context recall is limited.');
+      } else if (wasHsConnected === null) {
+        chatLog.addSystemWarning(
+          "Hindsight memory is offline. The agent can only recall the last few messages. " +
+          "Run 'orionomega setup' to configure it."
+        );
+        hindsightFirstMessageWarned = true;
+      }
+    }
+
     throttledRender();
   });
 
@@ -480,6 +515,57 @@ export async function start(): Promise<void> {
       return;
     }
 
+    // /hindsight — show memory system status and troubleshooting
+    if (normalizedLower === '/hindsight') {
+      const connected = hindsightConnected === true;
+      const unknown = hindsightConnected === null;
+      const statusIcon = unknown
+        ? chalk.hex(palette.warning)(icons.warning)
+        : connected
+          ? chalk.hex(palette.success)(icons.connected)
+          : chalk.hex(palette.error)(icons.disconnected);
+      const statusLabel = unknown
+        ? chalk.hex(palette.warning)('Unknown (waiting for gateway)')
+        : connected
+          ? chalk.hex(palette.success)('Connected')
+          : chalk.hex(palette.error)('Disconnected');
+
+      let hsUrl = 'http://localhost:3040';
+      try {
+        const cfg = readConfig();
+        if (cfg.hindsight?.url) hsUrl = cfg.hindsight.url;
+      } catch {}
+
+      const lines = [
+        chalk.hex(palette.accent).bold('Hindsight Memory System'),
+        '',
+        `  Status:  ${statusIcon} ${statusLabel}`,
+        `  URL:     ${chalk.hex(palette.text)(hsUrl)}`,
+        '',
+      ];
+
+      if (!connected || unknown) {
+        lines.push(
+          chalk.hex(palette.warning)('  Troubleshooting:'),
+          chalk.hex(palette.text)('    1. Run: orionomega setup  (step 4 configures Hindsight)'),
+          chalk.hex(palette.text)('    2. Check Docker: docker ps'),
+          chalk.hex(palette.text)('    3. macOS: colima status'),
+          chalk.hex(palette.text)('    4. Start manually: docker start hindsight'),
+          '',
+        );
+      }
+
+      chatLog.addMessage({
+        id: `hindsight-cmd-${Date.now()}`,
+        role: 'system',
+        content: '',
+        timestamp: new Date().toISOString(),
+        raw: lines.join('\n'),
+      });
+      throttledRender();
+      return;
+    }
+
     // Also check without slash — some paths strip it
     const bareCmd = normalized.replace(/^\//, '').toLowerCase();
     if (bareCmd === 'exit' || bareCmd === 'quit' || bareCmd === 'q') {
@@ -492,6 +578,13 @@ export async function start(): Promise<void> {
     if (normalized.startsWith('/')) {
       client.sendCommand(normalized.slice(1));
     } else {
+      userMessageCount++;
+      if (userMessageCount === 1 && hindsightConnected === false && !hindsightFirstMessageWarned) {
+        hindsightFirstMessageWarned = true;
+        chatLog.addSystemWarning(
+          'Memory is offline. The agent can only see the last few messages.'
+        );
+      }
       client.sendChat(value);
     }
   };

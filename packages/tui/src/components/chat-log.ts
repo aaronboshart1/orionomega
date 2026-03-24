@@ -7,7 +7,7 @@
 import { Container, Markdown, Spacer, Text } from '@mariozechner/pi-tui';
 import type { Component } from '@mariozechner/pi-tui';
 import type { DisplayMessage } from '../gateway-client.js';
-import { markdownTheme, theme, spacing, palette, box } from '../theme.js';
+import { markdownTheme, theme, spacing, palette, box, icons } from '../theme.js';
 import { truncate } from '../utils/format.js';
 import { omegaSpinner } from './omega-spinner.js';
 import chalk from 'chalk';
@@ -56,6 +56,32 @@ export class ChatLog extends Container {
       if (original) return original;
     }
     return null;
+  }
+
+  addSystemWarning(content: string): void {
+    this.addChild(new Spacer(1));
+    const text = new Text(
+      chalk.hex(palette.warning)(`${icons.warning}  ${content}`),
+      spacing.componentMarginX,
+      spacing.componentMarginY,
+    );
+    this.addChild(text);
+    this.entries.push({ component: text, role: 'system' });
+    this.lastRole = 'system';
+    this.pruneOverflow();
+  }
+
+  addSystemSuccess(content: string): void {
+    this.addChild(new Spacer(1));
+    const text = new Text(
+      chalk.hex(palette.success)(`${icons.complete}  ${content}`),
+      spacing.componentMarginX,
+      spacing.componentMarginY,
+    );
+    this.addChild(text);
+    this.entries.push({ component: text, role: 'system' });
+    this.lastRole = 'system';
+    this.pruneOverflow();
   }
 
   addMessage(msg: DisplayMessage): void {
