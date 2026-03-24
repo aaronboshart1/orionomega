@@ -203,8 +203,37 @@ if [ "$DOCKER_READY" = "true" ]; then
   if docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^hindsight$'; then
     info "Hindsight container already running"
     HINDSIGHT_RUNNING=true
-  else
-    printf "  ${DIM}Hindsight requires an API key to start. The setup wizard will start it.${NC}\n"
+  elif docker image inspect ghcr.io/vectorize-io/hindsight:latest &>/dev/null 2>&1; then
+    CONFIG_FILE="$HOME/.orionomega/config.yaml"
+    API_KEY=""
+    if [ -f "$CONFIG_FILE" ]; then
+      API_KEY=$(grep -E '^\s*apiKey:' "$CONFIG_FILE" | head -1 | sed 's/.*apiKey:\s*//' | sed 's/^["'"'"']//' | sed 's/["'"'"']$//' | tr -d '[:space:]')
+    fi
+
+    if [ -n "$API_KEY" ] && [ "$API_KEY" != "not" ]; then
+      docker stop hindsight 2>/dev/null || true
+      docker rm hindsight 2>/dev/null || true
+      printf "  Starting Hindsight container... "
+      if docker run -d \
+        --name hindsight \
+        --restart unless-stopped \
+        -p 8888:8888 -p 9999:9999 \
+        -e "HINDSIGHT_API_LLM_API_KEY=${API_KEY}" \
+        -e "HINDSIGHT_API_LLM_PROVIDER=anthropic" \
+        -e "HINDSIGHT_API_LLM_MODEL=claude-haiku-4-5-20251001" \
+        -v "${HINDSIGHT_DATA}:/home/hindsight/.pg0" \
+        ghcr.io/vectorize-io/hindsight:latest >/dev/null 2>&1; then
+        printf "done\n"
+        info "Hindsight container started"
+        HINDSIGHT_RUNNING=true
+        printf "  ${DIM}Hindsight needs 30-60s to initialize on first start.${NC}\n"
+      else
+        warn "Failed to start Hindsight container."
+        printf "    Run: orionomega setup  (step 4 to configure Hindsight)\n"
+      fi
+    else
+      printf "  ${DIM}No API key found yet. The setup wizard will start Hindsight after you configure it.${NC}\n"
+    fi
   fi
 else
   warn "Docker not available — Hindsight will not be started."
