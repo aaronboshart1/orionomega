@@ -474,15 +474,20 @@ export class WorkflowBox extends Container {
     }
 
     const desiredSet = new Set(desired);
+    const currentlyAttached = [...this.attachedChildren];
 
-    for (const child of [...this.attachedChildren]) {
+    for (const child of currentlyAttached) {
       if (!desiredSet.has(child)) {
         this.removeChild(child);
-        this.attachedChildren.delete(child);
       }
     }
 
-    this.clear();
+    for (const child of currentlyAttached) {
+      if (desiredSet.has(child)) {
+        this.removeChild(child);
+      }
+    }
+
     this.attachedChildren.clear();
     for (const child of desired) {
       this.addChild(child);

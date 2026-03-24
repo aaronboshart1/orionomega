@@ -112,10 +112,19 @@ export class GatewayClient extends EventEmitter<GatewayClientEvents> {
   private flushEventBatch(): void {
     this.eventBatchTimer = null;
 
+    const eventsByWorkflow = new Map<string, WorkerEvent[]>();
     for (const item of this.pendingWorkerEvents) {
-      this.emit('event', item.event, item.workflowId);
+      const wfId = item.workflowId ?? 'unknown';
+      if (!eventsByWorkflow.has(wfId)) eventsByWorkflow.set(wfId, []);
+      eventsByWorkflow.get(wfId)!.push(item.event);
     }
     this.pendingWorkerEvents = [];
+
+    for (const [wfId, events] of eventsByWorkflow) {
+      for (const event of events) {
+        this.emit('event', event, wfId);
+      }
+    }
 
     for (const [wfId, state] of this.pendingGraphStates) {
       this.emit('graphState', state, wfId);
