@@ -168,10 +168,23 @@ const STEP_INFO: StepInfo[] = [
   },
 ];
 
+async function checkHindsightReachable(url: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${url}/health`, { signal: AbortSignal.timeout(2000) });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 async function showMenu(config: OrionOmegaConfig): Promise<number> {
   println();
   println(`${BOLD}${BLUE}  OrionOmega Setup${RESET}`);
   println();
+
+  const hindsightReachable = config.hindsight.url
+    ? await checkHindsightReachable(config.hindsight.url)
+    : false;
 
   const requiredDone = STEP_INFO.filter((s) => s.group === 'required' && s.configured(config) && s.summary(config) !== 'not set').length;
   const requiredTotal = STEP_INFO.filter((s) => s.group === 'required').length;
@@ -196,10 +209,19 @@ async function showMenu(config: OrionOmegaConfig): Promise<number> {
 
   println(`  ${BOLD}${CYAN}Optional${RESET}`);
   for (const { info, i } of optional) {
-    const configured = info.configured(config);
-    const icon = configured && info.summary(config) !== 'not set' ? `${GREEN}✓${RESET}` : `${DIM}○${RESET}`;
+    let icon: string;
+    let summaryColor: string;
     const summary = info.summary(config);
-    const summaryColor = summary === 'not set' ? `${RED}${summary}${RESET}` : `${DIM}${summary}${RESET}`;
+    if (info.name === 'Hindsight Memory' && config.hindsight.url) {
+      icon = hindsightReachable ? `${GREEN}✓${RESET}` : `${RED}✗${RESET}`;
+      summaryColor = hindsightReachable
+        ? `${DIM}${summary}${RESET}`
+        : `${RED}${summary} — not running${RESET}`;
+    } else {
+      const configured = info.configured(config);
+      icon = configured && summary !== 'not set' ? `${GREEN}✓${RESET}` : `${DIM}○${RESET}`;
+      summaryColor = summary === 'not set' ? `${RED}${summary}${RESET}` : `${DIM}${summary}${RESET}`;
+    }
     println(`    ${BOLD}${i + 1}${RESET}. ${info.name.padEnd(22)}${icon}  ${summaryColor}`);
   }
 
@@ -1323,6 +1345,17 @@ async function finalizeSetup(config: OrionOmegaConfig): Promise<void> {
   }
 
   writeConfig(config);
+
+  if (config.hindsight.url && (config.hindsight.url.includes('localhost') || config.hindsight.url.includes('127.0.0.1'))) {
+    const hsReachable = await checkHindsightReachable(config.hindsight.url);
+    if (!hsReachable) {
+      println();
+      println(`  ${YELLOW}⚠${RESET} Hindsight is configured (${config.hindsight.url}) but not running.`);
+      await tryStartHindsightContainer(config);
+    } else {
+      success('Hindsight is running.');
+    }
+  }
 
   print('  Starting gateway... ');
   try {

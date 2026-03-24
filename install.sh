@@ -60,7 +60,8 @@ step "Getting OrionOmega source..."
 if [ -d "$INSTALL_DIR/.git" ]; then
   printf "  Updating existing installation... "
   cd "$INSTALL_DIR"
-  git pull --ff-only origin main 2>/dev/null || git pull origin main
+  git fetch origin main 2>/dev/null
+  git reset --hard origin/main 2>/dev/null || git pull origin main
   printf "done\n"
 else
   printf "  Cloning into %s... " "$INSTALL_DIR"
