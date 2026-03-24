@@ -223,10 +223,11 @@ async function autoStartHindsight(config: OrionOmegaConfig): Promise<boolean> {
     ].join(' ');
     execSync(dockerCmd, { stdio: 'pipe', timeout: 60000 });
 
+    const healthUrl = config.hindsight.url.replace(/\/$/, '') + '/health';
     print(`  ${DIM}Waiting for Hindsight to initialize...${RESET}`);
     for (let i = 0; i < 30; i++) {
       try {
-        const res = await fetch('http://localhost:8888/health', { signal: AbortSignal.timeout(3000) });
+        const res = await fetch(healthUrl, { signal: AbortSignal.timeout(3000) });
         if (res.ok) {
           println('');
           success('Hindsight started automatically.');
