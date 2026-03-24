@@ -83,6 +83,12 @@ export function useGateway(url: string = defaultGatewayUrl()) {
             c.workflowId,
             c.output ?? c.summary,
             c.status === 'error' ? c.summary : undefined,
+            {
+              durationSec: c.durationSec,
+              workerCount: c.workerCount,
+              totalCostUsd: c.totalCostUsd,
+              modelUsage: c.modelUsage,
+            },
           );
           chatStore.addMessage({
             id: crypto.randomUUID(),

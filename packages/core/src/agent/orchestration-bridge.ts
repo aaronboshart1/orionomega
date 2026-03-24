@@ -640,6 +640,7 @@ export class OrchestrationBridge {
       durationSec,
       workerCount,
       totalCostUsd: result.totalCostUsd ?? result.estimatedCost,
+      modelUsage: result.modelUsage && result.modelUsage.length > 0 ? result.modelUsage : undefined,
     };
     this.callbacks.onDAGComplete?.(completeInfo);
 

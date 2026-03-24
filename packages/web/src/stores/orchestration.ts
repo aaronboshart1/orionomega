@@ -56,6 +56,16 @@ export interface InlineDAGNode {
   output?: string;
 }
 
+export interface ModelUsageEntry {
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  workerCount: number;
+  costUsd: number;
+}
+
 export interface InlineDAG {
   dagId: string;
   summary: string;
@@ -66,6 +76,10 @@ export interface InlineDAG {
   elapsed: number;
   result?: string;
   error?: string;
+  durationSec?: number;
+  workerCount?: number;
+  totalCostUsd?: number;
+  modelUsage?: ModelUsageEntry[];
 }
 
 export interface DAGConfirmation {
@@ -88,7 +102,7 @@ interface OrchestrationStore {
   selectWorker: (id: string | null) => void;
   upsertInlineDAG: (dag: InlineDAG) => void;
   updateDAGNode: (dagId: string, nodeId: string, update: Partial<InlineDAGNode>) => void;
-  completeDAG: (dagId: string, result?: string, error?: string) => void;
+  completeDAG: (dagId: string, result?: string, error?: string, stats?: { durationSec?: number; workerCount?: number; totalCostUsd?: number; modelUsage?: ModelUsageEntry[] }) => void;
   removeInlineDAG: (dagId: string) => void;
   setPendingConfirmation: (c: DAGConfirmation | null) => void;
   reset: () => void;
@@ -124,7 +138,7 @@ export const useOrchestrationStore = create<OrchestrationStore>((set) => ({
         },
       };
     }),
-  completeDAG: (dagId, result, error) =>
+  completeDAG: (dagId, result, error, stats) =>
     set((s) => {
       const dag = s.inlineDAGs[dagId];
       if (!dag) return s;
@@ -137,6 +151,10 @@ export const useOrchestrationStore = create<OrchestrationStore>((set) => ({
             result,
             error,
             completedCount: dag.totalCount,
+            durationSec: stats?.durationSec,
+            workerCount: stats?.workerCount,
+            totalCostUsd: stats?.totalCostUsd,
+            modelUsage: stats?.modelUsage,
           },
         },
       };

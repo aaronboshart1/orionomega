@@ -25,7 +25,7 @@ interface ServerMessage {
   id: string;
   workflowId?: string;
   replyTo?: string;
-  type: 'text' | 'thinking' | 'plan' | 'event' | 'status' | 'command_result' | 'session_status' | 'hindsight_status' | 'error' | 'ack' | 'history';
+  type: 'text' | 'thinking' | 'plan' | 'event' | 'status' | 'command_result' | 'session_status' | 'hindsight_status' | 'dag_complete' | 'error' | 'ack' | 'history';
   content?: string;
   streaming?: boolean;
   done?: boolean;
@@ -38,6 +38,24 @@ interface ServerMessage {
   error?: string;
   sessionStatus?: { model: string; inputTokens: number; outputTokens: number; maxContextTokens: number };
   hindsightStatus?: { connected: boolean; busy: boolean };
+  dagComplete?: {
+    workflowId: string;
+    status: 'complete' | 'error' | 'stopped';
+    summary: string;
+    output?: string;
+    durationSec: number;
+    workerCount: number;
+    totalCostUsd: number;
+    modelUsage?: Array<{
+      model: string;
+      inputTokens: number;
+      outputTokens: number;
+      cacheReadTokens: number;
+      cacheCreationTokens: number;
+      workerCount: number;
+      costUsd: number;
+    }>;
+  };
   history?: Array<{ id: string; role: string; content: string; timestamp: string }>;
 }
 
@@ -75,6 +93,7 @@ export interface GatewayClientEvents {
   event: [WorkerEvent, string?];
   sessionStatus: [{ model: string; inputTokens: number; outputTokens: number; maxContextTokens: number }];
   hindsightStatus: [{ connected: boolean; busy: boolean }];
+  dagComplete: [NonNullable<ServerMessage['dagComplete']>];
   history: [Array<{ id: string; role: string; content: string; timestamp: string }>];
 }
 
@@ -379,6 +398,12 @@ export class GatewayClient extends EventEmitter<GatewayClientEvents> {
       case 'hindsight_status':
         if (msg.hindsightStatus) {
           this.emit('hindsightStatus', msg.hindsightStatus);
+        }
+        break;
+
+      case 'dag_complete':
+        if (msg.dagComplete) {
+          this.emit('dagComplete', msg.dagComplete);
         }
         break;
 

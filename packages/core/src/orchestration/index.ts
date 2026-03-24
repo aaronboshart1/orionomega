@@ -18,6 +18,7 @@ export type {
   GraphState,
   PlannerOutput,
   ExecutionResult,
+  ModelUsage,
 } from './types.js';
 
 // Graph

@@ -84,6 +84,92 @@ export class ChatLog extends Container {
     this.pruneOverflow();
   }
 
+  addRunStats(info: {
+    status: 'complete' | 'error' | 'stopped';
+    durationSec: number;
+    workerCount: number;
+    totalCostUsd: number;
+    modelUsage?: Array<{
+      model: string;
+      inputTokens: number;
+      outputTokens: number;
+      cacheReadTokens: number;
+      cacheCreationTokens: number;
+      workerCount: number;
+      costUsd: number;
+    }>;
+  }): void {
+    const dim = chalk.hex(palette.dim);
+    const accent = chalk.hex(palette.accent);
+    const bright = chalk.hex(palette.textBright);
+    const success = chalk.hex(palette.success);
+    const error = chalk.hex(palette.error);
+    const info_ = chalk.hex(palette.info);
+    const border = chalk.hex(palette.border);
+    const purple = chalk.hex(palette.purple);
+
+    const statusLabel = info.status === 'complete'
+      ? success('COMPLETE')
+      : info.status === 'error' ? error('ERROR') : dim('STOPPED');
+
+    const fmtDuration = info.durationSec < 60
+      ? `${Math.round(info.durationSec)}s`
+      : `${Math.floor(info.durationSec / 60)}m ${Math.round(info.durationSec % 60)}s`;
+
+    const fmtCost = `$${info.totalCostUsd.toFixed(4)}`;
+
+    const fmtTokens = (n: number): string => {
+      if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+      if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+      return String(n);
+    };
+
+    const lines: string[] = [];
+    const rule = border(box.horizontal.repeat(50));
+    lines.push(rule);
+    lines.push(accent.bold('  Run Summary'));
+    lines.push(`  Status: ${statusLabel}  ${dim('|')}  Duration: ${bright(fmtDuration)}  ${dim('|')}  Workers: ${bright(String(info.workerCount))}`);
+    lines.push('');
+
+    if (info.modelUsage && info.modelUsage.length > 0) {
+      const headerLine = `  ${dim('Model'.padEnd(35))} ${dim('Input'.padStart(8))} ${dim('Output'.padStart(8))} ${dim('Cache R'.padStart(8))} ${dim('Cache W'.padStart(8))} ${dim('Cost'.padStart(9))}`;
+      lines.push(headerLine);
+      lines.push(`  ${border(box.horizontal.repeat(77))}`);
+
+      let totalInput = 0, totalOutput = 0, totalCacheR = 0, totalCacheW = 0;
+
+      for (const m of info.modelUsage) {
+        totalInput += m.inputTokens;
+        totalOutput += m.outputTokens;
+        totalCacheR += m.cacheReadTokens;
+        totalCacheW += m.cacheCreationTokens;
+
+        const shortModel = m.model.length > 33 ? m.model.slice(0, 30) + '...' : m.model;
+        lines.push(
+          `  ${purple(shortModel.padEnd(35))} ${info_(fmtTokens(m.inputTokens).padStart(8))} ${info_(fmtTokens(m.outputTokens).padStart(8))} ${dim(fmtTokens(m.cacheReadTokens).padStart(8))} ${dim(fmtTokens(m.cacheCreationTokens).padStart(8))} ${bright(('$' + m.costUsd.toFixed(4)).padStart(9))}`
+        );
+      }
+
+      lines.push(`  ${border(box.horizontal.repeat(77))}`);
+      lines.push(
+        `  ${accent('Total'.padEnd(35))} ${info_(fmtTokens(totalInput).padStart(8))} ${info_(fmtTokens(totalOutput).padStart(8))} ${dim(fmtTokens(totalCacheR).padStart(8))} ${dim(fmtTokens(totalCacheW).padStart(8))} ${success.bold(fmtCost.padStart(9))}`
+      );
+    } else {
+      lines.push(`  Total Cost: ${success.bold(fmtCost)}`);
+    }
+
+    lines.push(rule);
+
+    this.addChild(new Spacer(1));
+    for (const line of lines) {
+      const t = new Text(line, spacing.componentMarginX, 0);
+      this.addChild(t);
+    }
+    this.entries.push({ component: new Text('', 0, 0), role: 'system' });
+    this.lastRole = 'system';
+    this.pruneOverflow();
+  }
+
   addMessage(msg: DisplayMessage): void {
     if (msg.role === 'user') {
       if (this.lastRole !== null) {

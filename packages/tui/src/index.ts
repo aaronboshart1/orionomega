@@ -376,6 +376,17 @@ export async function start(): Promise<void> {
     throttledRender();
   });
 
+  client.on('dagComplete', (info) => {
+    chatLog.addRunStats({
+      status: info.status,
+      durationSec: info.durationSec,
+      workerCount: info.workerCount,
+      totalCostUsd: info.totalCostUsd,
+      modelUsage: info.modelUsage,
+    });
+    throttledRender();
+  });
+
   client.on("sessionStatus", (status) => {
     statusBar.updateStatus({
       model: status.model,

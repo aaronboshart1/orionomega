@@ -294,6 +294,7 @@ export interface DAGCompleteInfo {
   durationSec: number;
   workerCount: number;
   totalCostUsd: number;
+  modelUsage?: ModelUsage[];
 }
 
 /** Info emitted when a guarded DAG needs user confirmation. */

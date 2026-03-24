@@ -90,6 +90,15 @@ export interface ServerMessage {
     durationSec: number;
     workerCount: number;
     totalCostUsd: number;
+    modelUsage?: Array<{
+      model: string;
+      inputTokens: number;
+      outputTokens: number;
+      cacheReadTokens: number;
+      cacheCreationTokens: number;
+      workerCount: number;
+      costUsd: number;
+    }>;
   };
   dagConfirm?: {
     workflowId: string;

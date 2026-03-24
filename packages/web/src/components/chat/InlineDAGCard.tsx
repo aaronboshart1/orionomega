@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { ChevronDown, ChevronRight, CheckCircle2, XCircle, Loader2, Circle } from 'lucide-react';
 import { OmegaSpinner } from './OmegaSpinner';
-import type { InlineDAG, InlineDAGNode } from '@/stores/orchestration';
+import type { InlineDAG, InlineDAGNode, ModelUsageEntry } from '@/stores/orchestration';
 
 interface InlineDAGCardProps {
   dag: InlineDAG;
@@ -122,9 +122,80 @@ export function InlineDAGCard({ dag }: InlineDAGCardProps) {
         </div>
       )}
 
+      {/* Run Stats */}
+      {(isDone || isError) && (dag.modelUsage || dag.totalCostUsd !== undefined) && (
+        <RunStats dag={dag} />
+      )}
+
       {/* Error message */}
       {isError && dag.error && (
         <p className="mt-2 text-xs text-red-400">{dag.error}</p>
+      )}
+    </div>
+  );
+}
+
+function fmtTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return String(n);
+}
+
+function fmtDuration(sec: number): string {
+  if (sec < 60) return `${Math.round(sec)}s`;
+  return `${Math.floor(sec / 60)}m ${Math.round(sec % 60)}s`;
+}
+
+function RunStats({ dag }: { dag: InlineDAG }) {
+  const hasModels = dag.modelUsage && dag.modelUsage.length > 0;
+
+  const totals = hasModels
+    ? dag.modelUsage!.reduce(
+        (acc, m) => ({
+          input: acc.input + m.inputTokens,
+          output: acc.output + m.outputTokens,
+          cacheR: acc.cacheR + m.cacheReadTokens,
+          cacheW: acc.cacheW + m.cacheCreationTokens,
+        }),
+        { input: 0, output: 0, cacheR: 0, cacheW: 0 },
+      )
+    : null;
+
+  return (
+    <div className="mt-2 border-t border-zinc-700/50 pt-2">
+      <div className="flex items-center gap-3 text-[10px] text-zinc-500">
+        {dag.durationSec !== undefined && <span>{fmtDuration(dag.durationSec)}</span>}
+        {dag.workerCount !== undefined && <span>{dag.workerCount} worker{dag.workerCount !== 1 ? 's' : ''}</span>}
+        {dag.totalCostUsd !== undefined && (
+          <span className="font-medium text-green-400">${dag.totalCostUsd.toFixed(4)}</span>
+        )}
+      </div>
+
+      {hasModels && (
+        <div className="mt-1.5 space-y-0.5">
+          <div className="grid grid-cols-[1fr_3.5rem_3.5rem_3.5rem] gap-1 text-[9px] text-zinc-600">
+            <span>Model</span>
+            <span className="text-right">Input</span>
+            <span className="text-right">Output</span>
+            <span className="text-right">Cost</span>
+          </div>
+          {dag.modelUsage!.map((m) => (
+            <div key={m.model} className="grid grid-cols-[1fr_3.5rem_3.5rem_3.5rem] gap-1 text-[10px]">
+              <span className="truncate text-purple-400">{m.model}</span>
+              <span className="text-right text-zinc-400">{fmtTokens(m.inputTokens)}</span>
+              <span className="text-right text-zinc-400">{fmtTokens(m.outputTokens)}</span>
+              <span className="text-right text-zinc-300">${m.costUsd.toFixed(4)}</span>
+            </div>
+          ))}
+          {totals && (
+            <div className="grid grid-cols-[1fr_3.5rem_3.5rem_3.5rem] gap-1 border-t border-zinc-700/30 pt-0.5 text-[10px] font-medium">
+              <span className="text-zinc-400">Total</span>
+              <span className="text-right text-zinc-300">{fmtTokens(totals.input)}</span>
+              <span className="text-right text-zinc-300">{fmtTokens(totals.output)}</span>
+              <span className="text-right text-green-400">${dag.totalCostUsd?.toFixed(4) ?? '0.0000'}</span>
+            </div>
+          )}
+        </div>
       )}
     </div>
   );
