@@ -464,16 +464,25 @@ async function tryStartHindsightContainer(config: OrionOmegaConfig): Promise<voi
   const startIt = await confirm('  Start Hindsight Docker container?', true);
   if (!startIt) return;
 
-  const docker = (() => {
-    try { execSync('docker ps 2>/dev/null', { stdio: 'pipe', timeout: 5000 }); return 'docker'; } catch {}
-    try { execSync('sudo docker ps 2>/dev/null', { stdio: 'pipe', timeout: 5000 }); return 'sudo docker'; } catch {}
-    return null;
-  })();
-
-  if (!docker) {
-    warn('Docker not found or not running. Install Docker Desktop and try again.');
-    return;
+  let docker: string | null = null;
+  try {
+    execSync('docker info', { stdio: 'pipe', timeout: 10000 });
+    docker = 'docker';
+  } catch {
+    const platform = process.platform;
+    if (platform === 'darwin') {
+      warn('Docker Desktop is not running. Start Docker Desktop and try again.');
+    } else {
+      try {
+        execSync('sudo docker info', { stdio: 'pipe', timeout: 10000 });
+        docker = 'sudo docker';
+      } catch {
+        warn('Docker not found or not running. Install Docker and try again.');
+      }
+    }
   }
+
+  if (!docker) return;
 
   const dataDir = join(homedir(), '.orionomega', 'hindsight-data');
 
@@ -486,6 +495,14 @@ async function tryStartHindsightContainer(config: OrionOmegaConfig): Promise<voi
   try {
     mkdirSync(dataDir, { recursive: true });
   } catch {}
+
+  print('  Pulling Hindsight image (this may take a few minutes)... ');
+  try {
+    execSync(`${docker} pull ghcr.io/vectorize-io/hindsight:latest`, { stdio: 'pipe', timeout: 300000 });
+    println('done');
+  } catch {
+    warn('Image pull failed or timed out. Trying to start with cached image...');
+  }
 
   print('  Starting Hindsight... ');
   try {
@@ -500,7 +517,7 @@ async function tryStartHindsightContainer(config: OrionOmegaConfig): Promise<voi
       `-v "${dataDir}:/home/hindsight/.pg0"`,
       'ghcr.io/vectorize-io/hindsight:latest',
     ].join(' ');
-    execSync(dockerCmd, { stdio: 'pipe', timeout: 30000 });
+    execSync(dockerCmd, { stdio: 'pipe', timeout: 60000 });
     println('started');
 
     print('  Waiting for Hindsight to initialize (this can take 30-60s)... ');

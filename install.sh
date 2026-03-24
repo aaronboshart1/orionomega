@@ -114,7 +114,45 @@ fi
 export PATH="$BIN_DIR:$PATH"
 info "orionomega command ready"
 
-# ── 7. Verify ────────────────────────────────────────────────────
+# ── 7. Pre-pull Hindsight Docker image ─────────────────────────────
+
+step "Hindsight (Memory System)..."
+
+HINDSIGHT_DATA="$HOME/.orionomega/hindsight-data"
+mkdir -p "$HINDSIGHT_DATA"
+
+if command -v docker &>/dev/null; then
+  if docker info &>/dev/null 2>&1; then
+    info "Docker is running"
+    if docker image inspect ghcr.io/vectorize-io/hindsight:latest &>/dev/null 2>&1; then
+      info "Hindsight image already available"
+    else
+      printf "  Pulling Hindsight image (this may take a few minutes)... "
+      if docker pull ghcr.io/vectorize-io/hindsight:latest 2>&1 | tail -1; then
+        info "Hindsight image pulled"
+      else
+        warn "Failed to pull Hindsight image — you can pull it manually later:"
+        printf "    docker pull ghcr.io/vectorize-io/hindsight:latest\n"
+      fi
+    fi
+  else
+    warn "Docker is installed but not running."
+    if [ "$(uname -s)" = "Darwin" ]; then
+      printf "    Start Docker Desktop and re-run setup to enable Hindsight.\n"
+    else
+      printf "    Start the Docker daemon and re-run setup to enable Hindsight.\n"
+    fi
+  fi
+else
+  warn "Docker not found — Hindsight requires Docker to run locally."
+  if [ "$(uname -s)" = "Darwin" ]; then
+    printf "    Install Docker Desktop: https://www.docker.com/products/docker-desktop/\n"
+  else
+    printf "    Install Docker: curl -fsSL https://get.docker.com | sh\n"
+  fi
+fi
+
+# ── 8. Verify ────────────────────────────────────────────────────
 
 step "Verifying installation..."
 "$BIN_DIR/orionomega" --help >/dev/null 2>&1 && info "Installation verified!" || warn "CLI built but --help check failed"
@@ -127,7 +165,7 @@ printf "\n"
 printf "  Launching setup wizard...\n"
 printf "\n"
 
-# ── 8. Spawn a fresh login shell so PATH is live ─────────────────
+# ── 9. Spawn a fresh login shell so PATH is live ─────────────────
 # exec replaces this process with a new shell that reads .zshrc/.bashrc,
 # so `orionomega` is immediately available — same pattern as rustup/claude.
 exec "${SHELL:-/bin/sh}" -l -c "orionomega setup" </dev/tty
