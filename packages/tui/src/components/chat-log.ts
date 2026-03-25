@@ -14,6 +14,7 @@ import chalk from 'chalk';
 
 interface ChatEntry {
   components: Component[];
+  separatorCount: number;
   role: 'user' | 'assistant' | 'system';
 }
 
@@ -58,31 +59,30 @@ export class ChatLog extends Container {
     return null;
   }
 
-  private addEntry(role: ChatEntry['role'], components: Component[]): void {
-    for (const c of components) this.addChild(c);
-    this.entries.push({ components, role });
+  private addEntry(role: ChatEntry['role'], separators: Component[], content: Component[]): void {
+    const all = [...separators, ...content];
+    for (const c of all) this.addChild(c);
+    this.entries.push({ components: all, separatorCount: separators.length, role });
     this.lastRole = role;
     this.pruneOverflow();
   }
 
   addSystemWarning(content: string): void {
-    const spacer = new Spacer(1);
     const text = new Text(
       chalk.hex(palette.warning)(`${icons.warning}  ${content}`),
       spacing.componentMarginX,
       spacing.componentMarginY,
     );
-    this.addEntry('system', [spacer, text]);
+    this.addEntry('system', [new Spacer(1)], [text]);
   }
 
   addSystemSuccess(content: string): void {
-    const spacer = new Spacer(1);
     const text = new Text(
       chalk.hex(palette.success)(`${icons.complete}  ${content}`),
       spacing.componentMarginX,
       spacing.componentMarginY,
     );
-    this.addEntry('system', [spacer, text]);
+    this.addEntry('system', [new Spacer(1)], [text]);
   }
 
   addRunStats(info: {
@@ -166,59 +166,59 @@ export class ChatLog extends Container {
     for (const line of lines) {
       container.addChild(new Text(line, spacing.componentMarginX, 0));
     }
-    this.addEntry('system', [container]);
+    this.addEntry('system', [], [container]);
   }
 
   addMessage(msg: DisplayMessage): void {
-    const parts: Component[] = [];
+    const seps: Component[] = [];
+    const content: Component[] = [];
 
     if (msg.role === 'user') {
       if (this.lastRole !== null) {
-        parts.push(new Spacer(1));
-        parts.push(this.makeDivider());
+        seps.push(new Spacer(1));
+        seps.push(this.makeDivider());
       }
-      parts.push(new Spacer(1));
+      seps.push(new Spacer(1));
 
-      const label = new Text(
+      content.push(new Text(
         theme.userLabel() + spacing.labelGap + theme.user(msg.content),
         spacing.componentMarginX,
         spacing.componentMarginY,
-      );
-      parts.push(label);
+      ));
 
       this.userMessages.set(msg.id, msg.content);
-      this.addEntry('user', parts);
+      this.addEntry('user', seps, content);
 
     } else if (msg.raw) {
       if (this.lastRole === 'assistant') {
-        parts.push(new Spacer(1));
-        parts.push(this.makeDivider());
+        seps.push(new Spacer(1));
+        seps.push(this.makeDivider());
       }
-      parts.push(new Spacer(1));
+      seps.push(new Spacer(1));
       const rawLines = msg.raw.split('\n');
       for (const line of rawLines) {
-        parts.push(new Text(line, spacing.componentMarginX, spacing.componentMarginY));
+        content.push(new Text(line, spacing.componentMarginX, spacing.componentMarginY));
       }
-      this.addEntry('system', parts);
+      this.addEntry('system', seps, content);
 
     } else if (msg.role === 'system') {
-      parts.push(new Spacer(1));
+      seps.push(new Spacer(1));
       const prefix = msg.emoji ? `${msg.emoji} ` : '';
-      parts.push(new Text(
+      content.push(new Text(
         theme.system(prefix + msg.content),
         spacing.componentMarginX,
         spacing.componentMarginY,
       ));
-      this.addEntry('system', parts);
+      this.addEntry('system', seps, content);
 
     } else {
       if (this.lastRole === 'assistant') {
-        parts.push(new Spacer(1));
-        parts.push(this.makeDivider());
+        seps.push(new Spacer(1));
+        seps.push(this.makeDivider());
       }
-      parts.push(new Spacer(1));
+      seps.push(new Spacer(1));
 
-      parts.push(new Text(
+      content.push(new Text(
         theme.assistantLabel(),
         spacing.componentMarginX,
         spacing.componentMarginY,
@@ -226,17 +226,16 @@ export class ChatLog extends Container {
 
       const context = this.resolveContext(msg);
       if (context && this.lastRole !== 'user') {
-        parts.push(this.makeContextRef(context));
+        content.push(this.makeContextRef(context));
       }
 
-      const md = new Markdown(
+      content.push(new Markdown(
         msg.content,
         spacing.componentMarginX,
         spacing.componentMarginY,
         markdownTheme,
-      );
-      parts.push(md);
-      this.addEntry('assistant', parts);
+      ));
+      this.addEntry('assistant', seps, content);
     }
   }
 
@@ -348,11 +347,16 @@ export class ChatLog extends Container {
       }
       pruned = true;
     }
-    if (pruned && this.entries.length > 0) {
-      const first = this.entries[0];
-      while (first.components.length > 0 && first.components[0] instanceof Spacer) {
-        this.removeChild(first.components[0]);
-        first.components.shift();
+    if (pruned) {
+      if (this.entries.length === 0) {
+        this.lastRole = null;
+      } else {
+        const first = this.entries[0];
+        while (first.separatorCount > 0 && first.components.length > 1) {
+          this.removeChild(first.components[0]);
+          first.components.shift();
+          first.separatorCount--;
+        }
       }
     }
   }
