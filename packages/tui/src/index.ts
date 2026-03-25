@@ -124,7 +124,9 @@ export async function start(): Promise<void> {
 
   const tui = new TUI(new ProcessTerminal());
 
-  const RENDER_INTERVAL_MS = 50;
+  tui.setClearOnShrink(true);
+
+  const RENDER_INTERVAL_MS = 100;
   let renderScheduled = false;
   let lastRenderTime = 0;
   const throttledRender = () => {

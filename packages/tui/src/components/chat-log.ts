@@ -25,6 +25,7 @@ export class ChatLog extends Container {
   private streamingLabel: Text | null = null;
   private streamingDivider: Text | null = null;
   private streamingContext: Text | null = null;
+  private streamingSpacers: Component[] = [];
   private thinkingComponent: Text | null = null;
   private thinkingText = '';
   private unsubSpinner: (() => void) | null = null;
@@ -247,11 +248,15 @@ export class ChatLog extends Container {
     if (!this.streamingComponent) {
       if (this.lastRole !== null) {
         this.streamingDivider = this.makeDivider();
-        this.addChild(new Spacer(1));
+        const sp1 = new Spacer(1);
+        this.streamingSpacers.push(sp1);
+        this.addChild(sp1);
         this.addChild(this.streamingDivider);
       }
 
-      this.addChild(new Spacer(1));
+      const sp2 = new Spacer(1);
+      this.streamingSpacers.push(sp2);
+      this.addChild(sp2);
       this.streamingLabel = new Text(
         theme.assistantLabel(),
         spacing.componentMarginX,
@@ -272,6 +277,10 @@ export class ChatLog extends Container {
   }
 
   clearStreaming(): void {
+    for (const sp of this.streamingSpacers) {
+      this.removeChild(sp);
+    }
+    this.streamingSpacers = [];
     if (this.streamingComponent) {
       this.removeChild(this.streamingComponent);
       this.streamingComponent = null;
@@ -330,6 +339,7 @@ export class ChatLog extends Container {
     this.streamingLabel = null;
     this.streamingDivider = null;
     this.streamingContext = null;
+    this.streamingSpacers = [];
     if (this.unsubSpinner) {
       this.unsubSpinner();
       this.unsubSpinner = null;

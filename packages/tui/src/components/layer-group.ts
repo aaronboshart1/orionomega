@@ -47,18 +47,10 @@ export class LayerGroup extends Container {
       return;
     }
 
-    if (!this._collapsed) {
-      for (const nd of this.nodeDisplays) {
-        this.removeChild(nd);
-      }
-    }
-
     this.nodeDisplays = nodes;
 
     if (!this._collapsed) {
-      for (const nd of nodes) {
-        this.addChild(nd);
-      }
+      (this as any).children = [this.headerText, ...nodes];
     }
   }
 
@@ -85,9 +77,7 @@ export class LayerGroup extends Container {
   collapse(): void {
     if (this._collapsed) return;
     this._collapsed = true;
-    for (const nd of this.nodeDisplays) {
-      this.removeChild(nd);
-    }
+    (this as any).children = [this.headerText];
     this.updateHeader();
   }
 
@@ -95,9 +85,7 @@ export class LayerGroup extends Container {
   expand(): void {
     if (!this._collapsed) return;
     this._collapsed = false;
-    for (const nd of this.nodeDisplays) {
-      this.addChild(nd);
-    }
+    (this as any).children = [this.headerText, ...this.nodeDisplays];
     this.updateHeader();
   }
 

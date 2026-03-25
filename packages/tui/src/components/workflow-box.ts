@@ -338,26 +338,20 @@ export class WorkflowBox extends Container {
   }
 
   private applyLayerCollapseLogic(
-    layerNodes: Map<number, NodeDisplay[]>,
+    _layerNodes: Map<number, NodeDisplay[]>,
     allLayerIndices: number[],
   ): void {
+    const workflowDone = this.workflowStatus === 'complete'
+      || this.workflowStatus === 'error'
+      || this.workflowStatus === 'stopped';
+
     for (const layerIdx of allLayerIndices) {
       const lg = this.layerGroups.get(layerIdx);
       if (!lg) continue;
 
-      const laterLayerStarted = allLayerIndices.some(
-        idx => idx > layerIdx && (layerNodes.get(idx) ?? []).some(
-          n => n.state.status === 'running' || n.state.status === 'complete',
-        ),
-      );
-      const totalNodeCount = this.nodeDisplays.size;
-      if (
-        lg.layerStatus === 'complete' &&
-        laterLayerStarted &&
-        totalNodeCount > 4
-      ) {
+      if (workflowDone && lg.layerStatus === 'complete') {
         lg.collapse();
-      } else if (lg.layerStatus === 'active' || (lg.layerStatus === 'complete' && !laterLayerStarted)) {
+      } else {
         lg.expand();
       }
     }
@@ -435,19 +429,13 @@ export class WorkflowBox extends Container {
       const wasColl = lg.collapsed;
       lg.updateStats(completed, total, layerDuration, layerStatus);
 
-      const laterLayerStarted = allLayerIndices.some(
-        idx => idx > layerIdx && (layerNodes.get(idx) ?? []).some(
-          n => n.state.status === 'running' || n.state.status === 'complete',
-        ),
-      );
-      const totalNodeCount = this.nodeDisplays.size;
-      if (
-        lg.layerStatus === 'complete' &&
-        laterLayerStarted &&
-        totalNodeCount > 4
-      ) {
+      const workflowDone = this.workflowStatus === 'complete'
+        || this.workflowStatus === 'error'
+        || this.workflowStatus === 'stopped';
+
+      if (workflowDone && lg.layerStatus === 'complete') {
         lg.collapse();
-      } else if (lg.layerStatus === 'active' || (lg.layerStatus === 'complete' && !laterLayerStarted)) {
+      } else {
         lg.expand();
       }
       if (lg.collapsed !== wasColl) collapseChanged = true;
@@ -543,24 +531,8 @@ export class WorkflowBox extends Container {
       return;
     }
 
-    const desiredSet = new Set(desired);
-    for (const child of current) {
-      if (!desiredSet.has(child)) {
-        this.removeChild(child);
-      }
-    }
-
-    for (const child of current) {
-      if (desiredSet.has(child)) {
-        this.removeChild(child);
-      }
-    }
-
-    this.attachedChildren = [];
-    for (const child of desired) {
-      this.addChild(child);
-      this.attachedChildren.push(child);
-    }
+    (this as any).children = [...desired];
+    this.attachedChildren = [...desired];
   }
 
   /** Update only border texts (without restructuring). */
