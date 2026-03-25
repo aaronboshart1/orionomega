@@ -338,12 +338,21 @@ export class ChatLog extends Container {
   }
 
   private pruneOverflow(): void {
+    let pruned = false;
     while (this.entries.length > this.maxEntries) {
       const oldest = this.entries.shift();
       if (oldest) {
         for (const c of oldest.components) {
           this.removeChild(c);
         }
+      }
+      pruned = true;
+    }
+    if (pruned && this.entries.length > 0) {
+      const first = this.entries[0];
+      while (first.components.length > 0 && first.components[0] instanceof Spacer) {
+        this.removeChild(first.components[0]);
+        first.components.shift();
       }
     }
   }

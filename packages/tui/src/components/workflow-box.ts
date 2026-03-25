@@ -404,11 +404,14 @@ export class WorkflowBox extends Container {
 
   private updateLayerStats(): void {
     const { layerNodes, allLayerIndices } = this.groupNodesByLayer();
+    let collapseChanged = false;
 
     for (const layerIdx of allLayerIndices) {
       const lg = this.layerGroups.get(layerIdx);
       if (!lg) continue;
       const nodes = layerNodes.get(layerIdx)!;
+
+      lg.setNodes(nodes);
 
       const completed = nodes.filter(n =>
         n.state.status === 'complete' || n.state.status === 'skipped',
@@ -429,10 +432,30 @@ export class WorkflowBox extends Container {
         layerDuration = this.computeLayerDuration(nodes);
       }
 
+      const wasColl = lg.collapsed;
       lg.updateStats(completed, total, layerDuration, layerStatus);
+
+      const laterLayerStarted = allLayerIndices.some(
+        idx => idx > layerIdx && (layerNodes.get(idx) ?? []).some(
+          n => n.state.status === 'running' || n.state.status === 'complete',
+        ),
+      );
+      const totalNodeCount = this.nodeDisplays.size;
+      if (
+        lg.layerStatus === 'complete' &&
+        laterLayerStarted &&
+        totalNodeCount > 4
+      ) {
+        lg.collapse();
+      } else if (lg.layerStatus === 'active' || (lg.layerStatus === 'complete' && !laterLayerStarted)) {
+        lg.expand();
+      }
+      if (lg.collapsed !== wasColl) collapseChanged = true;
     }
 
-    this.applyLayerCollapseLogic(layerNodes, allLayerIndices);
+    if (collapseChanged) {
+      this.rebuildStructure();
+    }
   }
 
   private computeLayerDuration(nodes: NodeDisplay[]): number {
