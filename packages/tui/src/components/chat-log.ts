@@ -245,7 +245,7 @@ export class ChatLog extends Container {
 
   updateStreaming(content: string): void {
     if (!this.streamingComponent) {
-      if (this.lastRole === 'assistant') {
+      if (this.lastRole !== null) {
         this.streamingDivider = this.makeDivider();
         this.addChild(new Spacer(1));
         this.addChild(this.streamingDivider);
