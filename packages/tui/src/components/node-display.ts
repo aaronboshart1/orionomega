@@ -121,12 +121,15 @@ export class NodeEventAccumulator {
 
 /**
  * Renders a single workflow node as 1-3 lines depending on status.
- * Manages its own Text children for main line and sub-lines.
+ * Reuses persistent Text children to avoid tree mutations on every update.
  */
 export class NodeDisplay extends Container {
   private mainLine: Text;
-  private subLine1: Text | null = null;
-  private subLine2: Text | null = null;
+  private subLine1: Text;
+  private subLine2: Text;
+  private sub1Attached = false;
+  private sub2Attached = false;
+  private lastRenderedStatus: NodeStatusType | null = null;
   readonly state: NodeState;
   readonly accumulator = new NodeEventAccumulator();
 
@@ -134,11 +137,12 @@ export class NodeDisplay extends Container {
     super();
     this.state = state;
     this.mainLine = new Text('', 1, 0);
+    this.subLine1 = new Text('', 1, 0);
+    this.subLine2 = new Text('', 1, 0);
     this.addChild(this.mainLine);
     this.rebuild();
   }
 
-  /** Process an incoming WorkerEvent and update display. */
   updateFromEvent(event: WorkerEvent): void {
     this.accumulator.processEvent(event);
     if (event.progress !== undefined) this.state.progress = event.progress;
@@ -163,7 +167,6 @@ export class NodeDisplay extends Container {
     this.rebuild();
   }
 
-  /** Update from a GraphState node snapshot. */
   updateFromGraphNode(node: any): void {
     const newStatus = mapNodeStatus(node.status);
     if (newStatus === 'running' && !this.state.startedAt) {
@@ -180,13 +183,11 @@ export class NodeDisplay extends Container {
     this.rebuild();
   }
 
-  /** Called on spinner tick — updates elapsed time and spinner char in-place. */
   tickUpdate(): void {
     if (this.state.status !== 'running') return;
     if (this.state.startedAt) {
       this.state.elapsed = Math.round((Date.now() - this.state.startedAt) / 1000);
     }
-    // Update main line in-place instead of full rebuild
     const model = this.state.model
       ? chalk.hex(palette.purple)(` [${this.state.model}]`)
       : '';
@@ -196,29 +197,61 @@ export class NodeDisplay extends Container {
     this.mainLine.setText(`${spacing.indent2}${icon} ${label}${model}  ${elapsed}`);
   }
 
-  /** Rebuild all display lines based on current state. */
-  rebuild(): void {
-    // Remove old sub-lines
-    if (this.subLine1) { this.removeChild(this.subLine1); this.subLine1 = null; }
-    if (this.subLine2) { this.removeChild(this.subLine2); this.subLine2 = null; }
+  private ensureSub1(): void {
+    if (!this.sub1Attached) {
+      this.addChild(this.subLine1);
+      this.sub1Attached = true;
+    }
+  }
 
+  private removeSub1(): void {
+    if (this.sub1Attached) {
+      this.removeChild(this.subLine1);
+      this.sub1Attached = false;
+    }
+  }
+
+  private ensureSub2(): void {
+    if (!this.sub2Attached) {
+      this.addChild(this.subLine2);
+      this.sub2Attached = true;
+    }
+  }
+
+  private removeSub2(): void {
+    if (this.sub2Attached) {
+      this.removeChild(this.subLine2);
+      this.sub2Attached = false;
+    }
+  }
+
+  rebuild(): void {
     const { state, accumulator } = this;
     const model = state.model
       ? chalk.hex(palette.purple)(` [${state.model}]`)
       : '';
 
+    const needsSub1Before = this.sub1Attached;
+    const needsSub2Before = this.sub2Attached;
+    let wantSub1 = false;
+    let wantSub2 = false;
+
     switch (state.status) {
-      case 'running':
-        this.renderRunning(model, state, accumulator);
+      case 'running': {
+        const hasActivity = this.renderRunning(model, state, accumulator);
+        const hasProgress = this.renderRunningProgressLine(state, accumulator, hasActivity);
+        wantSub1 = hasActivity || hasProgress;
+        wantSub2 = hasActivity && hasProgress;
         break;
+      }
       case 'complete':
-        this.renderComplete(model, state, accumulator);
+        wantSub1 = this.renderComplete(model, state, accumulator);
         break;
       case 'pending':
-        this.renderPending(model, state);
+        wantSub1 = this.renderPending(model, state);
         break;
       case 'error':
-        this.renderError(model, state);
+        wantSub1 = this.renderError(model, state);
         break;
       case 'skipped':
         this.renderSkipped(model, state);
@@ -227,9 +260,24 @@ export class NodeDisplay extends Container {
         this.renderCancelled(model, state);
         break;
     }
+
+    const statusChanged = this.lastRenderedStatus !== state.status;
+    this.lastRenderedStatus = state.status;
+
+    if (statusChanged) {
+      if (needsSub2Before) this.removeSub2();
+      if (needsSub1Before) this.removeSub1();
+      if (wantSub1) this.ensureSub1();
+      if (wantSub2) this.ensureSub2();
+    } else {
+      if (!wantSub2 && needsSub2Before) this.removeSub2();
+      if (!wantSub1 && needsSub1Before) this.removeSub1();
+      if (wantSub1 && !needsSub1Before) this.ensureSub1();
+      if (wantSub2 && !needsSub2Before) this.ensureSub2();
+    }
   }
 
-  private renderRunning(model: string, state: NodeState, acc: NodeEventAccumulator): void {
+  private renderRunning(model: string, state: NodeState, acc: NodeEventAccumulator): boolean {
     if (state.startedAt) {
       state.elapsed = Math.round((Date.now() - state.startedAt) / 1000);
     }
@@ -238,17 +286,17 @@ export class NodeDisplay extends Container {
     const elapsed = chalk.hex(palette.dim)(formatDuration(state.elapsed));
     this.mainLine.setText(`${spacing.indent2}${icon} ${label}${model}  ${elapsed}`);
 
-    // Activity line
     const activity = acc.activity;
     if (activity) {
-      this.subLine1 = new Text(
+      this.subLine1.setText(
         `${spacing.indent3}${chalk.hex(palette.border)(icons.treeMiddle)} ${chalk.hex(palette.text)(truncate(activity, 60))}`,
-        1, 0,
       );
-      this.addChild(this.subLine1);
+      return true;
     }
+    return false;
+  }
 
-    // Progress line
+  private renderRunningProgressLine(state: NodeState, acc: NodeEventAccumulator, hasActivity: boolean): boolean {
     if (acc.toolCount > 0 || state.progress > 0) {
       const parts: string[] = [];
       if (acc.toolCount > 0) parts.push(`${acc.toolCount} tool calls`);
@@ -257,15 +305,16 @@ export class NodeDisplay extends Container {
         const pct = Math.round(state.progress);
         pctPart = ` \u00b7 ${chalk.hex(palette.info)(`${pct}%`)}  ${styledProgressBar(state.progress)}`;
       }
-      this.subLine2 = new Text(
+      const target = hasActivity ? this.subLine2 : this.subLine1;
+      target.setText(
         `${spacing.indent3}${chalk.hex(palette.border)(icons.treeLast)} ${chalk.hex(palette.dim)(parts.join(' \u00b7 '))}${pctPart}`,
-        1, 0,
       );
-      this.addChild(this.subLine2);
+      return true;
     }
+    return false;
   }
 
-  private renderComplete(model: string, state: NodeState, acc: NodeEventAccumulator): void {
+  private renderComplete(model: string, state: NodeState, acc: NodeEventAccumulator): boolean {
     const icon = chalk.hex(palette.success)(icons.complete);
     const label = chalk.hex(palette.success)(state.label);
     const timeParts: string[] = [];
@@ -275,19 +324,17 @@ export class NodeDisplay extends Container {
       : '';
     this.mainLine.setText(`${spacing.indent2}${icon} ${label}${model}${timeStr}`);
 
-    // Summary line
     const summaryParts: string[] = [];
     if (acc.toolCount > 0) summaryParts.push(`${acc.toolCount} tool calls`);
     if (state.resultSummary) summaryParts.push(truncate(state.resultSummary, 50));
     else if (summaryParts.length === 0) summaryParts.push('Complete');
-    this.subLine1 = new Text(
+    this.subLine1.setText(
       `${spacing.indent3}${chalk.hex(palette.border)(icons.treeLast)} ${chalk.hex(palette.dim)(summaryParts.join(' \u00b7 '))}`,
-      1, 0,
     );
-    this.addChild(this.subLine1);
+    return true;
   }
 
-  private renderPending(model: string, state: NodeState): void {
+  private renderPending(model: string, state: NodeState): boolean {
     const icon = chalk.hex(palette.dim)(icons.pending);
     const label = chalk.hex(palette.dim)(state.label);
     this.mainLine.setText(`${spacing.indent2}${icon} ${label}${model}`);
@@ -295,14 +342,13 @@ export class NodeDisplay extends Container {
     const deps = state.dependencyLabels.length > 0
       ? state.dependencyLabels.join(', ')
       : '\u2014';
-    this.subLine1 = new Text(
+    this.subLine1.setText(
       `${spacing.indent3}${chalk.hex(palette.border)(icons.treeLast)} ${chalk.hex(palette.dim)(`waiting on: ${deps}`)}`,
-      1, 0,
     );
-    this.addChild(this.subLine1);
+    return true;
   }
 
-  private renderError(model: string, state: NodeState): void {
+  private renderError(model: string, state: NodeState): boolean {
     const icon = chalk.hex(palette.error)(icons.error);
     const label = chalk.hex(palette.error)(state.label);
     const dur = state.duration !== undefined
@@ -311,11 +357,10 @@ export class NodeDisplay extends Container {
     this.mainLine.setText(`${spacing.indent2}${icon} ${label}${model}${dur}`);
 
     const errMsg = state.errorMessage || 'Unknown error';
-    this.subLine1 = new Text(
+    this.subLine1.setText(
       `${spacing.indent3}${chalk.hex(palette.border)(icons.treeLast)} ${chalk.hex(palette.error)(`${icons.error} Error: ${truncate(errMsg, 55)}`)}`,
-      1, 0,
     );
-    this.addChild(this.subLine1);
+    return true;
   }
 
   private renderCancelled(model: string, state: NodeState): void {

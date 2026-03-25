@@ -13,7 +13,7 @@ import { omegaSpinner } from './omega-spinner.js';
 import chalk from 'chalk';
 
 interface ChatEntry {
-  component: Component;
+  components: Component[];
   role: 'user' | 'assistant' | 'system';
 }
 
@@ -58,30 +58,31 @@ export class ChatLog extends Container {
     return null;
   }
 
+  private addEntry(role: ChatEntry['role'], components: Component[]): void {
+    for (const c of components) this.addChild(c);
+    this.entries.push({ components, role });
+    this.lastRole = role;
+    this.pruneOverflow();
+  }
+
   addSystemWarning(content: string): void {
-    this.addChild(new Spacer(1));
+    const spacer = new Spacer(1);
     const text = new Text(
       chalk.hex(palette.warning)(`${icons.warning}  ${content}`),
       spacing.componentMarginX,
       spacing.componentMarginY,
     );
-    this.addChild(text);
-    this.entries.push({ component: text, role: 'system' });
-    this.lastRole = 'system';
-    this.pruneOverflow();
+    this.addEntry('system', [spacer, text]);
   }
 
   addSystemSuccess(content: string): void {
-    this.addChild(new Spacer(1));
+    const spacer = new Spacer(1);
     const text = new Text(
       chalk.hex(palette.success)(`${icons.complete}  ${content}`),
       spacing.componentMarginX,
       spacing.componentMarginY,
     );
-    this.addChild(text);
-    this.entries.push({ component: text, role: 'system' });
-    this.lastRole = 'system';
-    this.pruneOverflow();
+    this.addEntry('system', [spacer, text]);
   }
 
   addRunStats(info: {
@@ -165,74 +166,67 @@ export class ChatLog extends Container {
     for (const line of lines) {
       container.addChild(new Text(line, spacing.componentMarginX, 0));
     }
-    this.addChild(container);
-    this.entries.push({ component: container, role: 'system' });
-    this.lastRole = 'system';
-    this.pruneOverflow();
+    this.addEntry('system', [container]);
   }
 
   addMessage(msg: DisplayMessage): void {
+    const parts: Component[] = [];
+
     if (msg.role === 'user') {
       if (this.lastRole !== null) {
-        this.addChild(new Spacer(1));
-        this.addChild(this.makeDivider());
+        parts.push(new Spacer(1));
+        parts.push(this.makeDivider());
       }
-      this.addChild(new Spacer(1));
+      parts.push(new Spacer(1));
 
       const label = new Text(
         theme.userLabel() + spacing.labelGap + theme.user(msg.content),
         spacing.componentMarginX,
         spacing.componentMarginY,
       );
-      this.addChild(label);
-      this.entries.push({ component: label, role: 'user' });
+      parts.push(label);
 
       this.userMessages.set(msg.id, msg.content);
-      this.lastRole = 'user';
+      this.addEntry('user', parts);
 
     } else if (msg.raw) {
       if (this.lastRole === 'assistant') {
-        this.addChild(new Spacer(1));
-        this.addChild(this.makeDivider());
+        parts.push(new Spacer(1));
+        parts.push(this.makeDivider());
       }
-      this.addChild(new Spacer(1));
+      parts.push(new Spacer(1));
       const rawLines = msg.raw.split('\n');
       for (const line of rawLines) {
-        const t = new Text(line, spacing.componentMarginX, spacing.componentMarginY);
-        this.addChild(t);
+        parts.push(new Text(line, spacing.componentMarginX, spacing.componentMarginY));
       }
-      this.entries.push({ component: new Text('', 0, 0), role: 'system' });
-      this.lastRole = 'system';
+      this.addEntry('system', parts);
 
     } else if (msg.role === 'system') {
-      this.addChild(new Spacer(1));
+      parts.push(new Spacer(1));
       const prefix = msg.emoji ? `${msg.emoji} ` : '';
-      const text = new Text(
+      parts.push(new Text(
         theme.system(prefix + msg.content),
         spacing.componentMarginX,
         spacing.componentMarginY,
-      );
-      this.addChild(text);
-      this.entries.push({ component: text, role: 'system' });
-      this.lastRole = 'system';
+      ));
+      this.addEntry('system', parts);
 
     } else {
       if (this.lastRole === 'assistant') {
-        this.addChild(new Spacer(1));
-        this.addChild(this.makeDivider());
+        parts.push(new Spacer(1));
+        parts.push(this.makeDivider());
       }
-      this.addChild(new Spacer(1));
+      parts.push(new Spacer(1));
 
-      const label = new Text(
+      parts.push(new Text(
         theme.assistantLabel(),
         spacing.componentMarginX,
         spacing.componentMarginY,
-      );
-      this.addChild(label);
+      ));
 
       const context = this.resolveContext(msg);
       if (context && this.lastRole !== 'user') {
-        this.addChild(this.makeContextRef(context));
+        parts.push(this.makeContextRef(context));
       }
 
       const md = new Markdown(
@@ -241,12 +235,9 @@ export class ChatLog extends Container {
         spacing.componentMarginY,
         markdownTheme,
       );
-      this.addChild(md);
-      this.entries.push({ component: md, role: 'assistant' });
-      this.lastRole = 'assistant';
+      parts.push(md);
+      this.addEntry('assistant', parts);
     }
-
-    this.pruneOverflow();
   }
 
   updateStreaming(content: string): void {
@@ -350,7 +341,9 @@ export class ChatLog extends Container {
     while (this.entries.length > this.maxEntries) {
       const oldest = this.entries.shift();
       if (oldest) {
-        this.removeChild(oldest.component);
+        for (const c of oldest.components) {
+          this.removeChild(c);
+        }
       }
     }
   }

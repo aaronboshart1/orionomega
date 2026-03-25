@@ -233,7 +233,11 @@ export class WorkflowBox extends Container {
     const statusTransitioned = prevStatus !== this.workflowStatus;
     const structureChanged = hasNewNodes || this.nodeDisplays.size !== prevNodeCount || statusTransitioned;
 
-    this.buildLayerGroups();
+    if (structureChanged) {
+      this.buildLayerGroups();
+    } else {
+      this.updateLayerStats();
+    }
     this.updateSpinner();
 
     if (structureChanged) {
@@ -319,22 +323,48 @@ export class WorkflowBox extends Container {
 
   // ── Layer Group Management ─────────────────────────────────────
 
-  private buildLayerGroups(): void {
-    // Group nodes by layer
+  private groupNodesByLayer(): { layerNodes: Map<number, NodeDisplay[]>; allLayerIndices: number[] } {
     const layerNodes = new Map<number, NodeDisplay[]>();
     for (const nd of this.nodeDisplays.values()) {
       const layer = nd.state.layer;
       if (!layerNodes.has(layer)) layerNodes.set(layer, []);
       layerNodes.get(layer)!.push(nd);
     }
-
-    // Sort nodes within each layer by id
     for (const nodes of layerNodes.values()) {
       nodes.sort((a, b) => a.state.id.localeCompare(b.state.id));
     }
-
-    // Create or update layer groups
     const allLayerIndices = [...layerNodes.keys()].sort((a, b) => a - b);
+    return { layerNodes, allLayerIndices };
+  }
+
+  private applyLayerCollapseLogic(
+    layerNodes: Map<number, NodeDisplay[]>,
+    allLayerIndices: number[],
+  ): void {
+    for (const layerIdx of allLayerIndices) {
+      const lg = this.layerGroups.get(layerIdx);
+      if (!lg) continue;
+
+      const laterLayerStarted = allLayerIndices.some(
+        idx => idx > layerIdx && (layerNodes.get(idx) ?? []).some(
+          n => n.state.status === 'running' || n.state.status === 'complete',
+        ),
+      );
+      const totalNodeCount = this.nodeDisplays.size;
+      if (
+        lg.layerStatus === 'complete' &&
+        laterLayerStarted &&
+        totalNodeCount > 4
+      ) {
+        lg.collapse();
+      } else if (lg.layerStatus === 'active' || (lg.layerStatus === 'complete' && !laterLayerStarted)) {
+        lg.expand();
+      }
+    }
+  }
+
+  private buildLayerGroups(): void {
+    const { layerNodes, allLayerIndices } = this.groupNodesByLayer();
     const newLayerGroups = new Map<number, LayerGroup>();
 
     for (const layerIdx of allLayerIndices) {
@@ -344,7 +374,6 @@ export class WorkflowBox extends Container {
         lg = new LayerGroup(layerIdx);
       }
 
-      // Compute layer stats
       const completed = nodes.filter(n =>
         n.state.status === 'complete' || n.state.status === 'skipped',
       ).length;
@@ -352,7 +381,6 @@ export class WorkflowBox extends Container {
       const hasRunning = nodes.some(n => n.state.status === 'running');
       const hasError = nodes.some(n => n.state.status === 'error');
 
-      // Determine layer status
       let layerStatus: LayerStatus = 'pending';
       if (completed === total && total > 0) {
         layerStatus = 'complete';
@@ -360,7 +388,6 @@ export class WorkflowBox extends Container {
         layerStatus = 'active';
       }
 
-      // Compute layer duration
       let layerDuration = 0;
       if (layerStatus === 'complete') {
         layerDuration = this.computeLayerDuration(nodes);
@@ -368,29 +395,44 @@ export class WorkflowBox extends Container {
 
       lg.updateStats(completed, total, layerDuration, layerStatus);
       lg.setNodes(nodes);
-
-      // Auto-collapse logic:
-      // Collapse if: all nodes done/skipped, a later layer has started, total workflow nodes > 4
-      const laterLayerStarted = allLayerIndices.some(
-        idx => idx > layerIdx && (layerNodes.get(idx) ?? []).some(
-          n => n.state.status === 'running' || n.state.status === 'complete',
-        ),
-      );
-      const totalNodeCount = this.nodeDisplays.size;
-      if (
-        layerStatus === 'complete' &&
-        laterLayerStarted &&
-        totalNodeCount > 4
-      ) {
-        lg.collapse();
-      } else if (layerStatus === 'active' || (layerStatus === 'complete' && !laterLayerStarted)) {
-        lg.expand();
-      }
-
       newLayerGroups.set(layerIdx, lg);
     }
 
     this.layerGroups = newLayerGroups;
+    this.applyLayerCollapseLogic(layerNodes, allLayerIndices);
+  }
+
+  private updateLayerStats(): void {
+    const { layerNodes, allLayerIndices } = this.groupNodesByLayer();
+
+    for (const layerIdx of allLayerIndices) {
+      const lg = this.layerGroups.get(layerIdx);
+      if (!lg) continue;
+      const nodes = layerNodes.get(layerIdx)!;
+
+      const completed = nodes.filter(n =>
+        n.state.status === 'complete' || n.state.status === 'skipped',
+      ).length;
+      const total = nodes.length;
+      const hasRunning = nodes.some(n => n.state.status === 'running');
+      const hasError = nodes.some(n => n.state.status === 'error');
+
+      let layerStatus: LayerStatus = 'pending';
+      if (completed === total && total > 0) {
+        layerStatus = 'complete';
+      } else if (hasRunning || hasError || completed > 0) {
+        layerStatus = 'active';
+      }
+
+      let layerDuration = 0;
+      if (layerStatus === 'complete') {
+        layerDuration = this.computeLayerDuration(nodes);
+      }
+
+      lg.updateStats(completed, total, layerDuration, layerStatus);
+    }
+
+    this.applyLayerCollapseLogic(layerNodes, allLayerIndices);
   }
 
   private computeLayerDuration(nodes: NodeDisplay[]): number {
@@ -414,7 +456,7 @@ export class WorkflowBox extends Container {
   private findingsSpacer = new Spacer(1);
   private resultSpacer = new Spacer(1);
   private resultHeader: Text | null = null;
-  private attachedChildren = new Set<Container | Text | Spacer>();
+  private attachedChildren: Array<Container | Text | Spacer> = [];
 
   /** Full rebuild of the component tree (children of this Container). */
   private rebuildStructure(): void {
@@ -473,35 +515,28 @@ export class WorkflowBox extends Container {
       desired.push(this.bottomBorder);
     }
 
-    const desiredSet = new Set(desired);
-    const currentlyAttached = [...this.attachedChildren];
-
-    const currentInDesiredOrder = currentlyAttached.filter(c => desiredSet.has(c));
-    const orderMatches = currentInDesiredOrder.length === desired.length &&
-      currentInDesiredOrder.every((c, i) => c === desired[i]) &&
-      currentlyAttached.length === desired.length;
-
-    if (orderMatches) {
+    const current = this.attachedChildren;
+    if (current.length === desired.length && current.every((c, i) => c === desired[i])) {
       return;
     }
 
-    for (const child of currentlyAttached) {
+    const desiredSet = new Set(desired);
+    for (const child of current) {
       if (!desiredSet.has(child)) {
         this.removeChild(child);
-        this.attachedChildren.delete(child);
       }
     }
 
-    for (const child of currentlyAttached) {
+    for (const child of current) {
       if (desiredSet.has(child)) {
         this.removeChild(child);
       }
     }
 
-    this.attachedChildren.clear();
+    this.attachedChildren = [];
     for (const child of desired) {
       this.addChild(child);
-      this.attachedChildren.add(child);
+      this.attachedChildren.push(child);
     }
   }
 
