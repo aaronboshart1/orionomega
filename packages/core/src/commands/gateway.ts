@@ -61,11 +61,19 @@ function findServerPath(): string {
   return candidates[0];
 }
 
-function startDev(): void {
+function startDev(force = false): void {
   const existing = readPid();
   if (existing) {
-    process.stdout.write(`${YELLOW}⚠${RESET} Gateway already running (PID ${existing})\n`);
-    return;
+    if (force) {
+      try {
+        process.kill(existing, 'SIGTERM');
+        unlinkSync(PID_FILE);
+        process.stdout.write(`${GREEN}✓${RESET} Stopped existing gateway (PID ${existing})\n`);
+      } catch {}
+    } else {
+      process.stdout.write(`${YELLOW}⚠${RESET} Gateway already running (PID ${existing})\n`);
+      return;
+    }
   }
 
   const serverPath = findServerPath();
@@ -168,8 +176,7 @@ function runDevMode(sub: string): void {
     case 'start': startDev(); break;
     case 'stop': stopDev(); break;
     case 'restart':
-      stopDev();
-      setTimeout(() => startDev(), 500);
+      startDev(true);
       break;
     case 'status': statusDev(); break;
   }
