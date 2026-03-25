@@ -172,6 +172,7 @@ function RunStats({ dag }: { dag: InlineDAG }) {
       <div className="flex items-center gap-3 text-[10px] text-zinc-500">
         {dag.durationSec !== undefined && <span>{fmtDuration(dag.durationSec)}</span>}
         {dag.workerCount !== undefined && <span>{dag.workerCount} worker{dag.workerCount !== 1 ? 's' : ''}</span>}
+        {dag.toolCallCount != null && dag.toolCallCount > 0 && <span>{dag.toolCallCount} tool call{dag.toolCallCount !== 1 ? 's' : ''}</span>}
         {dag.totalCostUsd !== undefined && (
           <span className="font-medium text-green-400">${dag.totalCostUsd.toFixed(4)}</span>
         )}

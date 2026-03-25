@@ -1160,6 +1160,7 @@ export class GraphExecutor {
       nodeFinalResults: Object.keys(nodeFinalResults).length > 0 ? nodeFinalResults : undefined,
       modelUsage,
       totalCostUsd,
+      toolCallCount: Array.from(this.nodeResults.values()).reduce((sum, r) => sum + r.toolCallCount, 0),
     };
   }
 

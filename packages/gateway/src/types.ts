@@ -90,6 +90,7 @@ export interface ServerMessage {
     durationSec: number;
     workerCount: number;
     totalCostUsd: number;
+    toolCallCount?: number;
     modelUsage?: Array<{
       model: string;
       inputTokens: number;

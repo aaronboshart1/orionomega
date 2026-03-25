@@ -383,6 +383,7 @@ export async function start(): Promise<void> {
       durationSec: info.durationSec,
       workerCount: info.workerCount,
       totalCostUsd: info.totalCostUsd,
+      toolCallCount: info.toolCallCount,
       modelUsage: info.modelUsage,
     });
     throttledRender();

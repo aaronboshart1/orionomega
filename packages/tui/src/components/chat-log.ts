@@ -90,6 +90,7 @@ export class ChatLog extends Container {
     durationSec: number;
     workerCount: number;
     totalCostUsd: number;
+    toolCallCount?: number;
     modelUsage?: Array<{
       model: string;
       inputTokens: number;
@@ -129,7 +130,10 @@ export class ChatLog extends Container {
     const rule = border(box.horizontal.repeat(50));
     lines.push(rule);
     lines.push(accent.bold('  Run Summary'));
-    lines.push(`  Status: ${statusLabel}  ${dim('|')}  Duration: ${bright(fmtDuration)}  ${dim('|')}  Workers: ${bright(String(info.workerCount))}`);
+    const toolCallPart = info.toolCallCount != null
+      ? `  ${dim('|')}  Tool Calls: ${bright(String(info.toolCallCount))}`
+      : '';
+    lines.push(`  Status: ${statusLabel}  ${dim('|')}  Duration: ${bright(fmtDuration)}  ${dim('|')}  Workers: ${bright(String(info.workerCount))}${toolCallPart}`);
     lines.push('');
 
     if (info.modelUsage && info.modelUsage.length > 0) {

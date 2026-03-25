@@ -221,6 +221,8 @@ export interface ExecutionResult {
   modelUsage?: ModelUsage[];
   /** Total cost in USD. */
   totalCostUsd?: number;
+  /** Total tool calls across all workers. */
+  toolCallCount?: number;
 }
 
 // ── Checkpointing ───────────────────────────────────────────────────────────
@@ -296,6 +298,7 @@ export interface DAGCompleteInfo {
   workerCount: number;
   totalCostUsd: number;
   modelUsage?: ModelUsage[];
+  toolCallCount?: number;
 }
 
 /** Info emitted when a guarded DAG needs user confirmation. */
