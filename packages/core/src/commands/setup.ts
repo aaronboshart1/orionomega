@@ -981,14 +981,6 @@ async function stepSkills(config: OrionOmegaConfig, stepIdx: number, totalSteps:
       if (m.setup.description) println(`  ${m.setup.description}`);
       println();
 
-      const skipThis = await confirm(`  Skip ${m.name} setup for now?`, false);
-      if (skipThis) {
-        cfg.enabled = false;
-        writeSkillConfig(config.skills.directory, cfg);
-        println(`  ${DIM}Skipped. Configure later with: orionomega skill setup ${m.name}${RESET}`);
-        continue;
-      }
-
       let authSucceeded = true;
       if (m.setup.auth?.methods?.length) {
         const authResult = await runAuthSetup(m.setup.auth.methods, config.skills.directory, m.name);
