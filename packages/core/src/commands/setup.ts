@@ -914,12 +914,6 @@ async function stepSkills(config: OrionOmegaConfig, stepIdx: number, totalSteps:
     return nav(stepIdx, totalSteps);
   }
 
-  const skip = await confirm('  Skip skill setup for now?', false);
-  if (skip) {
-    println(`  ${DIM}You can configure skills later with: orionomega setup skills${RESET}`);
-    return nav(stepIdx, totalSteps);
-  }
-
   println('  Available skills:');
   println();
   for (let i = 0; i < allManifests.length; i++) {
