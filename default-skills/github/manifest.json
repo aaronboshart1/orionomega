@@ -32,7 +32,7 @@
           "tokenUrl": "https://github.com/settings/tokens/new?scopes=repo,workflow,read:org,read:user",
           "scopes": ["repo", "workflow", "read:org", "read:user"],
           "envVar": "GH_TOKEN",
-          "validateCommand": "gh auth status"
+          "validateCommand": "node -e \"fetch('https://api.github.com/user',{headers:{Authorization:'token '+(process.env.GH_TOKEN||''),Accept:'application/vnd.github+json','User-Agent':'orionomega'}}).then(r=>{if(r.ok)process.exit(0);else process.exit(1)}).catch(()=>process.exit(1))\""
         },
         {
           "type": "login",
