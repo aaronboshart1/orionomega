@@ -684,7 +684,7 @@ async function stepWorkspace(config: OrionOmegaConfig, stepIdx: number, totalSte
     }
   }
 
-  const defaultPath = config.workspace.path || join(homedir(), '.orionomega', 'workspace');
+  const defaultPath = config.workspace.path || join(homedir(), 'orionomega', 'workspace');
   const wsPath = await ask('Workspace directory', { default: defaultPath });
   config.workspace.path = wsPath;
 

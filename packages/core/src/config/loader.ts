@@ -62,7 +62,7 @@ export function getDefaultConfig(): OrionOmegaConfig {
       },
     },
     workspace: {
-      path: join(homedir(), '.orionomega', 'workspace'),
+      path: join(homedir(), 'orionomega', 'workspace'),
       maxOutputSize: '10MB',
     },
     logging: {
