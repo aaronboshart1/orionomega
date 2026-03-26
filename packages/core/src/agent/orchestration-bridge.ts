@@ -619,7 +619,7 @@ export class OrchestrationBridge {
       }).catch(() => {});
     }
 
-    const { status, findings, errors, taskSummary, decisions, nodeFinalResults, nodeOutputs, nodeOutputPaths } = result;
+    const { status, findings, errors, taskSummary, decisions, nodeFinalResults, nodeOutputPaths } = result;
 
     // ── Structured text message ─────────────────────────────────────
     const budget = OrchestrationBridge.OUTPUT_BUDGET;
@@ -631,33 +631,20 @@ export class OrchestrationBridge {
     else header = 'Workflow stopped.';
     parts.push(header);
 
+    parts.push('', `**Task:** ${taskSummary}`);
+
     const finalResultEntries = nodeFinalResults ? Object.entries(nodeFinalResults) : [];
-    const nodeOutputEntries = nodeOutputs ? Object.entries(nodeOutputs) : [];
     const lastFinalResult = finalResultEntries.length > 0
       ? finalResultEntries[finalResultEntries.length - 1][1]
       : undefined;
-    const lastOutput = nodeOutputEntries.length > 0
-      ? nodeOutputEntries[nodeOutputEntries.length - 1][1]
-      : undefined;
 
-    const metaLen = (findings.length > 0 ? findings.slice(0, 8).join('\n').length + 30 : 0)
-      + (decisions.length > 0 ? decisions.slice(0, 5).join('\n').length + 30 : 0)
-      + (errors.length > 0 ? errors.slice(0, 5).map(e => e.message).join('\n').length + 30 : 0);
-    const bodyBudget = Math.max(200, budget - header.length - metaLen - 100);
+    const bodyBudget = Math.min(2000, Math.max(200, budget - 500));
 
-    let body: string;
-    if (lastFinalResult && lastFinalResult.length <= bodyBudget) {
-      body = lastFinalResult;
-    } else if (lastFinalResult) {
-      body = this.fitToBudget(lastFinalResult, bodyBudget);
-    } else if (lastOutput && lastOutput.length <= bodyBudget) {
-      body = lastOutput;
-    } else if (lastOutput) {
-      body = this.fitToBudget(lastOutput, bodyBudget);
-    } else {
-      body = taskSummary;
+    if (lastFinalResult) {
+      const fitted = lastFinalResult.length <= bodyBudget
+        ? lastFinalResult : this.fitToBudget(lastFinalResult, bodyBudget);
+      parts.push('', fitted);
     }
-    parts.push('', body);
 
     if (errors.length > 0) {
       parts.push('', '**Errors:**');
