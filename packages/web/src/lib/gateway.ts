@@ -29,7 +29,16 @@ export function useGateway(url: string = defaultGatewayUrl()) {
 
       switch (msg.type) {
         case 'text':
-          if (msg.streaming) chatStore.appendToLast(msg.content || '');
+          if (msg.streaming) {
+            chatStore.appendToLast(msg.content || '');
+          } else if (msg.content && !msg.streaming) {
+            chatStore.addMessage({
+              id: crypto.randomUUID(),
+              role: 'assistant',
+              content: msg.content,
+              timestamp: new Date().toISOString(),
+            });
+          }
           if (msg.done) chatStore.setStreaming(false);
           break;
         case 'thinking':
@@ -93,16 +102,6 @@ export function useGateway(url: string = defaultGatewayUrl()) {
               stopped: c.status === 'stopped',
             },
           );
-          chatStore.addMessage({
-            id: crypto.randomUUID(),
-            role: 'assistant',
-            content: c.status === 'error'
-              ? `Something went wrong: ${c.summary}`
-              : c.output || c.summary || 'Done.',
-            timestamp: new Date().toISOString(),
-            type: 'dag-complete',
-            dagId: c.workflowId,
-          });
           break;
         }
         case 'dag_confirm': {

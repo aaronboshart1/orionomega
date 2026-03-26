@@ -689,12 +689,11 @@ export class OrchestrationBridge {
     this.callbacks.onText(summary, false, true, workflowId);
     pushHistory({ role: 'assistant', content: `[Workflow result] ${summary}` });
 
-    // ── DAGCompleteInfo (renders Run Summary card — emitted last) ───
     const completeInfo: DAGCompleteInfo = {
       workflowId,
       status,
       summary: taskSummary,
-      output: lastOutput,
+      output: summary,
       findings: findings.length > 0 ? findings.slice(0, 8) : undefined,
       outputPaths: result.outputPaths.length > 0 ? result.outputPaths : undefined,
       nodeOutputPaths: nodeOutputPaths && Object.keys(nodeOutputPaths).length > 0 ? nodeOutputPaths : undefined,
