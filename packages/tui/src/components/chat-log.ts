@@ -101,6 +101,7 @@ export class ChatLog extends Container {
       workerCount: number;
       costUsd: number;
     }>;
+    nodeOutputPaths?: Record<string, string[]>;
   }): void {
     const dim = chalk.hex(palette.dim);
     const accent = chalk.hex(palette.accent);
@@ -162,6 +163,18 @@ export class ChatLog extends Container {
       );
     } else {
       lines.push(`  Total Cost: ${success.bold(fmtCost)}`);
+    }
+
+    if (info.nodeOutputPaths && Object.keys(info.nodeOutputPaths).length > 0) {
+      lines.push('');
+      lines.push(accent.bold('  Artifacts'));
+      lines.push(`  ${border(box.horizontal.repeat(77))}`);
+      for (const [nodeLabel, paths] of Object.entries(info.nodeOutputPaths)) {
+        lines.push(`  ${bright(nodeLabel)}`);
+        for (const p of paths) {
+          lines.push(`    ${dim('\u2192')} ${info_(p)}`);
+        }
+      }
     }
 
     lines.push(rule);

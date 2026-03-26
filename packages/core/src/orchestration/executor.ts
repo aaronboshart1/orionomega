@@ -1102,15 +1102,21 @@ export class GraphExecutor {
     terminalStatus: 'complete' | 'error' | 'stopped',
     startTime: number,
   ): ExecutionResult {
-    // Collect text outputs from all completed nodes
     const nodeOutputs: Record<string, string> = {};
     const nodeFinalResults: Record<string, string> = {};
+    const nodeOutputPaths: Record<string, string[]> = {};
     for (const [nodeId, result] of this.nodeResults) {
       if (result.output && typeof result.output === "string") {
         nodeOutputs[nodeId] = result.output;
       }
       if (result.finalResult && typeof result.finalResult === "string") {
         nodeFinalResults[nodeId] = result.finalResult;
+      }
+      if (result.outputPaths && result.outputPaths.length > 0) {
+        const node = this.graph.nodes.get(nodeId);
+        const label = node?.label ?? nodeId;
+        const existing = nodeOutputPaths[label] ?? [];
+        nodeOutputPaths[label] = [...new Set([...existing, ...result.outputPaths])];
       }
     }
 
@@ -1150,6 +1156,7 @@ export class GraphExecutor {
       status: terminalStatus,
       taskSummary: this.graph.name,
       outputPaths: [...new Set(this.outputPaths)],
+      nodeOutputPaths: Object.keys(nodeOutputPaths).length > 0 ? nodeOutputPaths : undefined,
       durationSec: (Date.now() - startTime) / 1000,
       workerCount: this.nodeResults.size,
       estimatedCost: totalCostUsd,

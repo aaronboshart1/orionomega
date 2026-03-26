@@ -387,6 +387,7 @@ export async function start(): Promise<void> {
       totalCostUsd: info.totalCostUsd,
       toolCallCount: info.toolCallCount,
       modelUsage: info.modelUsage,
+      nodeOutputPaths: info.nodeOutputPaths,
     });
     throttledRender();
   });

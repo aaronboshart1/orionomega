@@ -26,8 +26,6 @@ import type {
 import type { MemoryBridge } from './memory-bridge.js';
 import type { MainAgentCallbacks } from './main-agent.js';
 import { createLogger } from '../logging/logger.js';
-import { readFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 
 const log = createLogger('orchestration-bridge');
@@ -607,7 +605,6 @@ export class OrchestrationBridge {
   ): Promise<void> {
     const wf = this.activeWorkflows.get(workflowId);
 
-    // Retain workflow outcome (fire-and-forget)
     if (this.memory.retention && this.memory.projectBank) {
       this.memory.retention.retainWorkflowOutcome({
         bankId: this.memory.projectBank,
@@ -622,87 +619,31 @@ export class OrchestrationBridge {
       }).catch(() => {});
     }
 
-    const { status, durationSec, workerCount, findings, errors, taskSummary, outputPaths, decisions, nodeOutputs, nodeFinalResults } = result;
+    const { status, findings, errors, taskSummary, decisions, nodeFinalResults, nodeOutputs, nodeOutputPaths } = result;
 
-    // Emit DAGCompleteInfo callback for inline UI
-    const nodeOutputEntries = nodeOutputs ? Object.entries(nodeOutputs) : [];
-    const lastOutput = nodeOutputEntries.length > 0
-      ? nodeOutputEntries[nodeOutputEntries.length - 1][1]
-      : undefined;
-
-    const completeInfo: DAGCompleteInfo = {
-      workflowId,
-      status,
-      summary: taskSummary,
-      output: lastOutput,
-      findings: findings.length > 0 ? findings.slice(0, 8) : undefined,
-      outputPaths: outputPaths.length > 0 ? outputPaths : undefined,
-      durationSec,
-      workerCount,
-      totalCostUsd: result.totalCostUsd ?? result.estimatedCost,
-      modelUsage: result.modelUsage && result.modelUsage.length > 0 ? result.modelUsage : undefined,
-      toolCallCount: result.toolCallCount,
-    };
-    this.callbacks.onDAGComplete?.(completeInfo);
-
-    // ── Budget-aware output formatting ──────────────────────────────
-    //
-    // Strategy: build the footer (run details) first, then fit the body
-    // into the remaining budget. Prefer the concise finalResult from
-    // the SDK over the full accumulated output. Never truncate with
-    // "... [truncated]" — always produce complete, readable output.
-
+    // ── Structured text message ─────────────────────────────────────
     const budget = OrchestrationBridge.OUTPUT_BUDGET;
+    const parts: string[] = [];
 
-    // 1. Build the footer (always shown)
-    const footerLines: string[] = [];
-
-    if (errors.length > 0) {
-      footerLines.push('', '**Errors:**');
-      for (const e of errors.slice(0, 5)) footerLines.push(`  ${e.worker}: ${e.message}`);
-    }
-
-    const costStr = result.totalCostUsd != null && result.totalCostUsd > 0
-      ? ` | $${result.totalCostUsd.toFixed(2)}`
-      : '';
-    footerLines.push('', `${durationSec.toFixed(1)}s | ${workerCount} workers${costStr}`);
-    const footer = footerLines.join('\n');
-
-    // 2. Build metadata sections (findings, decisions, output files)
-    const metaLines: string[] = [];
-
-    if (findings.length > 0) {
-      metaLines.push('', '**Key findings:**');
-      for (const f of findings.slice(0, 8)) metaLines.push(`  - ${f}`);
-    }
-
-    if (decisions.length > 0) {
-      metaLines.push('', '**Decisions:**');
-      for (const d of decisions.slice(0, 5)) metaLines.push(`  - ${d}`);
-    }
-
-    if (outputPaths.length > 0) {
-      metaLines.push('', '**Output files:**');
-      for (const p of outputPaths) metaLines.push(`  ${p}`);
-    }
-
-    const meta = metaLines.join('\n');
-
-    // 3. Build the header
     let header: string;
     if (status === 'complete') header = 'Workflow complete.';
     else if (status === 'error') header = 'Workflow finished with errors.';
     else header = 'Workflow stopped.';
+    parts.push(header);
 
-    // 4. Calculate remaining budget for the body
-    const reservedLen = header.length + meta.length + footer.length + 10;
-    const bodyBudget = Math.max(200, budget - reservedLen);
-
-    // 5. Select the best body text — prefer concise finalResult over full output
     const finalResultEntries = nodeFinalResults ? Object.entries(nodeFinalResults) : [];
+    const nodeOutputEntries = nodeOutputs ? Object.entries(nodeOutputs) : [];
     const lastFinalResult = finalResultEntries.length > 0
       ? finalResultEntries[finalResultEntries.length - 1][1]
       : undefined;
+    const lastOutput = nodeOutputEntries.length > 0
+      ? nodeOutputEntries[nodeOutputEntries.length - 1][1]
+      : undefined;
+
+    const metaLen = (findings.length > 0 ? findings.slice(0, 8).join('\n').length + 30 : 0)
+      + (decisions.length > 0 ? decisions.slice(0, 5).join('\n').length + 30 : 0)
+      + (errors.length > 0 ? errors.slice(0, 5).map(e => e.message).join('\n').length + 30 : 0);
+    const bodyBudget = Math.max(200, budget - header.length - metaLen - 100);
 
     let body: string;
     if (lastFinalResult && lastFinalResult.length <= bodyBudget) {
@@ -716,46 +657,55 @@ export class OrchestrationBridge {
     } else {
       body = taskSummary;
     }
+    parts.push('', body);
 
-    // 6. Optionally include file previews if budget allows
-    let filePreview = '';
-    if (outputPaths.length > 0) {
-      const previewBudget = budget - header.length - body.length - meta.length - footer.length - 20;
-      if (previewBudget > 200) {
-        const previewLines: string[] = [];
-        let used = 0;
-        for (const p of outputPaths.slice(0, 3)) {
-          try {
-            const resolved = p.startsWith('/') ? p : `${this.config.workspaceDir}/${p}`;
-            if (existsSync(resolved)) {
-              const fileContent = await readFile(resolved, 'utf-8');
-              const maxPreview = Math.min(previewBudget - used - 20, 2000);
-              if (maxPreview > 100) {
-                const preview = fileContent.length > maxPreview
-                  ? fileContent.slice(0, maxPreview).trimEnd()
-                  : fileContent;
-                const block = '\n```\n' + preview + '\n```';
-                used += block.length;
-                if (used <= previewBudget) previewLines.push(block);
-              }
-            }
-          } catch { /* non-fatal */ }
-        }
-        filePreview = previewLines.join('');
-      }
+    if (errors.length > 0) {
+      parts.push('', '**Errors:**');
+      for (const e of errors.slice(0, 5)) parts.push(`  ${e.worker}: ${e.message}`);
     }
 
-    // 7. Assemble final output
-    const parts = [header, '', body];
-    if (meta) parts.push(meta);
-    if (filePreview) parts.push(filePreview);
-    parts.push(footer);
+    if (findings.length > 0) {
+      parts.push('', '**Key findings:**');
+      for (const f of findings.slice(0, 8)) parts.push(`  - ${f}`);
+    }
+
+    if (decisions.length > 0) {
+      parts.push('', '**Decisions:**');
+      for (const d of decisions.slice(0, 5)) parts.push(`  - ${d}`);
+    }
+
+    if (nodeOutputPaths && Object.keys(nodeOutputPaths).length > 0) {
+      parts.push('', '**Artifacts:**');
+      for (const [nodeLabel, paths] of Object.entries(nodeOutputPaths)) {
+        parts.push(`  ${nodeLabel}`);
+        for (const p of paths) parts.push(`    ${p}`);
+      }
+    } else if (result.outputPaths.length > 0) {
+      parts.push('', '**Output files:**');
+      for (const p of result.outputPaths) parts.push(`  ${p}`);
+    }
 
     const summary = parts.join('\n');
     this.callbacks.onText(summary, false, true, workflowId);
     pushHistory({ role: 'assistant', content: `[Workflow result] ${summary}` });
 
-    // Final state snapshot
+    // ── DAGCompleteInfo (renders Run Summary card — emitted last) ───
+    const completeInfo: DAGCompleteInfo = {
+      workflowId,
+      status,
+      summary: taskSummary,
+      output: lastOutput,
+      findings: findings.length > 0 ? findings.slice(0, 8) : undefined,
+      outputPaths: result.outputPaths.length > 0 ? result.outputPaths : undefined,
+      nodeOutputPaths: nodeOutputPaths && Object.keys(nodeOutputPaths).length > 0 ? nodeOutputPaths : undefined,
+      durationSec: result.durationSec,
+      workerCount: result.workerCount,
+      totalCostUsd: result.totalCostUsd ?? result.estimatedCost,
+      modelUsage: result.modelUsage && result.modelUsage.length > 0 ? result.modelUsage : undefined,
+      toolCallCount: result.toolCallCount,
+    };
+    this.callbacks.onDAGComplete?.(completeInfo);
+
     if (wf) this.callbacks.onGraphState(wf.executor.getState());
   }
 

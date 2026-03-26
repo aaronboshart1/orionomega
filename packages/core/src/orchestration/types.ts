@@ -207,6 +207,7 @@ export interface ExecutionResult {
   status: 'complete' | 'error' | 'stopped';
   taskSummary: string;
   outputPaths: string[];
+  nodeOutputPaths?: Record<string, string[]>;
   durationSec: number;
   workerCount: number;
   estimatedCost: number;
@@ -294,6 +295,7 @@ export interface DAGCompleteInfo {
   output?: string;
   findings?: string[];
   outputPaths?: string[];
+  nodeOutputPaths?: Record<string, string[]>;
   durationSec: number;
   workerCount: number;
   totalCostUsd: number;

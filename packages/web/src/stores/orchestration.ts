@@ -81,6 +81,7 @@ export interface InlineDAG {
   totalCostUsd?: number;
   toolCallCount?: number;
   modelUsage?: ModelUsageEntry[];
+  nodeOutputPaths?: Record<string, string[]>;
 }
 
 export interface DAGConfirmation {
@@ -103,7 +104,7 @@ interface OrchestrationStore {
   selectWorker: (id: string | null) => void;
   upsertInlineDAG: (dag: InlineDAG) => void;
   updateDAGNode: (dagId: string, nodeId: string, update: Partial<InlineDAGNode>) => void;
-  completeDAG: (dagId: string, result?: string, error?: string, stats?: { durationSec?: number; workerCount?: number; totalCostUsd?: number; toolCallCount?: number; modelUsage?: ModelUsageEntry[]; stopped?: boolean }) => void;
+  completeDAG: (dagId: string, result?: string, error?: string, stats?: { durationSec?: number; workerCount?: number; totalCostUsd?: number; toolCallCount?: number; modelUsage?: ModelUsageEntry[]; nodeOutputPaths?: Record<string, string[]>; stopped?: boolean }) => void;
   removeInlineDAG: (dagId: string) => void;
   setPendingConfirmation: (c: DAGConfirmation | null) => void;
   reset: () => void;
@@ -158,6 +159,7 @@ export const useOrchestrationStore = create<OrchestrationStore>((set) => ({
             totalCostUsd: stats?.totalCostUsd,
             toolCallCount: stats?.toolCallCount,
             modelUsage: stats?.modelUsage,
+            nodeOutputPaths: stats?.nodeOutputPaths,
           },
         },
       };

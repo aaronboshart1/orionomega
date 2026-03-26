@@ -89,6 +89,7 @@ export function useGateway(url: string = defaultGatewayUrl()) {
               totalCostUsd: c.totalCostUsd,
               toolCallCount: c.toolCallCount,
               modelUsage: c.modelUsage,
+              nodeOutputPaths: c.nodeOutputPaths,
               stopped: c.status === 'stopped',
             },
           );

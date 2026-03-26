@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { ChevronDown, ChevronRight, CheckCircle2, XCircle, Loader2, Circle } from 'lucide-react';
+import { ChevronDown, ChevronRight, CheckCircle2, XCircle, Loader2, Circle, FileText } from 'lucide-react';
 import { OmegaSpinner } from './OmegaSpinner';
 import type { InlineDAG, InlineDAGNode, ModelUsageEntry } from '@/stores/orchestration';
 
@@ -133,6 +133,11 @@ export function InlineDAGCard({ dag }: InlineDAGCardProps) {
         <RunStats dag={dag} />
       )}
 
+      {/* Artifacts table */}
+      {isTerminal && dag.nodeOutputPaths && Object.keys(dag.nodeOutputPaths).length > 0 && (
+        <ArtifactsTable nodeOutputPaths={dag.nodeOutputPaths} />
+      )}
+
       {/* Error message */}
       {isError && dag.error && (
         <p className="mt-2 text-xs text-red-400">{dag.error}</p>
@@ -210,6 +215,27 @@ function RunStats({ dag }: { dag: InlineDAG }) {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+function ArtifactsTable({ nodeOutputPaths }: { nodeOutputPaths: Record<string, string[]> }) {
+  return (
+    <div className="mt-2 border-t border-zinc-700/50 pt-2">
+      <div className="flex items-center gap-1.5 text-[10px] font-medium text-zinc-400 mb-1">
+        <FileText size={10} />
+        <span>Artifacts</span>
+      </div>
+      <div className="space-y-1">
+        {Object.entries(nodeOutputPaths).map(([nodeLabel, paths]) => (
+          <div key={nodeLabel}>
+            <div className="text-[10px] font-medium text-zinc-300">{nodeLabel}</div>
+            {paths.map((p) => (
+              <div key={p} className="ml-3 text-[10px] text-blue-400/80">{p}</div>
+            ))}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

@@ -47,6 +47,7 @@ interface ServerMessage {
     workerCount: number;
     totalCostUsd: number;
     toolCallCount?: number;
+    nodeOutputPaths?: Record<string, string[]>;
     modelUsage?: Array<{
       model: string;
       inputTokens: number;

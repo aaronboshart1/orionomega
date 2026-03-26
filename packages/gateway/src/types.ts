@@ -87,6 +87,7 @@ export interface ServerMessage {
     output?: string;
     findings?: string[];
     outputPaths?: string[];
+    nodeOutputPaths?: Record<string, string[]>;
     durationSec: number;
     workerCount: number;
     totalCostUsd: number;
