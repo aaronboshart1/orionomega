@@ -590,13 +590,6 @@ export class OrchestrationBridge {
 
   // ── Completion ──────────────────────────────────────────────────
 
-  /**
-   * Maximum total characters for the final output message.
-   * Sized for comfortable TUI rendering. The previous value of 8 000
-   * was too aggressive and truncated meaningful workflow output.
-   */
-  private static readonly OUTPUT_BUDGET = 16_000;
-
   /** Process workflow completion, emit summary text. */
   private async onExecutionComplete(
     result: ExecutionResult,
@@ -619,10 +612,9 @@ export class OrchestrationBridge {
       }).catch(() => {});
     }
 
-    const { status, findings, errors, taskSummary, decisions, nodeFinalResults, nodeOutputPaths } = result;
+    const { status, findings, errors, taskSummary, decisions, nodeOutputPaths } = result;
 
     // ── Structured text message ─────────────────────────────────────
-    const budget = OrchestrationBridge.OUTPUT_BUDGET;
     const parts: string[] = [];
 
     let header: string;
@@ -632,19 +624,6 @@ export class OrchestrationBridge {
     parts.push(header);
 
     parts.push('', `**Task:** ${taskSummary}`);
-
-    const finalResultEntries = nodeFinalResults ? Object.entries(nodeFinalResults) : [];
-    const lastFinalResult = finalResultEntries.length > 0
-      ? finalResultEntries[finalResultEntries.length - 1][1]
-      : undefined;
-
-    const bodyBudget = Math.min(2000, Math.max(200, budget - 500));
-
-    if (lastFinalResult) {
-      const fitted = lastFinalResult.length <= bodyBudget
-        ? lastFinalResult : this.fitToBudget(lastFinalResult, bodyBudget);
-      parts.push('', fitted);
-    }
 
     if (errors.length > 0) {
       parts.push('', '**Errors:**');
@@ -695,39 +674,6 @@ export class OrchestrationBridge {
     if (wf) this.callbacks.onGraphState(wf.executor.getState());
   }
 
-  /**
-   * Fit text to a character budget by truncating at the last clean paragraph
-   * or sentence boundary. Never appends "... [truncated]".
-   */
-  private fitToBudget(text: string, budget: number): string {
-    if (text.length <= budget) return text;
-
-    const slice = text.slice(0, budget);
-
-    // Try to break at a double-newline (paragraph boundary)
-    const lastPara = slice.lastIndexOf('\n\n');
-    if (lastPara > budget * 0.3) {
-      return slice.slice(0, lastPara).trimEnd();
-    }
-
-    // Try to break at a sentence boundary
-    const lastSentence = Math.max(
-      slice.lastIndexOf('. '),
-      slice.lastIndexOf('.\n'),
-      slice.lastIndexOf('\n'),
-    );
-    if (lastSentence > budget * 0.3) {
-      return slice.slice(0, lastSentence + 1).trimEnd();
-    }
-
-    // Last resort: break at last space
-    const lastSpace = slice.lastIndexOf(' ');
-    if (lastSpace > budget * 0.5) {
-      return slice.slice(0, lastSpace).trimEnd();
-    }
-
-    return slice.trimEnd();
-  }
 
   // ── Lifecycle ───────────────────────────────────────────────────
 
