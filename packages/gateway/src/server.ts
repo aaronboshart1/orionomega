@@ -435,13 +435,25 @@ const server = createServer(handleRequest);
 
 wsHandler.attach(server);
 
-server.listen(config.port, config.bind, () => {
-  log.info(`OrionOmega Gateway v0.1.0`);
-  log.info(`Listening on ${config.bind}:${config.port}`);
-  log.info(`Auth mode: ${config.auth.mode}`);
-  log.info(`CORS origins: ${config.cors.origins.join(', ')}`);
-  log.info(`Hindsight: ${hindsightUrl}`);
-});
+const restartDelay = parseInt(process.env.ORIONOMEGA_RESTART_DELAY ?? '0', 10);
+delete process.env.ORIONOMEGA_RESTART_DELAY;
+
+function startListening(): void {
+  server.listen(config.port, config.bind, () => {
+    log.info(`OrionOmega Gateway v0.1.0`);
+    log.info(`Listening on ${config.bind}:${config.port}`);
+    log.info(`Auth mode: ${config.auth.mode}`);
+    log.info(`CORS origins: ${config.cors.origins.join(', ')}`);
+    log.info(`Hindsight: ${hindsightUrl}`);
+  });
+}
+
+if (restartDelay > 0) {
+  log.info(`Restart delay: waiting ${restartDelay}ms for old process to release port...`);
+  setTimeout(startListening, restartDelay);
+} else {
+  startListening();
+}
 
 // ---------------------------------------------------------------------------
 // Graceful Shutdown

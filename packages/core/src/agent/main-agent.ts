@@ -11,7 +11,7 @@
  * and shared state (history, system prompt, callbacks).
  */
 
-import { execSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { AnthropicClient } from '../anthropic/client.js';
 import type { AnthropicMessage } from '../anthropic/client.js';
 import { buildSystemPrompt, type PromptContext } from './prompt-builder.js';
@@ -490,13 +490,18 @@ export class MainAgent {
           command: '/restart', success: true,
           message: 'Restarting gateway...',
         });
-        // Give the response time to flush, then restart
         setTimeout(() => {
-          try {
-            execSync('sudo systemctl restart orionomega', { stdio: 'ignore' });
-          } catch {
-            process.exit(0); // fallback: just exit, systemd will restart
-          }
+          const args = [...process.execArgv, ...process.argv.slice(1)];
+          const child = spawn(process.execPath, args, {
+            stdio: 'inherit',
+            detached: true,
+            env: { ...process.env, ORIONOMEGA_RESTART_DELAY: '1000' },
+          });
+          child.on('error', (err) => {
+            log.error('Failed to spawn restart process', { error: err.message });
+          });
+          child.unref();
+          process.exit(0);
         }, 500);
         return;
       }
