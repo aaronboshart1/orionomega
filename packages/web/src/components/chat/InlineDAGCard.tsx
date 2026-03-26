@@ -1,9 +1,9 @@
 'use client';
 
 import { useState } from 'react';
-import { ChevronDown, ChevronRight, CheckCircle2, XCircle, Loader2, Circle, FileText } from 'lucide-react';
+import { ChevronDown, ChevronRight, CheckCircle2, XCircle, Loader2, Circle } from 'lucide-react';
 import { OmegaSpinner } from './OmegaSpinner';
-import type { InlineDAG, InlineDAGNode, ModelUsageEntry } from '@/stores/orchestration';
+import type { InlineDAG, InlineDAGNode } from '@/stores/orchestration';
 
 interface InlineDAGCardProps {
   dag: InlineDAG;
@@ -59,7 +59,6 @@ export function InlineDAGCard({ dag }: InlineDAGCardProps) {
   const isDone = dag.status === 'complete';
   const isError = dag.status === 'error';
   const isStopped = dag.status === 'stopped';
-  const isTerminal = isDone || isError || isStopped;
 
   const progressPct = dag.totalCount > 0
     ? Math.round((dag.completedCount / dag.totalCount) * 100)
@@ -75,7 +74,6 @@ export function InlineDAGCard({ dag }: InlineDAGCardProps) {
             ? 'border-red-500/20 bg-zinc-800/60'
             : 'border-zinc-500/20 bg-zinc-800/60'
     }`}>
-      {/* Header row */}
       <div className="flex items-center gap-2">
         {isActive && <OmegaSpinner size={4} gap={1} interval={180} />}
         {isDone && <CheckCircle2 size={14} className="text-green-400" />}
@@ -102,7 +100,6 @@ export function InlineDAGCard({ dag }: InlineDAGCardProps) {
         )}
       </div>
 
-      {/* Progress bar */}
       {isActive && (
         <div className="mt-2 h-1 w-full overflow-hidden rounded-full bg-zinc-700">
           <div
@@ -112,14 +109,12 @@ export function InlineDAGCard({ dag }: InlineDAGCardProps) {
         </div>
       )}
 
-      {/* Elapsed time for active DAGs */}
       {isActive && dag.elapsed > 0 && (
         <div className="mt-1 text-right text-[10px] text-zinc-600">
           {dag.elapsed < 60 ? `${Math.round(dag.elapsed)}s` : `${Math.floor(dag.elapsed / 60)}m ${Math.round(dag.elapsed % 60)}s`}
         </div>
       )}
 
-      {/* Expanded node list */}
       {expanded && dag.nodes.length > 0 && (
         <div className="mt-2 space-y-0.5 border-t border-zinc-700/50 pt-2">
           {dag.nodes.map((node) => (
@@ -128,114 +123,9 @@ export function InlineDAGCard({ dag }: InlineDAGCardProps) {
         </div>
       )}
 
-      {/* Run Stats */}
-      {isTerminal && (dag.modelUsage || dag.totalCostUsd !== undefined) && (
-        <RunStats dag={dag} />
-      )}
-
-      {/* Artifacts table */}
-      {isTerminal && dag.nodeOutputPaths && Object.keys(dag.nodeOutputPaths).length > 0 && (
-        <ArtifactsTable nodeOutputPaths={dag.nodeOutputPaths} />
-      )}
-
-      {/* Error message */}
       {isError && dag.error && (
         <p className="mt-2 text-xs text-red-400">{dag.error}</p>
       )}
-    </div>
-  );
-}
-
-function fmtTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
-  return String(n);
-}
-
-function fmtDuration(sec: number): string {
-  if (sec < 60) return `${Math.round(sec)}s`;
-  return `${Math.floor(sec / 60)}m ${Math.round(sec % 60)}s`;
-}
-
-function RunStats({ dag }: { dag: InlineDAG }) {
-  const hasModels = dag.modelUsage && dag.modelUsage.length > 0;
-
-  const totals = hasModels
-    ? dag.modelUsage!.reduce(
-        (acc, m) => ({
-          input: acc.input + m.inputTokens,
-          output: acc.output + m.outputTokens,
-          cacheR: acc.cacheR + m.cacheReadTokens,
-          cacheW: acc.cacheW + m.cacheCreationTokens,
-        }),
-        { input: 0, output: 0, cacheR: 0, cacheW: 0 },
-      )
-    : null;
-
-  return (
-    <div className="mt-2 border-t border-zinc-700/50 pt-2">
-      <div className="flex items-center gap-3 text-[10px] text-zinc-500">
-        {dag.durationSec !== undefined && <span>{fmtDuration(dag.durationSec)}</span>}
-        {dag.workerCount !== undefined && <span>{dag.workerCount} worker{dag.workerCount !== 1 ? 's' : ''}</span>}
-        {dag.toolCallCount != null && dag.toolCallCount > 0 && <span>{dag.toolCallCount} tool call{dag.toolCallCount !== 1 ? 's' : ''}</span>}
-        {dag.totalCostUsd !== undefined && (
-          <span className="font-medium text-green-400">${dag.totalCostUsd.toFixed(4)}</span>
-        )}
-      </div>
-
-      {hasModels && (
-        <div className="mt-1.5 space-y-0.5">
-          <div className="grid grid-cols-[1fr_3rem_3rem_3rem_3rem_3.5rem] gap-1 text-[9px] text-zinc-600">
-            <span>Model</span>
-            <span className="text-right">Input</span>
-            <span className="text-right">Output</span>
-            <span className="text-right">Cache R</span>
-            <span className="text-right">Cache W</span>
-            <span className="text-right">Cost</span>
-          </div>
-          {dag.modelUsage!.map((m) => (
-            <div key={m.model} className="grid grid-cols-[1fr_3rem_3rem_3rem_3rem_3.5rem] gap-1 text-[10px]">
-              <span className="truncate text-purple-400">{m.model}</span>
-              <span className="text-right text-zinc-400">{fmtTokens(m.inputTokens)}</span>
-              <span className="text-right text-zinc-400">{fmtTokens(m.outputTokens)}</span>
-              <span className="text-right text-zinc-500">{fmtTokens(m.cacheReadTokens)}</span>
-              <span className="text-right text-zinc-500">{fmtTokens(m.cacheCreationTokens)}</span>
-              <span className="text-right text-zinc-300">${m.costUsd.toFixed(4)}</span>
-            </div>
-          ))}
-          {totals && (
-            <div className="grid grid-cols-[1fr_3rem_3rem_3rem_3rem_3.5rem] gap-1 border-t border-zinc-700/30 pt-0.5 text-[10px] font-medium">
-              <span className="text-zinc-400">Total</span>
-              <span className="text-right text-zinc-300">{fmtTokens(totals.input)}</span>
-              <span className="text-right text-zinc-300">{fmtTokens(totals.output)}</span>
-              <span className="text-right text-zinc-400">{fmtTokens(totals.cacheR)}</span>
-              <span className="text-right text-zinc-400">{fmtTokens(totals.cacheW)}</span>
-              <span className="text-right text-green-400">${dag.totalCostUsd?.toFixed(4) ?? '0.0000'}</span>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ArtifactsTable({ nodeOutputPaths }: { nodeOutputPaths: Record<string, string[]> }) {
-  return (
-    <div className="mt-2 border-t border-zinc-700/50 pt-2">
-      <div className="flex items-center gap-1.5 text-[10px] font-medium text-zinc-400 mb-1">
-        <FileText size={10} />
-        <span>Artifacts</span>
-      </div>
-      <div className="space-y-1">
-        {Object.entries(nodeOutputPaths).map(([nodeLabel, paths]) => (
-          <div key={nodeLabel}>
-            <div className="text-[10px] font-medium text-zinc-300">{nodeLabel}</div>
-            {paths.map((p) => (
-              <div key={p} className="ml-3 text-[10px] text-blue-400/80">{p}</div>
-            ))}
-          </div>
-        ))}
-      </div>
     </div>
   );
 }

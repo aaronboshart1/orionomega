@@ -3,6 +3,7 @@
 import type { ChatMessage } from '@/stores/chat';
 import { useOrchestrationStore } from '@/stores/orchestration';
 import { InlineDAGCard } from './InlineDAGCard';
+import { RunSummaryCard } from './RunSummaryCard';
 import { DAGConfirmationCard } from './DAGConfirmationCard';
 import { useGateway } from '@/lib/gateway';
 
@@ -91,12 +92,18 @@ export function MessageBubble({ message }: MessageBubbleProps) {
     );
   }
 
-  // DAG-complete messages render as conversational responses
-  if (type === 'dag-complete') {
+  if (type === 'dag-complete' && dagId) {
+    const dag = inlineDAGs[dagId];
     return (
       <div className="my-3 flex justify-start">
-        <div className="max-w-[80%] rounded-2xl bg-zinc-800 px-4 py-3 text-sm leading-relaxed text-zinc-100">
-          {formatContent(content)}
+        <div className="max-w-[85%]">
+          {dag ? (
+            <RunSummaryCard dag={dag} />
+          ) : (
+            <div className="rounded-2xl bg-zinc-800 px-4 py-3 text-sm leading-relaxed text-zinc-100">
+              {formatContent(content)}
+            </div>
+          )}
         </div>
       </div>
     );
