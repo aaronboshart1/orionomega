@@ -478,7 +478,12 @@ if (restartDelay > 0) {
 async function shutdown(signal: string): Promise<void> {
   log.info(` ${signal} received — shutting down gracefully…`);
 
-  // Summarize session to persistent memory before closing
+  wsHandler.broadcast({
+    id: randomBytes(8).toString('hex'),
+    type: 'command_result' as any,
+    commandResult: { command: 'restart', message: 'Gateway restarting…' },
+  } as any);
+
   if (mainAgent) {
     try {
       await mainAgent.summarizeSession();

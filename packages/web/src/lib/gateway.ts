@@ -34,6 +34,7 @@ function statusFromToolCall(toolName?: string): string {
 
 let singletonWs: ReconnectingWebSocket | null = null;
 let boundWs: ReconnectingWebSocket | null = null;
+let pendingRestart = false;
 
 function getOrCreateWs(): ReconnectingWebSocket {
   if (!singletonWs || singletonWs.readyState === WebSocket.CLOSED) {
@@ -246,6 +247,9 @@ function bindListeners(ws: ReconnectingWebSocket): void {
         if (msg.status) chat.setStreamingStatus(msg.status);
         break;
       case 'command_result':
+        if (msg.commandResult?.command === 'restart') {
+          pendingRestart = true;
+        }
         chat.addMessage({
           id: crypto.randomUUID(),
           role: 'system',
@@ -308,6 +312,10 @@ function bindListeners(ws: ReconnectingWebSocket): void {
 
   ws.onopen = () => {
     useConnectionStore.getState().setGatewayConnected(true);
+    if (pendingRestart) {
+      pendingRestart = false;
+      window.location.reload();
+    }
   };
 
   ws.onclose = () => {
@@ -354,6 +362,9 @@ export function useGateway() {
     (command: string) => {
       if (command === 'stop') {
         useChatStore.getState().markLastInterrupted();
+      }
+      if (command === 'restart') {
+        pendingRestart = true;
       }
       send({ id: crypto.randomUUID(), type: 'command', command });
     },
