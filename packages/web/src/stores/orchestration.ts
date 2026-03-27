@@ -1,6 +1,5 @@
 import { create } from 'zustand';
 
-// Define minimal types inline (don't import from core — this is a Next.js app)
 export interface WorkerEvent {
   workerId: string;
   nodeId: string;
@@ -91,15 +90,26 @@ export interface DAGConfirmation {
   guardedNodes: { id: string; label: string; risk: string }[];
 }
 
-interface OrchestrationStore {
+export interface WorkflowData {
   graphState: GraphState | null;
   events: WorkerEvent[];
+}
+
+interface OrchestrationStore {
+  workflows: Record<string, WorkflowData>;
+  activeWorkflowId: string | null;
   activePlan: PlanData | null;
   selectedWorker: string | null;
   inlineDAGs: Record<string, InlineDAG>;
   pendingConfirmation: DAGConfirmation | null;
+
+  graphState: GraphState | null;
+  events: WorkerEvent[];
+
+  setActiveWorkflowId: (id: string | null) => void;
+  removeWorkflow: (id: string) => void;
   setGraphState: (s: GraphState) => void;
-  addEvent: (e: WorkerEvent) => void;
+  addEvent: (e: WorkerEvent, workflowId?: string) => void;
   setActivePlan: (p: PlanData | null) => void;
   selectWorker: (id: string | null) => void;
   upsertInlineDAG: (dag: InlineDAG) => void;
@@ -110,19 +120,112 @@ interface OrchestrationStore {
   reset: () => void;
 }
 
+function deriveActive(workflows: Record<string, WorkflowData>, activeWorkflowId: string | null) {
+  const data = activeWorkflowId ? workflows[activeWorkflowId] : undefined;
+  return {
+    graphState: data?.graphState ?? null,
+    events: data?.events ?? [],
+  };
+}
+
 export const useOrchestrationStore = create<OrchestrationStore>((set) => ({
-  graphState: null,
-  events: [],
+  workflows: {},
+  activeWorkflowId: null,
   activePlan: null,
   selectedWorker: null,
   inlineDAGs: {},
   pendingConfirmation: null,
-  setGraphState: (graphState) => set({ graphState }),
-  addEvent: (event) => set((s) => ({ events: [...s.events.slice(-999), event] })),
+  graphState: null,
+  events: [],
+
+  setActiveWorkflowId: (id) =>
+    set((s) => ({
+      activeWorkflowId: id,
+      selectedWorker: null,
+      ...deriveActive(s.workflows, id),
+    })),
+
+  removeWorkflow: (id) =>
+    set((s) => {
+      const { [id]: _, ...rest } = s.workflows;
+      const { [id]: _dag, ...restDAGs } = s.inlineDAGs;
+      const newActiveId = s.activeWorkflowId === id
+        ? (Object.keys(rest)[0] ?? null)
+        : s.activeWorkflowId;
+      return {
+        workflows: rest,
+        inlineDAGs: restDAGs,
+        activeWorkflowId: newActiveId,
+        selectedWorker: s.activeWorkflowId === id ? null : s.selectedWorker,
+        ...deriveActive(rest, newActiveId),
+      };
+    }),
+
+  setGraphState: (graphState) =>
+    set((s) => {
+      const wfId = graphState.workflowId;
+      const isNew = !s.workflows[wfId];
+      const existing = s.workflows[wfId] || { graphState: null, events: [] };
+      const updatedWorkflows = {
+        ...s.workflows,
+        [wfId]: { ...existing, graphState },
+      };
+
+      const newActiveId = isNew ? wfId : (s.activeWorkflowId ?? wfId);
+
+      return {
+        workflows: updatedWorkflows,
+        activeWorkflowId: newActiveId,
+        ...deriveActive(updatedWorkflows, newActiveId),
+      };
+    }),
+
+  addEvent: (event, workflowId) =>
+    set((s) => {
+      const wfId = workflowId || s.activeWorkflowId;
+      if (!wfId) {
+        return {
+          events: [...s.events.slice(-999), event],
+        };
+      }
+      const isNew = !s.workflows[wfId];
+      const existing = s.workflows[wfId] || { graphState: null, events: [] };
+      const updatedWorkflows = {
+        ...s.workflows,
+        [wfId]: {
+          ...existing,
+          events: [...existing.events.slice(-999), event],
+        },
+      };
+      const newActiveId = isNew ? wfId : (s.activeWorkflowId ?? wfId);
+      return {
+        workflows: updatedWorkflows,
+        activeWorkflowId: newActiveId,
+        ...deriveActive(updatedWorkflows, newActiveId),
+      };
+    }),
+
   setActivePlan: (activePlan) => set({ activePlan }),
   selectWorker: (selectedWorker) => set({ selectedWorker }),
+
   upsertInlineDAG: (dag) =>
-    set((s) => ({ inlineDAGs: { ...s.inlineDAGs, [dag.dagId]: dag } })),
+    set((s) => {
+      const wfId = dag.dagId;
+      const isNew = !s.workflows[wfId];
+      const existing = s.workflows[wfId] || { graphState: null, events: [] };
+      const updatedWorkflows = {
+        ...s.workflows,
+        [wfId]: existing,
+      };
+      const newActiveId = isNew ? wfId : (s.activeWorkflowId ?? wfId);
+      return {
+        workflows: updatedWorkflows,
+        activeWorkflowId: newActiveId,
+        inlineDAGs: { ...s.inlineDAGs, [dag.dagId]: dag },
+        ...deriveActive(updatedWorkflows, newActiveId),
+      };
+    }),
+
   updateDAGNode: (dagId, nodeId, update) =>
     set((s) => {
       const dag = s.inlineDAGs[dagId];
@@ -140,6 +243,7 @@ export const useOrchestrationStore = create<OrchestrationStore>((set) => ({
         },
       };
     }),
+
   completeDAG: (dagId, result, error, stats) =>
     set((s) => {
       const dag = s.inlineDAGs[dagId];
@@ -164,14 +268,19 @@ export const useOrchestrationStore = create<OrchestrationStore>((set) => ({
         },
       };
     }),
+
   removeInlineDAG: (dagId) =>
     set((s) => {
       const { [dagId]: _, ...rest } = s.inlineDAGs;
       return { inlineDAGs: rest };
     }),
+
   setPendingConfirmation: (pendingConfirmation) => set({ pendingConfirmation }),
+
   reset: () =>
     set({
+      workflows: {},
+      activeWorkflowId: null,
       graphState: null,
       events: [],
       activePlan: null,

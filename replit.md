@@ -79,6 +79,16 @@ Shared readline/CLI helpers (colors, `ask`, `choose`, `confirm`, `askSecret`, `m
 - Stale pre-compiled `.js` files removed from `src/app/` and `src/lib/`
 - Legacy `workflow-tracker.ts` component removed (replaced by `workflow-panel.ts`)
 
+## Multi-Workflow Tabs
+
+The orchestration sidebar supports multiple concurrent workflows via per-workflow tabs:
+
+- `packages/web/src/stores/orchestration.ts` — the Zustand store scopes `graphState` and `events` per workflow ID in a `workflows` record, with `activeWorkflowId` controlling which workflow's data is surfaced as top-level `graphState`/`events` for existing consumers
+- `packages/web/src/components/orchestration/WorkflowTabs.tsx` — horizontal tab bar rendered at the top of the orchestration pane when multiple workflows exist; each tab shows workflow name, status dot (with pulse animation for running), and a close button for terminal workflows
+- `packages/web/src/components/orchestration/OrchestrationPane.tsx` — integrates `WorkflowTabs` above the existing DAG/activity/summary layout
+- `packages/web/src/app/page.tsx` — toggle logic uses `Object.keys(workflows).length > 0` instead of `!!graphState` so the pane shows whenever any workflow exists
+- New workflows auto-select when they start; completed workflows remain as tabs until dismissed
+
 ## Tool Call Visualization
 
 The web UI renders inline tool-call cards in the chat stream when workers invoke tools during DAG execution. Key components:

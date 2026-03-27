@@ -217,7 +217,7 @@ function bindListeners(ws: ReconnectingWebSocket): void {
         break;
       }
       case 'event': {
-        if (msg.event) orch.addEvent(msg.event);
+        if (msg.event) orch.addEvent(msg.event, msg.workflowId);
         const evt = msg.event as { type?: string; tool?: { name?: string }; error?: string; message?: string } | undefined;
         if (evt) {
           if (evt.type === 'tool_call' && evt.tool?.name) {

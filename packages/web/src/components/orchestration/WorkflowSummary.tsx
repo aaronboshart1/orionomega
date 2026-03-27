@@ -76,11 +76,18 @@ export function WorkflowSummary() {
   const graphState = useOrchestrationStore((s) => s.graphState);
   const inlineDAGs = useOrchestrationStore((s) => s.inlineDAGs);
 
+  const activeWorkflowId = useOrchestrationStore((s) => s.activeWorkflowId);
+
   const completedDAG = useMemo(() => {
-    const terminal = Object.values(inlineDAGs)
-      .filter((d) => (d.status === 'complete' || d.status === 'error' || d.status === 'stopped') && (d.modelUsage || d.totalCostUsd !== undefined));
-    return terminal.length > 0 ? terminal[terminal.length - 1] : undefined;
-  }, [inlineDAGs]);
+    const dagId = activeWorkflowId;
+    if (dagId) {
+      const dag = inlineDAGs[dagId];
+      if (dag && (dag.status === 'complete' || dag.status === 'error' || dag.status === 'stopped') && (dag.modelUsage || dag.totalCostUsd !== undefined)) {
+        return dag;
+      }
+    }
+    return undefined;
+  }, [inlineDAGs, activeWorkflowId]);
 
   const stats = useMemo(() => {
     if (!graphState) return null;

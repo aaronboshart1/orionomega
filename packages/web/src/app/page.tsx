@@ -7,19 +7,18 @@ import { OrchestrationPane } from '@/components/orchestration/OrchestrationPane'
 import { useOrchestrationStore } from '@/stores/orchestration';
 
 export default function Home() {
-  const graphState = useOrchestrationStore((s) => s.graphState);
+  const hasWorkflows = useOrchestrationStore(
+    (s) => Object.keys(s.workflows).length > 0,
+  );
   const [showOrchPane, setShowOrchPane] = useState(false);
-
-  const canShowPane = !!graphState;
 
   return (
     <div className="flex h-screen">
-      <div className={showOrchPane && canShowPane ? 'w-1/2 min-w-[400px]' : 'w-full'}>
+      <div className={showOrchPane && hasWorkflows ? 'w-1/2 min-w-[400px]' : 'w-full'}>
         <ChatPane />
       </div>
 
-      {/* Toggle button for orchestration detail pane */}
-      {canShowPane && (
+      {hasWorkflows && (
         <button
           onClick={() => setShowOrchPane((v) => !v)}
           className="absolute right-3 top-3 z-10 rounded-lg border border-zinc-700 bg-zinc-800 p-2 text-zinc-400 shadow-lg transition-colors hover:border-zinc-600 hover:text-zinc-200"
@@ -29,7 +28,7 @@ export default function Home() {
         </button>
       )}
 
-      {showOrchPane && canShowPane && (
+      {showOrchPane && hasWorkflows && (
         <div className="w-1/2 border-l border-zinc-800">
           <OrchestrationPane />
         </div>
