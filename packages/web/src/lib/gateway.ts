@@ -4,6 +4,7 @@ import { useEffect, useCallback } from 'react';
 import ReconnectingWebSocket from 'reconnecting-websocket';
 import { useOrchestrationStore } from '@/stores/orchestration';
 import { useChatStore } from '@/stores/chat';
+import { useConnectionStore } from '@/stores/connection';
 import type { ChatMessage } from '@/stores/chat';
 
 const SESSION_KEY = 'orionomega_session_id';
@@ -291,9 +292,28 @@ function bindListeners(ws: ReconnectingWebSocket): void {
         }
         break;
       }
+      case 'hindsight_status': {
+        const hs = msg.hindsightStatus;
+        if (hs) {
+          useConnectionStore
+            .getState()
+            .setHindsightStatus(!!hs.connected, !!hs.busy);
+        }
+        break;
+      }
       default:
         console.debug('[gateway] unhandled message type:', msg.type, msg);
     }
+  };
+
+  ws.onopen = () => {
+    useConnectionStore.getState().setGatewayConnected(true);
+  };
+
+  ws.onclose = () => {
+    const connStore = useConnectionStore.getState();
+    connStore.setGatewayConnected(false);
+    connStore.setHindsightStatus(false, false);
   };
 
   ws.onerror = () => {

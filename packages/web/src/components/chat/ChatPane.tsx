@@ -13,6 +13,7 @@ import { ThinkingIndicator } from './ThinkingIndicator';
 import { ErrorMessage } from './ErrorMessage';
 import { PlanCard } from './PlanCard';
 import { BackgroundTaskIndicator } from './BackgroundTaskIndicator';
+import { ConnectionStatus } from './ConnectionStatus';
 import type { ChatMessage } from '@/stores/chat';
 
 type RenderItem =
@@ -178,6 +179,7 @@ export function ChatPane() {
           <h1 className="text-sm font-semibold text-zinc-100">OrionOmega</h1>
           <p className="text-xs text-zinc-500">AI Orchestration</p>
         </div>
+        <ConnectionStatus />
         <BackgroundTaskIndicator />
       </div>
 
