@@ -17,7 +17,7 @@ export function BackgroundTaskIndicator() {
 
   return (
     <div className="flex items-center gap-2 rounded-full bg-blue-500/10 px-3 py-1">
-      <OmegaSpinner size={3} gap={0.5} interval={180} />
+      <OmegaSpinner size={2.5} gap={0.5} interval={180} />
       <span className="text-[11px] text-blue-400">
         {activeDAGs.length === 1
           ? `${completedNodes}/${totalNodes} steps`

@@ -75,7 +75,7 @@ export function InlineDAGCard({ dag }: InlineDAGCardProps) {
             : 'border-zinc-500/20 bg-zinc-800/60'
     }`}>
       <div className="flex items-center gap-2">
-        {isActive && <OmegaSpinner size={4} gap={1} interval={180} />}
+        {isActive && <OmegaSpinner size={3} gap={1} interval={180} />}
         {isDone && <CheckCircle2 size={14} className="text-green-400" />}
         {isError && <XCircle size={14} className="text-red-400" />}
         {isStopped && <Circle size={14} className="text-zinc-400" />}

@@ -2,20 +2,34 @@
 
 import { useEffect, useState } from 'react';
 
-// 4x4 omega shape:
-// . # # .
-// # . . #
-// . # # .
-// # . . #
+// 5x5 omega shape:
+// . # # # .
+// # . . . #
+// # . . . #
+// . # . # .
+// # # . # #
 const OMEGA = [
-  0, 1, 1, 0,
-  1, 0, 0, 1,
-  0, 1, 1, 0,
-  1, 0, 0, 1,
+  0, 1, 1, 1, 0,
+  1, 0, 0, 0, 1,
+  1, 0, 0, 0, 1,
+  0, 1, 0, 1, 0,
+  1, 1, 0, 1, 1,
 ];
 
-// Spiral fill order (clockwise from top-left)
-const SPIRAL = [0, 1, 2, 3, 7, 11, 15, 14, 13, 12, 8, 4, 5, 6, 10, 9];
+// Spiral fill order (clockwise from top-left), 25 cells
+const SPIRAL = [
+  0, 1, 2, 3, 4,
+  9, 14, 19, 24,
+  23, 22, 21, 20,
+  15, 10, 5,
+  6, 7, 8,
+  13, 18,
+  17, 16,
+  11,
+  12,
+];
+
+const TOTAL = 25;
 
 // 0=off, 1=on(blue), 2=accent(green), 3=glow(bright), -1=dim
 type CellState = 0 | 1 | 2 | 3 | -1;
@@ -23,39 +37,39 @@ type CellState = 0 | 1 | 2 | 3 | -1;
 function buildFrames(): CellState[][] {
   const frames: CellState[][] = [];
 
-  // Phase 1: Spiral fill (4 steps, 4 cells each) — glow
-  for (let step = 0; step < 4; step++) {
-    const grid: CellState[] = new Array(16).fill(0);
-    for (let i = 0; i <= (step + 1) * 4 - 1 && i < 16; i++) {
+  // Phase 1: Spiral fill (5 steps, 5 cells each) — glow
+  for (let step = 0; step < 5; step++) {
+    const grid: CellState[] = new Array(TOTAL).fill(0);
+    for (let i = 0; i <= (step + 1) * 5 - 1 && i < TOTAL; i++) {
       grid[SPIRAL[i]] = 3;
     }
     frames.push(grid);
   }
 
   // Phase 2: All solid blue
-  frames.push(new Array<CellState>(16).fill(1));
+  frames.push(new Array<CellState>(TOTAL).fill(1));
 
   // Phase 3: Non-omega fades to green accent
-  const fade1: CellState[] = new Array(16).fill(0);
-  for (let i = 0; i < 16; i++) fade1[i] = OMEGA[i] ? 1 : 2;
+  const fade1: CellState[] = new Array(TOTAL).fill(0);
+  for (let i = 0; i < TOTAL; i++) fade1[i] = OMEGA[i] ? 1 : 2;
   frames.push(fade1);
 
   // Phase 4: Non-omega dims
-  const fade2: CellState[] = new Array(16).fill(0);
-  for (let i = 0; i < 16; i++) fade2[i] = OMEGA[i] ? 1 : -1;
+  const fade2: CellState[] = new Array(TOTAL).fill(0);
+  for (let i = 0; i < TOTAL; i++) fade2[i] = OMEGA[i] ? 1 : -1;
   frames.push(fade2);
 
   // Phase 5: Omega glow reveal
-  const reveal: CellState[] = new Array(16).fill(0);
-  for (let i = 0; i < 16; i++) reveal[i] = OMEGA[i] ? 3 : 0;
+  const reveal: CellState[] = new Array(TOTAL).fill(0);
+  for (let i = 0; i < TOTAL; i++) reveal[i] = OMEGA[i] ? 3 : 0;
   frames.push(reveal);
 
   // Phase 6: Omega solid hold
   frames.push(OMEGA.map((v) => v as CellState));
 
   // Phase 7: Omega fades to green before restart
-  const fadeOut: CellState[] = new Array(16).fill(0);
-  for (let i = 0; i < 16; i++) fadeOut[i] = OMEGA[i] ? 2 : 0;
+  const fadeOut: CellState[] = new Array(TOTAL).fill(0);
+  for (let i = 0; i < TOTAL; i++) fadeOut[i] = OMEGA[i] ? 2 : 0;
   frames.push(fadeOut);
 
   return frames;
@@ -83,8 +97,8 @@ interface OmegaSpinnerProps {
 }
 
 export function OmegaSpinner({
-  size = 6,
-  gap = 1.5,
+  size = 5,
+  gap = 1,
   interval = 180,
   className = '',
 }: OmegaSpinnerProps) {
@@ -104,7 +118,7 @@ export function OmegaSpinner({
       className={className}
       style={{
         display: 'inline-grid',
-        gridTemplateColumns: 'repeat(4, 1fr)',
+        gridTemplateColumns: 'repeat(5, 1fr)',
         gap: `${gap}px`,
       }}
     >

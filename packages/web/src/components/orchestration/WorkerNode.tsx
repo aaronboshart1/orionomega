@@ -60,7 +60,7 @@ function WorkerNodeComponent({ data, id }: NodeProps) {
       >
         <div className="flex items-center gap-2">
           {d.status === 'running' ? (
-            <OmegaSpinner size={4} gap={1} interval={180} />
+            <OmegaSpinner size={3} gap={1} interval={180} />
           ) : (
             <span className="text-xs">{statusIcons[d.status] || '⏳'}</span>
           )}
