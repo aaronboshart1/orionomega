@@ -68,7 +68,6 @@ export function choose(question: string, options: { label: string; value: string
   return new Promise((resolve) => {
     println(question);
 
-    // eslint-disable-next-line no-control-regex
     const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, '');
     const firstLetters = options.map((o) => stripAnsi(o.label)[0]?.toLowerCase() ?? '');
     const letterCounts: Record<string, number> = {};

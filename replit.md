@@ -101,17 +101,6 @@ The web UI renders inline tool-call cards in the chat stream when workers invoke
 - Chat message list uses `react-virtuoso` for list virtualization — only visible messages plus a buffer are rendered to the DOM, keeping performance smooth for long conversations (100+ messages)
 - Smart auto-scroll: `followOutput="smooth"` keeps the list pinned to the bottom during streaming; when the user scrolls up, a "New messages" pill appears to jump back down
 
-## Per-Skill Configuration (Skills Tab)
-
-The Settings modal's Skills tab supports per-skill configuration:
-
-- **Gateway API**: `GET /api/skills` lists all discovered skills with manifests and configs (secrets masked). `PUT /api/skills/:name/config` updates a single skill's enabled state, auth credentials, and field values.
-- **Routes**: `packages/gateway/src/routes/skills.ts` — uses `SkillLoader.discoverAll()`, `readSkillConfig`, `writeSkillConfig` from `@orionomega/skills-sdk`
-- **Frontend**: `SkillsTab` in `SettingsModal.tsx` shows global settings (directory, auto-load) at top, then accordion list of skill cards with name, version, description, status badge, and enable/disable toggle
-- **Skill config panel**: Expands when clicking an enabled skill with setup requirements. Renders `api-key`/`pat` auth as masked credential input, `env`/`ssh-key`/`oauth`/`login` as CLI-redirect notes, and `setup.fields` as appropriate form controls
-- **Save flow**: Saves global config first, then sends `PUT /api/skills/:name/config` for each changed skill. Skills list refreshes after save.
-- **Validity**: Skills tab validity indicator reflects whether all skills requiring setup are configured
-
 ## Markdown Rendering
 
-Chat assistant/system messages render full markdown via `react-markdown` with `remark-gfm`, `rehype-highlight` (syntax highlighting), and `rehype-sanitize`. The `MarkdownContent` component lives at `packages/web/src/components/chat/MarkdownContent.tsx`. User messages remain plain text. Streaming updates are throttled via `requestAnimationFrame` to avoid excessive re-renders. The highlight.js `github-dark` theme is imported in `packages/web/src/app/globals.css`.
+Chat assistant/system messages render full markdown via `react-markdown` with `remark-gfm`, `rehype-highlight` (syntax highlighting), and `rehype-sanitize`. The `MarkdownContent` component lives at `packages/web/src/components/chat/MarkdownContent.tsx`. User messages remain plain text. Streaming updates are throttled via `requestAnimationFrame` to avoid excessive re-renders. The highlight.js `github-dark` theme is imported in `packages/web/src/app/layout.tsx`.

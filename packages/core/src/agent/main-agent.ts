@@ -116,7 +116,6 @@ export class MainAgent {
   private availableSkills: string[] = [];
   private interruptedWorkflows: WorkflowCheckpoint[] = [];
   private activeAbort: AbortController | null = null;
-  private _hadActiveWorkBeforeAbort = false;
 
   constructor(config: MainAgentConfig, callbacks: MainAgentCallbacks) {
     this.config = config;
@@ -291,11 +290,9 @@ export class MainAgent {
     });
     this.pushHistory({ role: 'user', content: trimmed });
 
-    this._hadActiveWorkBeforeAbort = this.activeAbort !== null && !this.activeAbort.signal.aborted;
     this.activeAbort?.abort();
     this.activeAbort = new AbortController();
     const signal = this.activeAbort.signal;
-    let asyncFired = false;
 
     // Evaluate for preference patterns (fire-and-forget)
     if (this.memory.retention) {
@@ -415,15 +412,11 @@ export class MainAgent {
           );
           break;
         case 'CHAT_ASYNC':
-          asyncFired = true;
+          // Fire-and-forget: returns immediately, async work continues in background
           void this.respondConversationally(trimmed, signal).catch((err) => {
             const msg = err instanceof Error ? err.message : String(err);
             log.error('Async conversational response error', { error: msg });
             this.callbacks.onText(`Something went wrong: ${msg}`, false, true);
-          }).finally(() => {
-            if (this.activeAbort?.signal === signal) {
-              this.activeAbort = null;
-            }
           });
           break;
       }
@@ -432,7 +425,7 @@ export class MainAgent {
       log.error('handleMessage error', { error: msg });
       this.callbacks.onText(`Something went wrong: ${msg}`, false, true);
     } finally {
-      if (!asyncFired && this.activeAbort?.signal === signal) {
+      if (this.activeAbort?.signal === signal) {
         this.activeAbort = null;
       }
     }
@@ -589,11 +582,15 @@ export class MainAgent {
       }
 
       if (cmd === '/stop') {
-        const hadWork = this._hadActiveWorkBeforeAbort || this.orchestration.hasActiveWorkflow;
+        let stopped = false;
+        if (this.activeAbort && !this.activeAbort.signal.aborted) {
+          this.activeAbort.abort();
+          stopped = true;
+        }
         this.orchestration.stopAll();
         this.callbacks.onCommandResult({
           command: '/stop', success: true,
-          message: hadWork ? 'Stopped.' : 'Nothing running to stop.',
+          message: stopped ? 'Stopped.' : 'Nothing running to stop.',
         });
         return;
       }

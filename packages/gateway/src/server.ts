@@ -20,7 +20,6 @@ import { handleHealth } from './routes/health.js';
 import { handleListSessions, handleGetSession, handleCreateSession } from './routes/sessions.js';
 import { handleStatus } from './routes/status.js';
 import { handleGetConfig, handlePutConfig } from './routes/config.js';
-import { handleGetSkills, handlePutSkillConfig } from './routes/skills.js';
 
 process.on('uncaughtException', (err) => {
   console.error('[gateway] Uncaught exception:', err);
@@ -445,26 +444,6 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
   if (pathname === '/api/config' && method === 'PUT') {
     handlePutConfig(req, res, config).catch((err) => {
       log.error('Config route error', { error: err instanceof Error ? err.message : String(err) });
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Internal server error' }));
-    });
-    return;
-  }
-
-  // --- Skills ---
-  if (pathname === '/api/skills' && method === 'GET') {
-    handleGetSkills(req, res, config).catch((err) => {
-      log.error('Skills route error', { error: err instanceof Error ? err.message : String(err) });
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Internal server error' }));
-    });
-    return;
-  }
-
-  const skillConfigMatch = pathname.match(/^\/api\/skills\/([a-zA-Z0-9_-]+)\/config$/);
-  if (skillConfigMatch && method === 'PUT') {
-    handlePutSkillConfig(req, res, config, skillConfigMatch[1]!).catch((err) => {
-      log.error('Skill config route error', { error: err instanceof Error ? err.message : String(err) });
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Internal server error' }));
     });
