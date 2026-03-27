@@ -19,6 +19,7 @@ import { WebSocketHandler } from './websocket.js';
 import { handleHealth } from './routes/health.js';
 import { handleListSessions, handleGetSession, handleCreateSession } from './routes/sessions.js';
 import { handleStatus } from './routes/status.js';
+import { handleGetConfig, handlePutConfig } from './routes/config.js';
 
 const startTime = Date.now();
 const log = createLogger('gateway');
@@ -363,7 +364,7 @@ function setCorsHeaders(req: IncomingMessage, res: ServerResponse): void {
   if (originAllowed(origin)) {
     res.setHeader('Access-Control-Allow-Origin', origin);
   }
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   res.setHeader('Access-Control-Max-Age', '86400');
 }
@@ -419,6 +420,21 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
   const sessionMatch = url.match(/^\/api\/sessions\/([a-f0-9]+)$/);
   if (sessionMatch && method === 'GET') {
     handleGetSession(req, res, sessionManager, sessionMatch[1]!);
+    return;
+  }
+
+  // --- Config ---
+  if (url === '/api/config' && method === 'GET') {
+    handleGetConfig(req, res, config);
+    return;
+  }
+
+  if (url === '/api/config' && method === 'PUT') {
+    handlePutConfig(req, res, config).catch((err) => {
+      log.error('Config route error', { error: err instanceof Error ? err.message : String(err) });
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Internal server error' }));
+    });
     return;
   }
 

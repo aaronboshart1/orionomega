@@ -2,7 +2,7 @@
 
 import { useRef, useState, useCallback, useMemo } from 'react';
 import { Virtuoso, VirtuosoHandle } from 'react-virtuoso';
-import { Settings2, ArrowDown, AlertOctagon } from 'lucide-react';
+import { Settings2, ArrowDown, AlertOctagon, Settings } from 'lucide-react';
 import { useChatStore } from '@/stores/chat';
 import { useOrchestrationStore } from '@/stores/orchestration';
 import { useGateway } from '@/lib/gateway';
@@ -14,6 +14,7 @@ import { ErrorMessage } from './ErrorMessage';
 import { PlanCard } from './PlanCard';
 import { BackgroundTaskIndicator } from './BackgroundTaskIndicator';
 import { ConnectionStatus } from './ConnectionStatus';
+import { SettingsModal } from '../settings/SettingsModal';
 import type { ChatMessage } from '@/stores/chat';
 
 type RenderItem =
@@ -75,6 +76,7 @@ export function ChatPane() {
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const [showAdvancedPlan, setShowAdvancedPlan] = useState(false);
   const [atBottom, setAtBottom] = useState(true);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const hasActiveDAGs = Object.values(inlineDAGs).some(
     (d) => d.status === 'dispatched' || d.status === 'running',
@@ -181,7 +183,15 @@ export function ChatPane() {
         </div>
         <ConnectionStatus />
         <BackgroundTaskIndicator />
+        <button
+          onClick={() => setSettingsOpen(true)}
+          className="rounded-md p-1.5 text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
+          title="Settings"
+        >
+          <Settings size={16} />
+        </button>
       </div>
+      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
 
       <div className="relative flex-1">
         {messages.length === 0 ? (
