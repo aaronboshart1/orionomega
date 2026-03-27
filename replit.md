@@ -88,6 +88,8 @@ The web UI renders inline tool-call cards in the chat stream when workers invoke
 - `ToolCallGroup` component — groups consecutive tool calls from the same worker/node under a single header
 - Gateway (`packages/web/src/lib/gateway.ts`) emits `tool-call` chat messages when `dag_progress` events contain tool data
 - `ChatPane` groups consecutive tool-call messages by nodeId before rendering
+- Chat message list uses `react-virtuoso` for list virtualization — only visible messages plus a buffer are rendered to the DOM, keeping performance smooth for long conversations (100+ messages)
+- Smart auto-scroll: `followOutput="smooth"` keeps the list pinned to the bottom during streaming; when the user scrolls up, a "New messages" pill appears to jump back down
 
 ## Markdown Rendering
 

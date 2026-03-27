@@ -30,6 +30,7 @@
     "react": "^18",
     "react-dom": "^18",
     "react-markdown": "^10.1.0",
+    "react-virtuoso": "^4.18.3",
     "reconnecting-websocket": "^4",
     "rehype-highlight": "^7.0.2",
     "rehype-sanitize": "^6.0.0",
