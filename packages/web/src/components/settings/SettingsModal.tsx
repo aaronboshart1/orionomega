@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { X, Eye, EyeOff, Save, Loader2, CheckCircle, AlertCircle } from 'lucide-react';
+import { X, Eye, EyeOff, Save, Loader2, CheckCircle, AlertCircle, ChevronDown, ChevronRight, Zap, AlertTriangle, XCircle } from 'lucide-react';
 
 type TabId = 'omegaclaw' | 'memory' | 'skills';
 
@@ -111,7 +111,7 @@ function SelectInput({
   onChange,
 }: {
   value: string;
-  options: string[];
+  options: (string | { label: string; value: string })[];
   onChange: (v: string) => void;
 }) {
   return (
@@ -120,11 +120,15 @@ function SelectInput({
       onChange={(e) => onChange(e.target.value)}
       className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-xs text-zinc-100 outline-none focus:border-blue-500 transition-colors"
     >
-      {options.map((opt) => (
-        <option key={opt} value={opt}>
-          {opt}
-        </option>
-      ))}
+      {options.map((opt) => {
+        const optValue = typeof opt === 'string' ? opt : opt.value;
+        const optLabel = typeof opt === 'string' ? opt : opt.label;
+        return (
+          <option key={optValue} value={optValue}>
+            {optLabel}
+          </option>
+        );
+      })}
     </select>
   );
 }
@@ -482,33 +486,350 @@ function MemoryTab({
   );
 }
 
-function SkillsTab({
-  config,
-  onChange,
+interface SkillAuthMethod {
+  type: 'oauth' | 'pat' | 'api-key' | 'login' | 'ssh-key' | 'env';
+  label: string;
+  description?: string;
+  tokenUrl?: string;
+  envVar?: string;
+}
+
+interface SkillSetupField {
+  name: string;
+  type: 'string' | 'number' | 'boolean' | 'select';
+  label: string;
+  description?: string;
+  required: boolean;
+  default?: string | number | boolean;
+  options?: { label: string; value: string }[];
+  mask?: boolean;
+}
+
+interface SkillManifestData {
+  name: string;
+  version: string;
+  description: string;
+  author: string;
+  setup?: {
+    required: boolean;
+    description?: string;
+    auth?: { methods: SkillAuthMethod[] };
+    fields?: SkillSetupField[];
+  };
+}
+
+interface SkillConfigData {
+  name: string;
+  enabled: boolean;
+  configured: boolean;
+  authMethod?: string;
+  configuredAt?: string;
+  fields: Record<string, string | number | boolean>;
+}
+
+interface SkillEntry {
+  name: string;
+  version: string;
+  description: string;
+  author: string;
+  manifest: SkillManifestData;
+  config: SkillConfigData;
+  status: 'configured' | 'needs-setup' | 'disabled' | 'no-setup';
+}
+
+function StatusBadge({ status }: { status: SkillEntry['status'] }) {
+  const styles: Record<SkillEntry['status'], { bg: string; text: string; label: string; icon: React.ReactNode }> = {
+    configured: { bg: 'bg-green-900/30', text: 'text-green-400', label: 'Configured', icon: <CheckCircle size={10} /> },
+    'needs-setup': { bg: 'bg-amber-900/30', text: 'text-amber-400', label: 'Needs Setup', icon: <AlertTriangle size={10} /> },
+    disabled: { bg: 'bg-zinc-800', text: 'text-zinc-500', label: 'Disabled', icon: <XCircle size={10} /> },
+    'no-setup': { bg: 'bg-blue-900/30', text: 'text-blue-400', label: 'Ready', icon: <Zap size={10} /> },
+  };
+  const s = styles[status];
+  return (
+    <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${s.bg} ${s.text}`}>
+      {s.icon}
+      {s.label}
+    </span>
+  );
+}
+
+function getAuthFieldKey(method: SkillAuthMethod): string {
+  return method.envVar ?? 'API_KEY';
+}
+
+function SkillAuthPanel({
+  methods,
+  fieldValues,
+  selectedMethod,
+  onFieldChange,
+  onMethodChange,
 }: {
-  config: ConfigData;
-  onChange: (path: string, value: unknown) => void;
+  methods: SkillAuthMethod[];
+  fieldValues: Record<string, string | number | boolean>;
+  selectedMethod: string;
+  onFieldChange: (fieldKey: string, value: string) => void;
+  onMethodChange: (v: string) => void;
 }) {
+  const directInputTypes = new Set(['api-key', 'pat']);
+  const cliOnlyTypes = new Set(['oauth', 'login', 'ssh-key', 'env']);
+
+  const activeMethod = methods.find((m) => m.type === selectedMethod) ?? methods[0];
+  if (!activeMethod) return null;
+
+  const authFieldKey = getAuthFieldKey(activeMethod);
+  const credential = String(fieldValues[authFieldKey] ?? '');
+
   return (
     <div className="space-y-2">
-      <SectionTitle>Skills Settings</SectionTitle>
-      <FormField label="Skills Directory">
-        <TextInput
-          value={String(getNestedValue(config, 'skills.directory') ?? '')}
-          onChange={(v) => onChange('skills.directory', v)}
-        />
-      </FormField>
-      <FormField label="Auto-Load">
-        <Toggle
-          checked={Boolean(getNestedValue(config, 'skills.autoLoad'))}
-          onChange={(v) => onChange('skills.autoLoad', v)}
-        />
-      </FormField>
+      <h4 className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">Authentication</h4>
+      {methods.length > 1 && (
+        <FormField label="Auth Method">
+          <SelectInput
+            value={selectedMethod || methods[0]!.type}
+            options={methods.map((m) => m.type)}
+            onChange={onMethodChange}
+          />
+        </FormField>
+      )}
+      {activeMethod.description && (
+        <p className="text-[11px] text-zinc-500 pl-0 sm:pl-[196px]">{activeMethod.description}</p>
+      )}
+      {directInputTypes.has(activeMethod.type) && (
+        <FormField label={activeMethod.label || (activeMethod.type === 'api-key' ? 'API Key' : 'Personal Access Token')}>
+          <ApiKeyInput
+            value={credential}
+            onChange={(v) => onFieldChange(authFieldKey, v)}
+          />
+        </FormField>
+      )}
+      {activeMethod.tokenUrl && directInputTypes.has(activeMethod.type) && (
+        <p className="text-[11px] text-zinc-500 pl-0 sm:pl-[196px]">
+          Get a token at:{' '}
+          <a href={activeMethod.tokenUrl} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline">
+            {activeMethod.tokenUrl}
+          </a>
+        </p>
+      )}
+      {cliOnlyTypes.has(activeMethod.type) && (
+        <div className="rounded-md border border-zinc-700 bg-zinc-800/50 px-3 py-2 text-[11px] text-zinc-400 ml-0 sm:ml-[196px]">
+          {activeMethod.type === 'env' && activeMethod.envVar
+            ? <>This skill uses the environment variable <code className="text-zinc-300">{activeMethod.envVar}</code>. Set it in your shell before starting the gateway.</>
+            : <>This auth method ({activeMethod.type}) requires CLI setup. Run <code className="text-zinc-300">orionomega setup skills</code> to configure.</>
+          }
+        </div>
+      )}
     </div>
   );
 }
 
-function getTabValidity(config: ConfigData | null): Record<TabId, boolean> {
+function SkillFieldsPanel({
+  fields,
+  values,
+  onFieldChange,
+}: {
+  fields: SkillSetupField[];
+  values: Record<string, string | number | boolean>;
+  onFieldChange: (name: string, value: string | number | boolean) => void;
+}) {
+  return (
+    <div className="space-y-2">
+      <h4 className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">Configuration</h4>
+      {fields.map((field) => {
+        const currentValue = values[field.name] ?? field.default ?? (field.type === 'boolean' ? false : field.type === 'number' ? 0 : '');
+
+        return (
+          <div key={field.name}>
+            <FormField label={`${field.label}${field.required ? ' *' : ''}`}>
+              {field.type === 'boolean' ? (
+                <Toggle
+                  checked={Boolean(currentValue)}
+                  onChange={(v) => onFieldChange(field.name, v)}
+                />
+              ) : field.type === 'number' ? (
+                <NumberInput
+                  value={Number(currentValue)}
+                  onChange={(v) => onFieldChange(field.name, v)}
+                />
+              ) : field.type === 'select' && field.options ? (
+                <SelectInput
+                  value={String(currentValue)}
+                  options={field.options}
+                  onChange={(v) => onFieldChange(field.name, v)}
+                />
+              ) : field.mask ? (
+                <ApiKeyInput
+                  value={String(currentValue)}
+                  onChange={(v) => onFieldChange(field.name, v)}
+                />
+              ) : (
+                <TextInput
+                  value={String(currentValue)}
+                  onChange={(v) => onFieldChange(field.name, v)}
+                  placeholder={field.description}
+                />
+              )}
+            </FormField>
+            {field.description && !field.mask && (
+              <p className="text-[10px] text-zinc-600 mt-0.5 pl-0 sm:pl-[196px]">{field.description}</p>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function SkillCard({
+  skill,
+  expanded,
+  onToggleExpand,
+  onToggleEnabled,
+  onConfigChange,
+}: {
+  skill: SkillEntry;
+  expanded: boolean;
+  onToggleExpand: () => void;
+  onToggleEnabled: (enabled: boolean) => void;
+  onConfigChange: (skillName: string, field: string, value: string | number | boolean) => void;
+}) {
+  const hasSetup = skill.manifest.setup && (
+    (skill.manifest.setup.auth?.methods && skill.manifest.setup.auth.methods.length > 0) ||
+    (skill.manifest.setup.fields && skill.manifest.setup.fields.length > 0)
+  );
+
+  return (
+    <div className="rounded-lg border border-zinc-700/50 bg-zinc-800/30 overflow-hidden">
+      <div
+        className="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-zinc-800/50 transition-colors"
+        onClick={(e) => {
+          if ((e.target as HTMLElement).closest('button[data-toggle]')) return;
+          if (skill.config.enabled && hasSetup) onToggleExpand();
+        }}
+      >
+        {skill.config.enabled && hasSetup ? (
+          expanded
+            ? <ChevronDown size={14} className="text-zinc-500 shrink-0" />
+            : <ChevronRight size={14} className="text-zinc-500 shrink-0" />
+        ) : (
+          <div className="w-[14px] shrink-0" />
+        )}
+
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-medium text-zinc-200 truncate">{skill.name}</span>
+            <span className="text-[10px] text-zinc-600">v{skill.version}</span>
+          </div>
+          <p className="text-[11px] text-zinc-500 truncate mt-0.5">{skill.description}</p>
+        </div>
+
+        <StatusBadge status={skill.config.enabled ? skill.status : 'disabled'} />
+
+        <div data-toggle="true" onClick={(e) => e.stopPropagation()}>
+          <Toggle
+            checked={skill.config.enabled}
+            onChange={(v) => onToggleEnabled(v)}
+          />
+        </div>
+      </div>
+
+      {expanded && skill.config.enabled && hasSetup && (
+        <div className="border-t border-zinc-700/50 px-4 py-3 space-y-4">
+          {skill.manifest.setup?.auth?.methods && skill.manifest.setup.auth.methods.length > 0 && (
+            <SkillAuthPanel
+              methods={skill.manifest.setup.auth.methods}
+              fieldValues={skill.config.fields}
+              selectedMethod={skill.config.authMethod || skill.manifest.setup.auth.methods[0]!.type}
+              onFieldChange={(fieldKey, v) => onConfigChange(skill.name, fieldKey, v)}
+              onMethodChange={(v) => onConfigChange(skill.name, '_authMethod', v)}
+            />
+          )}
+          {skill.manifest.setup?.fields && skill.manifest.setup.fields.length > 0 && (
+            <SkillFieldsPanel
+              fields={skill.manifest.setup.fields}
+              values={skill.config.fields}
+              onFieldChange={(name, value) => onConfigChange(skill.name, name, value)}
+            />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SkillsTab({
+  config,
+  onChange,
+  skills,
+  skillsLoading,
+  onSkillConfigChange,
+  onSkillToggle,
+}: {
+  config: ConfigData;
+  onChange: (path: string, value: unknown) => void;
+  skills: SkillEntry[];
+  skillsLoading: boolean;
+  onSkillConfigChange: (skillName: string, field: string, value: string | number | boolean) => void;
+  onSkillToggle: (skillName: string, enabled: boolean) => void;
+}) {
+  const [expandedSkills, setExpandedSkills] = useState<Set<string>>(new Set());
+
+  const toggleExpand = useCallback((name: string) => {
+    setExpandedSkills((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  }, []);
+
+  return (
+    <div className="space-y-4">
+      <SectionTitle>Global Settings</SectionTitle>
+      <div className="space-y-2">
+        <FormField label="Skills Directory">
+          <TextInput
+            value={String(getNestedValue(config, 'skills.directory') ?? '')}
+            onChange={(v) => onChange('skills.directory', v)}
+          />
+        </FormField>
+        <FormField label="Auto-Load">
+          <Toggle
+            checked={Boolean(getNestedValue(config, 'skills.autoLoad'))}
+            onChange={(v) => onChange('skills.autoLoad', v)}
+          />
+        </FormField>
+      </div>
+
+      <SectionTitle>Installed Skills</SectionTitle>
+      {skillsLoading ? (
+        <div className="flex items-center justify-center py-8">
+          <Loader2 size={16} className="animate-spin text-zinc-500" />
+          <span className="ml-2 text-xs text-zinc-500">Discovering skills...</span>
+        </div>
+      ) : skills.length === 0 ? (
+        <div className="text-center py-8">
+          <p className="text-xs text-zinc-500">No skills found in the configured directory.</p>
+          <p className="text-[11px] text-zinc-600 mt-1">Set a skills directory above and save to discover skills.</p>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {skills.map((skill) => (
+            <SkillCard
+              key={skill.name}
+              skill={skill}
+              expanded={expandedSkills.has(skill.name)}
+              onToggleExpand={() => toggleExpand(skill.name)}
+              onToggleEnabled={(enabled) => onSkillToggle(skill.name, enabled)}
+              onConfigChange={onSkillConfigChange}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function getTabValidity(config: ConfigData | null, skills: SkillEntry[]): Record<TabId, boolean> {
   if (!config) return { omegaclaw: false, memory: false, skills: false };
 
   const apiKey = String(getNestedValue(config, 'models.apiKey') ?? '');
@@ -521,7 +842,8 @@ function getTabValidity(config: ConfigData | null): Record<TabId, boolean> {
   const memoryValid = hindsightUrl.length > 0 && defaultBank.length > 0;
 
   const skillsDir = String(getNestedValue(config, 'skills.directory') ?? '');
-  const skillsValid = skillsDir.length > 0;
+  const allSkillsConfigured = skills.every((s) => s.status !== 'needs-setup');
+  const skillsValid = skillsDir.length > 0 && allSkillsConfigured;
 
   return { omegaclaw: omegaclawValid, memory: memoryValid, skills: skillsValid };
 }
@@ -539,6 +861,9 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [saving, setSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'success' | 'error'>('idle');
   const [errorMsg, setErrorMsg] = useState('');
+  const [skills, setSkills] = useState<SkillEntry[]>([]);
+  const [skillsLoading, setSkillsLoading] = useState(false);
+  const [dirtySkills, setDirtySkills] = useState<Map<string, Partial<{ enabled: boolean; authMethod: string; fields: Record<string, string | number | boolean> }>>>(new Map());
 
   const fetchConfig = useCallback(async () => {
     setLoading(true);
@@ -573,18 +898,84 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
     setLoading(false);
   }, []);
 
+  const fetchSkills = useCallback(async () => {
+    setSkillsLoading(true);
+    try {
+      const res = await fetch('/api/gateway/api/skills');
+      if (res.ok) {
+        const data = await res.json();
+        setSkills((data as { skills: SkillEntry[] }).skills || []);
+      }
+    } catch {
+      // Skills fetch is non-critical
+    } finally {
+      setSkillsLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     if (open) {
       setConfig(null);
+      setSkills([]);
+      setDirtySkills(new Map());
       fetchConfig();
+      fetchSkills();
       setSaveStatus('idle');
       setErrorMsg('');
     }
-  }, [open, fetchConfig]);
+  }, [open, fetchConfig, fetchSkills]);
 
   const handleChange = useCallback((path: string, value: unknown) => {
     setConfig((prev) => setNestedValue(prev ?? {}, path, value));
     setSaveStatus('idle');
+  }, []);
+
+  const handleSkillConfigChange = useCallback((skillName: string, field: string, value: string | number | boolean) => {
+    setSaveStatus('idle');
+
+    setSkills((prev) => prev.map((s) => {
+      if (s.name !== skillName) return s;
+      const updated = { ...s, config: { ...s.config, fields: { ...s.config.fields } } };
+      if (field === '_authMethod') {
+        updated.config.authMethod = String(value);
+      } else {
+        updated.config.fields[field] = value;
+      }
+      return updated;
+    }));
+
+    setDirtySkills((prev) => {
+      const next = new Map(prev);
+      const existing = next.get(skillName) || {};
+      if (field === '_authMethod') {
+        existing.authMethod = String(value);
+      } else {
+        existing.fields = { ...(existing.fields || {}), [field]: value };
+      }
+      next.set(skillName, existing);
+      return next;
+    });
+  }, []);
+
+  const handleSkillToggle = useCallback((skillName: string, enabled: boolean) => {
+    setSaveStatus('idle');
+
+    setSkills((prev) => prev.map((s) => {
+      if (s.name !== skillName) return s;
+      return {
+        ...s,
+        config: { ...s.config, enabled },
+        status: enabled ? (s.manifest.setup?.required && !s.config.configured ? 'needs-setup' : s.config.configured ? 'configured' : 'no-setup') : 'disabled',
+      };
+    }));
+
+    setDirtySkills((prev) => {
+      const next = new Map(prev);
+      const existing = next.get(skillName) || {};
+      existing.enabled = enabled;
+      next.set(skillName, existing);
+      return next;
+    });
   }, []);
 
   const handleSave = async () => {
@@ -608,6 +999,42 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
         throw new Error((body as { error?: string }).error || 'Failed to save');
       }
       setConfig(body as ConfigData);
+
+      const skillErrors: string[] = [];
+      for (const [skillName, changes] of dirtySkills.entries()) {
+        try {
+          const skillRes = await fetch(`/api/gateway/api/skills/${encodeURIComponent(skillName)}/config`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              enabled: changes.enabled,
+              authMethod: changes.authMethod,
+              fields: changes.fields,
+            }),
+          });
+          if (!skillRes.ok) {
+            const errData = await skillRes.json().catch(() => ({ error: 'Unknown error' }));
+            skillErrors.push(`${skillName}: ${(errData as { error?: string }).error || 'Failed'}`);
+          } else {
+            const result = await skillRes.json() as { config: SkillConfigData; status: SkillEntry['status'] };
+            setSkills((prev) => prev.map((s) => {
+              if (s.name !== skillName) return s;
+              return { ...s, config: result.config, status: result.status };
+            }));
+          }
+        } catch (err) {
+          skillErrors.push(`${skillName}: ${err instanceof Error ? err.message : 'Network error'}`);
+        }
+      }
+
+      setDirtySkills(new Map());
+
+      if (skillErrors.length > 0) {
+        throw new Error(`Config saved but skill errors: ${skillErrors.join('; ')}`);
+      }
+
+      fetchSkills();
+
       setSaveStatus('success');
       setTimeout(() => setSaveStatus('idle'), 3000);
     } catch (err) {
@@ -635,7 +1062,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
 
         <div className="flex border-b border-zinc-800">
           {TABS.map((tab) => {
-            const validity = getTabValidity(config);
+            const validity = getTabValidity(config, skills);
             const isValid = validity[tab.id];
             return (
               <button
@@ -681,7 +1108,16 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
             config && <>
               {activeTab === 'omegaclaw' && <OmegaClawTab config={config} onChange={handleChange} />}
               {activeTab === 'memory' && <MemoryTab config={config} onChange={handleChange} />}
-              {activeTab === 'skills' && <SkillsTab config={config} onChange={handleChange} />}
+              {activeTab === 'skills' && (
+                <SkillsTab
+                  config={config}
+                  onChange={handleChange}
+                  skills={skills}
+                  skillsLoading={skillsLoading}
+                  onSkillConfigChange={handleSkillConfigChange}
+                  onSkillToggle={handleSkillToggle}
+                />
+              )}
             </>
           )}
         </div>

@@ -82,6 +82,9 @@ importers:
       '@orionomega/hindsight':
         specifier: workspace:*
         version: link:../hindsight
+      '@orionomega/skills-sdk':
+        specifier: workspace:*
+        version: link:../skills-sdk
       ws:
         specifier: ^8.18.0
         version: 8.19.0

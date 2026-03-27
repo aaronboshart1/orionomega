@@ -21,6 +21,7 @@
   "dependencies": {
     "@orionomega/core": "workspace:*",
     "@orionomega/hindsight": "workspace:*",
+    "@orionomega/skills-sdk": "workspace:*",
     "ws": "^8.18.0"
   },
   "devDependencies": {
