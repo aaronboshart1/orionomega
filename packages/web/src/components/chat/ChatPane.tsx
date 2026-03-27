@@ -174,9 +174,7 @@ export function ChatPane() {
   return (
     <div className="flex h-full flex-col bg-[var(--background)]">
       <div className="flex items-center gap-3 border-b border-zinc-800 px-6 py-4">
-        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-600 text-sm font-bold">
-          C
-        </div>
+        <img src="/omegaclaw-logo.png" alt="OmegaClaw" className="h-8 w-8 rounded-lg" />
         <div className="flex-1">
           <h1 className="text-sm font-semibold text-zinc-100">OmegaClaw</h1>
         </div>
@@ -195,7 +193,7 @@ export function ChatPane() {
       <div className="relative flex-1">
         {messages.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center text-zinc-600">
-            <div className="mb-3 text-4xl">&#x1F43E;</div>
+            <img src="/omegaclaw-logo.png" alt="OmegaClaw" className="mb-3 h-12 w-12" />
             <p className="text-sm">Send a message to begin</p>
             <p className="mt-1 text-xs text-zinc-700">
               Ask anything — I&apos;ll handle the orchestration
