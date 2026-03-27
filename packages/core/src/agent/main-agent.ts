@@ -589,10 +589,11 @@ export class MainAgent {
       }
 
       if (cmd === '/stop') {
+        const hadWork = this._hadActiveWorkBeforeAbort || this.orchestration.hasActiveWorkflow;
         this.orchestration.stopAll();
         this.callbacks.onCommandResult({
           command: '/stop', success: true,
-          message: this._hadActiveWorkBeforeAbort ? 'Stopped.' : 'Nothing running to stop.',
+          message: hadWork ? 'Stopped.' : 'Nothing running to stop.',
         });
         return;
       }
