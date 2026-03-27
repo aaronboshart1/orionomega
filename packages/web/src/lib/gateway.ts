@@ -250,6 +250,8 @@ export function useGateway(url: string = defaultGatewayUrl()) {
           break;
         case 'history': {
           if (msg.history && Array.isArray(msg.history)) {
+            const currentMessages = getChat().messages;
+            if (currentMessages.length > 0) break;
             const restored: ChatMessage[] = msg.history
               .filter((m: { role: string }) => m.role === 'user' || m.role === 'assistant')
               .map((m: { id: string; role: string; content: string; timestamp: string; type?: string }) => ({
@@ -260,7 +262,7 @@ export function useGateway(url: string = defaultGatewayUrl()) {
                 type: m.type as ChatMessage['type'],
               }));
             if (restored.length > 0) {
-              chat.setMessages(restored);
+              getChat().setMessages(restored);
             }
           }
           break;
