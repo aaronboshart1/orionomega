@@ -32,6 +32,31 @@ function readPid(): number | null {
   }
 }
 
+function findPidOnPort(port: number): number | null {
+  try {
+    const result = execSync(
+      `lsof -nP -iTCP:${port} -sTCP:LISTEN -t 2>/dev/null || true`,
+      { timeout: 5000, shell: '/bin/sh' as any },
+    ).toString().trim();
+    if (!result) return null;
+    const pids = result.split('\n').map((s) => parseInt(s.trim(), 10)).filter((n) => !isNaN(n));
+    for (const pid of pids) {
+      try {
+        const cmdline = execSync(`ps -p ${pid} -o args= 2>/dev/null || true`, {
+          timeout: 3000,
+          shell: '/bin/sh' as any,
+        }).toString().trim();
+        if (cmdline.includes('server.js') || cmdline.includes('gateway')) {
+          return pid;
+        }
+      } catch { /* skip */ }
+    }
+    return pids[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export function findInstallDirectory(): string | null {
   const __dirname = fileURLToPath(new URL('.', import.meta.url));
   const monorepoRoot = join(__dirname, '..', '..', '..', '..');
@@ -82,8 +107,11 @@ export function runUpdateSteps(installDir: string, callbacks: UpdateCallbacks): 
   return true;
 }
 
-export function stopGateway(): number | null {
-  const gatewayPid = readPid();
+export function stopGateway(port = 8000): number | null {
+  let gatewayPid = readPid();
+  if (!gatewayPid) {
+    gatewayPid = findPidOnPort(port);
+  }
   if (!gatewayPid) return null;
   try {
     process.kill(gatewayPid, 'SIGTERM');
@@ -93,6 +121,7 @@ export function stopGateway(): number | null {
       execSync('sleep 0.5');
       waited += 500;
     }
+    try { process.kill(gatewayPid, 0); process.kill(gatewayPid, 'SIGKILL'); } catch { /* done */ }
   } catch {
     // already stopped
   }

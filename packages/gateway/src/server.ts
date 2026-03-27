@@ -397,17 +397,18 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
     return;
   }
 
-  const url = req.url ?? '/';
+  const rawUrl = req.url ?? '/';
   const method = req.method ?? 'GET';
+  const pathname = rawUrl.split('?')[0]!.replace(/\/+$/, '') || '/';
 
   // --- Health ---
-  if (url === '/api/health' && method === 'GET') {
+  if (pathname === '/api/health' && method === 'GET') {
     handleHealth(req, res, startTime);
     return;
   }
 
   // --- Status ---
-  if (url === '/api/status' && method === 'GET') {
+  if (pathname === '/api/status' && method === 'GET') {
     handleStatus(req, res, sessionManager, startTime, hindsightUrl).catch((err) => {
       log.error('Status route error', { error: err instanceof Error ? err.message : String(err) });
       res.writeHead(500, { 'Content-Type': 'application/json' });
@@ -417,30 +418,30 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
   }
 
   // --- Sessions ---
-  if (url === '/api/sessions' && method === 'GET') {
+  if (pathname === '/api/sessions' && method === 'GET') {
     handleListSessions(req, res, sessionManager);
     return;
   }
 
-  if (url === '/api/sessions' && method === 'POST') {
+  if (pathname === '/api/sessions' && method === 'POST') {
     handleCreateSession(req, res, sessionManager);
     return;
   }
 
   // GET /api/sessions/:id
-  const sessionMatch = url.match(/^\/api\/sessions\/([a-f0-9]+)$/);
+  const sessionMatch = pathname.match(/^\/api\/sessions\/([a-f0-9]+)$/);
   if (sessionMatch && method === 'GET') {
     handleGetSession(req, res, sessionManager, sessionMatch[1]!);
     return;
   }
 
   // --- Config ---
-  if (url === '/api/config' && method === 'GET') {
+  if (pathname === '/api/config' && method === 'GET') {
     handleGetConfig(req, res, config);
     return;
   }
 
-  if (url === '/api/config' && method === 'PUT') {
+  if (pathname === '/api/config' && method === 'PUT') {
     handlePutConfig(req, res, config).catch((err) => {
       log.error('Config route error', { error: err instanceof Error ? err.message : String(err) });
       res.writeHead(500, { 'Content-Type': 'application/json' });
@@ -450,6 +451,7 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
   }
 
   // --- 404 ---
+  log.warn('404 Not Found', { method, rawUrl, pathname });
   res.writeHead(404, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ error: 'Not found' }));
 }
