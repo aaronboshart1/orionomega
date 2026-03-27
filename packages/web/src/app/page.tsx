@@ -1,6 +1,5 @@
 'use client';
 
-import { useState } from 'react';
 import { PanelRightOpen, PanelRightClose } from 'lucide-react';
 import { ChatPane } from '@/components/chat/ChatPane';
 import { OrchestrationPane } from '@/components/orchestration/OrchestrationPane';
@@ -10,17 +9,20 @@ export default function Home() {
   const hasWorkflows = useOrchestrationStore(
     (s) => Object.keys(s.workflows).length > 0,
   );
-  const [showOrchPane, setShowOrchPane] = useState(false);
+  const orchPaneOpen = useOrchestrationStore((s) => s.orchPaneOpen);
+  const setOrchPaneOpen = useOrchestrationStore((s) => s.setOrchPaneOpen);
+
+  const showOrchPane = orchPaneOpen && hasWorkflows;
 
   return (
     <div className="flex h-screen">
-      <div className={showOrchPane && hasWorkflows ? 'w-1/2 min-w-[400px]' : 'w-full'}>
+      <div className={showOrchPane ? 'w-1/2 min-w-[400px]' : 'w-full'}>
         <ChatPane />
       </div>
 
       {hasWorkflows && (
         <button
-          onClick={() => setShowOrchPane((v) => !v)}
+          onClick={() => setOrchPaneOpen(!orchPaneOpen)}
           className="absolute right-3 top-3 z-10 rounded-lg border border-zinc-700 bg-zinc-800 p-2 text-zinc-400 shadow-lg transition-colors hover:border-zinc-600 hover:text-zinc-200"
           title={showOrchPane ? 'Hide detail pane' : 'Show DAG detail'}
         >
@@ -28,7 +30,7 @@ export default function Home() {
         </button>
       )}
 
-      {showOrchPane && hasWorkflows && (
+      {showOrchPane && (
         <div className="w-1/2 border-l border-zinc-800">
           <OrchestrationPane />
         </div>

@@ -102,6 +102,7 @@ interface OrchestrationStore {
   selectedWorker: string | null;
   inlineDAGs: Record<string, InlineDAG>;
   pendingConfirmation: DAGConfirmation | null;
+  orchPaneOpen: boolean;
 
   graphState: GraphState | null;
   events: WorkerEvent[];
@@ -117,6 +118,8 @@ interface OrchestrationStore {
   completeDAG: (dagId: string, result?: string, error?: string, stats?: { durationSec?: number; workerCount?: number; totalCostUsd?: number; toolCallCount?: number; modelUsage?: ModelUsageEntry[]; nodeOutputPaths?: Record<string, string[]>; stopped?: boolean }) => void;
   removeInlineDAG: (dagId: string) => void;
   setPendingConfirmation: (c: DAGConfirmation | null) => void;
+  setOrchPaneOpen: (open: boolean) => void;
+  openOrchPane: (dagId: string) => void;
   reset: () => void;
 }
 
@@ -135,6 +138,7 @@ export const useOrchestrationStore = create<OrchestrationStore>((set) => ({
   selectedWorker: null,
   inlineDAGs: {},
   pendingConfirmation: null,
+  orchPaneOpen: false,
   graphState: null,
   events: [],
 
@@ -277,6 +281,16 @@ export const useOrchestrationStore = create<OrchestrationStore>((set) => ({
 
   setPendingConfirmation: (pendingConfirmation) => set({ pendingConfirmation }),
 
+  setOrchPaneOpen: (open) => set({ orchPaneOpen: open }),
+
+  openOrchPane: (dagId) =>
+    set((s) => ({
+      orchPaneOpen: true,
+      activeWorkflowId: dagId,
+      selectedWorker: null,
+      ...deriveActive(s.workflows, dagId),
+    })),
+
   reset: () =>
     set({
       workflows: {},
@@ -287,5 +301,6 @@ export const useOrchestrationStore = create<OrchestrationStore>((set) => ({
       selectedWorker: null,
       inlineDAGs: {},
       pendingConfirmation: null,
+      orchPaneOpen: false,
     }),
 }));

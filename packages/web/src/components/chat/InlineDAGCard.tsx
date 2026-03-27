@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { ChevronDown, ChevronRight, CheckCircle2, XCircle, Loader2, Circle } from 'lucide-react';
 import { OmegaSpinner } from './OmegaSpinner';
+import { useOrchestrationStore } from '@/stores/orchestration';
 import type { InlineDAG, InlineDAGNode } from '@/stores/orchestration';
 
 interface InlineDAGCardProps {
@@ -54,6 +55,7 @@ function NodeRow({ node }: { node: InlineDAGNode }) {
 
 export function InlineDAGCard({ dag }: InlineDAGCardProps) {
   const [expanded, setExpanded] = useState(false);
+  const openOrchPane = useOrchestrationStore((s) => s.openOrchPane);
 
   const isActive = dag.status === 'dispatched' || dag.status === 'running';
   const isDone = dag.status === 'complete';
@@ -90,7 +92,12 @@ export function InlineDAGCard({ dag }: InlineDAGCardProps) {
 
         {dag.nodes.length > 0 && (
           <button
-            onClick={() => setExpanded(!expanded)}
+            onClick={() => {
+              setExpanded(!expanded);
+              if (!expanded) {
+                openOrchPane(dag.dagId);
+              }
+            }}
             className="rounded p-0.5 text-zinc-500 hover:bg-zinc-700 hover:text-zinc-300"
           >
             {expanded
