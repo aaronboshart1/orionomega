@@ -116,6 +116,7 @@ export class MainAgent {
   private availableSkills: string[] = [];
   private interruptedWorkflows: WorkflowCheckpoint[] = [];
   private activeAbort: AbortController | null = null;
+  private _hadActiveWorkBeforeAbort = false;
 
   constructor(config: MainAgentConfig, callbacks: MainAgentCallbacks) {
     this.config = config;
@@ -290,6 +291,7 @@ export class MainAgent {
     });
     this.pushHistory({ role: 'user', content: trimmed });
 
+    this._hadActiveWorkBeforeAbort = this.activeAbort !== null && !this.activeAbort.signal.aborted;
     this.activeAbort?.abort();
     this.activeAbort = new AbortController();
     const signal = this.activeAbort.signal;
@@ -587,15 +589,10 @@ export class MainAgent {
       }
 
       if (cmd === '/stop') {
-        let stopped = false;
-        if (this.activeAbort && !this.activeAbort.signal.aborted) {
-          this.activeAbort.abort();
-          stopped = true;
-        }
         this.orchestration.stopAll();
         this.callbacks.onCommandResult({
           command: '/stop', success: true,
-          message: stopped ? 'Stopped.' : 'Nothing running to stop.',
+          message: this._hadActiveWorkBeforeAbort ? 'Stopped.' : 'Nothing running to stop.',
         });
         return;
       }
