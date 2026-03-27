@@ -4,8 +4,8 @@ const devDomain = process.env.REPLIT_DEV_DOMAIN;
 
 const nextConfig: NextConfig = {
   allowedDevOrigins: devDomain
-    ? [`https://${devDomain}`, `http://${devDomain}`]
-    : [],
+    ? [devDomain, `https://${devDomain}`, `http://${devDomain}`]
+    : ['*.replit.dev'],
 };
 
 export default nextConfig;

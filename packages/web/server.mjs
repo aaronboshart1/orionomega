@@ -1,24 +1,15 @@
-import { createServer } from 'http';
+import { createServer, request as httpRequest } from 'http';
+import { connect as netConnect } from 'net';
 import { parse } from 'url';
 import next from 'next';
-import httpProxy from 'http-proxy';
 
 const dev = process.env.NODE_ENV !== 'production';
 const port = parseInt(process.env.PORT || '5000', 10);
-const gatewayUrl = process.env.GATEWAY_URL || 'http://localhost:8000';
+const gatewayHost = process.env.GATEWAY_HOST || 'localhost';
+const gatewayPort = parseInt(process.env.GATEWAY_PORT || '8000', 10);
 
 const app = next({ dev, port });
 const handle = app.getRequestHandler();
-
-const proxy = httpProxy.createProxyServer({
-  target: gatewayUrl,
-  ws: true,
-  changeOrigin: true,
-});
-
-proxy.on('error', (err) => {
-  console.error('[proxy] Error:', err.message);
-});
 
 app.prepare().then(() => {
   const nextUpgradeHandler = app.getUpgradeHandler();
@@ -26,8 +17,28 @@ app.prepare().then(() => {
   const server = createServer((req, res) => {
     const parsedUrl = parse(req.url, true);
     if (parsedUrl.pathname.startsWith('/api/gateway/')) {
-      req.url = req.url.replace('/api/gateway', '');
-      proxy.web(req, res);
+      const targetPath = req.url.replace('/api/gateway', '');
+      const proxyReq = httpRequest(
+        {
+          hostname: gatewayHost,
+          port: gatewayPort,
+          path: targetPath,
+          method: req.method,
+          headers: { ...req.headers, host: `${gatewayHost}:${gatewayPort}` },
+        },
+        (proxyRes) => {
+          res.writeHead(proxyRes.statusCode, proxyRes.headers);
+          proxyRes.pipe(res, { end: true });
+        },
+      );
+      proxyReq.on('error', (err) => {
+        console.error('[proxy] HTTP error:', err.message);
+        if (!res.headersSent) {
+          res.writeHead(502, { 'Content-Type': 'text/plain' });
+          res.end('Gateway unavailable');
+        }
+      });
+      req.pipe(proxyReq, { end: true });
     } else {
       handle(req, res, parsedUrl);
     }
@@ -36,8 +47,30 @@ app.prepare().then(() => {
   server.on('upgrade', (req, socket, head) => {
     const parsedUrl = parse(req.url, true);
     if (parsedUrl.pathname === '/api/gateway/ws') {
-      req.url = req.url.replace('/api/gateway', '');
-      proxy.ws(req, socket, head);
+      const targetPath = req.url.replace('/api/gateway', '');
+      const proxySocket = netConnect({ host: gatewayHost, port: gatewayPort }, () => {
+        const reqLine = `GET ${targetPath} HTTP/1.1\r\n`;
+        const headers = Object.entries({
+          ...req.headers,
+          host: `${gatewayHost}:${gatewayPort}`,
+        })
+          .map(([k, v]) => `${k}: ${v}`)
+          .join('\r\n');
+        proxySocket.write(reqLine + headers + '\r\n\r\n');
+        if (head && head.length > 0) proxySocket.write(head);
+        proxySocket.pipe(socket);
+        socket.pipe(proxySocket);
+      });
+      proxySocket.on('error', (err) => {
+        console.error('[proxy] WS error:', err.message);
+        socket.destroy();
+      });
+      socket.on('error', (err) => {
+        console.error('[proxy] Client socket error:', err.message);
+        proxySocket.destroy();
+      });
+      socket.on('close', () => proxySocket.destroy());
+      proxySocket.on('close', () => socket.destroy());
     } else {
       nextUpgradeHandler(req, socket, head);
     }
@@ -45,6 +78,6 @@ app.prepare().then(() => {
 
   server.listen(port, '0.0.0.0', () => {
     console.log(`> Ready on http://0.0.0.0:${port}`);
-    console.log(`> Gateway proxy: ${gatewayUrl}`);
+    console.log(`> Gateway proxy: ${gatewayHost}:${gatewayPort}`);
   });
 });
