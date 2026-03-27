@@ -52,7 +52,7 @@ async function launchTUI(): Promise<void> {
   }
 
   if (!tuiPath) {
-    throw new Error('Could not locate @orionomega/tui. Is it built? Try: cd /opt/orionomega && pnpm -r build');
+    throw new Error('Could not locate @orionomega/tui. Is it built? Try: cd ~/.orionomega/src && pnpm -r build');
   }
 
   const tui = await import(tuiPath) as Record<string, unknown>;
@@ -68,7 +68,7 @@ const COMMANDS: Record<string, () => Promise<void>> = {
     try {
       await launchTUI();
     } catch {
-      log.error('Failed to launch TUI. Is @orionomega/tui built? Try: cd /opt/orionomega && pnpm -r build');
+      log.error('Failed to launch TUI. Is @orionomega/tui built? Try: cd ~/.orionomega/src && pnpm -r build');
       process.exitCode = 1;
     }
   },

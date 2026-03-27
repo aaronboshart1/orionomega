@@ -89,6 +89,9 @@ info "Build complete"
 
 step "Linking orionomega command..."
 
+pnpm unlink -g @orionomega/core 2>/dev/null || true
+npm unlink -g @orionomega/core 2>/dev/null || true
+
 mkdir -p "$BIN_DIR"
 
 cat > "$BIN_DIR/orionomega" <<WRAPPER
@@ -262,4 +265,4 @@ printf "\n"
 # ── 9. Spawn a fresh login shell so PATH is live ─────────────────
 # exec replaces this process with a new shell that reads .zshrc/.bashrc,
 # so `orionomega` is immediately available — same pattern as rustup/claude.
-exec "${SHELL:-/bin/sh}" -l -c "orionomega setup" </dev/tty
+exec "${SHELL:-/bin/sh}" -l -c "'$BIN_DIR/orionomega' setup" </dev/tty

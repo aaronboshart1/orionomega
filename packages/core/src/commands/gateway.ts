@@ -57,7 +57,6 @@ function findServerPath(): string {
     join(monorepoRoot, 'packages', 'gateway', 'dist', 'server.js'),
     join(homedir(), '.orionomega', 'src', 'packages', 'gateway', 'dist', 'server.js'),
     join(process.cwd(), 'packages', 'gateway', 'dist', 'server.js'),
-    '/opt/orionomega/packages/gateway/dist/server.js',
     join(homedir(), '.orionomega', 'packages', 'gateway', 'dist', 'server.js'),
   ];
   for (const c of candidates) {

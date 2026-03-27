@@ -24,10 +24,9 @@ export async function runUI(): Promise<void> {
 
   const candidates = [
     join(monorepoRoot, 'packages', 'web'),
-    join(homedir(), '.orionomega', 'packages', 'web'),
     join(homedir(), '.orionomega', 'src', 'packages', 'web'),
+    join(homedir(), '.orionomega', 'packages', 'web'),
     `${process.cwd()}/packages/web`,
-    '/opt/orionomega/packages/web',
   ];
 
   let webDir: string | null = null;

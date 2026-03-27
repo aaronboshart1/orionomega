@@ -15,7 +15,7 @@ Optional:
 
 ## Installation
 
-The one-liner installs OrionOmega to `/opt/orionomega` and links the CLI globally:
+The one-liner installs OrionOmega to `~/.orionomega/src` and links the CLI globally:
 
 ```bash
 curl -fsSL https://orionomega.dev/install | bash
@@ -26,7 +26,7 @@ The installer will:
 1. **Preflight check** — verify Linux, architecture (x64/arm64), and permissions
 2. **Install Node.js 22** — via NodeSource if not already present
 3. **Install pnpm** — for dependency management
-4. **Clone the repository** — to `/opt/orionomega`
+4. **Clone the repository** — to `~/.orionomega/src`
 5. **Build all packages** — TypeScript compilation across the monorepo
 6. **Link the CLI** — `orionomega` command available globally
 7. **Optionally install Hindsight** — clone, build (Rust), and set up as a systemd service

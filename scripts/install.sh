@@ -6,7 +6,7 @@
 # ═══════════════════════════════════════════════════════════════
 set -euo pipefail
 
-INSTALL_DIR="/opt/orionomega"
+INSTALL_DIR="${ORIONOMEGA_DIR:-$HOME/.orionomega/src}"
 CONFIG_DIR="${ORIONOMEGA_HOME:-$HOME/.orionomega}"
 # Support GITHUB_TOKEN for private repos
 if [[ -n "${GITHUB_TOKEN:-}" ]]; then

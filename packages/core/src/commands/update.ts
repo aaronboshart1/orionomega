@@ -62,7 +62,6 @@ export function findInstallDirectory(): string | null {
   const monorepoRoot = join(__dirname, '..', '..', '..', '..');
   const candidates = [
     monorepoRoot,
-    '/opt/orionomega',
     join(homedir(), '.orionomega', 'src'),
     process.cwd(),
   ];
@@ -148,7 +147,7 @@ export async function runUpdate(): Promise<void> {
   const installDir = findInstallDirectory();
   if (!installDir) {
     process.stdout.write(`${RED}✗${RESET} Cannot find OrionOmega git repository\n`);
-    process.stdout.write(`  ${DIM}Expected at /opt/orionomega or current directory${RESET}\n`);
+    process.stdout.write(`  ${DIM}Expected at ~/.orionomega/src or current directory${RESET}\n`);
     return;
   }
 
