@@ -55,7 +55,7 @@ export async function runUI(): Promise<void> {
   process.stdout.write(`${DIM}Press Ctrl+C to stop${RESET}\n\n`);
 
   const host = process.env.HOST || '127.0.0.1';
-  const port = process.env.PORT || '3000';
+  const port = process.env.PORT || '5000';
   const child = spawn('pnpm', [cmd], {
     cwd: webDir,
     stdio: 'inherit',
