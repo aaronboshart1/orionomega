@@ -21,6 +21,15 @@ import { handleListSessions, handleGetSession, handleCreateSession } from './rou
 import { handleStatus } from './routes/status.js';
 import { handleGetConfig, handlePutConfig } from './routes/config.js';
 
+process.on('uncaughtException', (err) => {
+  console.error('[gateway] Uncaught exception:', err);
+  process.exit(1);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[gateway] Unhandled rejection:', reason);
+  process.exit(1);
+});
+
 const startTime = Date.now();
 const log = createLogger('gateway');
 
@@ -290,7 +299,9 @@ async function initMainAgent(): Promise<void> {
   }
 }
 
-initMainAgent();
+initMainAgent().catch((err) => {
+  log.error('Unhandled error during MainAgent init', { error: err instanceof Error ? err.message : String(err) });
+});
 
 // ---------------------------------------------------------------------------
 // Periodic Hindsight Health Check
@@ -449,12 +460,34 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
 
 const server = createServer(handleRequest);
 
+let listenAttempts = 0;
+let retryTimer: ReturnType<typeof setTimeout> | null = null;
+const MAX_LISTEN_ATTEMPTS = 10;
+
+server.on('error', (err: NodeJS.ErrnoException) => {
+  if (err.code === 'EADDRINUSE') {
+    log.warn(`Port ${config.port} in use — retrying in 2 s… (attempt ${listenAttempts}/${MAX_LISTEN_ATTEMPTS})`);
+    if (!retryTimer) {
+      retryTimer = setTimeout(startListening, 2000);
+    }
+  } else {
+    log.error('Server error', { error: err.message, code: err.code });
+    process.exit(1);
+  }
+});
+
 wsHandler.attach(server);
 
 const restartDelay = parseInt(process.env.ORIONOMEGA_RESTART_DELAY ?? '0', 10);
 delete process.env.ORIONOMEGA_RESTART_DELAY;
 
 function startListening(): void {
+  retryTimer = null;
+  listenAttempts++;
+  if (listenAttempts > MAX_LISTEN_ATTEMPTS) {
+    log.error(`Failed to bind to port ${config.port} after ${MAX_LISTEN_ATTEMPTS} attempts — exiting`);
+    process.exit(1);
+  }
   server.listen(config.port, config.bind, () => {
     log.info(`OrionOmega Gateway v0.1.0`);
     log.info(`Listening on ${config.bind}:${config.port}`);
