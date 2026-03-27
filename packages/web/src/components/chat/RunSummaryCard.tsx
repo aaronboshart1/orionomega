@@ -1,7 +1,9 @@
 'use client';
 
-import { CheckCircle2, XCircle, Circle, FileText } from 'lucide-react';
+import { useState } from 'react';
+import { CheckCircle2, XCircle, Circle, FileText, ChevronRight } from 'lucide-react';
 import type { InlineDAG, ModelUsageEntry } from '@/stores/orchestration';
+import { MarkdownContent } from './MarkdownContent';
 
 interface RunSummaryCardProps {
   dag: InlineDAG;
@@ -19,10 +21,12 @@ function fmtDuration(sec: number): string {
 }
 
 export function RunSummaryCard({ dag }: RunSummaryCardProps) {
+  const [summaryOpen, setSummaryOpen] = useState(false);
   const isDone = dag.status === 'complete';
   const isError = dag.status === 'error';
   const isStopped = dag.status === 'stopped';
   const hasModels = dag.modelUsage && dag.modelUsage.length > 0;
+  const hasResult = dag.result != null && dag.result.trim().length > 0;
 
   const totals = hasModels
     ? dag.modelUsage!.reduce(
@@ -108,6 +112,32 @@ export function RunSummaryCard({ dag }: RunSummaryCardProps) {
                 ))}
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {hasResult && (
+        <div className="mt-2 border-t border-zinc-700/50 pt-2">
+          <button
+            type="button"
+            aria-expanded={summaryOpen}
+            onClick={() => setSummaryOpen((o) => !o)}
+            className="flex w-full items-center gap-1.5 text-[10px] font-medium text-zinc-400 hover:text-zinc-300 transition-colors"
+          >
+            <ChevronRight
+              size={10}
+              className={`transition-transform duration-200 ${summaryOpen ? 'rotate-90' : ''}`}
+            />
+            <span>Summary</span>
+          </button>
+          <div
+            className={`overflow-hidden transition-all duration-200 ease-in-out ${
+              summaryOpen ? 'max-h-[2000px] opacity-100 mt-1.5' : 'max-h-0 opacity-0'
+            }`}
+          >
+            <div className="text-xs text-zinc-300">
+              <MarkdownContent content={dag.result!} />
+            </div>
           </div>
         </div>
       )}
