@@ -88,3 +88,7 @@ The web UI renders inline tool-call cards in the chat stream when workers invoke
 - `ToolCallGroup` component — groups consecutive tool calls from the same worker/node under a single header
 - Gateway (`packages/web/src/lib/gateway.ts`) emits `tool-call` chat messages when `dag_progress` events contain tool data
 - `ChatPane` groups consecutive tool-call messages by nodeId before rendering
+
+## Markdown Rendering
+
+Chat assistant/system messages render full markdown via `react-markdown` with `remark-gfm`, `rehype-highlight` (syntax highlighting), and `rehype-sanitize`. The `MarkdownContent` component lives at `packages/web/src/components/chat/MarkdownContent.tsx`. User messages remain plain text. Streaming updates are throttled via `requestAnimationFrame` to avoid excessive re-renders. The highlight.js `github-dark` theme is imported in `packages/web/src/app/layout.tsx`.
