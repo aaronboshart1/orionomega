@@ -78,3 +78,13 @@ Shared readline/CLI helpers (colors, `ask`, `choose`, `confirm`, `askSecret`, `m
 - `allowedDevOrigins: ['*']` added to `next.config.ts` for Replit's proxied preview
 - Stale pre-compiled `.js` files removed from `src/app/` and `src/lib/`
 - Legacy `workflow-tracker.ts` component removed (replaced by `workflow-panel.ts`)
+
+## Tool Call Visualization
+
+The web UI renders inline tool-call cards in the chat stream when workers invoke tools during DAG execution. Key components:
+
+- `ToolCallData` type in `packages/web/src/stores/chat.ts` — carries tool name, action, file, summary, and status
+- `ToolCallCard` component in `packages/web/src/components/chat/ToolCallCard.tsx` — collapsible card with tool icon, name, target, summary, and status indicator
+- `ToolCallGroup` component — groups consecutive tool calls from the same worker/node under a single header
+- Gateway (`packages/web/src/lib/gateway.ts`) emits `tool-call` chat messages when `dag_progress` events contain tool data
+- `ChatPane` groups consecutive tool-call messages by nodeId before rendering

@@ -5,6 +5,7 @@ import { useOrchestrationStore } from '@/stores/orchestration';
 import { InlineDAGCard } from './InlineDAGCard';
 import { RunSummaryCard } from './RunSummaryCard';
 import { DAGConfirmationCard } from './DAGConfirmationCard';
+import { ToolCallCard } from './ToolCallCard';
 import { useGateway } from '@/lib/gateway';
 
 interface MessageBubbleProps {
@@ -104,6 +105,16 @@ export function MessageBubble({ message }: MessageBubbleProps) {
               {formatContent(content)}
             </div>
           )}
+        </div>
+      </div>
+    );
+  }
+
+  if (type === 'tool-call' && message.toolCall) {
+    return (
+      <div className="my-1 flex justify-start">
+        <div className="max-w-[85%] w-full">
+          <ToolCallCard toolCall={message.toolCall} />
         </div>
       </div>
     );

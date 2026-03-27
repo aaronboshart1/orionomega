@@ -6,10 +6,12 @@ import { useChatStore } from '@/stores/chat';
 import { useOrchestrationStore } from '@/stores/orchestration';
 import { useGateway } from '@/lib/gateway';
 import { MessageBubble } from './MessageBubble';
+import { ToolCallGroup } from './ToolCallCard';
 import { ChatInput } from './ChatInput';
 import { ThinkingIndicator } from './ThinkingIndicator';
 import { PlanCard } from './PlanCard';
 import { BackgroundTaskIndicator } from './BackgroundTaskIndicator';
+import type { ChatMessage } from '@/stores/chat';
 
 export function ChatPane() {
   const messages = useChatStore((s) => s.messages);
@@ -65,9 +67,49 @@ export function ChatPane() {
           </div>
         )}
 
-        {messages.map((msg) => (
-          <MessageBubble key={msg.id} message={msg} />
-        ))}
+        {(() => {
+          const elements: React.ReactNode[] = [];
+          let i = 0;
+          while (i < messages.length) {
+            const msg = messages[i];
+            if (msg.type === 'tool-call' && msg.toolCall) {
+              const groupNodeId = msg.toolCall.nodeId;
+              const groupLabel = msg.toolCall.nodeLabel || groupNodeId || 'Worker';
+              const group: { id: string; toolCall: NonNullable<ChatMessage['toolCall']> }[] = [];
+              if (groupNodeId) {
+                while (
+                  i < messages.length &&
+                  messages[i].type === 'tool-call' &&
+                  messages[i].toolCall &&
+                  messages[i].toolCall!.nodeId === groupNodeId
+                ) {
+                  group.push({ id: messages[i].id, toolCall: messages[i].toolCall! });
+                  i++;
+                }
+              } else {
+                group.push({ id: messages[i].id, toolCall: messages[i].toolCall! });
+                i++;
+              }
+              if (group.length > 1) {
+                elements.push(
+                  <ToolCallGroup
+                    key={`group-${group[0].id}`}
+                    nodeLabel={groupLabel}
+                    toolCalls={group}
+                  />,
+                );
+              } else {
+                elements.push(
+                  <MessageBubble key={group[0].id} message={messages[i - 1]} />,
+                );
+              }
+            } else {
+              elements.push(<MessageBubble key={msg.id} message={msg} />);
+              i++;
+            }
+          }
+          return elements;
+        })()}
 
         {/* Advanced plan view — hidden by default, toggled via icon */}
         {activePlan && showAdvancedPlan && (

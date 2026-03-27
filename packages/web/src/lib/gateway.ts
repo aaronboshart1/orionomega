@@ -87,6 +87,51 @@ export function useGateway(url: string = defaultGatewayUrl()) {
             status: statusMap[p.status] ?? 'running',
             progress: p.progress,
           });
+
+          if (p.tool && p.tool.name) {
+            const currentDAGs = useOrchestrationStore.getState().inlineDAGs;
+            const dag = currentDAGs[p.workflowId];
+            const node = dag?.nodes.find((n: { id: string }) => n.id === p.nodeId);
+            const toolStatus: 'running' | 'done' | 'error' =
+              p.status === 'done' ? 'done' : p.status === 'error' ? 'error' : 'running';
+
+            const currentMessages = useChatStore.getState().messages;
+            const existingMsg = currentMessages.find(
+              (m) =>
+                m.type === 'tool-call' &&
+                m.toolCall &&
+                m.toolCall.status === 'running' &&
+                m.toolCall.nodeId === p.nodeId &&
+                m.toolCall.toolName === p.tool.name &&
+                m.toolCall.file === p.tool.file &&
+                m.dagId === p.workflowId,
+            );
+
+            if (existingMsg) {
+              if (toolStatus === 'done' || toolStatus === 'error') {
+                chatStore.updateToolCallStatus(existingMsg.id, toolStatus);
+              }
+            } else {
+              chatStore.addMessage({
+                id: crypto.randomUUID(),
+                role: 'assistant',
+                content: p.tool.summary || `${p.tool.name}${p.tool.file ? `: ${p.tool.file}` : ''}`,
+                timestamp: new Date().toISOString(),
+                type: 'tool-call',
+                dagId: p.workflowId,
+                toolCall: {
+                  toolName: p.tool.name,
+                  action: p.tool.action,
+                  file: p.tool.file,
+                  summary: p.tool.summary || '',
+                  status: toolStatus,
+                  workerId: p.workerId,
+                  nodeId: p.nodeId,
+                  nodeLabel: node?.label || p.nodeId,
+                },
+              });
+            }
+          }
           break;
         }
         case 'dag_complete': {

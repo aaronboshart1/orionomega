@@ -1,5 +1,16 @@
 import { create } from 'zustand';
 
+export interface ToolCallData {
+  toolName: string;
+  action?: string;
+  file?: string;
+  summary: string;
+  status: 'running' | 'done' | 'error';
+  workerId?: string;
+  nodeId?: string;
+  nodeLabel?: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
@@ -13,8 +24,10 @@ export interface ChatMessage {
     | 'dag-dispatched'
     | 'dag-progress'
     | 'dag-complete'
-    | 'dag-confirmation';
+    | 'dag-confirmation'
+    | 'tool-call';
   dagId?: string;
+  toolCall?: ToolCallData;
 }
 
 interface ChatStore {
@@ -27,6 +40,7 @@ interface ChatStore {
   setStreaming: (s: boolean) => void;
   setThinking: (t: string) => void;
   appendThinking: (t: string) => void;
+  updateToolCallStatus: (messageId: string, status: 'running' | 'done' | 'error') => void;
 }
 
 export const useChatStore = create<ChatStore>((set) => ({
@@ -56,4 +70,12 @@ export const useChatStore = create<ChatStore>((set) => ({
   setStreaming: (isStreaming) => set({ isStreaming }),
   setThinking: (thinkingContent) => set({ thinkingContent }),
   appendThinking: (t) => set((s) => ({ thinkingContent: s.thinkingContent + t })),
+  updateToolCallStatus: (messageId, status) =>
+    set((s) => ({
+      messages: s.messages.map((m) =>
+        m.id === messageId && m.toolCall
+          ? { ...m, toolCall: { ...m.toolCall, status } }
+          : m,
+      ),
+    })),
 }));
