@@ -22,7 +22,7 @@ import { githubDeviceFlowAuth, isGhWebAuthCommand, extractGitProtocol } from './
 import {
   GREEN, RED, YELLOW, BLUE, CYAN, BOLD, DIM, RESET,
   print, println, success, fail, warn, heading,
-  maskSecret, initRL, closeRL, ask, choose, confirm,
+  initRL, closeRL, ask, choose, confirm,
   chmodJsFiles,
 } from './cli-utils.js';
 
@@ -182,9 +182,6 @@ async function runAuthSetup(
       const envVar = method.envVar ?? 'API_KEY';
 
       const existing = readSkillConfig(skillsDir, skillName).fields[envVar];
-      if (existing && typeof existing === 'string') {
-        println(`  ${DIM}Current: ${maskSecret(existing)}${RESET}`);
-      }
 
       const token = await ask(`  Enter ${label}`);
       if (!token?.trim()) {

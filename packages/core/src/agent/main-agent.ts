@@ -357,7 +357,18 @@ export class MainAgent {
         return;
       }
 
-      // 2. CHAT fast-path
+      // 2. Skill-match shortcut — route through orchestration so skill MCP tools are available
+      if (this.matchesAvailableSkill(trimmed)) {
+        log.verbose('Route: ORCHESTRATE (skill match)', { guarded: isGuardedRequest(trimmed) });
+        await this.orchestration.dispatchFullDAG(
+          trimmed,
+          (e) => this.pushHistory(e as HistoryEntry),
+          { requireConfirmation: isGuardedRequest(trimmed) },
+        );
+        return;
+      }
+
+      // 3. CHAT fast-path
       if (isFastConversational(trimmed)) {
         log.verbose('Route: CHAT fast-path');
         this.callbacks.onThinking('Thinking…', true, false);
@@ -365,7 +376,7 @@ export class MainAgent {
         return;
       }
 
-      // 3. ORCHESTRATE fast-path — full planner DAG
+      // 4. ORCHESTRATE fast-path — full planner DAG
       if (isOrchestrateRequest(trimmed)) {
         log.verbose('Route: ORCHESTRATE fast-path', { guarded: isGuardedRequest(trimmed) });
         const guarded = isGuardedRequest(trimmed);
@@ -377,7 +388,7 @@ export class MainAgent {
         return; // Returns immediately — DAG runs async
       }
 
-      // 4. Ambiguous — LLM 2-tier classifier
+      // 5. Ambiguous — LLM 2-tier classifier
       log.verbose('Route: LLM intent classification');
       this.callbacks.onThinking('Classifying intent…', true, false);
       const intent = await classifyIntent(this.anthropic, this.config.model, trimmed, this.config.cheapModel);
@@ -648,6 +659,15 @@ export class MainAgent {
   }
 
   // ── Private ────────────────────────────────────────────────────────────
+
+  private matchesAvailableSkill(message: string): boolean {
+    if (!this.availableSkills.length) return false;
+    const lower = message.toLowerCase();
+    return this.availableSkills.some((skill) => {
+      const name = skill.split(':')[0].trim().toLowerCase();
+      return name && lower.includes(name);
+    });
+  }
 
   private async respondConversationally(userMessage: string): Promise<void> {
     // Signal that we're assembling context (visible in TUI spinner)

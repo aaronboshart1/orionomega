@@ -352,10 +352,11 @@ Retrieval: 50K-100K tokens (lightweight). Analysis: 100K-200K (midweight). Compl
 
 ## Output: JSON
 \`\`\`json
-{"reasoning":"...","estimatedCost":0.05,"estimatedTime":120,"summary":"...","nodes":[{"id":"...","type":"AGENT|TOOL|ROUTER|JOIN|CODING_AGENT|LOOP","label":"...","dependsOn":[],"timeout":300,"retries":1,"agent":{"model":"...","task":"...","tokenBudget":200000},"codingAgent":{"task":"...","model":"...","allowedTools":["Read","Write","Edit","Bash","Glob","Grep"],"maxTurns":30},"tool":{"name":"BINARY","params":{}},"router":{"condition":"key","routes":{"val":"node-id","default":"node-id"}},"loop":{"body":[...],"maxIterations":5,"exitCondition":{"type":"all_pass|output_match|llm_judge"},"carryForward":true}}]}
+{"reasoning":"...","estimatedCost":0.05,"estimatedTime":120,"summary":"...","nodes":[{"id":"...","type":"AGENT|TOOL|ROUTER|JOIN|CODING_AGENT|LOOP","label":"...","dependsOn":[],"timeout":300,"retries":1,"agent":{"model":"...","task":"...","tokenBudget":200000,"skillIds":["linear"]},"codingAgent":{"task":"...","model":"...","allowedTools":["Read","Write","Edit","Bash","Glob","Grep"],"maxTurns":30},"tool":{"name":"BINARY","params":{}},"router":{"condition":"key","routes":{"val":"node-id","default":"node-id"}},"loop":{"body":[...],"maxIterations":5,"exitCondition":{"type":"all_pass|output_match|llm_judge"},"carryForward":true}}]}
 \`\`\`
 Include only the relevant config key per node type (agent/tool/router/codingAgent/loop). Every node: id, type, label, dependsOn.
 CODING_AGENT is preferred for coding tasks (key: codingAgent, not agent). LOOP is essential for iterative build-test-fix cycles.
+When a task involves an available skill, add \`"skillIds": ["<skill-name>"]\` inside the \`agent\` config of the AGENT node so its tools are available at runtime.
 
 ## ${discoveredModels?.length ? buildModelGuide(discoveredModels, mainModel ?? this.config.model) : `Available models: Use "${mainModel ?? this.config.model}" for all workers.`}
 ${skillsList}${memoriesList}${filesList}${infraContext ? `\n\n## Known Context (from memory — DO NOT create discovery nodes for this)\n${infraContext}` : ''}
