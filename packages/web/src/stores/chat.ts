@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
 
 export interface ToolCallData {
   toolName: string;
@@ -47,60 +48,70 @@ interface ChatStore {
   setStreamingStatus: (status: string) => void;
   markLastInterrupted: () => void;
   updateMessage: (id: string, updates: Partial<ChatMessage>) => void;
+  clearMessages: () => void;
 }
 
-export const useChatStore = create<ChatStore>((set) => ({
-  messages: [],
-  isStreaming: false,
-  thinkingContent: '',
-  streamingStatus: '',
-  addMessage: (msg) => set((s) => ({ messages: [...s.messages, msg] })),
-  setMessages: (messages) => set({ messages }),
-  appendToLast: (content) =>
-    set((s) => {
-      const msgs = [...s.messages];
-      if (msgs.length > 0 && msgs[msgs.length - 1].role === 'assistant') {
-        msgs[msgs.length - 1] = {
-          ...msgs[msgs.length - 1],
-          content: msgs[msgs.length - 1].content + content,
-        };
-      } else {
-        msgs.push({
-          id: crypto.randomUUID(),
-          role: 'assistant',
-          content,
-          timestamp: new Date().toISOString(),
-        });
-      }
-      return { messages: msgs };
+export const useChatStore = create<ChatStore>()(
+  persist(
+    (set) => ({
+      messages: [],
+      isStreaming: false,
+      thinkingContent: '',
+      streamingStatus: '',
+      addMessage: (msg) => set((s) => ({ messages: [...s.messages, msg] })),
+      setMessages: (messages) => set({ messages }),
+      appendToLast: (content) =>
+        set((s) => {
+          const msgs = [...s.messages];
+          if (msgs.length > 0 && msgs[msgs.length - 1].role === 'assistant') {
+            msgs[msgs.length - 1] = {
+              ...msgs[msgs.length - 1],
+              content: msgs[msgs.length - 1].content + content,
+            };
+          } else {
+            msgs.push({
+              id: crypto.randomUUID(),
+              role: 'assistant',
+              content,
+              timestamp: new Date().toISOString(),
+            });
+          }
+          return { messages: msgs };
+        }),
+      setStreaming: (isStreaming) =>
+        set(isStreaming ? { isStreaming } : { isStreaming, streamingStatus: '' }),
+      setThinking: (thinkingContent) => set({ thinkingContent }),
+      appendThinking: (t) => set((s) => ({ thinkingContent: s.thinkingContent + t })),
+      updateToolCallStatus: (messageId, status) =>
+        set((s) => ({
+          messages: s.messages.map((m) =>
+            m.id === messageId && m.toolCall
+              ? { ...m, toolCall: { ...m.toolCall, status } }
+              : m,
+          ),
+        })),
+      setStreamingStatus: (streamingStatus) => set({ streamingStatus }),
+      markLastInterrupted: () =>
+        set((s) => {
+          if (!s.isStreaming) return s;
+          const msgs = [...s.messages];
+          if (msgs.length > 0 && msgs[msgs.length - 1].role === 'assistant') {
+            msgs[msgs.length - 1] = {
+              ...msgs[msgs.length - 1],
+              interrupted: true,
+            };
+          }
+          return { messages: msgs, isStreaming: false, streamingStatus: '', thinkingContent: '' };
+        }),
+      updateMessage: (id, updates) =>
+        set((s) => ({
+          messages: s.messages.map((m) => (m.id === id ? { ...m, ...updates } : m)),
+        })),
+      clearMessages: () => set({ messages: [] }),
     }),
-  setStreaming: (isStreaming) =>
-    set(isStreaming ? { isStreaming } : { isStreaming, streamingStatus: '' }),
-  setThinking: (thinkingContent) => set({ thinkingContent }),
-  appendThinking: (t) => set((s) => ({ thinkingContent: s.thinkingContent + t })),
-  updateToolCallStatus: (messageId, status) =>
-    set((s) => ({
-      messages: s.messages.map((m) =>
-        m.id === messageId && m.toolCall
-          ? { ...m, toolCall: { ...m.toolCall, status } }
-          : m,
-      ),
-    })),
-  setStreamingStatus: (streamingStatus) => set({ streamingStatus }),
-  markLastInterrupted: () =>
-    set((s) => {
-      if (!s.isStreaming) return s;
-      const msgs = [...s.messages];
-      if (msgs.length > 0 && msgs[msgs.length - 1].role === 'assistant') {
-        msgs[msgs.length - 1] = {
-          ...msgs[msgs.length - 1],
-          interrupted: true,
-        };
-      }
-      return { messages: msgs, isStreaming: false, streamingStatus: '', thinkingContent: '' };
-    }),
-  updateMessage: (id, updates) =>
-    set((s) => ({
-      messages: s.messages.map((m) => (m.id === id ? { ...m, ...updates } : m)),
-    })),
-}));
+    {
+      name: 'orionomega-chat',
+      partialize: (state) => ({ messages: state.messages }),
+    },
+  ),
+);

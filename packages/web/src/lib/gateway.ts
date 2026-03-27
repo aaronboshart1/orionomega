@@ -282,9 +282,11 @@ function bindListeners(ws: ReconnectingWebSocket): void {
               timestamp: m.timestamp,
               type: m.type as ChatMessage['type'],
             }));
-          const current = useChatStore.getState().messages;
-          if (restored.length > 0 && current.length === 0) {
-            chat.setMessages(restored);
+          if (restored.length > 0) {
+            const current = useChatStore.getState().messages;
+            if (current.length === 0) {
+              chat.setMessages(restored);
+            }
           }
         }
         break;
