@@ -8,7 +8,7 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { randomBytes } from 'node:crypto';
-import { readConfig, MainAgent, createLogger, setGlobalLogLevel, enableFileLogging } from '@orionomega/core';
+import { readConfig, MainAgent, createLogger, setGlobalLogLevel, enableFileLogging, discoverModels, clearModelCache } from '@orionomega/core';
 import type { MainAgentConfig, MainAgentCallbacks, LogLevel } from '@orionomega/core';
 import { setLogLevel as setHindsightLogLevel } from '@orionomega/hindsight';
 import type { GatewayConfig, ServerMessage } from './types.js';
@@ -432,6 +432,33 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
   const sessionMatch = pathname.match(/^\/api\/sessions\/([a-f0-9]+)$/);
   if (sessionMatch && method === 'GET') {
     handleGetSession(req, res, sessionManager, sessionMatch[1]!);
+    return;
+  }
+
+  // --- Models ---
+  if (pathname === '/api/models' && method === 'GET') {
+    const cfg = readConfig();
+    const apiKey = cfg.models?.apiKey;
+    if (!apiKey) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'No API key configured' }));
+      return;
+    }
+    const queryStr = rawUrl.split('?')[1] ?? '';
+    const params = new URLSearchParams(queryStr);
+    if (params.get('refresh') === 'true') {
+      clearModelCache();
+    }
+    discoverModels(apiKey)
+      .then((models) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ models }));
+      })
+      .catch((err) => {
+        log.error('Models route error', { error: err instanceof Error ? err.message : String(err) });
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Failed to fetch models' }));
+      });
     return;
   }
 

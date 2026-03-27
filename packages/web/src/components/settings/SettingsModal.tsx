@@ -1,7 +1,7 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
-import { X, Eye, EyeOff, Save, Loader2, CheckCircle, AlertCircle } from 'lucide-react';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { X, Eye, EyeOff, Save, Loader2, CheckCircle, AlertCircle, ChevronDown, RefreshCw } from 'lucide-react';
 
 type TabId = 'omegaclaw' | 'memory' | 'skills';
 
@@ -129,6 +129,132 @@ function SelectInput({
   );
 }
 
+interface AnthropicModel {
+  id: string;
+  displayName: string;
+  createdAt: string;
+  tier: 'opus' | 'sonnet' | 'haiku' | 'unknown';
+}
+
+function ModelSelect({
+  value,
+  onChange,
+  models,
+  loading,
+  placeholder,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  models: AnthropicModel[];
+  loading: boolean;
+  placeholder?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState('');
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    }
+    if (open) document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [open]);
+
+  const filtered = search
+    ? models.filter(
+        (m) =>
+          m.id.toLowerCase().includes(search.toLowerCase()) ||
+          m.displayName.toLowerCase().includes(search.toLowerCase()),
+      )
+    : models;
+
+  const grouped = {
+    opus: filtered.filter((m) => m.tier === 'opus'),
+    sonnet: filtered.filter((m) => m.tier === 'sonnet'),
+    haiku: filtered.filter((m) => m.tier === 'haiku'),
+    unknown: filtered.filter((m) => m.tier === 'unknown'),
+  };
+
+  const tierLabels: Record<string, string> = {
+    opus: 'Opus — Heavyweight',
+    sonnet: 'Sonnet — Midweight',
+    haiku: 'Haiku — Lightweight',
+    unknown: 'Other',
+  };
+
+  const selectedDisplay = models.find((m) => m.id === value)?.displayName || value;
+
+  return (
+    <div ref={containerRef} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="flex w-full items-center justify-between rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-xs text-zinc-100 outline-none transition-colors hover:border-zinc-600 focus:border-blue-500"
+      >
+        <span className={value ? 'text-zinc-100' : 'text-zinc-500'}>
+          {loading ? 'Loading models…' : selectedDisplay || placeholder || 'Select a model'}
+        </span>
+        {loading ? (
+          <Loader2 size={12} className="animate-spin text-zinc-500" />
+        ) : (
+          <ChevronDown size={12} className={`text-zinc-500 transition-transform ${open ? 'rotate-180' : ''}`} />
+        )}
+      </button>
+
+      {open && (
+        <div className="absolute z-50 mt-1 w-full rounded-md border border-zinc-700 bg-zinc-800 shadow-xl">
+          <div className="border-b border-zinc-700 p-1.5">
+            <input
+              autoFocus
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search models…"
+              className="w-full rounded bg-zinc-900 px-2 py-1 text-xs text-zinc-100 placeholder-zinc-500 outline-none"
+            />
+          </div>
+          <div className="max-h-60 overflow-y-auto py-1">
+            {models.length === 0 && !loading && (
+              <div className="px-3 py-2 text-xs text-zinc-500">No models available. Check your API key.</div>
+            )}
+            {(['opus', 'sonnet', 'haiku', 'unknown'] as const).map((tier) => {
+              const tierModels = grouped[tier];
+              if (tierModels.length === 0) return null;
+              return (
+                <div key={tier}>
+                  <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                    {tierLabels[tier]}
+                  </div>
+                  {tierModels.map((m) => (
+                    <button
+                      key={m.id}
+                      type="button"
+                      onClick={() => {
+                        onChange(m.id);
+                        setOpen(false);
+                        setSearch('');
+                      }}
+                      className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs transition-colors hover:bg-zinc-700 ${
+                        m.id === value ? 'bg-zinc-700/50 text-blue-400' : 'text-zinc-200'
+                      }`}
+                    >
+                      <span className="flex-1 truncate">{m.displayName}</span>
+                      <span className="shrink-0 text-[10px] text-zinc-500">{m.id}</span>
+                    </button>
+                  ))}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ApiKeyInput({
   value,
   onChange,
@@ -185,16 +311,69 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
   );
 }
 
+function useAnthropicModels(modalOpen: boolean) {
+  const [models, setModels] = useState<AnthropicModel[]>([]);
+  const [loading, setLoading] = useState(false);
+  const fetchedRef = useRef(false);
+
+  const fetchModels = useCallback(async (refresh = false) => {
+    setLoading(true);
+    try {
+      const url = refresh ? '/api/gateway/api/models?refresh=true' : '/api/gateway/api/models';
+      const res = await fetch(url);
+      if (res.ok) {
+        const data = await res.json();
+        setModels(data.models ?? []);
+      }
+    } catch {
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (modalOpen && !fetchedRef.current) {
+      fetchedRef.current = true;
+      fetchModels();
+    }
+    if (!modalOpen) {
+      fetchedRef.current = false;
+    }
+  }, [modalOpen, fetchModels]);
+
+  const refetch = useCallback(() => fetchModels(true), [fetchModels]);
+
+  return { models, loading, refetch };
+}
+
 function OmegaClawTab({
   config,
   onChange,
+  models,
+  modelsLoading,
+  onRefreshModels,
 }: {
   config: ConfigData;
   onChange: (path: string, value: unknown) => void;
+  models: AnthropicModel[];
+  modelsLoading: boolean;
+  onRefreshModels: () => void;
 }) {
   return (
     <div className="space-y-2">
-      <SectionTitle>Models</SectionTitle>
+      <div className="flex items-center justify-between">
+        <SectionTitle>Models</SectionTitle>
+        <button
+          type="button"
+          onClick={onRefreshModels}
+          disabled={modelsLoading}
+          className="mb-1 flex items-center gap-1 rounded px-2 py-0.5 text-[10px] text-zinc-500 transition-colors hover:bg-zinc-700 hover:text-zinc-300 disabled:opacity-50"
+          title="Refresh models from Anthropic"
+        >
+          <RefreshCw size={10} className={modelsLoading ? 'animate-spin' : ''} />
+          Refresh
+        </button>
+      </div>
       <FormField label="Anthropic API Key">
         <ApiKeyInput
           value={String(getNestedValue(config, 'models.apiKey') ?? '')}
@@ -202,24 +381,30 @@ function OmegaClawTab({
         />
       </FormField>
       <FormField label="Default Model">
-        <TextInput
+        <ModelSelect
           value={String(getNestedValue(config, 'models.default') ?? '')}
           onChange={(v) => onChange('models.default', v)}
-          placeholder="e.g. claude-sonnet-4-20250514"
+          models={models}
+          loading={modelsLoading}
+          placeholder="Select default model"
         />
       </FormField>
       <FormField label="Planner Model">
-        <TextInput
+        <ModelSelect
           value={String(getNestedValue(config, 'models.planner') ?? '')}
           onChange={(v) => onChange('models.planner', v)}
-          placeholder="e.g. claude-sonnet-4-20250514"
+          models={models}
+          loading={modelsLoading}
+          placeholder="Select planner model"
         />
       </FormField>
       <FormField label="Cheap Model">
-        <TextInput
+        <ModelSelect
           value={String(getNestedValue(config, 'models.cheap') ?? '')}
           onChange={(v) => onChange('models.cheap', v)}
-          placeholder="e.g. claude-haiku-4-5-20251001"
+          models={models}
+          loading={modelsLoading}
+          placeholder="Select cheap model"
         />
       </FormField>
       <FormField label="Worker Profiles">
@@ -539,6 +724,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [saving, setSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'success' | 'error'>('idle');
   const [errorMsg, setErrorMsg] = useState('');
+  const { models: anthropicModels, loading: modelsLoading, refetch: refetchModels } = useAnthropicModels(open);
 
   const fetchConfig = useCallback(async () => {
     setLoading(true);
@@ -679,7 +865,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
             </div>
           ) : (
             config && <>
-              {activeTab === 'omegaclaw' && <OmegaClawTab config={config} onChange={handleChange} />}
+              {activeTab === 'omegaclaw' && <OmegaClawTab config={config} onChange={handleChange} models={anthropicModels} modelsLoading={modelsLoading} onRefreshModels={refetchModels} />}
               {activeTab === 'memory' && <MemoryTab config={config} onChange={handleChange} />}
               {activeTab === 'skills' && <SkillsTab config={config} onChange={handleChange} />}
             </>
