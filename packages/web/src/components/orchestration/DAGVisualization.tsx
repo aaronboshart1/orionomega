@@ -39,14 +39,25 @@ function computeLayout(nodes: Record<string, GraphNode>) {
     layers.push(layer);
   }
 
+  const NODE_WIDTH = 280;
+  const H_GAP = 80;
+  const H_SPACING = NODE_WIDTH + H_GAP;
+  const V_SPACING = 130;
+
+  const maxLayerSize = Math.max(...layers.map((l) => l.length));
+
   const rfNodes: Node[] = [];
   layers.forEach((layer, layerIdx) => {
+    const layerHeight = (layer.length - 1) * V_SPACING;
+    const maxHeight = (maxLayerSize - 1) * V_SPACING;
+    const yOffset = (maxHeight - layerHeight) / 2;
+
     layer.forEach((nodeId, nodeIdx) => {
       const gn = nodes[nodeId];
       rfNodes.push({
         id: nodeId,
         type: 'worker',
-        position: { x: layerIdx * 220, y: nodeIdx * 110 },
+        position: { x: layerIdx * H_SPACING, y: yOffset + nodeIdx * V_SPACING },
         data: {
           label: gn.label,
           nodeType: gn.type,

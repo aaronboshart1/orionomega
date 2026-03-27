@@ -54,18 +54,18 @@ function WorkerNodeComponent({ data, id }: NodeProps) {
     <>
       <Handle type="target" position={Position.Left} className="!h-2 !w-2 !border-zinc-600 !bg-zinc-500" />
       <div
-        className={`min-w-[140px] rounded-lg border-2 ${colors.border} ${colors.bg} px-3 py-2 shadow-lg transition-all ${
+        className={`min-w-[140px] max-w-[260px] rounded-lg border-2 ${colors.border} ${colors.bg} px-3 py-2 shadow-lg transition-all ${
           isSelected ? 'ring-2 ring-blue-400 ring-offset-1 ring-offset-zinc-900' : ''
         } ${d.status === 'skipped' ? 'opacity-50' : ''}`}
       >
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 min-w-0">
           {d.status === 'running' ? (
             <OmegaSpinner size={3} gap={1} interval={180} />
           ) : (
-            <span className="text-xs">{statusIcons[d.status] || '⏳'}</span>
+            <span className="text-xs shrink-0">{statusIcons[d.status] || '⏳'}</span>
           )}
-          <NodeTypeIcon type={d.nodeType as string} />
-          <span className={`text-xs font-medium ${colors.text}`}>{d.label as string}</span>
+          <span className="shrink-0"><NodeTypeIcon type={d.nodeType as string} /></span>
+          <span className={`text-xs font-medium ${colors.text} min-w-0 truncate`}>{d.label as string}</span>
         </div>
 
         {/* Progress bar */}
