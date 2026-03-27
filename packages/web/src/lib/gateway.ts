@@ -13,7 +13,7 @@ function defaultGatewayUrl(): string {
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const savedSession = localStorage.getItem(SESSION_KEY);
     const sessionParam = savedSession ? `&session=${savedSession}` : '';
-    return `${proto}//${window.location.hostname}:8000/ws?client=web${sessionParam}`;
+    return `${proto}//${window.location.host}/api/gateway/ws?client=web${sessionParam}`;
   }
   return 'ws://127.0.0.1:8000/ws?client=web';
 }

@@ -73,7 +73,7 @@ Shared readline/CLI helpers (colors, `ask`, `choose`, `confirm`, `askSecret`, `m
 - Next.js dev/start scripts bind to `0.0.0.0` on port 5000 (Replit's required webview port)
 - Gateway default port changed from 7800 → 8000 (Replit-supported port)
 - Gateway bind address changed from `127.0.0.1` → `0.0.0.0` in fallback config
-- Frontend WebSocket URL updated to port 8000
+- Frontend WebSocket proxied through Next.js custom server (`server.mjs`) at `/api/gateway/ws` — Replit's proxy doesn't allow direct port access from the browser, so the Next.js server proxies WebSocket upgrades to `localhost:8000`
 - TUI gateway fallback port updated to 8000 (was 7800)
 - `allowedDevOrigins: ['*']` added to `next.config.ts` for Replit's proxied preview
 - Stale pre-compiled `.js` files removed from `src/app/` and `src/lib/`
