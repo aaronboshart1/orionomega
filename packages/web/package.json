@@ -9,21 +9,27 @@
     "start": "next start"
   },
   "dependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@xyflow/react": "^12",
+    "github-slugger": "^2.0.0",
+    "highlight.js": "^11.11.1",
+    "lucide-react": "^0.460",
     "next": "^15",
     "react": "^18",
     "react-dom": "^18",
-    "zustand": "^5",
-    "@xyflow/react": "^12",
-    "lucide-react": "^0.460",
+    "react-markdown": "^10.1.0",
     "reconnecting-websocket": "^4",
+    "rehype-highlight": "^7.0.2",
+    "rehype-raw": "^7.0.0",
+    "remark-gfm": "^4.0.1",
     "tailwindcss": "^4",
-    "@tailwindcss/postcss": "^4"
+    "zustand": "^5"
   },
   "devDependencies": {
     "@types/node": "^22",
     "@types/react": "^18",
     "@types/react-dom": "^18",
-    "typescript": "^5",
-    "postcss": "^8"
+    "postcss": "^8",
+    "typescript": "^5"
   }
 }

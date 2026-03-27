@@ -4,6 +4,7 @@ import { useEffect, useRef, useCallback } from 'react';
 import ReconnectingWebSocket from 'reconnecting-websocket';
 import { useOrchestrationStore } from '@/stores/orchestration';
 import { useChatStore } from '@/stores/chat';
+import type { ToolCall } from '@/stores/chat';
 
 // Gateway port matches core config default (7800)
 // Auto-detect gateway URL from current browser location
@@ -28,17 +29,61 @@ export function useGateway(url: string = defaultGatewayUrl()) {
       const msg = JSON.parse(raw.data as string);
 
       switch (msg.type) {
+        // ----------------------------------------------------------------
+        // Streaming text
+        // ----------------------------------------------------------------
         case 'text':
           if (msg.streaming) chatStore.appendToLast(msg.content || '');
           if (msg.done) chatStore.setStreaming(false);
           break;
+
+        // ----------------------------------------------------------------
+        // Thinking / extended reasoning
+        // ----------------------------------------------------------------
         case 'thinking':
           if (msg.streaming) chatStore.appendThinking(msg.thinking || '');
           if (msg.done) chatStore.setThinking('');
           break;
+
+        // ----------------------------------------------------------------
+        // Plan review
+        // ----------------------------------------------------------------
         case 'plan':
           orchStore.setActivePlan(msg.plan);
           break;
+
+        // ----------------------------------------------------------------
+        // Tool calls (new)
+        // ----------------------------------------------------------------
+        case 'tool_call': {
+          const tc = msg.toolCall as ToolCall | undefined;
+          if (!tc) break;
+
+          // If we already have a message for this tool call, update it
+          const existing = useChatStore
+            .getState()
+            .messages.find(
+              (m) => m.type === 'tool-call' && m.toolCall?.id === tc.id,
+            );
+
+          if (existing) {
+            chatStore.updateToolCall(tc.id, tc);
+          } else {
+            chatStore.addMessage({
+              id: crypto.randomUUID(),
+              role: 'assistant',
+              content: `Tool: ${tc.name}`,
+              timestamp: new Date().toISOString(),
+              type: 'tool-call',
+              toolCall: tc,
+            });
+          }
+          break;
+        }
+
+        // ----------------------------------------------------------------
+        // DAG dispatched
+        // ----------------------------------------------------------------
         case 'dag_dispatched': {
           const d = msg.dagDispatch;
           if (!d) break;
@@ -47,7 +92,8 @@ export function useGateway(url: string = defaultGatewayUrl()) {
             summary: d.summary,
             status: 'dispatched',
             nodes: d.nodes.map((n: { id: string; label: string; type: string }) => ({
-              ...n, status: 'pending' as const,
+              ...n,
+              status: 'pending' as const,
             })),
             completedCount: 0,
             totalCount: d.nodeCount,
@@ -64,11 +110,18 @@ export function useGateway(url: string = defaultGatewayUrl()) {
           chatStore.setStreaming(false);
           break;
         }
+
+        // ----------------------------------------------------------------
+        // DAG progress
+        // ----------------------------------------------------------------
         case 'dag_progress': {
           const p = msg.dagProgress;
           if (!p) break;
           const statusMap: Record<string, 'pending' | 'running' | 'done' | 'error'> = {
-            started: 'running', progress: 'running', done: 'done', error: 'error',
+            started: 'running',
+            progress: 'running',
+            done: 'done',
+            error: 'error',
           };
           orchStore.updateDAGNode(p.workflowId, p.nodeId, {
             status: statusMap[p.status] ?? 'running',
@@ -76,6 +129,10 @@ export function useGateway(url: string = defaultGatewayUrl()) {
           });
           break;
         }
+
+        // ----------------------------------------------------------------
+        // DAG complete
+        // ----------------------------------------------------------------
         case 'dag_complete': {
           const c = msg.dagComplete;
           if (!c) break;
@@ -87,15 +144,20 @@ export function useGateway(url: string = defaultGatewayUrl()) {
           chatStore.addMessage({
             id: crypto.randomUUID(),
             role: 'assistant',
-            content: c.status === 'error'
-              ? `Something went wrong: ${c.summary}`
-              : c.output || c.summary || 'Done.',
+            content:
+              c.status === 'error'
+                ? `Something went wrong: ${c.summary}`
+                : c.output || c.summary || 'Done.',
             timestamp: new Date().toISOString(),
             type: 'dag-complete',
             dagId: c.workflowId,
           });
           break;
         }
+
+        // ----------------------------------------------------------------
+        // DAG confirmation gate
+        // ----------------------------------------------------------------
         case 'dag_confirm': {
           const cf = msg.dagConfirm;
           if (!cf) break;
@@ -104,7 +166,9 @@ export function useGateway(url: string = defaultGatewayUrl()) {
             summary: cf.summary,
             reason: cf.reasoning,
             guardedNodes: cf.guardedActions.map((a: string, i: number) => ({
-              id: `guard-${i}`, label: a, risk: 'high',
+              id: `guard-${i}`,
+              label: a,
+              risk: 'high',
             })),
           });
           chatStore.addMessage({
@@ -117,13 +181,22 @@ export function useGateway(url: string = defaultGatewayUrl()) {
           });
           break;
         }
+
+        // ----------------------------------------------------------------
+        // Graph / event updates
+        // ----------------------------------------------------------------
         case 'event':
           if (msg.event) orchStore.addEvent(msg.event);
           if (msg.graphState) orchStore.setGraphState(msg.graphState);
           break;
+
         case 'status':
           if (msg.graphState) orchStore.setGraphState(msg.graphState);
           break;
+
+        // ----------------------------------------------------------------
+        // Command result
+        // ----------------------------------------------------------------
         case 'command_result':
           chatStore.addMessage({
             id: crypto.randomUUID(),
@@ -133,6 +206,10 @@ export function useGateway(url: string = defaultGatewayUrl()) {
             type: 'command-result',
           });
           break;
+
+        // ----------------------------------------------------------------
+        // Error
+        // ----------------------------------------------------------------
         case 'error':
           chatStore.addMessage({
             id: crypto.randomUUID(),
@@ -143,8 +220,10 @@ export function useGateway(url: string = defaultGatewayUrl()) {
           });
           chatStore.setStreaming(false);
           break;
+
         case 'ack':
           break;
+
         default:
           console.debug('[gateway] unhandled message type:', msg.type, msg);
       }
@@ -178,9 +257,14 @@ export function useGateway(url: string = defaultGatewayUrl()) {
 
   const sendCommand = useCallback(
     (command: string) => {
+      // Handle /clear locally without a round-trip
+      if (command.trim() === 'clear') {
+        chatStore.clearMessages();
+        return;
+      }
       send({ id: crypto.randomUUID(), type: 'command', command });
     },
-    [send],
+    [send, chatStore],
   );
 
   const respondToPlan = useCallback(
