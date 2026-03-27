@@ -542,20 +542,40 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
 
   const fetchConfig = useCallback(async () => {
     setLoading(true);
-    try {
-      const res = await fetch('/api/gateway/api/config');
-      if (!res.ok) throw new Error('Failed to fetch config');
-      const data = await res.json();
-      setConfig(data as ConfigData);
-    } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : 'Failed to load config');
-    } finally {
-      setLoading(false);
+    setErrorMsg('');
+    const maxRetries = 3;
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        const res = await fetch('/api/gateway/api/config');
+        const text = await res.text();
+        if (!res.ok) {
+          let message = 'Failed to fetch config';
+          try {
+            const data = JSON.parse(text);
+            message = (data as { error?: string }).error || message;
+          } catch {
+            if (text) message = text;
+          }
+          throw new Error(message);
+        }
+        const data = JSON.parse(text);
+        setConfig(data as ConfigData);
+        setLoading(false);
+        return;
+      } catch (err) {
+        if (attempt < maxRetries - 1) {
+          await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+          continue;
+        }
+        setErrorMsg(err instanceof Error ? err.message : 'Failed to load config');
+      }
     }
+    setLoading(false);
   }, []);
 
   useEffect(() => {
     if (open) {
+      setConfig(null);
       fetchConfig();
       setSaveStatus('idle');
       setErrorMsg('');
@@ -577,12 +597,17 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(config ?? {}),
       });
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error((data as { error?: string }).error || 'Failed to save');
+      const rawText = await res.text();
+      let body: unknown;
+      try {
+        body = JSON.parse(rawText);
+      } catch {
+        body = { error: rawText || 'Unexpected response' };
       }
-      const updated = await res.json();
-      setConfig(updated as ConfigData);
+      if (!res.ok) {
+        throw new Error((body as { error?: string }).error || 'Failed to save');
+      }
+      setConfig(body as ConfigData);
       setSaveStatus('success');
       setTimeout(() => setSaveStatus('idle'), 3000);
     } catch (err) {
@@ -640,9 +665,17 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
               <span className="ml-2 text-xs text-zinc-500">Loading configuration...</span>
             </div>
           ) : errorMsg && config === null ? (
-            <div className="flex h-full items-center justify-center">
-              <AlertCircle size={16} className="text-red-400" />
-              <span className="ml-2 text-xs text-red-400">{errorMsg}</span>
+            <div className="flex h-full flex-col items-center justify-center gap-3">
+              <div className="flex items-center">
+                <AlertCircle size={16} className="text-red-400" />
+                <span className="ml-2 text-xs text-red-400">{errorMsg}</span>
+              </div>
+              <button
+                onClick={fetchConfig}
+                className="rounded bg-zinc-700 px-3 py-1 text-xs text-zinc-200 hover:bg-zinc-600 transition-colors"
+              >
+                Retry
+              </button>
             </div>
           ) : (
             config && <>
