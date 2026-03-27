@@ -92,6 +92,10 @@ step "Linking orionomega command..."
 pnpm unlink -g @orionomega/core 2>/dev/null || true
 npm unlink -g @orionomega/core 2>/dev/null || true
 
+if [ -f /usr/local/bin/orionomega ]; then
+  sudo rm -f /usr/local/bin/orionomega 2>/dev/null || rm -f /usr/local/bin/orionomega 2>/dev/null || true
+fi
+
 mkdir -p "$BIN_DIR"
 
 cat > "$BIN_DIR/orionomega" <<WRAPPER

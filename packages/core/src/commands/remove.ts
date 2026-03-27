@@ -36,6 +36,8 @@ function prompt(question: string): Promise<string> {
 }
 
 function unlinkGlobalCli(): boolean {
+  let removed = false;
+
   const managers = ['pnpm', 'npm'];
   for (const mgr of managers) {
     try {
@@ -44,12 +46,36 @@ function unlinkGlobalCli(): boolean {
         stdio: 'pipe',
         shell: '/bin/sh' as any,
       });
-      return true;
+      removed = true;
     } catch {
       // try next
     }
   }
-  return false;
+
+  if (existsSync('/usr/local/bin/orionomega')) {
+    try {
+      execSync('sudo rm -f /usr/local/bin/orionomega 2>/dev/null || rm -f /usr/local/bin/orionomega 2>/dev/null', {
+        timeout: 10_000,
+        stdio: 'pipe',
+        shell: '/bin/sh' as any,
+      });
+      removed = true;
+    } catch {
+      // best effort
+    }
+  }
+
+  const binWrapper = join(homedir(), '.orionomega', 'bin', 'orionomega');
+  if (existsSync(binWrapper)) {
+    try {
+      rmSync(binWrapper, { force: true });
+      removed = true;
+    } catch {
+      // best effort
+    }
+  }
+
+  return removed;
 }
 
 export async function runRemove(): Promise<void> {
