@@ -2,6 +2,7 @@
 
 import { useOrchestrationStore, type InlineDAG } from '@/stores/orchestration';
 import { OmegaSpinner } from './OmegaSpinner';
+import { Badge } from '@/components/ui/badge';
 
 export function BackgroundTaskIndicator() {
   const inlineDAGs = useOrchestrationStore((s) => s.inlineDAGs);
@@ -14,15 +15,19 @@ export function BackgroundTaskIndicator() {
 
   const totalNodes = activeDAGs.reduce((a, d) => a + d.totalCount, 0);
   const completedNodes = activeDAGs.reduce((a, d) => a + d.completedCount, 0);
+  const label =
+    activeDAGs.length === 1
+      ? `${completedNodes}/${totalNodes} steps`
+      : `${activeDAGs.length} tasks`;
 
   return (
-    <div className="flex items-center gap-2 rounded-full bg-blue-500/10 px-3 py-1">
+    <Badge
+      variant="secondary"
+      className="gap-1.5 pl-1.5 bg-blue-500/10 border-blue-500/20 text-blue-400"
+      aria-label={`${activeDAGs.length} background ${activeDAGs.length === 1 ? 'task' : 'tasks'} running`}
+    >
       <OmegaSpinner size={3} gap={0.5} interval={180} />
-      <span className="text-[11px] text-blue-400">
-        {activeDAGs.length === 1
-          ? `${completedNodes}/${totalNodes} steps`
-          : `${activeDAGs.length} tasks`}
-      </span>
-    </div>
+      <span className="text-[11px]">{label}</span>
+    </Badge>
   );
 }

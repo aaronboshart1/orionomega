@@ -5,6 +5,7 @@ import ReconnectingWebSocket from 'reconnecting-websocket';
 import { useOrchestrationStore } from '@/stores/orchestration';
 import { useChatStore } from '@/stores/chat';
 import type { ChatMessage } from '@/stores/chat';
+import { useConnectionStore } from '@/stores/connection';
 
 const SESSION_KEY = 'orionomega_session_id';
 
@@ -22,6 +23,7 @@ export function useGateway(url: string = defaultGatewayUrl()) {
   const wsRef = useRef<ReconnectingWebSocket | null>(null);
   const orchStore = useOrchestrationStore();
   const chatStore = useChatStore();
+  const connectionStore = useConnectionStore();
 
   useEffect(() => {
     const ws = new ReconnectingWebSocket(url);
@@ -195,8 +197,17 @@ export function useGateway(url: string = defaultGatewayUrl()) {
       }
     };
 
+    ws.onopen = () => {
+      connectionStore.setGatewayConnected(true);
+    };
+
+    ws.onclose = () => {
+      connectionStore.setGatewayConnected(false);
+    };
+
     ws.onerror = (err) => {
       console.error('[gateway] WebSocket error', err);
+      chatStore.markLastInterrupted();
     };
 
     return () => ws.close();

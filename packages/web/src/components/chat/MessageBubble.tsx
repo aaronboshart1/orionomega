@@ -5,57 +5,15 @@ import { useOrchestrationStore } from '@/stores/orchestration';
 import { InlineDAGCard } from './InlineDAGCard';
 import { RunSummaryCard } from './RunSummaryCard';
 import { DAGConfirmationCard } from './DAGConfirmationCard';
+import { MarkdownContent } from './MarkdownContent';
 import { useGateway } from '@/lib/gateway';
 
 interface MessageBubbleProps {
   message: ChatMessage;
 }
 
-/** Simple inline formatting: backtick code, bold, and newlines */
-function formatContent(content: string) {
-  const parts: (string | JSX.Element)[] = [];
-  const segments = content.split(/(```[\s\S]*?```|`[^`]+`|\*\*[^*]+\*\*)/g);
-
-  segments.forEach((seg, i) => {
-    if (seg.startsWith('```') && seg.endsWith('```')) {
-      const code = seg.slice(3, -3).replace(/^\w+\n/, '');
-      parts.push(
-        <pre
-          key={i}
-          className="my-2 overflow-x-auto rounded-lg bg-zinc-900 p-3 text-xs text-zinc-300"
-        >
-          <code>{code}</code>
-        </pre>,
-      );
-    } else if (seg.startsWith('`') && seg.endsWith('`')) {
-      parts.push(
-        <code
-          key={i}
-          className="rounded bg-zinc-800 px-1.5 py-0.5 text-xs text-blue-400"
-        >
-          {seg.slice(1, -1)}
-        </code>,
-      );
-    } else if (seg.startsWith('**') && seg.endsWith('**')) {
-      parts.push(
-        <strong key={i} className="font-semibold">
-          {seg.slice(2, -2)}
-        </strong>,
-      );
-    } else {
-      const lines = seg.split('\n');
-      lines.forEach((line, li) => {
-        if (li > 0) parts.push(<br key={`${i}-br-${li}`} />);
-        parts.push(line);
-      });
-    }
-  });
-
-  return parts;
-}
-
 export function MessageBubble({ message }: MessageBubbleProps) {
-  const { role, content, type, dagId } = message;
+  const { role, content, type, dagId, interrupted } = message;
   const inlineDAGs = useOrchestrationStore((s) => s.inlineDAGs);
   const pendingConfirmation = useOrchestrationStore((s) => s.pendingConfirmation);
   const { respondToConfirmation } = useGateway();
@@ -64,13 +22,13 @@ export function MessageBubble({ message }: MessageBubbleProps) {
   if (type === 'dag-dispatched' && dagId) {
     const dag = inlineDAGs[dagId];
     return (
-      <div className="my-3 flex justify-start">
+      <div className="my-3 flex justify-start" role="article" aria-label="Assistant workflow message">
         <div className="max-w-[85%]">
           {dag ? (
             <InlineDAGCard dag={dag} />
           ) : (
             <div className="rounded-2xl bg-zinc-800 px-4 py-3 text-sm text-zinc-100">
-              {formatContent(content)}
+              <MarkdownContent content={content} />
             </div>
           )}
         </div>
@@ -81,7 +39,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
   // DAG-confirmation messages render with approval UI
   if (type === 'dag-confirmation' && dagId && pendingConfirmation?.dagId === dagId) {
     return (
-      <div className="my-3 flex justify-start">
+      <div className="my-3 flex justify-start" role="article" aria-label="Confirmation required">
         <div className="max-w-[85%]">
           <DAGConfirmationCard
             confirmation={pendingConfirmation}
@@ -95,13 +53,13 @@ export function MessageBubble({ message }: MessageBubbleProps) {
   if (type === 'dag-complete' && dagId) {
     const dag = inlineDAGs[dagId];
     return (
-      <div className="my-3 flex justify-start">
+      <div className="my-3 flex justify-start" role="article" aria-label="Workflow complete">
         <div className="max-w-[85%]">
           {dag ? (
             <RunSummaryCard dag={dag} />
           ) : (
             <div className="rounded-2xl bg-zinc-800 px-4 py-3 text-sm leading-relaxed text-zinc-100">
-              {formatContent(content)}
+              <MarkdownContent content={content} />
             </div>
           )}
         </div>
@@ -111,10 +69,10 @@ export function MessageBubble({ message }: MessageBubbleProps) {
 
   if (role === 'system') {
     return (
-      <div className="my-3 flex justify-center">
+      <div className="my-3 flex justify-center" role="article" aria-label="System message">
         <div className="max-w-md rounded-lg bg-zinc-800/50 px-4 py-2 text-center text-xs text-zinc-400">
           {type === 'command-result' && '\u26A1 '}
-          {formatContent(content)}
+          <MarkdownContent content={content} />
         </div>
       </div>
     );
@@ -123,15 +81,22 @@ export function MessageBubble({ message }: MessageBubbleProps) {
   const isUser = role === 'user';
 
   return (
-    <div className={`my-3 flex ${isUser ? 'justify-end' : 'justify-start'}`}>
+    <div
+      className={`my-3 flex ${isUser ? 'justify-end' : 'justify-start'}`}
+      role="article"
+      aria-label={isUser ? 'Your message' : 'Assistant message'}
+    >
       <div
         className={`max-w-[80%] rounded-2xl px-4 py-3 text-sm leading-relaxed ${
           isUser
             ? 'bg-blue-600 text-white'
             : 'bg-zinc-800 text-zinc-100'
-        }`}
+        } ${interrupted ? 'opacity-70 border border-red-500/30' : ''}`}
       >
-        {formatContent(content)}
+        <MarkdownContent content={content} />
+        {interrupted && (
+          <p className="mt-1 text-xs text-red-400/70">⚠ Response interrupted</p>
+        )}
       </div>
     </div>
   );

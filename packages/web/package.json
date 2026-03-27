@@ -2,7 +2,13 @@
   "name": "@orionomega/web",
   "version": "0.1.0",
   "description": "Next.js web dashboard with DAG visualization for OrionOmega",
-  "keywords": ["dashboard", "web-ui", "reactflow", "dag", "orionomega"],
+  "keywords": [
+    "dashboard",
+    "web-ui",
+    "reactflow",
+    "dag",
+    "orionomega"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/aaronboshart1/orionomega.git",
@@ -16,21 +22,31 @@
     "start": "next start -p 5000"
   },
   "dependencies": {
+    "@radix-ui/react-progress": "^1.1.8",
+    "@radix-ui/react-scroll-area": "^1.2.10",
+    "@radix-ui/react-separator": "^1.1.8",
+    "@radix-ui/react-slot": "^1.2.4",
+    "@radix-ui/react-tooltip": "^1.2.8",
+    "@tailwindcss/postcss": "^4",
+    "@xyflow/react": "^12",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.460",
     "next": "^15",
     "react": "^18",
     "react-dom": "^18",
-    "zustand": "^5",
-    "@xyflow/react": "^12",
-    "lucide-react": "^0.460",
+    "react-markdown": "^10.1.0",
     "reconnecting-websocket": "^4",
+    "remark-gfm": "^4.0.1",
+    "tailwind-merge": "^3.5.0",
     "tailwindcss": "^4",
-    "@tailwindcss/postcss": "^4"
+    "zustand": "^5"
   },
   "devDependencies": {
     "@types/node": "^22",
     "@types/react": "^18",
     "@types/react-dom": "^18",
-    "typescript": "^5",
-    "postcss": "^8"
+    "postcss": "^8",
+    "typescript": "^5"
   }
 }

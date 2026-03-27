@@ -10,6 +10,8 @@ import { ChatInput } from './ChatInput';
 import { ThinkingIndicator } from './ThinkingIndicator';
 import { PlanCard } from './PlanCard';
 import { BackgroundTaskIndicator } from './BackgroundTaskIndicator';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { Button } from '@/components/ui/button';
 
 export function ChatPane() {
   const messages = useChatStore((s) => s.messages);
@@ -54,46 +56,56 @@ export function ChatPane() {
       </div>
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto px-6 py-4">
-        {messages.length === 0 && (
-          <div className="flex h-full flex-col items-center justify-center text-zinc-600">
-            <div className="mb-3 text-4xl">&Omega;</div>
-            <p className="text-sm">Send a message to begin</p>
-            <p className="mt-1 text-xs text-zinc-700">
-              Ask anything — I&apos;ll handle the orchestration
-            </p>
-          </div>
-        )}
+      <ScrollArea className="flex-1">
+        <div
+          className="px-6 py-4"
+          role="log"
+          aria-label="Chat messages"
+          aria-live="polite"
+          aria-relevant="additions"
+        >
+          {messages.length === 0 && (
+            <div className="flex h-full flex-col items-center justify-center py-16 text-zinc-600">
+              <div className="mb-3 text-4xl">&Omega;</div>
+              <p className="text-sm">Send a message to begin</p>
+              <p className="mt-1 text-xs text-zinc-700">
+                Ask anything — I&apos;ll handle the orchestration
+              </p>
+            </div>
+          )}
 
-        {messages.map((msg) => (
-          <MessageBubble key={msg.id} message={msg} />
-        ))}
+          {messages.map((msg) => (
+            <MessageBubble key={msg.id} message={msg} />
+          ))}
 
-        {/* Advanced plan view — hidden by default, toggled via icon */}
-        {activePlan && showAdvancedPlan && (
-          <div className="my-4">
-            <PlanCard plan={activePlan} onRespond={respondToPlan} />
-          </div>
-        )}
+          {/* Advanced plan view — hidden by default, toggled via icon */}
+          {activePlan && showAdvancedPlan && (
+            <div className="my-4">
+              <PlanCard plan={activePlan} onRespond={respondToPlan} />
+            </div>
+          )}
 
-        {/* Subtle plan notification when plan arrives but advanced view is hidden */}
-        {activePlan && !showAdvancedPlan && (
-          <div className="my-3 flex justify-start">
-            <button
-              onClick={() => setShowAdvancedPlan(true)}
-              className="flex items-center gap-2 rounded-xl border border-zinc-700 bg-zinc-800/60 px-4 py-2 text-xs text-zinc-400 transition-colors hover:border-zinc-600 hover:text-zinc-300"
-            >
-              <Settings2 size={12} />
-              Plan available — click to review
-            </button>
-          </div>
-        )}
+          {/* Subtle plan notification when plan arrives but advanced view is hidden */}
+          {activePlan && !showAdvancedPlan && (
+            <div className="my-3 flex justify-start">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setShowAdvancedPlan(true)}
+                className="gap-2 text-xs text-zinc-400"
+              >
+                <Settings2 size={12} />
+                Plan available — click to review
+              </Button>
+            </div>
+          )}
 
-        {thinkingContent && <ThinkingIndicator content={thinkingContent} />}
-        {isStreaming && !thinkingContent && <ThinkingIndicator />}
+          {thinkingContent && <ThinkingIndicator content={thinkingContent} />}
+          {isStreaming && !thinkingContent && <ThinkingIndicator />}
 
-        <div ref={bottomRef} />
-      </div>
+          <div ref={bottomRef} />
+        </div>
+      </ScrollArea>
 
       {/* Input — enabled during background DAG execution */}
       <ChatInput onSend={handleSend} disabled={inputDisabled} />
