@@ -13,6 +13,7 @@ const SLASH_COMMANDS = [
   { command: '/stop', description: 'Stop current streaming' },
   { command: '/clear', description: 'Clear conversation' },
   { command: '/status', description: 'Show system status' },
+  { command: '/update', description: 'Pull latest, rebuild, and restart' },
   { command: '/help', description: 'Show available commands' },
 ];
 

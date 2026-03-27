@@ -11,7 +11,7 @@
  * and shared state (history, system prompt, callbacks).
  */
 
-import { spawn } from 'node:child_process';
+import { execSync, spawn } from 'node:child_process';
 import { AnthropicClient } from '../anthropic/client.js';
 import type { AnthropicMessage } from '../anthropic/client.js';
 import { buildSystemPrompt, type PromptContext } from './prompt-builder.js';
@@ -490,6 +490,7 @@ export class MainAgent {
             '  /skills    — View, enable/disable, configure skills',
             '  /reset     — Clear history and detach workflow',
             '  /restart   — Restart the gateway service',
+            '  /update    — Pull latest, rebuild, and restart',
             '  /help      — This message',
             '',
             'TUI-only:',
@@ -519,6 +520,17 @@ export class MainAgent {
           child.unref();
           process.exit(0);
         }, 500);
+        return;
+      }
+
+      if (cmd === '/update') {
+        this.callbacks.onCommandResult({
+          command: '/update', success: true,
+          message: 'Updating OrionOmega — pulling latest, rebuilding, and restarting…',
+        });
+        this.runUpdateAndRestart().catch((err) => {
+          log.error('Update failed', { error: err instanceof Error ? err.message : String(err) });
+        });
         return;
       }
 
@@ -588,6 +600,46 @@ export class MainAgent {
   /** Get the shared event bus. */
   getEventBus(): EventBus {
     return this.orchestration.eventBus;
+  }
+
+  private async runUpdateAndRestart(): Promise<void> {
+    const { findInstallDirectory } = await import('../commands/update.js');
+    const installDir = findInstallDirectory();
+    if (!installDir) {
+      this.callbacks.onCommandResult({ command: '/update', success: false, message: 'Cannot find OrionOmega git repository' });
+      return;
+    }
+    const steps: Array<{ label: string; cmd: string; timeout: number }> = [
+      { label: 'Pulling latest changes', cmd: 'git pull', timeout: 30_000 },
+      { label: 'Installing dependencies', cmd: 'pnpm install --frozen-lockfile || pnpm install', timeout: 120_000 },
+      { label: 'Building all packages', cmd: 'pnpm build', timeout: 120_000 },
+    ];
+    for (const s of steps) {
+      this.callbacks.onCommandResult({ command: '/update', success: true, message: `${s.label}…` });
+      try {
+        execSync(s.cmd, { cwd: installDir, stdio: 'pipe', timeout: s.timeout, shell: '/bin/sh' });
+      } catch (err) {
+        this.callbacks.onCommandResult({
+          command: '/update', success: false,
+          message: `${s.label} failed: ${err instanceof Error ? err.message.slice(0, 200) : String(err)}`,
+        });
+        return;
+      }
+    }
+    this.callbacks.onCommandResult({ command: '/update', success: true, message: 'Update complete — restarting gateway…' });
+    setTimeout(() => {
+      const args = [...process.execArgv, ...process.argv.slice(1)];
+      const child = spawn(process.execPath, args, {
+        stdio: 'inherit',
+        detached: true,
+        env: { ...process.env, ORIONOMEGA_RESTART_DELAY: '1000' },
+      });
+      child.on('error', (err) => {
+        log.error('Failed to spawn restart process', { error: err.message });
+      });
+      child.unref();
+      process.exit(0);
+    }, 500);
   }
 
   /**

@@ -247,8 +247,12 @@ function bindListeners(ws: ReconnectingWebSocket): void {
         if (msg.status) chat.setStreamingStatus(msg.status);
         break;
       case 'command_result':
-        if (msg.commandResult?.command === 'restart') {
-          pendingRestart = true;
+        if (msg.commandResult?.command === 'restart' || msg.commandResult?.command === '/update') {
+          if (msg.commandResult?.success === false) {
+            pendingRestart = false;
+          } else {
+            pendingRestart = true;
+          }
         }
         chat.addMessage({
           id: crypto.randomUUID(),
@@ -363,7 +367,7 @@ export function useGateway() {
       if (command === 'stop') {
         useChatStore.getState().markLastInterrupted();
       }
-      if (command === 'restart') {
+      if (command === 'restart' || command === 'update') {
         pendingRestart = true;
       }
       send({ id: crypto.randomUUID(), type: 'command', command });
