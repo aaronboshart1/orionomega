@@ -614,6 +614,9 @@ export class OrchestrationBridge {
 
     const { status, findings, errors, taskSummary, decisions, nodeOutputPaths } = result;
 
+    // ── Extract the final worker output (the actual analysis/report) ──
+    const finalOutput = this.extractFinalOutput(result);
+
     // ── Structured text message ─────────────────────────────────────
     const parts: string[] = [];
 
@@ -640,7 +643,9 @@ export class OrchestrationBridge {
       for (const d of decisions.slice(0, 5)) parts.push(`  - ${d}`);
     }
 
-    // Artifacts are shown in the Run Summary card — omit from text to avoid duplication
+    if (finalOutput) {
+      parts.push('', finalOutput);
+    }
 
     const summary = parts.join('\n');
     this.callbacks.onText(summary, false, true, workflowId);
@@ -665,6 +670,33 @@ export class OrchestrationBridge {
     if (wf) this.callbacks.onGraphState(wf.executor.getState());
   }
 
+
+  private extractFinalOutput(result: ExecutionResult): string | null {
+    const MAX_OUTPUT_CHARS = 12_000;
+
+    const truncate = (text: string): string => {
+      const trimmed = text.trim();
+      if (!trimmed) return '';
+      if (trimmed.length > MAX_OUTPUT_CHARS) {
+        return trimmed.slice(0, MAX_OUTPUT_CHARS) + '\n\n…(output truncated)';
+      }
+      return trimmed;
+    };
+
+    if (result.nodeFinalResults && Object.keys(result.nodeFinalResults).length > 0) {
+      const values = Object.values(result.nodeFinalResults);
+      const last = values[values.length - 1];
+      if (last && last.trim()) return truncate(last);
+    }
+
+    if (result.nodeOutputs && Object.keys(result.nodeOutputs).length > 0) {
+      const entries = Object.values(result.nodeOutputs);
+      const last = entries[entries.length - 1];
+      if (last && last.trim()) return truncate(last);
+    }
+
+    return null;
+  }
 
   // ── Lifecycle ───────────────────────────────────────────────────
 
