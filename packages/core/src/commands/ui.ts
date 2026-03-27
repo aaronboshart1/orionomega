@@ -5,6 +5,9 @@
 
 import { execSync, spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 
 const GREEN = '\x1b[32m';
 const RED = '\x1b[31m';
@@ -16,8 +19,13 @@ const RESET = '\x1b[0m';
  * Start the Next.js web dashboard.
  */
 export async function runUI(): Promise<void> {
-  // Find the web package
+  const __dirname = fileURLToPath(new URL('.', import.meta.url));
+  const monorepoRoot = join(__dirname, '..', '..', '..', '..');
+
   const candidates = [
+    join(monorepoRoot, 'packages', 'web'),
+    join(homedir(), '.orionomega', 'packages', 'web'),
+    join(homedir(), '.orionomega', 'src', 'packages', 'web'),
     `${process.cwd()}/packages/web`,
     '/opt/orionomega/packages/web',
   ];
@@ -32,7 +40,10 @@ export async function runUI(): Promise<void> {
 
   if (!webDir) {
     process.stdout.write(`${RED}✗${RESET} Web package not found\n`);
-    process.stdout.write(`  ${DIM}Expected at packages/web/ or /opt/orionomega/packages/web/${RESET}\n`);
+    process.stdout.write(`  ${DIM}Searched:${RESET}\n`);
+    for (const c of candidates) {
+      process.stdout.write(`  ${DIM}  - ${c}${RESET}\n`);
+    }
     return;
   }
 

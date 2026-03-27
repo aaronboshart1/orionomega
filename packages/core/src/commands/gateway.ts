@@ -7,6 +7,7 @@ import { execSync, spawn } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { readConfig } from '../config/index.js';
 
 const GREEN = '\x1b[32m';
@@ -49,7 +50,11 @@ function readPid(): number | null {
 
 /** Find the gateway server entry point. */
 function findServerPath(): string {
+  const __dirname = fileURLToPath(new URL('.', import.meta.url));
+  const monorepoRoot = join(__dirname, '..', '..', '..', '..');
+
   const candidates = [
+    join(monorepoRoot, 'packages', 'gateway', 'dist', 'server.js'),
     join(homedir(), '.orionomega', 'src', 'packages', 'gateway', 'dist', 'server.js'),
     join(process.cwd(), 'packages', 'gateway', 'dist', 'server.js'),
     '/opt/orionomega/packages/gateway/dist/server.js',
