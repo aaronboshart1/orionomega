@@ -1128,6 +1128,10 @@ export class GraphExecutor {
     }>();
 
     for (const result of this.nodeResults.values()) {
+      const hasModel = !!result.model;
+      const hasTokens = (result.inputTokens ?? 0) > 0 || (result.outputTokens ?? 0) > 0
+        || (result.cacheReadTokens ?? 0) > 0 || (result.cacheCreationTokens ?? 0) > 0;
+      if (!hasModel && !hasTokens) continue;
       const model = result.model ?? 'unknown';
       const existing = modelMap.get(model) ?? {
         inputTokens: 0, outputTokens: 0,

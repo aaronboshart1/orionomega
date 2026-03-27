@@ -139,6 +139,14 @@ export interface AgentExecutionResult {
    * accumulated output. Prefer this for display; fall back to output if empty.
    */
   finalResult?: string;
+  /** Total input tokens consumed across all turns. */
+  inputTokens?: number;
+  /** Total output tokens consumed across all turns. */
+  outputTokens?: number;
+  /** Total cache read tokens across all turns. */
+  cacheReadTokens?: number;
+  /** Total cache creation tokens across all turns. */
+  cacheCreationTokens?: number;
 }
 
 /**
@@ -376,6 +384,10 @@ export async function executeAgent(
   let structuredOutput: unknown;
   const outputPaths: string[] = [];
   let progressEstimate = 5;
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
+  let totalCacheReadTokens = 0;
+  let totalCacheCreationTokens = 0;
 
   // P5: Build skill MCP server if skillIds are provided
   let mcpServers: Record<string, McpSdkServerConfigWithInstance> | undefined;
@@ -441,6 +453,14 @@ export async function executeAgent(
       // Assistant message — collect text and tool use
       if (message.type === 'assistant') {
         const assistantMsg = message as SDKAssistantMessage;
+        const usage = (assistantMsg.message as Record<string, unknown>)?.usage as
+          { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number } | undefined;
+        if (usage) {
+          totalInputTokens += usage.input_tokens ?? 0;
+          totalOutputTokens += usage.output_tokens ?? 0;
+          totalCacheReadTokens += usage.cache_read_input_tokens ?? 0;
+          totalCacheCreationTokens += usage.cache_creation_input_tokens ?? 0;
+        }
         if (assistantMsg.message?.content) {
           for (const block of assistantMsg.message.content) {
             if (block.type === 'text' && block.text.trim()) {
@@ -519,6 +539,10 @@ export async function executeAgent(
       durationSec,
       costUsd,
       outputPaths,
+      inputTokens: totalInputTokens,
+      outputTokens: totalOutputTokens,
+      cacheReadTokens: totalCacheReadTokens,
+      cacheCreationTokens: totalCacheCreationTokens,
       ...(structuredOutput !== undefined ? { structuredOutput } : {}),
       ...(finalResult ? { finalResult } : {}),
     };

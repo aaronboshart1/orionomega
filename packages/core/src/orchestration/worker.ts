@@ -380,6 +380,11 @@ export class WorkerProcess {
       toolCallCount: result.toolCalls,
       findings: [],
       outputPaths: result.outputPaths,
+      model,
+      inputTokens: result.inputTokens ?? 0,
+      outputTokens: result.outputTokens ?? 0,
+      cacheReadTokens: result.cacheReadTokens ?? 0,
+      cacheCreationTokens: result.cacheCreationTokens ?? 0,
       costUsd: result.costUsd,
       finalResult: result.finalResult,
     };

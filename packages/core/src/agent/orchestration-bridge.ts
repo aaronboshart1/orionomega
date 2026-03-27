@@ -640,16 +640,7 @@ export class OrchestrationBridge {
       for (const d of decisions.slice(0, 5)) parts.push(`  - ${d}`);
     }
 
-    if (nodeOutputPaths && Object.keys(nodeOutputPaths).length > 0) {
-      parts.push('', '**Artifacts:**');
-      for (const [nodeLabel, paths] of Object.entries(nodeOutputPaths)) {
-        parts.push(`  ${nodeLabel}`);
-        for (const p of paths) parts.push(`    ${p}`);
-      }
-    } else if (result.outputPaths.length > 0) {
-      parts.push('', '**Output files:**');
-      for (const p of result.outputPaths) parts.push(`  ${p}`);
-    }
+    // Artifacts are shown in the Run Summary card — omit from text to avoid duplication
 
     const summary = parts.join('\n');
     this.callbacks.onText(summary, false, true, workflowId);
