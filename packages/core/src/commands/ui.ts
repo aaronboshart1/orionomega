@@ -55,10 +55,10 @@ export async function runUI(): Promise<void> {
   process.stdout.write(`${DIM}Press Ctrl+C to stop${RESET}\n\n`);
 
   const host = process.env.HOST || '127.0.0.1';
-  const child = spawn('pnpm', [cmd, '-H', host], {
+  const child = spawn('pnpm', [cmd], {
     cwd: webDir,
     stdio: 'inherit',
-    env: { ...process.env },
+    env: { ...process.env, HOST: host },
   });
 
   process.on('SIGINT', () => {

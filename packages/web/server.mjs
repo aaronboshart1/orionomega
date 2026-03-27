@@ -4,7 +4,26 @@ import { parse } from 'url';
 import next from 'next';
 
 const dev = process.env.NODE_ENV !== 'production';
-const port = parseInt(process.env.PORT || '5000', 10);
+
+function parseArgs() {
+  const args = process.argv.slice(2);
+  let host = null;
+  let port = null;
+  for (let i = 0; i < args.length; i++) {
+    if ((args[i] === '-H' || args[i] === '--hostname') && args[i + 1]) {
+      host = args[i + 1];
+      i++;
+    } else if ((args[i] === '-p' || args[i] === '--port') && args[i + 1]) {
+      port = parseInt(args[i + 1], 10);
+      i++;
+    }
+  }
+  return { host, port };
+}
+
+const cliArgs = parseArgs();
+const host = cliArgs.host || process.env.HOST || '0.0.0.0';
+const port = cliArgs.port || parseInt(process.env.PORT || '5000', 10);
 const gatewayHost = process.env.GATEWAY_HOST || 'localhost';
 const gatewayPort = parseInt(process.env.GATEWAY_PORT || '8000', 10);
 
@@ -76,8 +95,8 @@ app.prepare().then(() => {
     }
   });
 
-  server.listen(port, '0.0.0.0', () => {
-    console.log(`> Ready on http://0.0.0.0:${port}`);
+  server.listen(port, host, () => {
+    console.log(`> Ready on http://${host}:${port}`);
     console.log(`> Gateway proxy: ${gatewayHost}:${gatewayPort}`);
   });
 });
