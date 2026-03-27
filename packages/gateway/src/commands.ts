@@ -24,6 +24,12 @@ export class CommandHandler {
     const parts = trimmed.split(/\s+/);
     const cmd = parts[0]?.toLowerCase();
 
+    const notConnected = (c: string) => ({
+      command: c,
+      success: false,
+      message: 'Orchestration engine not connected. Waiting for MainAgent...',
+    });
+
     switch (cmd) {
       case '/help':
         return this.handleHelp();
@@ -34,36 +40,20 @@ export class CommandHandler {
       case '/reset':
         return this.handleReset(session);
 
-      case '/stop':
-        return {
-          command: '/stop',
-          success: true,
-          message: 'Command registered, orchestration engine not yet connected.',
-        };
-
-      case '/restart':
-        return {
-          command: '/restart',
-          success: true,
-          message: 'Command registered, orchestration engine not yet connected.',
-        };
-
-      case '/plan':
-        return {
-          command: '/plan',
-          success: true,
-          message: 'Command registered, orchestration engine not yet connected.',
-        };
-
       case '/skills':
         return this.handleSkills(session);
 
+      case '/stop':
+      case '/plan':
       case '/workers':
-        return {
-          command: '/workers',
-          success: true,
-          message: 'Command registered, orchestration engine not yet connected.',
-        };
+      case '/pause':
+      case '/resume':
+      case '/gates':
+      case '/workflows':
+        return notConnected(cmd);
+
+      case '/restart':
+        return notConnected(cmd);
 
       default:
         return {
@@ -97,13 +87,18 @@ export class CommandHandler {
   private handleHelp(): CommandResult {
     const lines = [
       'Available commands:',
-      '  /help      \u2014 Show this help',
+      '  /workflows \u2014 List all active workflows',
       '  /status    \u2014 Session and system status',
-      '  /reset     \u2014 Clear message history and detach workflow',
       '  /stop      \u2014 Stop the active workflow',
-      '  /restart   \u2014 Restart the active workflow',
+      '  /pause     \u2014 Pause before next layer',
+      '  /resume    \u2014 Resume a paused workflow',
       '  /plan      \u2014 Show the current execution plan',
       '  /workers   \u2014 List active workers',
+      '  /gates     \u2014 List pending human approval gates',
+      '  /skills    \u2014 View, enable/disable, configure skills',
+      '  /reset     \u2014 Clear history and detach workflow',
+      '  /restart   \u2014 Restart the gateway service',
+      '  /help      \u2014 This message',
     ];
     return {
       command: '/help',
@@ -112,7 +107,6 @@ export class CommandHandler {
     };
   }
 
-  /** Clear session message history and workflow state. */
   /** List skills (gateway-level stub — real logic in main-agent). */
   private handleSkills(_session: Session): CommandResult {
     return {

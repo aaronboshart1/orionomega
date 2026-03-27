@@ -33,15 +33,19 @@ const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/help', description: 'Show available commands' },
   { name: '/workflows', description: 'List all active workflows' },
   { name: '/status', description: 'Session and system status' },
-  { name: '/reset', description: 'Clear history and detach workflow' },
   { name: '/stop', description: 'Stop the active workflow' },
-  { name: '/restart', description: 'Restart the gateway service' },
+  { name: '/pause', description: 'Pause before next layer' },
+  { name: '/resume', description: 'Resume a paused workflow' },
   { name: '/plan', description: 'Show the current execution plan' },
   { name: '/workers', description: 'List active workers' },
+  { name: '/gates', description: 'List pending human approval gates' },
   { name: '/skills', description: 'View, enable/disable, configure skills' },
+  { name: '/reset', description: 'Clear history and detach workflow' },
+  { name: '/restart', description: 'Restart the gateway service' },
   { name: '/focus', description: 'Focus a workflow by ID (or /focus to show all)' },
   { name: '/hindsight', description: 'Show Hindsight memory status and troubleshooting' },
   { name: '/exit', description: 'Exit the TUI' },
+  { name: '/quit', description: 'Exit the TUI' },
 ];
 
 /** Client-side commands that don't go to the gateway. */
