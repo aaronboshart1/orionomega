@@ -4,7 +4,7 @@ import { useState, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
-import { Copy, Check } from 'lucide-react';
+import { Copy, Check, File, Image, FileText } from 'lucide-react';
 import type { ChatMessage } from '@/stores/chat';
 import { useOrchestrationStore } from '@/stores/orchestration';
 import { InlineDAGCard } from './InlineDAGCard';
@@ -14,6 +14,22 @@ import { useGateway } from '@/lib/gateway';
 
 interface MessageBubbleProps {
   message: ChatMessage;
+}
+
+// ---------------------------------------------------------------------------
+// File attachment helpers (used for user messages)
+// ---------------------------------------------------------------------------
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function AttachmentIcon({ mimeType }: { mimeType: string }) {
+  if (mimeType.startsWith('image/')) return <Image size={11} />;
+  if (mimeType.startsWith('text/') || mimeType === 'application/json') return <FileText size={11} />;
+  return <File size={11} />;
 }
 
 // ---------------------------------------------------------------------------
@@ -276,8 +292,31 @@ export function MessageBubble({ message }: MessageBubbleProps) {
   if (role === 'user') {
     return (
       <div className="my-3 flex justify-end">
-        <div className="max-w-[80%] rounded-2xl bg-blue-600 px-4 py-3 text-sm leading-relaxed text-white">
-          {content}
+        <div className="max-w-[80%] space-y-1.5">
+          {/* File attachment chips */}
+          {message.attachments && message.attachments.length > 0 && (
+            <div className="flex flex-wrap justify-end gap-1.5">
+              {message.attachments.map((att, i) => (
+                <div
+                  key={i}
+                  className="flex items-center gap-1.5 rounded-lg border border-blue-400/30 bg-blue-600/20 px-2.5 py-1 text-xs text-blue-200"
+                  title={att.name}
+                >
+                  <span className="text-blue-300">
+                    <AttachmentIcon mimeType={att.type} />
+                  </span>
+                  <span className="max-w-[130px] truncate">{att.name}</span>
+                  <span className="text-blue-300/60">{formatBytes(att.size)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {/* Message text */}
+          {content && (
+            <div className="rounded-2xl bg-blue-600 px-4 py-3 text-sm leading-relaxed text-white">
+              {content}
+            </div>
+          )}
         </div>
       </div>
     );

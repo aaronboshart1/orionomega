@@ -5,6 +5,16 @@
 
 import type { WebSocket } from 'ws';
 
+/** A file attached by the client, base64-encoded. */
+export interface FileAttachment {
+  id: string;
+  name: string;
+  size: number;
+  type: string;
+  /** Raw file content encoded as base64 (no data-URL prefix). */
+  data: string;
+}
+
 /** Represents a connected client (TUI or Web). */
 export interface ClientConnection {
   id: string;
@@ -33,6 +43,8 @@ export interface ClientMessage {
   workflowId?: string;
   /** DAG confirmation response fields. */
   dagAction?: 'approve' | 'reject';
+  /** Files attached to a chat message. Present only when type === 'chat'. */
+  attachments?: FileAttachment[];
 }
 
 /** Gateway → Client message envelope. */

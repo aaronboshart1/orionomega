@@ -5,6 +5,7 @@ import ReconnectingWebSocket from 'reconnecting-websocket';
 import { useOrchestrationStore } from '@/stores/orchestration';
 import { useChatStore } from '@/stores/chat';
 import type { ToolCall } from '@/stores/chat';
+import type { AttachedFile } from '@/components/chat/ChatInput';
 
 // Gateway port matches core config default (7800)
 // Auto-detect gateway URL from current browser location
@@ -242,15 +243,23 @@ export function useGateway(url: string = defaultGatewayUrl()) {
   }, []);
 
   const sendChat = useCallback(
-    (content: string) => {
+    (content: string, files?: AttachedFile[]) => {
       chatStore.addMessage({
         id: crypto.randomUUID(),
         role: 'user',
         content,
         timestamp: new Date().toISOString(),
+        // Store display-only metadata (no raw data) in the message store
+        attachments: files?.map(({ name, size, type }) => ({ name, size, type })),
       });
       chatStore.setStreaming(true);
-      send({ id: crypto.randomUUID(), type: 'chat', content });
+      send({
+        id: crypto.randomUUID(),
+        type: 'chat',
+        content,
+        // Include full file data (base64) in the WebSocket message for the gateway
+        ...(files && files.length > 0 ? { attachments: files } : {}),
+      });
     },
     [send, chatStore],
   );

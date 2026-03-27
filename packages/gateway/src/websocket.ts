@@ -249,12 +249,48 @@ export class WebSocketHandler {
 
   /** Handle a chat message — store it, acknowledge, and route to MainAgent. */
   private handleChat(conn: ClientConnection, session: ReturnType<SessionManager['getSession']> & object, msg: ClientMessage): void {
-    const content = msg.content ?? '';
+    let content = msg.content ?? '';
+
+    // ------------------------------------------------------------------
+    // Process file attachments
+    // Decode each attachment and append its content to the chat message
+    // so the MainAgent can read it without needing API changes.
+    // ------------------------------------------------------------------
+    if (msg.attachments && msg.attachments.length > 0) {
+      const fileContexts = msg.attachments.map((file) => {
+        const isText =
+          file.type.startsWith('text/') ||
+          file.type === 'application/json' ||
+          file.type === 'application/xml' ||
+          file.type === 'application/javascript' ||
+          file.type === 'application/typescript';
+        const isImage = file.type.startsWith('image/');
+        const kb = (file.size / 1024).toFixed(1);
+
+        if (isText) {
+          try {
+            const decoded = Buffer.from(file.data, 'base64').toString('utf-8');
+            return `\n\n<attached_file name="${file.name}" type="${file.type}">\n${decoded}\n</attached_file>`;
+          } catch {
+            return `\n\n<attached_file name="${file.name}" type="${file.type}" size="${kb} KB" error="could not decode" />`;
+          }
+        } else if (isImage) {
+          // Pass image as a data URL so the agent can reference it
+          return `\n\n<attached_image name="${file.name}" type="${file.type}" size="${kb} KB" data="data:${file.type};base64,${file.data}" />`;
+        } else {
+          return `\n\n<attached_file name="${file.name}" type="${file.type}" size="${kb} KB" note="binary file — content not decoded" />`;
+        }
+      });
+      content = content + fileContexts.join('');
+      log.info(`Processed ${msg.attachments.length} attachment(s) for message ${msg.id}`);
+    }
+
     log.verbose(`Chat message from ${conn.id}`, {
       sessionId: conn.sessionId,
       messageId: msg.id,
       contentLength: content.length,
       contentPreview: content.slice(0, 200),
+      attachmentCount: msg.attachments?.length ?? 0,
     });
 
     this.sessionManager.addMessage(conn.sessionId, {

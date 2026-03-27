@@ -19,6 +19,15 @@ export interface ToolCall {
 }
 
 // ---------------------------------------------------------------------------
+// File attachment metadata (display only — raw data is not stored in the store)
+// ---------------------------------------------------------------------------
+export interface FileAttachment {
+  name: string;
+  size: number;
+  type: string;
+}
+
+// ---------------------------------------------------------------------------
 // Chat message
 // ---------------------------------------------------------------------------
 export interface ChatMessage {
@@ -39,6 +48,8 @@ export interface ChatMessage {
   dagId?: string;
   /** Populated when type === 'tool-call' */
   toolCall?: ToolCall;
+  /** File attachments sent with this message (user messages only) */
+  attachments?: FileAttachment[];
 }
 
 // ---------------------------------------------------------------------------

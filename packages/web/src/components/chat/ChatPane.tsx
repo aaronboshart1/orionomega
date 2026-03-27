@@ -6,7 +6,7 @@ import { useChatStore } from '@/stores/chat';
 import { useOrchestrationStore } from '@/stores/orchestration';
 import { useGateway } from '@/lib/gateway';
 import { MessageBubble } from './MessageBubble';
-import { ChatInput } from './ChatInput';
+import { ChatInput, type AttachedFile } from './ChatInput';
 import { ThinkingIndicator } from './ThinkingIndicator';
 import { PlanCard } from './PlanCard';
 import { BackgroundTaskIndicator } from './BackgroundTaskIndicator';
@@ -31,11 +31,11 @@ export function ChatPane() {
   );
   const inputDisabled = isStreaming && !hasActiveDAGs;
 
-  const handleSend = (text: string) => {
+  const handleSend = (text: string, files?: AttachedFile[]) => {
     if (text.startsWith('/')) {
       sendCommand(text.slice(1));
     } else {
-      sendChat(text);
+      sendChat(text, files);
     }
   };
 
