@@ -115,6 +115,7 @@ export class MainAgent {
   private sessionCostUsd = 0;
   private availableSkills: string[] = [];
   private interruptedWorkflows: WorkflowCheckpoint[] = [];
+  private activeAbort: AbortController | null = null;
 
   constructor(config: MainAgentConfig, callbacks: MainAgentCallbacks) {
     this.config = config;
@@ -289,6 +290,10 @@ export class MainAgent {
     });
     this.pushHistory({ role: 'user', content: trimmed });
 
+    this.activeAbort?.abort();
+    this.activeAbort = new AbortController();
+    const signal = this.activeAbort.signal;
+
     // Evaluate for preference patterns (fire-and-forget)
     if (this.memory.retention) {
       this.memory.retention.evaluateUserMessage(trimmed, this.memory.projectBank ?? undefined).catch((err) => {
@@ -372,7 +377,7 @@ export class MainAgent {
       if (isFastConversational(trimmed)) {
         log.verbose('Route: CHAT fast-path');
         this.callbacks.onThinking('Thinking…', true, false);
-        await this.respondConversationally(trimmed);
+        await this.respondConversationally(trimmed, signal);
         return;
       }
 
@@ -396,7 +401,7 @@ export class MainAgent {
 
       switch (intent) {
         case 'CHAT':
-          await this.respondConversationally(trimmed);
+          await this.respondConversationally(trimmed, signal);
           break;
         case 'ORCHESTRATE':
           log.verbose('Route: ORCHESTRATE (LLM classified)', { guarded: isGuardedRequest(trimmed) });
@@ -408,7 +413,7 @@ export class MainAgent {
           break;
         case 'CHAT_ASYNC':
           // Fire-and-forget: returns immediately, async work continues in background
-          void this.respondConversationally(trimmed).catch((err) => {
+          void this.respondConversationally(trimmed, signal).catch((err) => {
             const msg = err instanceof Error ? err.message : String(err);
             log.error('Async conversational response error', { error: msg });
             this.callbacks.onText(`Something went wrong: ${msg}`, false, true);
@@ -419,6 +424,10 @@ export class MainAgent {
       const msg = err instanceof Error ? err.message : String(err);
       log.error('handleMessage error', { error: msg });
       this.callbacks.onText(`Something went wrong: ${msg}`, false, true);
+    } finally {
+      if (this.activeAbort?.signal === signal) {
+        this.activeAbort = null;
+      }
     }
   }
 
@@ -572,6 +581,20 @@ export class MainAgent {
         return;
       }
 
+      if (cmd === '/stop') {
+        let stopped = false;
+        if (this.activeAbort && !this.activeAbort.signal.aborted) {
+          this.activeAbort.abort();
+          stopped = true;
+        }
+        this.orchestration.stopAll();
+        this.callbacks.onCommandResult({
+          command: '/stop', success: true,
+          message: stopped ? 'Stopped.' : 'Nothing running to stop.',
+        });
+        return;
+      }
+
       if (!this.orchestration?.commands) {
         this.callbacks.onCommandResult({
           command: cmd, success: false,
@@ -716,7 +739,7 @@ export class MainAgent {
     });
   }
 
-  private async respondConversationally(userMessage: string): Promise<void> {
+  private async respondConversationally(userMessage: string, abortSignal?: AbortSignal): Promise<void> {
     // Signal that we're assembling context (visible in TUI spinner)
     this.callbacks.onThinking('Assembling context…', true, false);
 
@@ -752,6 +775,7 @@ export class MainAgent {
         onText: this.callbacks.onText,
         onThinking: this.callbacks.onThinking,
         maxInputTokens: 100_000,
+        abortSignal,
       });
       this.cumulativeInputTokens += result.inputTokens;
       this.cumulativeOutputTokens += result.outputTokens;

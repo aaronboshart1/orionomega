@@ -309,8 +309,9 @@ export async function streamConversation(opts: {
   onThinking?: (text: string, streaming: boolean, done: boolean) => void;
   maxToolRounds?: number;
   maxInputTokens?: number;
+  abortSignal?: AbortSignal;
 }): Promise<{ text: string; inputTokens: number; outputTokens: number; cacheCreationTokens: number; cacheReadTokens: number }> {
-  const { client, model, systemPrompt, workspaceDir, onText, onThinking } = opts;
+  const { client, model, systemPrompt, workspaceDir, onText, onThinking, abortSignal } = opts;
   let messages = [...opts.messages];
 
   if (opts.maxInputTokens && messages.length > 2) {
@@ -360,6 +361,12 @@ export async function streamConversation(opts: {
   });
 
   for (let round = 0; ; round++) {
+    if (abortSignal?.aborted) {
+      log.info('Conversation aborted by user');
+      onText('\n\n*Stopped.*', false, true);
+      onThinking?.('', false, true);
+      return { text: fullText, inputTokens: totalInputTokens, outputTokens: totalOutputTokens, cacheCreationTokens: totalCacheCreationTokens, cacheReadTokens: totalCacheReadTokens };
+    }
     const roundStart = Date.now();
     if (round > 0) {
       onThinking?.(`Thinking… (round ${round + 1})`, true, false);
@@ -385,6 +392,12 @@ export async function streamConversation(opts: {
     let currentToolInput = '';
 
     for await (const event of stream) {
+      if (abortSignal?.aborted) {
+        log.info('Conversation aborted during streaming');
+        onText('\n\n*Stopped.*', false, true);
+        onThinking?.('', false, true);
+        return { text: fullText, inputTokens: totalInputTokens, outputTokens: totalOutputTokens, cacheCreationTokens: totalCacheCreationTokens, cacheReadTokens: totalCacheReadTokens };
+      }
       const text = extractTextDelta(event);
       if (text) {
         roundText += text;
@@ -485,6 +498,12 @@ export async function streamConversation(opts: {
 
     const toolResults: unknown[] = [];
     for (const tc of toolCalls) {
+      if (abortSignal?.aborted) {
+        log.info('Conversation aborted before tool execution', { tool: tc.name });
+        onText('\n\n*Stopped.*', false, true);
+        onThinking?.('', false, true);
+        return { text: fullText, inputTokens: totalInputTokens, outputTokens: totalOutputTokens, cacheCreationTokens: totalCacheCreationTokens, cacheReadTokens: totalCacheReadTokens };
+      }
       const sig = toolSignature(tc.name, tc.input);
       const cat = toolCategory(tc.name, tc.input);
 
