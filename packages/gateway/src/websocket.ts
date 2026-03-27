@@ -302,6 +302,8 @@ export class WebSocketHandler {
         id: randomBytes(8).toString('hex'),
         type: 'text',
         content: 'Message received. Orchestration engine not yet connected.',
+        streaming: false,
+        done: true,
       });
     }
   }

@@ -22,6 +22,7 @@ interface ChatStore {
   isStreaming: boolean;
   thinkingContent: string;
   addMessage: (msg: ChatMessage) => void;
+  setMessages: (msgs: ChatMessage[]) => void;
   appendToLast: (content: string) => void;
   setStreaming: (s: boolean) => void;
   setThinking: (t: string) => void;
@@ -33,6 +34,7 @@ export const useChatStore = create<ChatStore>((set) => ({
   isStreaming: false,
   thinkingContent: '',
   addMessage: (msg) => set((s) => ({ messages: [...s.messages, msg] })),
+  setMessages: (messages) => set({ messages }),
   appendToLast: (content) =>
     set((s) => {
       const msgs = [...s.messages];

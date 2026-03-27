@@ -4,15 +4,18 @@ import { useEffect, useRef, useCallback } from 'react';
 import ReconnectingWebSocket from 'reconnecting-websocket';
 import { useOrchestrationStore } from '@/stores/orchestration';
 import { useChatStore } from '@/stores/chat';
+import type { ChatMessage } from '@/stores/chat';
 
-// Gateway port matches core config default (8000) — Replit-compatible port
-// Auto-detect gateway URL from current browser location
+const SESSION_KEY = 'orionomega_session_id';
+
 function defaultGatewayUrl(): string {
   if (typeof window !== 'undefined') {
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    return `${proto}//${window.location.hostname}:8000/ws`;
+    const savedSession = localStorage.getItem(SESSION_KEY);
+    const sessionParam = savedSession ? `&session=${savedSession}` : '';
+    return `${proto}//${window.location.hostname}:8000/ws?client=web${sessionParam}`;
   }
-  return 'ws://127.0.0.1:8000/ws';
+  return 'ws://127.0.0.1:8000/ws?client=web';
 }
 
 export function useGateway(url: string = defaultGatewayUrl()) {
@@ -21,7 +24,7 @@ export function useGateway(url: string = defaultGatewayUrl()) {
   const chatStore = useChatStore();
 
   useEffect(() => {
-    const ws = new ReconnectingWebSocket(`${url}?client=web`);
+    const ws = new ReconnectingWebSocket(url);
     wsRef.current = ws;
 
     ws.onmessage = (raw) => {
@@ -38,6 +41,7 @@ export function useGateway(url: string = defaultGatewayUrl()) {
               content: msg.content,
               timestamp: new Date().toISOString(),
             });
+            chatStore.setStreaming(false);
           }
           if (msg.done) chatStore.setStreaming(false);
           break;
@@ -162,7 +166,30 @@ export function useGateway(url: string = defaultGatewayUrl()) {
           chatStore.setStreaming(false);
           break;
         case 'ack':
+          try {
+            const ackData = msg.content ? JSON.parse(msg.content) : null;
+            if (ackData?.sessionId) {
+              localStorage.setItem(SESSION_KEY, ackData.sessionId);
+            }
+          } catch { /* ignore parse errors */ }
           break;
+        case 'history': {
+          if (msg.history && Array.isArray(msg.history)) {
+            const restored: ChatMessage[] = msg.history
+              .filter((m: { role: string }) => m.role === 'user' || m.role === 'assistant')
+              .map((m: { id: string; role: string; content: string; timestamp: string; type?: string }) => ({
+                id: m.id,
+                role: m.role as 'user' | 'assistant',
+                content: m.content,
+                timestamp: m.timestamp,
+                type: m.type as ChatMessage['type'],
+              }));
+            if (restored.length > 0) {
+              chatStore.setMessages(restored);
+            }
+          }
+          break;
+        }
         default:
           console.debug('[gateway] unhandled message type:', msg.type, msg);
       }
