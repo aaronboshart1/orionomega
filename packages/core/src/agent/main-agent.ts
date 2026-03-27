@@ -603,29 +603,24 @@ export class MainAgent {
   }
 
   private async runUpdateAndRestart(): Promise<void> {
-    const { findInstallDirectory } = await import('../commands/update.js');
+    const { findInstallDirectory, runUpdateSteps } = await import('../commands/update.js');
     const installDir = findInstallDirectory();
     if (!installDir) {
       this.callbacks.onCommandResult({ command: '/update', success: false, message: 'Cannot find OrionOmega git repository' });
       return;
     }
-    const steps: Array<{ label: string; cmd: string; timeout: number }> = [
-      { label: 'Pulling latest changes', cmd: 'git pull', timeout: 30_000 },
-      { label: 'Installing dependencies', cmd: 'pnpm install --frozen-lockfile || pnpm install', timeout: 120_000 },
-      { label: 'Building all packages', cmd: 'pnpm build', timeout: 120_000 },
-    ];
-    for (const s of steps) {
-      this.callbacks.onCommandResult({ command: '/update', success: true, message: `${s.label}…` });
-      try {
-        execSync(s.cmd, { cwd: installDir, stdio: 'pipe', timeout: s.timeout, shell: '/bin/sh' });
-      } catch (err) {
-        this.callbacks.onCommandResult({
-          command: '/update', success: false,
-          message: `${s.label} failed: ${err instanceof Error ? err.message.slice(0, 200) : String(err)}`,
-        });
-        return;
-      }
-    }
+    const ok = runUpdateSteps(installDir, {
+      onStep: (label) => {
+        this.callbacks.onCommandResult({ command: '/update', success: true, message: `${label}…` });
+      },
+      onStepDone: (label) => {
+        log.info(`Update step complete: ${label}`);
+      },
+      onStepFailed: (label, error) => {
+        this.callbacks.onCommandResult({ command: '/update', success: false, message: `${label} failed: ${error}` });
+      },
+    });
+    if (!ok) return;
     this.callbacks.onCommandResult({ command: '/update', success: true, message: 'Update complete — restarting gateway…' });
     setTimeout(() => {
       const args = [...process.execArgv, ...process.argv.slice(1)];

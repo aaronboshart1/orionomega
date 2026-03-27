@@ -1,6 +1,8 @@
 /**
  * @module commands/update
  * Pull latest code, rebuild, and restart the gateway + web UI.
+ *
+ * Shared logic used by both `orionomega update` (CLI) and `/update` (slash command).
  */
 
 import { execSync, spawn } from 'node:child_process';
@@ -30,21 +32,7 @@ function readPid(): number | null {
   }
 }
 
-function step(label: string, cmd: string, cwd: string): boolean {
-  process.stdout.write(`  ${DIM}${label}...${RESET} `);
-  try {
-    execSync(cmd, { cwd, stdio: 'pipe', encoding: 'utf-8', timeout: 120_000 });
-    process.stdout.write(`${GREEN}✓${RESET}\n`);
-    return true;
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    process.stdout.write(`${RED}✗${RESET}\n`);
-    process.stdout.write(`    ${DIM}${msg.slice(0, 200)}${RESET}\n`);
-    return false;
-  }
-}
-
-function findInstallDir(): string | null {
+export function findInstallDirectory(): string | null {
   const __dirname = fileURLToPath(new URL('.', import.meta.url));
   const monorepoRoot = join(__dirname, '..', '..', '..', '..');
   const candidates = [
@@ -61,10 +49,74 @@ function findInstallDir(): string | null {
   return null;
 }
 
+export interface UpdateStep {
+  label: string;
+  cmd: string;
+  timeout: number;
+}
+
+export const UPDATE_STEPS: UpdateStep[] = [
+  { label: 'Pulling latest changes', cmd: 'git pull', timeout: 30_000 },
+  { label: 'Installing dependencies', cmd: 'pnpm install --frozen-lockfile || pnpm install', timeout: 120_000 },
+  { label: 'Building all packages', cmd: 'pnpm build', timeout: 120_000 },
+];
+
+export interface UpdateCallbacks {
+  onStep: (label: string) => void;
+  onStepDone: (label: string) => void;
+  onStepFailed: (label: string, error: string) => void;
+}
+
+export function runUpdateSteps(installDir: string, callbacks: UpdateCallbacks): boolean {
+  for (const s of UPDATE_STEPS) {
+    callbacks.onStep(s.label);
+    try {
+      execSync(s.cmd, { cwd: installDir, stdio: 'pipe', timeout: s.timeout, shell: '/bin/sh' as any });
+      callbacks.onStepDone(s.label);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      callbacks.onStepFailed(s.label, msg.slice(0, 200));
+      return false;
+    }
+  }
+  return true;
+}
+
+export function stopGateway(): number | null {
+  const gatewayPid = readPid();
+  if (!gatewayPid) return null;
+  try {
+    process.kill(gatewayPid, 'SIGTERM');
+    let waited = 0;
+    while (waited < 5000) {
+      try { process.kill(gatewayPid, 0); } catch { break; }
+      execSync('sleep 0.5');
+      waited += 500;
+    }
+  } catch {
+    // already stopped
+  }
+  return gatewayPid;
+}
+
+export function startGateway(installDir: string): number | null {
+  const gatewayEntry = join(installDir, 'packages', 'gateway', 'dist', 'server.js');
+  const child = spawn(process.execPath, [gatewayEntry], {
+    stdio: 'ignore',
+    detached: true,
+    env: { ...process.env },
+  });
+  child.unref();
+  if (child.pid) {
+    writeFileSync(PID_FILE, String(child.pid), 'utf-8');
+  }
+  return child.pid ?? null;
+}
+
 export async function runUpdate(): Promise<void> {
   process.stdout.write(`\n${BOLD}Updating OrionOmega${RESET}\n\n`);
 
-  const installDir = findInstallDir();
+  const installDir = findInstallDirectory();
   if (!installDir) {
     process.stdout.write(`${RED}✗${RESET} Cannot find OrionOmega git repository\n`);
     process.stdout.write(`  ${DIM}Expected at /opt/orionomega or current directory${RESET}\n`);
@@ -73,54 +125,32 @@ export async function runUpdate(): Promise<void> {
 
   process.stdout.write(`  ${DIM}Install directory: ${installDir}${RESET}\n\n`);
 
-  const gatewayPid = readPid();
+  const gatewayPid = stopGateway();
   if (gatewayPid) {
-    process.stdout.write(`  ${DIM}Stopping gateway (PID ${gatewayPid})...${RESET} `);
-    try {
-      process.kill(gatewayPid, 'SIGTERM');
-      let waited = 0;
-      while (waited < 5000) {
-        try { process.kill(gatewayPid, 0); } catch { break; }
-        execSync('sleep 0.5');
-        waited += 500;
-      }
-      process.stdout.write(`${GREEN}✓${RESET}\n`);
-    } catch {
-      process.stdout.write(`${DIM}already stopped${RESET}\n`);
-    }
+    process.stdout.write(`  ${DIM}Stopped gateway (PID ${gatewayPid})${RESET} ${GREEN}✓${RESET}\n`);
   } else {
     process.stdout.write(`  ${DIM}Gateway not running${RESET}\n`);
   }
 
-  if (!step('Pulling latest changes', 'git pull', installDir)) return;
-  if (!step('Installing dependencies', 'pnpm install --frozen-lockfile', installDir)) {
-    if (!step('Installing dependencies (unfrozen)', 'pnpm install', installDir)) return;
-  }
-  if (!step('Building all packages', 'pnpm build', installDir)) return;
+  const ok = runUpdateSteps(installDir, {
+    onStep: (label) => process.stdout.write(`  ${DIM}${label}...${RESET} `),
+    onStepDone: () => process.stdout.write(`${GREEN}✓${RESET}\n`),
+    onStepFailed: (_label, error) => {
+      process.stdout.write(`${RED}✗${RESET}\n`);
+      process.stdout.write(`    ${DIM}${error}${RESET}\n`);
+    },
+  });
+
+  if (!ok) return;
 
   process.stdout.write(`\n  ${DIM}Starting gateway...${RESET} `);
-  try {
-    const gatewayEntry = join(installDir, 'packages', 'gateway', 'dist', 'server.js');
-    const child = spawn(process.execPath, [gatewayEntry], {
-      stdio: 'ignore',
-      detached: true,
-      env: { ...process.env },
-    });
-    child.unref();
-    if (child.pid) {
-      writeFileSync(PID_FILE, String(child.pid), 'utf-8');
-    }
-    process.stdout.write(`${GREEN}✓${RESET} (PID ${child.pid})\n`);
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    process.stdout.write(`${RED}✗${RESET}\n`);
-    process.stdout.write(`    ${DIM}${msg.slice(0, 200)}${RESET}\n`);
+  const pid = startGateway(installDir);
+  if (pid) {
+    process.stdout.write(`${GREEN}✓${RESET} (PID ${pid})\n`);
+  } else {
+    process.stdout.write(`${RED}✗${RESET} failed to start\n`);
   }
 
   process.stdout.write(`\n${GREEN}✓${RESET} ${BOLD}Update complete!${RESET}\n`);
   process.stdout.write(`  ${DIM}Run 'orionomega ui' to start the web dashboard${RESET}\n\n`);
-}
-
-export function findInstallDirectory(): string | null {
-  return findInstallDir();
 }
