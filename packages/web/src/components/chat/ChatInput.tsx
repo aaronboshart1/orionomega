@@ -1,7 +1,8 @@
 'use client';
 
-import { useState, useCallback, useRef, useEffect, type KeyboardEvent, type DragEvent } from 'react';
+import { useState, useCallback, useRef, useEffect, type KeyboardEvent, type DragEvent, type ClipboardEvent } from 'react';
 import { Send, Paperclip, X, File, Image, FileText } from 'lucide-react';
+import { TextThumbnail, type TextThumbnailItem } from '@/components/ui/text-thumbnail';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -28,6 +29,7 @@ interface ChatInputProps {
 
 const MAX_CHARS = 4000;
 const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024; // 10 MB
+const THUMBNAIL_THRESHOLD = 500; // chars — pastes larger than this become thumbnails
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -66,11 +68,21 @@ async function readFileAsBase64(file: File): Promise<string> {
 export function ChatInput({ onSend, disabled }: ChatInputProps) {
   const [input, setInput] = useState('');
   const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
+  const [thumbnails, setThumbnails] = useState<TextThumbnailItem[]>([]);
   const [isDragging, setIsDragging] = useState(false);
+  // Polite announcement for screen readers when a thumbnail is added
+  const [srAnnouncement, setSrAnnouncement] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   // Counter tracks nested dragenter/dragleave events so we don't flicker
   const dragCounter = useRef(0);
+
+  // Clear SR announcement after it has been read
+  useEffect(() => {
+    if (!srAnnouncement) return;
+    const t = setTimeout(() => setSrAnnouncement(''), 2000);
+    return () => clearTimeout(t);
+  }, [srAnnouncement]);
 
   // Auto-resize textarea up to ~8 lines
   useEffect(() => {
@@ -115,19 +127,45 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
   }, []);
 
   // -------------------------------------------------------------------------
+  // Paste interception
+  // -------------------------------------------------------------------------
+
+  const handlePaste = useCallback((e: ClipboardEvent<HTMLTextAreaElement>) => {
+    const text = e.clipboardData.getData('text');
+    if (text.length > THUMBNAIL_THRESHOLD) {
+      e.preventDefault();
+      const newItem: TextThumbnailItem = { id: crypto.randomUUID(), text };
+      setThumbnails((prev) => [...prev, newItem]);
+      const lines = text.split('\n').length;
+      setSrAnnouncement(
+        `Large text pasted as thumbnail: ${text.length.toLocaleString()} characters, ${lines} line${lines === 1 ? '' : 's'}.`
+      );
+    }
+    // Short pastes fall through to the default textarea behaviour
+  }, []);
+
+  const handleRemoveThumbnail = useCallback((id: string) => {
+    setThumbnails((prev) => prev.filter((t) => t.id !== id));
+  }, []);
+
+  // -------------------------------------------------------------------------
   // Send
   // -------------------------------------------------------------------------
 
   const handleSend = useCallback(() => {
     const trimmed = input.trim();
+    const thumbnailText = thumbnails.map((t) => t.text).join('\n\n');
+    // Thumbnails come first; direct input follows (if any)
+    const fullText = [thumbnailText, trimmed].filter(Boolean).join('\n\n');
     const hasFiles = attachedFiles.length > 0;
-    if ((!trimmed && !hasFiles) || disabled) return;
+    if ((!fullText && !hasFiles) || disabled) return;
 
-    onSend(trimmed, hasFiles ? attachedFiles : undefined);
+    onSend(fullText, hasFiles ? attachedFiles : undefined);
     setInput('');
     setAttachedFiles([]);
+    setThumbnails([]);
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
-  }, [input, attachedFiles, disabled, onSend]);
+  }, [input, thumbnails, attachedFiles, disabled, onSend]);
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -194,7 +232,8 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
 
   const charsLeft = MAX_CHARS - input.length;
   const nearLimit = charsLeft < 200;
-  const canSend = (input.trim().length > 0 || attachedFiles.length > 0) && !disabled;
+  const canSend =
+    (input.trim().length > 0 || attachedFiles.length > 0 || thumbnails.length > 0) && !disabled;
 
   // -------------------------------------------------------------------------
   // Render
@@ -208,6 +247,11 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
       onDragOver={handleDragOver}
       onDrop={handleDrop}
     >
+      {/* Screen-reader live region for thumbnail announcements */}
+      <div role="status" aria-live="polite" aria-atomic="true" className="sr-only">
+        {srAnnouncement}
+      </div>
+
       {/* Drag-over overlay */}
       {isDragging && (
         <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-xl border-2 border-dashed border-blue-500 bg-blue-500/10 mx-6">
@@ -215,6 +259,21 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
             <Paperclip size={20} className="text-blue-400" />
             <p className="text-sm font-medium text-blue-400">Drop to attach</p>
           </div>
+        </div>
+      )}
+
+      {/* Text thumbnail chips */}
+      {thumbnails.length > 0 && (
+        <div
+          className="mb-2 flex flex-col gap-1.5"
+          role="list"
+          aria-label="Pasted text thumbnails"
+        >
+          {thumbnails.map((item) => (
+            <div key={item.id} role="listitem">
+              <TextThumbnail item={item} onRemove={handleRemoveThumbnail} />
+            </div>
+          ))}
         </div>
       )}
 
@@ -280,6 +339,7 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
           value={input}
           onChange={handleChange}
           onKeyDown={handleKeyDown}
+          onPaste={handlePaste}
           placeholder="Message OrionOmega..."
           disabled={disabled}
           rows={1}
