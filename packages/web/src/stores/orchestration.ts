@@ -91,6 +91,24 @@ export interface DAGConfirmation {
   guardedNodes: { id: string; label: string; risk: string }[];
 }
 
+export type ConnectionStatus = 'connected' | 'reconnecting' | 'disconnected';
+
+export interface SessionMetrics {
+  model: string;
+  sessionCostUsd: number;
+  completedLayers: number;
+  totalLayers: number;
+  completedNodes: number;
+  totalNodes: number;
+  activeWorkers: number;
+  elapsed: number;
+}
+
+export interface HindsightState {
+  connected: boolean | null;
+  busy: boolean;
+}
+
 interface OrchestrationStore {
   graphState: GraphState | null;
   events: WorkerEvent[];
@@ -98,6 +116,10 @@ interface OrchestrationStore {
   selectedWorker: string | null;
   inlineDAGs: Record<string, InlineDAG>;
   pendingConfirmation: DAGConfirmation | null;
+  connectionStatus: ConnectionStatus;
+  sessionMetrics: SessionMetrics;
+  hindsight: HindsightState;
+  runStartTime: number | null;
   setGraphState: (s: GraphState) => void;
   addEvent: (e: WorkerEvent) => void;
   setActivePlan: (p: PlanData | null) => void;
@@ -107,8 +129,23 @@ interface OrchestrationStore {
   completeDAG: (dagId: string, result?: string, error?: string, stats?: { durationSec?: number; workerCount?: number; totalCostUsd?: number; toolCallCount?: number; modelUsage?: ModelUsageEntry[]; nodeOutputPaths?: Record<string, string[]>; stopped?: boolean }) => void;
   removeInlineDAG: (dagId: string) => void;
   setPendingConfirmation: (c: DAGConfirmation | null) => void;
+  setConnectionStatus: (s: ConnectionStatus) => void;
+  updateSessionMetrics: (m: Partial<SessionMetrics>) => void;
+  setHindsight: (h: Partial<HindsightState>) => void;
+  setRunStartTime: (t: number | null) => void;
   reset: () => void;
 }
+
+const defaultSessionMetrics: SessionMetrics = {
+  model: '',
+  sessionCostUsd: 0,
+  completedLayers: 0,
+  totalLayers: 0,
+  completedNodes: 0,
+  totalNodes: 0,
+  activeWorkers: 0,
+  elapsed: 0,
+};
 
 export const useOrchestrationStore = create<OrchestrationStore>((set) => ({
   graphState: null,
@@ -117,6 +154,10 @@ export const useOrchestrationStore = create<OrchestrationStore>((set) => ({
   selectedWorker: null,
   inlineDAGs: {},
   pendingConfirmation: null,
+  connectionStatus: 'disconnected',
+  sessionMetrics: { ...defaultSessionMetrics },
+  hindsight: { connected: null, busy: false },
+  runStartTime: null,
   setGraphState: (graphState) => set({ graphState }),
   addEvent: (event) => set((s) => ({ events: [...s.events.slice(-999), event] })),
   setActivePlan: (activePlan) => set({ activePlan }),
@@ -170,6 +211,12 @@ export const useOrchestrationStore = create<OrchestrationStore>((set) => ({
       return { inlineDAGs: rest };
     }),
   setPendingConfirmation: (pendingConfirmation) => set({ pendingConfirmation }),
+  setConnectionStatus: (connectionStatus) => set({ connectionStatus }),
+  updateSessionMetrics: (m) =>
+    set((s) => ({ sessionMetrics: { ...s.sessionMetrics, ...m } })),
+  setHindsight: (h) =>
+    set((s) => ({ hindsight: { ...s.hindsight, ...h } })),
+  setRunStartTime: (runStartTime) => set({ runStartTime }),
   reset: () =>
     set({
       graphState: null,
@@ -178,5 +225,9 @@ export const useOrchestrationStore = create<OrchestrationStore>((set) => ({
       selectedWorker: null,
       inlineDAGs: {},
       pendingConfirmation: null,
+      connectionStatus: 'disconnected',
+      sessionMetrics: { ...defaultSessionMetrics },
+      hindsight: { connected: null, busy: false },
+      runStartTime: null,
     }),
 }));

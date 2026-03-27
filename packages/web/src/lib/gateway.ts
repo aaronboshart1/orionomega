@@ -3,6 +3,7 @@
 import { useEffect, useRef, useCallback } from 'react';
 import ReconnectingWebSocket from 'reconnecting-websocket';
 import { useOrchestrationStore } from '@/stores/orchestration';
+import type { GraphState } from '@/stores/orchestration';
 import { useChatStore } from '@/stores/chat';
 import type { ChatMessage } from '@/stores/chat';
 
@@ -18,6 +19,18 @@ function defaultGatewayUrl(): string {
   return 'ws://127.0.0.1:8000/ws?client=web';
 }
 
+function extractMetricsFromGraphState(gs: GraphState) {
+  const nodeValues = Object.values(gs.nodes ?? {});
+  return {
+    completedLayers: gs.completedLayers ?? 0,
+    totalLayers: gs.totalLayers ?? 0,
+    elapsed: gs.elapsed ?? 0,
+    activeWorkers: nodeValues.filter((n) => n.status === 'running').length,
+    completedNodes: nodeValues.filter((n) => n.status === 'complete' || n.status === 'done').length,
+    totalNodes: nodeValues.length,
+  };
+}
+
 export function useGateway(url: string = defaultGatewayUrl()) {
   const wsRef = useRef<ReconnectingWebSocket | null>(null);
   const orchStore = useOrchestrationStore();
@@ -27,35 +40,55 @@ export function useGateway(url: string = defaultGatewayUrl()) {
     const ws = new ReconnectingWebSocket(url);
     wsRef.current = ws;
 
+    const getOrch = useOrchestrationStore.getState;
+    const getChat = useChatStore.getState;
+
+    let hasConnectedOnce = false;
+
+    ws.onopen = () => {
+      hasConnectedOnce = true;
+      getOrch().setConnectionStatus('connected');
+    };
+
+    ws.onclose = () => {
+      if (hasConnectedOnce) {
+        getOrch().setConnectionStatus('reconnecting');
+      } else {
+        getOrch().setConnectionStatus('disconnected');
+      }
+    };
+
     ws.onmessage = (raw) => {
       const msg = JSON.parse(raw.data as string);
+      const orch = getOrch();
+      const chat = getChat();
 
       switch (msg.type) {
         case 'text':
           if (msg.streaming) {
-            chatStore.appendToLast(msg.content || '');
+            chat.appendToLast(msg.content || '');
           } else if (msg.content) {
-            chatStore.addMessage({
+            chat.addMessage({
               id: crypto.randomUUID(),
               role: 'assistant',
               content: msg.content,
               timestamp: new Date().toISOString(),
             });
-            chatStore.setStreaming(false);
+            chat.setStreaming(false);
           }
-          if (msg.done) chatStore.setStreaming(false);
+          if (msg.done) chat.setStreaming(false);
           break;
         case 'thinking':
-          if (msg.streaming) chatStore.appendThinking(msg.thinking || '');
-          if (msg.done) chatStore.setThinking('');
+          if (msg.streaming) chat.appendThinking(msg.thinking || '');
+          if (msg.done) chat.setThinking('');
           break;
         case 'plan':
-          orchStore.setActivePlan(msg.plan);
+          orch.setActivePlan(msg.plan);
           break;
         case 'dag_dispatched': {
           const d = msg.dagDispatch;
           if (!d) break;
-          orchStore.upsertInlineDAG({
+          orch.upsertInlineDAG({
             dagId: d.workflowId,
             summary: d.summary,
             status: 'dispatched',
@@ -66,7 +99,14 @@ export function useGateway(url: string = defaultGatewayUrl()) {
             totalCount: d.nodeCount,
             elapsed: 0,
           });
-          chatStore.addMessage({
+          if (!orch.runStartTime) {
+            orch.setRunStartTime(Date.now());
+          }
+          orch.updateSessionMetrics({
+            totalNodes: d.nodeCount,
+            completedNodes: 0,
+          });
+          chat.addMessage({
             id: crypto.randomUUID(),
             role: 'assistant',
             content: d.summary || 'Working on it...',
@@ -74,7 +114,7 @@ export function useGateway(url: string = defaultGatewayUrl()) {
             type: 'dag-dispatched',
             dagId: d.workflowId,
           });
-          chatStore.setStreaming(false);
+          chat.setStreaming(false);
           break;
         }
         case 'dag_progress': {
@@ -83,7 +123,7 @@ export function useGateway(url: string = defaultGatewayUrl()) {
           const statusMap: Record<string, 'pending' | 'running' | 'done' | 'error'> = {
             started: 'running', progress: 'running', done: 'done', error: 'error',
           };
-          orchStore.updateDAGNode(p.workflowId, p.nodeId, {
+          orch.updateDAGNode(p.workflowId, p.nodeId, {
             status: statusMap[p.status] ?? 'running',
             progress: p.progress,
           });
@@ -92,7 +132,7 @@ export function useGateway(url: string = defaultGatewayUrl()) {
         case 'dag_complete': {
           const c = msg.dagComplete;
           if (!c) break;
-          orchStore.completeDAG(
+          orch.completeDAG(
             c.workflowId,
             c.output ?? c.summary,
             c.status === 'error' ? c.summary : undefined,
@@ -106,7 +146,18 @@ export function useGateway(url: string = defaultGatewayUrl()) {
               stopped: c.status === 'stopped',
             },
           );
-          chatStore.addMessage({
+          if (c.totalCostUsd != null) {
+            orch.updateSessionMetrics({ sessionCostUsd: c.totalCostUsd });
+          }
+          const freshOrch = getOrch();
+          const hasActive = Object.values(freshOrch.inlineDAGs).some(
+            (d) => d.dagId !== c.workflowId && (d.status === 'dispatched' || d.status === 'running'),
+          );
+          if (!hasActive) {
+            freshOrch.setRunStartTime(null);
+            freshOrch.updateSessionMetrics({ activeWorkers: 0 });
+          }
+          chat.addMessage({
             id: crypto.randomUUID(),
             role: 'assistant',
             content: c.status === 'error'
@@ -121,7 +172,7 @@ export function useGateway(url: string = defaultGatewayUrl()) {
         case 'dag_confirm': {
           const cf = msg.dagConfirm;
           if (!cf) break;
-          orchStore.setPendingConfirmation({
+          orch.setPendingConfirmation({
             dagId: cf.workflowId,
             summary: cf.summary,
             reason: cf.reasoning,
@@ -129,7 +180,7 @@ export function useGateway(url: string = defaultGatewayUrl()) {
               id: `guard-${i}`, label: a, risk: 'high',
             })),
           });
-          chatStore.addMessage({
+          chat.addMessage({
             id: crypto.randomUUID(),
             role: 'assistant',
             content: cf.summary,
@@ -140,14 +191,38 @@ export function useGateway(url: string = defaultGatewayUrl()) {
           break;
         }
         case 'event':
-          if (msg.event) orchStore.addEvent(msg.event);
-          if (msg.graphState) orchStore.setGraphState(msg.graphState);
+          if (msg.event) orch.addEvent(msg.event);
+          if (msg.graphState) {
+            const gs = msg.graphState as GraphState;
+            orch.setGraphState(gs);
+            orch.updateSessionMetrics(extractMetricsFromGraphState(gs));
+          }
           break;
         case 'status':
-          if (msg.graphState) orchStore.setGraphState(msg.graphState);
+          if (msg.graphState) {
+            const gs = msg.graphState as GraphState;
+            orch.setGraphState(gs);
+            orch.updateSessionMetrics(extractMetricsFromGraphState(gs));
+          }
+          break;
+        case 'session_status':
+          if (msg.sessionStatus) {
+            orch.updateSessionMetrics({
+              model: msg.sessionStatus.model,
+              sessionCostUsd: msg.sessionStatus.sessionCostUsd ?? 0,
+            });
+          }
+          break;
+        case 'hindsight_status':
+          if (msg.hindsightStatus) {
+            orch.setHindsight({
+              connected: msg.hindsightStatus.connected,
+              busy: msg.hindsightStatus.busy,
+            });
+          }
           break;
         case 'command_result':
-          chatStore.addMessage({
+          chat.addMessage({
             id: crypto.randomUUID(),
             role: 'system',
             content: msg.commandResult?.message || msg.message || '',
@@ -156,14 +231,14 @@ export function useGateway(url: string = defaultGatewayUrl()) {
           });
           break;
         case 'error':
-          chatStore.addMessage({
+          chat.addMessage({
             id: crypto.randomUUID(),
             role: 'system',
             content: `Error: ${msg.message || 'Unknown error'}`,
             timestamp: new Date().toISOString(),
             type: 'command-result',
           });
-          chatStore.setStreaming(false);
+          chat.setStreaming(false);
           break;
         case 'ack':
           try {
@@ -185,7 +260,7 @@ export function useGateway(url: string = defaultGatewayUrl()) {
                 type: m.type as ChatMessage['type'],
               }));
             if (restored.length > 0) {
-              chatStore.setMessages(restored);
+              chat.setMessages(restored);
             }
           }
           break;
@@ -197,6 +272,7 @@ export function useGateway(url: string = defaultGatewayUrl()) {
 
     ws.onerror = (err) => {
       console.error('[gateway] WebSocket error', err);
+      getOrch().setConnectionStatus('reconnecting');
     };
 
     return () => ws.close();

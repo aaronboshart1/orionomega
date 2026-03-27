@@ -1,7 +1,7 @@
 'use client';
 
 import { useRef, useEffect, useState } from 'react';
-import { Settings2 } from 'lucide-react';
+import { Settings2, Wifi, WifiOff, RefreshCw } from 'lucide-react';
 import { useChatStore } from '@/stores/chat';
 import { useOrchestrationStore } from '@/stores/orchestration';
 import { useGateway } from '@/lib/gateway';
@@ -10,6 +10,8 @@ import { ChatInput } from './ChatInput';
 import { ThinkingIndicator } from './ThinkingIndicator';
 import { PlanCard } from './PlanCard';
 import { BackgroundTaskIndicator } from './BackgroundTaskIndicator';
+import { StatusBar } from './StatusBar';
+import { HindsightBanner } from './HindsightBanner';
 
 export function ChatPane() {
   const messages = useChatStore((s) => s.messages);
@@ -17,6 +19,7 @@ export function ChatPane() {
   const thinkingContent = useChatStore((s) => s.thinkingContent);
   const activePlan = useOrchestrationStore((s) => s.activePlan);
   const inlineDAGs = useOrchestrationStore((s) => s.inlineDAGs);
+  const connectionStatus = useOrchestrationStore((s) => s.connectionStatus);
   const { sendChat, sendCommand, respondToPlan } = useGateway();
   const bottomRef = useRef<HTMLDivElement>(null);
   const [showAdvancedPlan, setShowAdvancedPlan] = useState(false);
@@ -25,7 +28,6 @@ export function ChatPane() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, thinkingContent]);
 
-  // Allow chatting while background DAGs are running
   const hasActiveDAGs = Object.values(inlineDAGs).some(
     (d) => d.status === 'dispatched' || d.status === 'running',
   );
@@ -39,9 +41,14 @@ export function ChatPane() {
     }
   };
 
+  const connectionIcon = connectionStatus === 'connected'
+    ? <Wifi size={12} className="text-green-400" />
+    : connectionStatus === 'reconnecting'
+      ? <RefreshCw size={12} className="animate-spin text-yellow-400" />
+      : <WifiOff size={12} className="text-red-400" />;
+
   return (
     <div className="flex h-full flex-col bg-[var(--background)]">
-      {/* Header */}
       <div className="flex items-center gap-3 border-b border-zinc-800 px-6 py-4">
         <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-600 text-sm font-bold">
           &Omega;
@@ -50,10 +57,14 @@ export function ChatPane() {
           <h1 className="text-sm font-semibold text-zinc-100">OrionOmega</h1>
           <p className="text-xs text-zinc-500">AI Orchestration</p>
         </div>
-        <BackgroundTaskIndicator />
+        <div className="flex items-center gap-3">
+          {connectionIcon}
+          <BackgroundTaskIndicator />
+        </div>
       </div>
 
-      {/* Messages */}
+      <HindsightBanner />
+
       <div className="flex-1 overflow-y-auto px-6 py-4">
         {messages.length === 0 && (
           <div className="flex h-full flex-col items-center justify-center text-zinc-600">
@@ -69,14 +80,12 @@ export function ChatPane() {
           <MessageBubble key={msg.id} message={msg} />
         ))}
 
-        {/* Advanced plan view — hidden by default, toggled via icon */}
         {activePlan && showAdvancedPlan && (
           <div className="my-4">
             <PlanCard plan={activePlan} onRespond={respondToPlan} />
           </div>
         )}
 
-        {/* Subtle plan notification when plan arrives but advanced view is hidden */}
         {activePlan && !showAdvancedPlan && (
           <div className="my-3 flex justify-start">
             <button
@@ -95,8 +104,14 @@ export function ChatPane() {
         <div ref={bottomRef} />
       </div>
 
-      {/* Input — enabled during background DAG execution */}
-      <ChatInput onSend={handleSend} disabled={inputDisabled} />
+      <StatusBar />
+
+      <ChatInput
+        onSend={handleSend}
+        disabled={inputDisabled}
+        pendingPlanId={activePlan?.id ?? null}
+        onPlanRespond={respondToPlan}
+      />
     </div>
   );
 }

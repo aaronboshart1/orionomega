@@ -78,3 +78,16 @@ Shared readline/CLI helpers (colors, `ask`, `choose`, `confirm`, `askSecret`, `m
 - `allowedDevOrigins: ['*']` added to `next.config.ts` for Replit's proxied preview
 - Stale pre-compiled `.js` files removed from `src/app/` and `src/lib/`
 - Legacy `workflow-tracker.ts` component removed (replaced by `workflow-panel.ts`)
+
+## Web UI Feature Parity (with TUI)
+
+The web UI includes feature parity with the TUI:
+
+- **Persistent status bar**: Fixed bar at bottom of chat showing connection state, model, layer/node progress, active workers, elapsed time, and session cost. Component: `StatusBar.tsx`
+- **Slash command autocomplete**: Typing `/` shows a filterable dropdown with keyboard navigation (arrow keys, Enter/Tab to select, Escape to close). Component: `SlashCommandAutocomplete.tsx`, integrated into `ChatInput.tsx`
+- **Full markdown rendering**: `react-markdown` + `remark-gfm` replace the old regex-based `formatContent`. Supports headings (h1-h6), lists, tables, links, blockquotes, horizontal rules, code blocks, and inline code. Component: `MessageBubble.tsx`
+- **Connection status indicator**: WebSocket connection state (connected/reconnecting/disconnected) shown in header and status bar. Tracked via `connectionStatus` in orchestration store.
+- **Hindsight memory banner**: Warning banner when Hindsight is offline. Handles `hindsight_status` WebSocket messages. Component: `HindsightBanner.tsx`
+- **Session status handling**: Handles `session_status` WebSocket messages for model name and cumulative cost.
+- **Live session metrics**: Elapsed time and cost update in real-time during active orchestrations via `dag_progress`, `event`, and `dag_complete` messages.
+- **Conversational plan approval**: Natural language responses ("yes", "go", "lgtm" to approve; "no", "cancel" to reject; anything else as modifications) when a plan is pending, matching TUI behavior.
