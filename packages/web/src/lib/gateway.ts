@@ -6,6 +6,7 @@ import { useOrchestrationStore } from '@/stores/orchestration';
 import { useChatStore } from '@/stores/chat';
 import { useConnectionStore } from '@/stores/connection';
 import type { ChatMessage } from '@/stores/chat';
+import type { FileAttachment } from '@/components/chat/ChatInput';
 
 const SESSION_KEY = 'orionomega_session_id';
 
@@ -347,7 +348,7 @@ export function useGateway() {
   }, []);
 
   const sendChat = useCallback(
-    (content: string) => {
+    (content: string, attachments?: FileAttachment[]) => {
       const chat = useChatStore.getState();
       chat.addMessage({
         id: crypto.randomUUID(),
@@ -357,7 +358,15 @@ export function useGateway() {
       });
       chat.setStreaming(true);
       chat.setStreamingStatus('Thinking…');
-      send({ id: crypto.randomUUID(), type: 'chat', content });
+      const payload: Record<string, unknown> = { id: crypto.randomUUID(), type: 'chat', content };
+      if (attachments && attachments.length > 0) {
+        payload.attachments = attachments.map((a) => ({
+          name: a.name,
+          size: a.size,
+          type: a.type,
+        }));
+      }
+      send(payload);
     },
     [send],
   );
