@@ -269,7 +269,8 @@ export function useGateway(url: string = defaultGatewayUrl()) {
                 timestamp: m.timestamp,
                 type: m.type as ChatMessage['type'],
               }));
-            if (restored.length > 0) {
+            const current = useChatStore.getState().messages;
+            if (restored.length > 0 && current.length === 0) {
               chatStore.setMessages(restored);
             }
           }
