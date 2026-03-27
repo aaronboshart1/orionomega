@@ -46,6 +46,10 @@ args = "pnpm --filter @orionomega/gateway start"
 waitForPort = 8000
 
 [[ports]]
+localPort = 3000
+externalPort = 3000
+
+[[ports]]
 localPort = 5000
 externalPort = 80
 
