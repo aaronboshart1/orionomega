@@ -26,6 +26,7 @@ const COMMANDS: [string, string][] = [
   ['logs [--level <lvl>]', 'Tail log file, optionally filtered by level'],
   ['update', 'Pull latest code, rebuild, and restart'],
   ['ui', 'Start the web dashboard'],
+  ['remove', 'Fully uninstall OrionOmega from this machine'],
   ['help', 'Show this help message'],
 ];
 

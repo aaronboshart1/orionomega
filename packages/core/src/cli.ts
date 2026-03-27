@@ -88,6 +88,7 @@ const COMMANDS: Record<string, () => Promise<void>> = {
   logs: async () => (await import('./commands/logs.js')).runLogs(process.argv.slice(3)),
   update: async () => (await import('./commands/update.js')).runUpdate(),
   ui: async () => (await import('./commands/ui.js')).runUI(),
+  remove: async () => (await import('./commands/remove.js')).runRemove(),
   help: async () => (await import('./commands/help.js')).runHelp(),
 };
 
