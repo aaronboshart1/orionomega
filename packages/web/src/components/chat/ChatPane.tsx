@@ -138,7 +138,7 @@ export function ChatPane() {
 
   const Footer = useCallback(() => {
     return (
-      <>
+      <div className="pb-6">
         {activePlan && showAdvancedPlan && (
           <div className="my-4 px-6">
             <PlanCard plan={activePlan} onRespond={respondToPlan} />
@@ -165,7 +165,7 @@ export function ChatPane() {
             />
           </div>
         )}
-      </>
+      </div>
     );
   }, [activePlan, showAdvancedPlan, respondToPlan, thinkingContent, isStreaming, streamingStatus]);
 
