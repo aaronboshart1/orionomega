@@ -49,9 +49,9 @@ try {
   // Fallback defaults if core config is unavailable
   config = {
     port: 8000,
-    bind: '127.0.0.1',
+    bind: '0.0.0.0',
     auth: { mode: 'none' },
-    cors: { origins: ['http://*:*', 'http://localhost:*'] },
+    cors: { origins: ['http://*:*', 'http://localhost:*', 'https://*'] },
   };
   hindsightUrl = 'http://localhost:8888';
   log.warn('Could not load config from @orionomega/core — using defaults');

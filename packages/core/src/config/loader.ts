@@ -27,12 +27,12 @@ export function getDefaultConfig(): OrionOmegaConfig {
   return {
     gateway: {
       port: 8000,
-      bind: '127.0.0.1',
+      bind: '0.0.0.0',
       auth: {
         mode: 'none',
       },
       cors: {
-        origins: ['http://localhost:*'],
+        origins: ['http://localhost:*', 'http://*:*', 'https://*'],
       },
     },
     hindsight: {
