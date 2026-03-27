@@ -18,6 +18,19 @@ function defaultGatewayUrl(): string {
   return 'ws://127.0.0.1:8000/ws?client=web';
 }
 
+function statusFromToolCall(toolName?: string): string {
+  if (!toolName) return 'Thinking…';
+  const lower = toolName.toLowerCase();
+  if (lower.includes('search') || lower.includes('web')) return 'Searching web…';
+  if (lower.includes('read') || lower.includes('file')) return 'Reading file…';
+  if (lower.includes('code') || lower.includes('exec') || lower.includes('run')) return 'Running code…';
+  if (lower.includes('write') || lower.includes('edit')) return 'Writing…';
+  if (lower.includes('shell') || lower.includes('bash') || lower.includes('terminal')) return 'Running command…';
+  if (lower.includes('image') || lower.includes('generate')) return 'Generating…';
+  if (lower.includes('database') || lower.includes('sql') || lower.includes('query')) return 'Querying database…';
+  return `Running ${toolName}…`;
+}
+
 export function useGateway(url: string = defaultGatewayUrl()) {
   const wsRef = useRef<ReconnectingWebSocket | null>(null);
   const orchStore = useOrchestrationStore();
@@ -48,6 +61,12 @@ export function useGateway(url: string = defaultGatewayUrl()) {
         case 'thinking':
           if (msg.streaming) chatStore.appendThinking(msg.thinking || '');
           if (msg.done) chatStore.setThinking('');
+          break;
+        case 'tool_call':
+          chatStore.setStreamingStatus(statusFromToolCall(msg.toolName || msg.name));
+          break;
+        case 'tool_result':
+          chatStore.setStreamingStatus('Thinking…');
           break;
         case 'plan':
           orchStore.setActivePlan(msg.plan);
@@ -184,12 +203,33 @@ export function useGateway(url: string = defaultGatewayUrl()) {
           });
           break;
         }
-        case 'event':
+        case 'event': {
           if (msg.event) orchStore.addEvent(msg.event);
+          const evt = msg.event as { type?: string; tool?: { name?: string }; error?: string; message?: string } | undefined;
+          if (evt) {
+            if (evt.type === 'tool_call' && evt.tool?.name) {
+              chatStore.setStreamingStatus(statusFromToolCall(evt.tool.name));
+            } else if (evt.type === 'tool_result') {
+              chatStore.setStreamingStatus('Thinking…');
+            } else if (evt.type === 'error') {
+              chatStore.markLastInterrupted();
+              chatStore.addMessage({
+                id: crypto.randomUUID(),
+                role: 'system',
+                content: evt.error || evt.message || 'Worker error',
+                timestamp: new Date().toISOString(),
+                type: 'error',
+              });
+            } else if (evt.type === 'status' && evt.message) {
+              chatStore.setStreamingStatus(evt.message);
+            }
+          }
           if (msg.graphState) orchStore.setGraphState(msg.graphState);
           break;
+        }
         case 'status':
           if (msg.graphState) orchStore.setGraphState(msg.graphState);
+          if (msg.status) chatStore.setStreamingStatus(msg.status);
           break;
         case 'command_result':
           chatStore.addMessage({
@@ -201,14 +241,14 @@ export function useGateway(url: string = defaultGatewayUrl()) {
           });
           break;
         case 'error':
+          chatStore.markLastInterrupted();
           chatStore.addMessage({
             id: crypto.randomUUID(),
             role: 'system',
-            content: `Error: ${msg.message || 'Unknown error'}`,
+            content: msg.error || msg.message || 'Unknown error',
             timestamp: new Date().toISOString(),
-            type: 'command-result',
+            type: 'error',
           });
-          chatStore.setStreaming(false);
           break;
         case 'ack':
           try {
@@ -242,6 +282,7 @@ export function useGateway(url: string = defaultGatewayUrl()) {
 
     ws.onerror = (err) => {
       console.error('[gateway] WebSocket error', err);
+      chatStore.markLastInterrupted();
     };
 
     return () => ws.close();
@@ -261,6 +302,7 @@ export function useGateway(url: string = defaultGatewayUrl()) {
         timestamp: new Date().toISOString(),
       });
       chatStore.setStreaming(true);
+      chatStore.setStreamingStatus('Thinking…');
       send({ id: crypto.randomUUID(), type: 'chat', content });
     },
     [send, chatStore],
@@ -268,9 +310,12 @@ export function useGateway(url: string = defaultGatewayUrl()) {
 
   const sendCommand = useCallback(
     (command: string) => {
+      if (command === 'stop') {
+        chatStore.markLastInterrupted();
+      }
       send({ id: crypto.randomUUID(), type: 'command', command });
     },
-    [send],
+    [send, chatStore],
   );
 
   const respondToPlan = useCallback(

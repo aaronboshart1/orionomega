@@ -1,34 +1,110 @@
 'use client';
 
-import { useState, useCallback, type KeyboardEvent } from 'react';
-import { Send } from 'lucide-react';
+import { useState, useCallback, useRef, useEffect, type KeyboardEvent } from 'react';
+import { Send, Command, X } from 'lucide-react';
+import { useChatStore } from '@/stores/chat';
 
 interface ChatInputProps {
   onSend: (text: string) => void;
   disabled?: boolean;
 }
 
+const SLASH_COMMANDS = [
+  { command: '/stop', description: 'Stop current streaming' },
+  { command: '/clear', description: 'Clear conversation' },
+  { command: '/status', description: 'Show system status' },
+  { command: '/help', description: 'Show available commands' },
+];
+
 export function ChatInput({ onSend, disabled }: ChatInputProps) {
   const [input, setInput] = useState('');
+  const [showPalette, setShowPalette] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const messages = useChatStore((s) => s.messages);
 
   const handleSend = useCallback(() => {
     const trimmed = input.trim();
     if (!trimmed || disabled) return;
     onSend(trimmed);
     setInput('');
+    setShowPalette(false);
   }, [input, disabled, onSend]);
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSend();
+      return;
     }
+
+    if (e.key === 'ArrowUp' && input === '') {
+      e.preventDefault();
+      const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user');
+      if (lastUserMsg) {
+        setInput(lastUserMsg.content);
+        setTimeout(() => {
+          const ta = textareaRef.current;
+          if (ta) ta.selectionStart = ta.selectionEnd = ta.value.length;
+        }, 0);
+      }
+      return;
+    }
+
+  };
+
+  useEffect(() => {
+    const handler = (e: globalThis.KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === '/') {
+        e.preventDefault();
+        setShowPalette((p) => !p);
+        textareaRef.current?.focus();
+      }
+      if (e.key === 'Escape' && useChatStore.getState().isStreaming) {
+        e.preventDefault();
+        onSend('/stop');
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [onSend]);
+
+  const selectCommand = (cmd: string) => {
+    setInput(cmd);
+    setShowPalette(false);
+    textareaRef.current?.focus();
   };
 
   return (
-    <div className="border-t border-zinc-800 px-6 py-4">
+    <div className="relative border-t border-zinc-800 px-6 py-4">
+      {showPalette && (
+        <div className="absolute bottom-full left-6 right-6 mb-2 overflow-hidden rounded-xl border border-zinc-700 bg-zinc-900 shadow-xl">
+          <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-2">
+            <span className="text-xs font-medium text-zinc-400">Commands</span>
+            <button
+              onClick={() => setShowPalette(false)}
+              className="text-zinc-500 hover:text-zinc-300"
+            >
+              <X size={14} />
+            </button>
+          </div>
+          <div className="max-h-48 overflow-y-auto py-1">
+            {SLASH_COMMANDS.map((cmd) => (
+              <button
+                key={cmd.command}
+                onClick={() => selectCommand(cmd.command)}
+                className="flex w-full items-center gap-3 px-4 py-2 text-left text-sm hover:bg-zinc-800"
+              >
+                <code className="text-xs text-blue-400">{cmd.command}</code>
+                <span className="text-xs text-zinc-500">{cmd.description}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="flex items-end gap-3 rounded-xl border border-zinc-700 bg-zinc-900 px-4 py-3 focus-within:border-blue-600">
         <textarea
+          ref={textareaRef}
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
@@ -46,7 +122,11 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
         </button>
       </div>
       <p className="mt-2 text-center text-xs text-zinc-600">
-        Press Enter to send · Shift+Enter for new line · /command for controls
+        Enter to send · Shift+Enter for new line · Esc to stop ·{' '}
+        <span className="inline-flex items-center gap-0.5">
+          <Command size={10} className="inline" />/
+        </span>{' '}
+        commands
       </p>
     </div>
   );
