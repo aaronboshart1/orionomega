@@ -293,6 +293,7 @@ export class MainAgent {
     this.activeAbort?.abort();
     this.activeAbort = new AbortController();
     const signal = this.activeAbort.signal;
+    let asyncFired = false;
 
     // Evaluate for preference patterns (fire-and-forget)
     if (this.memory.retention) {
@@ -412,11 +413,15 @@ export class MainAgent {
           );
           break;
         case 'CHAT_ASYNC':
-          // Fire-and-forget: returns immediately, async work continues in background
+          asyncFired = true;
           void this.respondConversationally(trimmed, signal).catch((err) => {
             const msg = err instanceof Error ? err.message : String(err);
             log.error('Async conversational response error', { error: msg });
             this.callbacks.onText(`Something went wrong: ${msg}`, false, true);
+          }).finally(() => {
+            if (this.activeAbort?.signal === signal) {
+              this.activeAbort = null;
+            }
           });
           break;
       }
@@ -425,7 +430,7 @@ export class MainAgent {
       log.error('handleMessage error', { error: msg });
       this.callbacks.onText(`Something went wrong: ${msg}`, false, true);
     } finally {
-      if (this.activeAbort?.signal === signal) {
+      if (!asyncFired && this.activeAbort?.signal === signal) {
         this.activeAbort = null;
       }
     }
