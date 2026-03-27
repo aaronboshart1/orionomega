@@ -298,19 +298,10 @@ export class WebSocketHandler {
         });
       });
     } else {
-      const fallbackId = randomBytes(8).toString('hex');
-      const fallbackContent = 'Message received. Orchestration engine not yet connected.';
-      this.sessionManager.addMessage(conn.sessionId, {
-        id: fallbackId,
-        role: 'assistant',
-        content: fallbackContent,
-        timestamp: new Date().toISOString(),
-        type: 'text',
-      });
       this.send(conn.ws, {
-        id: fallbackId,
+        id: randomBytes(8).toString('hex'),
         type: 'text',
-        content: fallbackContent,
+        content: 'Message received. Orchestration engine not yet connected.',
         streaming: false,
         done: true,
       });

@@ -2,13 +2,7 @@
   "name": "@orionomega/web",
   "version": "0.1.0",
   "description": "Next.js web dashboard with DAG visualization for OrionOmega",
-  "keywords": [
-    "dashboard",
-    "web-ui",
-    "reactflow",
-    "dag",
-    "orionomega"
-  ],
+  "keywords": ["dashboard", "web-ui", "reactflow", "dag", "orionomega"],
   "repository": {
     "type": "git",
     "url": "https://github.com/aaronboshart1/orionomega.git",
@@ -22,25 +16,21 @@
     "start": "next start -p 5000"
   },
   "dependencies": {
-    "@tailwindcss/postcss": "^4",
-    "@xyflow/react": "^12",
-    "lucide-react": "^0.460",
     "next": "^15",
     "react": "^18",
     "react-dom": "^18",
-    "react-markdown": "^10.1.0",
-    "react-syntax-highlighter": "^16.1.1",
+    "zustand": "^5",
+    "@xyflow/react": "^12",
+    "lucide-react": "^0.460",
     "reconnecting-websocket": "^4",
-    "remark-gfm": "^4.0.1",
     "tailwindcss": "^4",
-    "zustand": "^5"
+    "@tailwindcss/postcss": "^4"
   },
   "devDependencies": {
     "@types/node": "^22",
     "@types/react": "^18",
     "@types/react-dom": "^18",
-    "@types/react-syntax-highlighter": "^15.5.13",
-    "postcss": "^8",
-    "typescript": "^5"
+    "typescript": "^5",
+    "postcss": "^8"
   }
 }
