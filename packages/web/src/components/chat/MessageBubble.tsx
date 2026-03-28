@@ -8,6 +8,7 @@ import { RunSummaryCard } from './RunSummaryCard';
 import { DAGConfirmationCard } from './DAGConfirmationCard';
 import { ToolCallCard } from './ToolCallCard';
 import { MarkdownContent } from './MarkdownContent';
+import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { useGateway } from '@/lib/gateway';
 import { Reply, FileText } from 'lucide-react';
 
@@ -115,7 +116,7 @@ export function MessageBubble({ message, onScrollToMessage }: MessageBubbleProps
             <InlineDAGCard dag={dag} />
           ) : (
             <div className="rounded-2xl bg-zinc-800 px-4 py-3 text-sm text-zinc-100">
-              <MarkdownContent content={content} />
+              <ErrorBoundary><MarkdownContent content={content} /></ErrorBoundary>
             </div>
           )}
           <ReplyButton onClick={handleReply} />
@@ -146,7 +147,7 @@ export function MessageBubble({ message, onScrollToMessage }: MessageBubbleProps
             <RunSummaryCard dag={dag} />
           ) : (
             <div className="rounded-2xl bg-zinc-800 px-4 py-3 text-sm leading-relaxed text-zinc-100">
-              <MarkdownContent content={content} />
+              <ErrorBoundary><MarkdownContent content={content} /></ErrorBoundary>
             </div>
           )}
           <ReplyButton onClick={handleReply} />
@@ -170,7 +171,7 @@ export function MessageBubble({ message, onScrollToMessage }: MessageBubbleProps
       <div className="group my-3 flex justify-center">
         <div className="relative max-w-md rounded-lg bg-zinc-800/50 px-4 py-2 text-center text-xs text-zinc-400">
           {type === 'command-result' && '\u26A1 '}
-          <MarkdownContent content={content} />
+          <ErrorBoundary><MarkdownContent content={content} /></ErrorBoundary>
           <ReplyButton onClick={handleReply} />
         </div>
       </div>
@@ -206,7 +207,7 @@ export function MessageBubble({ message, onScrollToMessage }: MessageBubbleProps
               : 'bg-zinc-800 text-zinc-100'
           }`}
         >
-          {isUser ? formatPlainText(content) : <MarkdownContent content={content} isStreaming={isActivelyStreaming} />}
+          {isUser ? formatPlainText(content) : <ErrorBoundary><MarkdownContent content={content} isStreaming={isActivelyStreaming} /></ErrorBoundary>}
           {isUser && attachments && attachments.length > 0 && (
             <AttachmentDisplay attachments={attachments} />
           )}

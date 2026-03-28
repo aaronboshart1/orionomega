@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import FocusTrap from 'focus-trap-react';
 import { X, Eye, EyeOff, Save, Loader2, CheckCircle, AlertCircle, ChevronDown, RefreshCw } from 'lucide-react';
 
 type TabId = 'omegaclaw' | 'memory' | 'skills' | 'webui';
@@ -42,10 +43,10 @@ function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean
     <button
       type="button"
       onClick={() => onChange(!checked)}
-      className={`relative inline-flex h-7 w-12 md:h-5 md:w-9 items-center rounded-full transition-colors ${checked ? 'bg-blue-600' : 'bg-zinc-600'}`}
+      className={`relative inline-flex h-11 w-[52px] md:h-5 md:w-9 items-center rounded-full transition-colors ${checked ? 'bg-blue-600' : 'bg-zinc-600'}`}
     >
       <span
-        className={`inline-block h-5 w-5 md:h-3.5 md:w-3.5 transform rounded-full bg-white transition-transform ${checked ? 'translate-x-[22px] md:translate-x-[18px]' : 'translate-x-[3px]'}`}
+        className={`inline-block h-8 w-8 md:h-3.5 md:w-3.5 transform rounded-full bg-white transition-transform ${checked ? 'translate-x-[18px] md:translate-x-[18px]' : 'translate-x-[3px]'}`}
       />
     </button>
   );
@@ -857,8 +858,13 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="relative flex h-full w-full md:h-[85vh] md:max-w-2xl flex-col md:rounded-xl md:border md:border-zinc-700 bg-[var(--background)] md:shadow-2xl">
+    <FocusTrap focusTrapOptions={{ allowOutsideClick: true, escapeDeactivates: false }}>
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      onKeyDown={(e) => { if (e.key === 'Escape') onClose(); }}
+    >
+      <div className="relative flex h-full w-full md:h-[85vh] md:max-w-2xl flex-col md:rounded-xl md:border md:border-zinc-700 bg-[var(--background)] md:shadow-2xl" role="dialog" aria-modal="true" aria-label="Settings">
         <div className="flex items-center justify-between border-b border-zinc-800 px-4 md:px-6 py-4">
           <h2 className="text-sm font-semibold text-zinc-100">Settings</h2>
           <button
@@ -950,5 +956,6 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
         </div>
       </div>
     </div>
+    </FocusTrap>
   );
 }

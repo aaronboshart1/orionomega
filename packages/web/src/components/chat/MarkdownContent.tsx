@@ -5,6 +5,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
+import 'highlight.js/styles/github-dark.css';
 import type { Components } from 'react-markdown';
 
 const sanitizeSchema = {

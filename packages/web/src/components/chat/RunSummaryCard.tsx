@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { CheckCircle2, XCircle, Circle, FileText, ChevronRight } from 'lucide-react';
 import type { InlineDAG, ModelUsageEntry } from '@/stores/orchestration';
 import { MarkdownContent } from './MarkdownContent';
+import { ErrorBoundary } from '@/components/ErrorBoundary';
 
 interface RunSummaryCardProps {
   dag: InlineDAG;
@@ -136,7 +137,7 @@ export function RunSummaryCard({ dag }: RunSummaryCardProps) {
             }`}
           >
             <div className="text-xs text-zinc-300">
-              <MarkdownContent content={dag.result!} />
+              <ErrorBoundary><MarkdownContent content={dag.result!} /></ErrorBoundary>
             </div>
           </div>
         </div>

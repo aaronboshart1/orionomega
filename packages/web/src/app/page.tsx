@@ -1,9 +1,21 @@
 'use client';
 
+import dynamic from 'next/dynamic';
 import { PanelRightOpen, PanelRightClose, X } from 'lucide-react';
 import { ChatPane } from '@/components/chat/ChatPane';
-import { OrchestrationPane } from '@/components/orchestration/OrchestrationPane';
 import { useOrchestrationStore, useOrchHydrated } from '@/stores/orchestration';
+
+const OrchestrationPane = dynamic(
+  () => import('@/components/orchestration/OrchestrationPane').then((m) => m.OrchestrationPane),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex h-full items-center justify-center text-xs text-zinc-600">
+        Loading orchestration…
+      </div>
+    ),
+  },
+);
 
 export default function Home() {
   const orchHydrated = useOrchHydrated();

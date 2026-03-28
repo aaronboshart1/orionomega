@@ -115,6 +115,8 @@ export function OmegaSpinner({
 
   return (
     <div
+      role="status"
+      aria-label="Loading"
       className={className}
       style={{
         display: 'inline-grid',

@@ -1,7 +1,8 @@
 'use client';
 
+import dynamic from 'next/dynamic';
 import { useOrchestrationStore } from '@/stores/orchestration';
-import { DAGVisualization } from './DAGVisualization';
+import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { ActivityFeed } from './ActivityFeed';
 import { WorkerDetail } from './WorkerDetail';
 import { WorkflowSummary } from './WorkflowSummary';
@@ -28,6 +29,18 @@ function getWorkflowStatus(
 ): string {
   return dagStatus || graphStatus || 'pending';
 }
+
+const DAGVisualization = dynamic(
+  () => import('./DAGVisualization').then((m) => m.DAGVisualization),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex h-full items-center justify-center text-xs text-zinc-600">
+        Loading graph…
+      </div>
+    ),
+  },
+);
 
 export function OrchestrationPane() {
   const selectedWorker = useOrchestrationStore((s) => s.selectedWorker);
@@ -82,7 +95,7 @@ export function OrchestrationPane() {
           const showPause = isRunning;
           const showStop = isRunning || isPaused;
 
-          const hoverOnly = isActive ? '' : 'opacity-0 group-hover:opacity-100';
+          const hoverOnly = isActive ? '' : 'opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100';
 
           return (
             <div
@@ -120,7 +133,7 @@ export function OrchestrationPane() {
                       e.stopPropagation();
                       sendWorkflowCommand('resume', wfId);
                     }}
-                    className={`rounded p-0.5 transition-all ${hoverOnly} ${
+                    className={`rounded p-0.5 transition-all focus-visible:opacity-100 ${hoverOnly} ${
                       isInterrupted
                         ? 'bg-amber-500/20 text-amber-400 hover:bg-amber-500/30'
                         : 'text-green-400 hover:bg-green-500/20'
@@ -137,7 +150,7 @@ export function OrchestrationPane() {
                       e.stopPropagation();
                       sendWorkflowCommand('pause', wfId);
                     }}
-                    className={`rounded p-0.5 text-zinc-400 transition-all hover:bg-zinc-700 hover:text-amber-400 ${hoverOnly}`}
+                    className={`rounded p-0.5 text-zinc-400 transition-all hover:bg-zinc-700 hover:text-amber-400 focus-visible:opacity-100 ${hoverOnly}`}
                     title="Pause at next layer boundary"
                   >
                     <Pause size={12} />
@@ -150,7 +163,7 @@ export function OrchestrationPane() {
                       e.stopPropagation();
                       sendWorkflowCommand('stop', wfId);
                     }}
-                    className={`rounded p-0.5 text-zinc-400 transition-all hover:bg-zinc-700 hover:text-red-400 ${hoverOnly}`}
+                    className={`rounded p-0.5 text-zinc-400 transition-all hover:bg-zinc-700 hover:text-red-400 focus-visible:opacity-100 ${hoverOnly}`}
                     title="Stop workflow"
                   >
                     <Square size={12} />
@@ -165,7 +178,7 @@ export function OrchestrationPane() {
                     e.stopPropagation();
                     removeWorkflow(wfId);
                   }}
-                  className="ml-0.5 rounded p-0.5 text-zinc-600 opacity-0 transition-opacity hover:bg-zinc-700 hover:text-zinc-300 group-hover:opacity-100"
+                  className="ml-0.5 rounded p-0.5 text-zinc-600 opacity-0 transition-opacity hover:bg-zinc-700 hover:text-zinc-300 group-hover:opacity-100 group-focus-visible:opacity-100 focus-visible:opacity-100"
                 >
                   <X size={12} />
                 </button>
@@ -182,7 +195,9 @@ export function OrchestrationPane() {
       ) : (
         <>
           <div className="flex-[4] min-h-0 border-b border-zinc-800">
-            <DAGVisualization />
+            <ErrorBoundary>
+              <DAGVisualization />
+            </ErrorBoundary>
           </div>
 
           <div

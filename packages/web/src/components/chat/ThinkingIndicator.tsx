@@ -17,7 +17,7 @@ export function ThinkingIndicator({ content, statusText }: ThinkingIndicatorProp
   const displayText = hasContent ? (expanded ? content : truncated) : null;
 
   return (
-    <div className="my-3 flex justify-start">
+    <div className="my-3 flex justify-start" aria-live="polite">
       <div className="flex max-w-[85%] items-start gap-3 rounded-2xl bg-zinc-800/50 px-4 py-3">
         <div className="flex items-center pt-0.5">
           <OmegaSpinner size={5} gap={1.5} interval={180} />

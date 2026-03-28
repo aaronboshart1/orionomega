@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useEffect } from 'react';
+import { useRef, useEffect, useCallback } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { useOrchestrationStore, type WorkerEvent } from '@/stores/orchestration';
 
@@ -73,11 +73,33 @@ export function ActivityFeed() {
   const collapsed = useOrchestrationStore((s) => s.activitySectionCollapsed);
   const toggleCollapsed = useOrchestrationStore((s) => s.toggleActivitySectionCollapsed);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const userScrolledUpRef = useRef(false);
+  const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleScroll = useCallback(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    userScrolledUpRef.current = distanceFromBottom > 50;
+  }, []);
 
   useEffect(() => {
-    if (!collapsed) {
-      bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }
+    if (collapsed) return;
+    if (userScrolledUpRef.current) return;
+    if (scrollTimerRef.current) return;
+    scrollTimerRef.current = setTimeout(() => {
+      scrollTimerRef.current = null;
+      if (!userScrolledUpRef.current) {
+        bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+      }
+    }, 200);
+    return () => {
+      if (scrollTimerRef.current) {
+        clearTimeout(scrollTimerRef.current);
+        scrollTimerRef.current = null;
+      }
+    };
   }, [events, collapsed]);
 
   if (events.length === 0 && !collapsed) {
@@ -119,7 +141,7 @@ export function ActivityFeed() {
         <span className="text-[10px] text-zinc-600">{events.length} events</span>
       </button>
       {!collapsed && (
-        <div className="flex-1 overflow-y-auto">
+        <div className="flex-1 overflow-y-auto" ref={scrollContainerRef} onScroll={handleScroll}>
           {events.map((event, i) => (
             <EventRow key={`${event.timestamp}-${i}`} event={event} />
           ))}

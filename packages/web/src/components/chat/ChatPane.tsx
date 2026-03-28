@@ -16,8 +16,13 @@ import { ErrorMessage } from './ErrorMessage';
 import { PlanCard } from './PlanCard';
 import { BackgroundTaskIndicator } from './BackgroundTaskIndicator';
 import { ConnectionStatus } from './ConnectionStatus';
-import { SettingsModal } from '../settings/SettingsModal';
 import type { ChatMessage } from '@/stores/chat';
+import dynamic from 'next/dynamic';
+
+const SettingsModal = dynamic(
+  () => import('../settings/SettingsModal').then((m) => m.SettingsModal),
+  { ssr: false },
+);
 
 type RenderItem =
   | { kind: 'message'; message: ChatMessage }
