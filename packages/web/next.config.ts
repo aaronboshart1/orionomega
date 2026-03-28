@@ -28,6 +28,7 @@ function getGitHash(): string {
 }
 
 const nextConfig: NextConfig = {
+  devIndicators: false,
   env: {
     NEXT_PUBLIC_APP_VERSION: getPackageVersion(),
     NEXT_PUBLIC_GIT_HASH: getGitHash(),
