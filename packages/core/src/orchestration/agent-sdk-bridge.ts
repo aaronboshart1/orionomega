@@ -45,6 +45,8 @@ export interface CodingAgentResult {
   costUsd?: number;
   /** Duration in seconds. */
   durationSec: number;
+  /** Paths of files written or edited during execution. */
+  outputPaths: string[];
 }
 
 /** Configuration for a coding agent node. */
@@ -594,6 +596,7 @@ export async function executeCodingAgent(
       success: false,
       error: 'No API key configured',
       durationSec: 0,
+      outputPaths: [],
     };
   }
 
@@ -620,6 +623,7 @@ export async function executeCodingAgent(
   let output = '';
   let toolCalls = 0;
   let costUsd: number | undefined;
+  const outputPaths: string[] = [];
 
   try {
     // Build the system prompt
@@ -708,14 +712,19 @@ export async function executeCodingAgent(
             if (block.type === 'tool_use') {
               toolCalls++;
               const pct = Math.min(90, Math.round((toolCalls / maxTurns) * 100));
-              const filePath = block.input && typeof block.input === 'object' && 'file_path' in block.input
-                ? ` → ${(block.input as Record<string, unknown>).file_path}`
+              const toolInput = block.input as Record<string, unknown> | undefined;
+              const toolName = block.name;
+              const filePath = toolInput && typeof toolInput === 'object' && 'file_path' in toolInput
+                ? ` → ${toolInput.file_path}`
                 : '';
               onProgress?.({
                 type: 'tool',
-                message: `Tool: ${block.name}${filePath}`,
+                message: `Tool: ${toolName}${filePath}`,
                 progress: pct,
               });
+              if ((toolName === 'Write' || toolName === 'Edit') && toolInput?.file_path) {
+                outputPaths.push(String(toolInput.file_path));
+              }
             }
           }
         }
@@ -781,6 +790,7 @@ export async function executeCodingAgent(
       success: true,
       durationSec,
       costUsd,
+      outputPaths: [...new Set(outputPaths)],
     };
   } catch (err) {
     const durationSec = (Date.now() - startTime) / 1000;
@@ -799,6 +809,7 @@ export async function executeCodingAgent(
       success: false,
       error: errorMsg,
       durationSec,
+      outputPaths: [...new Set(outputPaths)],
     };
   }
 }

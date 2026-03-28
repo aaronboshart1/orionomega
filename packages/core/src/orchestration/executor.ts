@@ -578,7 +578,7 @@ export class GraphExecutor {
             durationMs: Date.now() - startMs,
             toolCallCount: codingResult.toolCalls,
             findings: [],
-            outputPaths: [],
+            outputPaths: codingResult.outputPaths ?? [],
           };
         } catch (err) {
           if (this.stopRequested) {
