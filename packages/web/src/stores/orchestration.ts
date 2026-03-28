@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
 
 export interface WorkerEvent {
   workerId: string;
@@ -131,7 +132,9 @@ function deriveActive(workflows: Record<string, WorkflowData>, activeWorkflowId:
   };
 }
 
-export const useOrchestrationStore = create<OrchestrationStore>((set) => ({
+export const useOrchestrationStore = create<OrchestrationStore>()(
+  persist(
+  (set) => ({
   workflows: {},
   activeWorkflowId: null,
   activePlan: null,
@@ -303,4 +306,9 @@ export const useOrchestrationStore = create<OrchestrationStore>((set) => ({
       pendingConfirmation: null,
       orchPaneOpen: false,
     }),
-}));
+  }),
+  {
+    name: 'orionomega-orchestration',
+    partialize: (state) => ({ inlineDAGs: state.inlineDAGs }),
+  },
+));

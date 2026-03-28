@@ -284,12 +284,13 @@ function bindListeners(ws: ReconnectingWebSocket): void {
         if (msg.history && Array.isArray(msg.history)) {
           const restored: ChatMessage[] = msg.history
             .filter((m: { role: string }) => m.role === 'user' || m.role === 'assistant')
-            .map((m: { id: string; role: string; content: string; timestamp: string; type?: string }) => ({
+            .map((m: { id: string; role: string; content: string; timestamp: string; type?: string; dagId?: string }) => ({
               id: m.id,
               role: m.role as 'user' | 'assistant',
               content: m.content,
               timestamp: m.timestamp,
               type: m.type as ChatMessage['type'],
+              dagId: m.dagId,
             }));
           if (restored.length > 0) {
             const current = useChatStore.getState().messages;
