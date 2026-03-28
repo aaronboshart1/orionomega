@@ -1,8 +1,10 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
+import { FileText, ChevronRight } from 'lucide-react';
 import { useOrchestrationStore } from '@/stores/orchestration';
 import type { ModelUsageEntry } from '@/stores/orchestration';
+import { MarkdownContent } from '../chat/MarkdownContent';
 
 function formatElapsed(seconds: number): string {
   if (seconds < 60) return `${Math.round(seconds)}s`;
@@ -75,14 +77,18 @@ function ModelUsageTable({ models, totalCostUsd }: { models: ModelUsageEntry[]; 
 export function WorkflowSummary() {
   const graphState = useOrchestrationStore((s) => s.graphState);
   const inlineDAGs = useOrchestrationStore((s) => s.inlineDAGs);
-
   const activeWorkflowId = useOrchestrationStore((s) => s.activeWorkflowId);
+  const [summaryOpen, setSummaryOpen] = useState(false);
 
   const completedDAG = useMemo(() => {
     const dagId = activeWorkflowId;
     if (dagId) {
       const dag = inlineDAGs[dagId];
-      if (dag && (dag.status === 'complete' || dag.status === 'error' || dag.status === 'stopped') && (dag.modelUsage || dag.totalCostUsd !== undefined)) {
+      if (
+        dag &&
+        (dag.status === 'complete' || dag.status === 'error' || dag.status === 'stopped') &&
+        (dag.modelUsage || dag.totalCostUsd !== undefined || (dag.result && dag.result.trim().length > 0) || (dag.nodeOutputPaths && Object.keys(dag.nodeOutputPaths).length > 0))
+      ) {
         return dag;
       }
     }
@@ -131,6 +137,51 @@ export function WorkflowSummary() {
         </div>
         {completedDAG.modelUsage && completedDAG.modelUsage.length > 0 && (
           <ModelUsageTable models={completedDAG.modelUsage} totalCostUsd={completedDAG.totalCostUsd} />
+        )}
+
+        {completedDAG.nodeOutputPaths && Object.keys(completedDAG.nodeOutputPaths).length > 0 && (
+          <div className="mt-2 border-t border-zinc-700/50 pt-2">
+            <div className="flex items-center gap-1.5 text-[10px] font-medium text-zinc-400 mb-1">
+              <FileText size={10} />
+              <span>Artifacts</span>
+            </div>
+            <div className="space-y-1">
+              {Object.entries(completedDAG.nodeOutputPaths).map(([nodeLabel, paths]) => (
+                <div key={nodeLabel}>
+                  <div className="text-[10px] font-medium text-zinc-300">{nodeLabel}</div>
+                  {paths.map((p) => (
+                    <div key={p} className="ml-3 text-[10px] text-blue-400/80">{p}</div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {completedDAG.result != null && completedDAG.result.trim().length > 0 && (
+          <div className="mt-2 border-t border-zinc-700/50 pt-2">
+            <button
+              type="button"
+              aria-expanded={summaryOpen}
+              onClick={() => setSummaryOpen((o) => !o)}
+              className="flex w-full items-center gap-1.5 text-[10px] font-medium text-zinc-400 hover:text-zinc-300 transition-colors"
+            >
+              <ChevronRight
+                size={10}
+                className={`transition-transform duration-200 ${summaryOpen ? 'rotate-90' : ''}`}
+              />
+              <span>Summary</span>
+            </button>
+            <div
+              className={`overflow-hidden transition-all duration-200 ease-in-out ${
+                summaryOpen ? 'max-h-[2000px] opacity-100 mt-1.5' : 'max-h-0 opacity-0'
+              }`}
+            >
+              <div className="text-xs text-zinc-300">
+                <MarkdownContent content={completedDAG.result} />
+              </div>
+            </div>
+          </div>
         )}
       </div>
     );
