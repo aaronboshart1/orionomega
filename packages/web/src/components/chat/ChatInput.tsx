@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useCallback, useRef, useEffect, useMemo, type KeyboardEvent, type DragEvent } from 'react';
-import { Send, Command, X, Reply, Paperclip, FileText, Image } from 'lucide-react';
+import { Send, X, Reply, Paperclip, FileText, Image } from 'lucide-react';
 import { useChatStore } from '@/stores/chat';
 
 export interface FileAttachment {
@@ -498,13 +498,6 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
         </button>
       </div>
 
-      <p className="mt-2 hidden md:block text-center text-xs text-zinc-600">
-        Enter to send · Shift+Enter for new line · Esc to stop ·{' '}
-        <span className="inline-flex items-center gap-0.5">
-          <Command size={10} className="inline" />/
-        </span>{' '}
-        commands · <Paperclip size={10} className="inline" /> to attach files
-      </p>
     </div>
   );
 }
