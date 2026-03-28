@@ -447,6 +447,7 @@ export const useOrchestrationStore = create<OrchestrationStore>()(
       events: state.events,
       activePlan: state.activePlan,
       selectedWorker: state.selectedWorker,
+      memoryEvents: state.memoryEvents,
     }),
     onRehydrateStorage: () => (state) => {
       if (state) {
