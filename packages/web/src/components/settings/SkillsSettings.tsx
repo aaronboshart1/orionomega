@@ -189,10 +189,18 @@ function SkillCard({
 
   return (
     <div className="rounded-lg border border-zinc-800 bg-zinc-900/50">
-      <button
-        type="button"
+      <div
+        role="button"
+        tabIndex={0}
+        aria-expanded={expanded}
         onClick={() => setExpanded(!expanded)}
-        className="flex w-full items-center justify-between px-3 py-2.5 text-left"
+        onKeyDown={(e) => {
+          if ((e.key === 'Enter' || e.key === ' ') && e.target === e.currentTarget) {
+            e.preventDefault();
+            setExpanded(!expanded);
+          }
+        }}
+        className="flex w-full cursor-pointer items-center justify-between px-3 py-2.5 text-left"
       >
         <div className="flex items-center gap-2.5">
           {expanded ? (
@@ -232,7 +240,7 @@ function SkillCard({
             />
           </button>
         </div>
-      </button>
+      </div>
 
       {expanded && (
         <div className="border-t border-zinc-800 px-3 py-3 space-y-3">
