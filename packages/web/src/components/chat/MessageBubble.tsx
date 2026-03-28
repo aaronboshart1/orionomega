@@ -50,7 +50,7 @@ function AttachmentDisplay({ attachments }: { attachments: MessageAttachment[] }
                 alt={att.name}
                 className="max-h-48 max-w-[280px] object-contain"
               />
-              <div className="bg-black/30 px-2 py-1 text-[10px] text-white/60">
+              <div className="bg-emerald-700 px-2 py-1 text-[10px] text-white/60">
                 {att.name} ({formatBytes(att.size)})
               </div>
             </div>
