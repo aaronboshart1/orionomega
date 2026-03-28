@@ -190,7 +190,7 @@ export function ChatPane() {
 
   return (
     <div className="flex h-full flex-col bg-[var(--background)]">
-      <div className="flex items-center gap-3 border-b border-zinc-800 px-6 py-4">
+      <div className="flex items-center gap-3 px-6 py-4">
         <img src="/omegaclaw-logo.png" alt="OmegaClaw" className="h-8 w-8 rounded-lg" />
         <div className="flex-1">
           <h1 className="text-sm font-semibold text-zinc-100">OmegaClaw</h1>

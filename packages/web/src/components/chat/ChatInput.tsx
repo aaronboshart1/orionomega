@@ -238,8 +238,8 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
 
   return (
     <div
-      className={`relative border-t px-6 py-4 transition-colors ${
-        isDraggingOver ? 'border-blue-500 bg-blue-950/20' : 'border-zinc-800'
+      className={`relative px-6 py-4 transition-colors ${
+        isDraggingOver ? 'bg-blue-950/20' : ''
       }`}
       onDragEnter={handleDragEnter}
       onDragLeave={handleDragLeave}
