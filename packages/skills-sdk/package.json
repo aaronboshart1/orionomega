@@ -1,8 +1,8 @@
 {
   "name": "@orionomega/skills-sdk",
-  "version": "0.1.0",
-  "description": "Skills system for OrionOmega \u2014 create, install, load, validate, and execute custom agent skills",
-  "keywords": ["skills", "plugins", "sdk", "orionomega"],
+  "version": "0.2.0",
+  "description": "Skills system for OrionOmega \u2014 create, install, load, validate, configure, and execute custom agent skills",
+  "keywords": ["skills", "plugins", "sdk", "orionomega", "settings", "manifest", "agent"],
   "repository": {
     "type": "git",
     "url": "https://github.com/aaronboshart1/orionomega.git",
@@ -11,8 +11,53 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./types": {
+      "types": "./dist/types.d.ts",
+      "import": "./dist/types.js"
+    },
+    "./interfaces": {
+      "types": "./dist/interfaces.d.ts",
+      "import": "./dist/interfaces.js"
+    },
+    "./settings": {
+      "types": "./dist/settings.d.ts",
+      "import": "./dist/settings.js"
+    },
+    "./loader": {
+      "types": "./dist/loader.d.ts",
+      "import": "./dist/loader.js"
+    },
+    "./validator": {
+      "types": "./dist/validator.d.ts",
+      "import": "./dist/validator.js"
+    },
+    "./executor": {
+      "types": "./dist/executor.d.ts",
+      "import": "./dist/executor.js"
+    },
+    "./scaffold": {
+      "types": "./dist/scaffold.d.ts",
+      "import": "./dist/scaffold.js"
+    },
+    "./skill-config": {
+      "types": "./dist/skill-config.d.ts",
+      "import": "./dist/skill-config.js"
+    }
+  },
+  "files": [
+    "dist",
+    "docs",
+    "templates",
+    "MIGRATION.md"
+  ],
   "scripts": {
     "build": "tsc",
+    "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist"
   },
   "devDependencies": {

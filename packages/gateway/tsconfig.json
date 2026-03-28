@@ -19,6 +19,7 @@
   "exclude": ["dist", "node_modules"],
   "references": [
     { "path": "../core" },
-    { "path": "../hindsight" }
+    { "path": "../hindsight" },
+    { "path": "../skills-sdk" }
   ]
 }

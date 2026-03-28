@@ -1,8 +1,24 @@
 /**
  * @module loader
  * Skill discovery, loading, matching, and dependency checking.
- * Scans a skills directory, validates manifests, registers tool executors,
- * and matches user input against skill triggers.
+ *
+ * Provides both a high-level {@link SkillLoader} class for lifecycle management
+ * and standalone functions ({@link discoverSkills}, {@link loadSkillManifest},
+ * {@link instantiateSkill}) for lightweight, ad-hoc usage.
+ *
+ * ## Dual-mode skill loading
+ *
+ * The loader supports two skill implementation patterns, which can coexist in
+ * the same skills directory without any configuration:
+ *
+ * **Manifest mode (legacy / language-agnostic)**
+ * Any directory with a `manifest.json` is a valid skill. Tools are executed by
+ * spawning the handler scripts listed in the manifest.
+ *
+ * **Class mode (TypeScript-native)**
+ * If a compiled `skill.js` exists alongside `manifest.json`, the loader imports
+ * it and uses the exported default class (which must extend {@link BaseSkill})
+ * as the {@link ISkill} implementation.
  */
 
 import { readdir, readFile, stat } from 'node:fs/promises';
@@ -14,52 +30,178 @@ import type {
   LoadedSkill,
   RegisteredTool,
   ValidationResult,
+  SkillConfig,
+  SkillContext,
 } from './types.js';
 import { validateManifest } from './validator.js';
 import { readSkillConfig } from './skill-config.js';
 import { SkillExecutor } from './executor.js';
+import type { ISkill } from './interfaces.js';
+import { BaseSkill } from './interfaces.js';
 
 const execFileAsync = promisify(execFile);
 
-/** Default handler timeout in milliseconds. */
 const DEFAULT_TIMEOUT = 30_000;
 
-/**
- * Discovers, loads, validates, and matches skills from a directory.
- *
- * Skills are expected to live in subdirectories of `skillsDir`, each
- * containing a `manifest.json` file.
- */
+// ── Dual-mode helpers ──────────────────────────────────────────────────
+
+async function tryLoadSkillClass(
+  skillDir: string,
+  logger?: { warn(msg: string, data?: Record<string, unknown>): void },
+): Promise<(new () => ISkill) | null> {
+  const classPath = path.join(path.resolve(skillDir), 'skill.js');
+
+  try {
+    await stat(classPath);
+  } catch {
+    return null;
+  }
+
+  try {
+    const mod = (await import(classPath)) as { default?: new () => ISkill };
+    const SkillClass = mod.default;
+
+    if (typeof SkillClass !== 'function') {
+      logger?.warn(`skill.js at "${classPath}" does not export a default class — using manifest mode`, {
+        skillDir,
+      });
+      return null;
+    }
+
+    return SkillClass;
+  } catch (err) {
+    logger?.warn(`Failed to import skill.js at "${classPath}" — using manifest mode`, {
+      skillDir,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
+}
+
+// ── Standalone Functions ───────────────────────────────────────────────
+
+export async function discoverSkills(skillsDir: string): Promise<string[]> {
+  const resolved = path.resolve(skillsDir);
+  const results: string[] = [];
+
+  let entries: string[];
+  try {
+    entries = await readdir(resolved);
+  } catch {
+    return results;
+  }
+
+  for (const entry of entries) {
+    const skillDir = path.join(resolved, entry);
+    try {
+      const st = await stat(skillDir);
+      if (!st.isDirectory()) continue;
+
+      await stat(path.join(skillDir, 'manifest.json'));
+      results.push(skillDir);
+    } catch {
+      // Not a skill directory
+    }
+  }
+
+  return results;
+}
+
+export async function loadSkillManifest(skillPath: string): Promise<SkillManifest> {
+  const manifestPath = path.join(path.resolve(skillPath), 'manifest.json');
+
+  let raw: string;
+  try {
+    raw = await readFile(manifestPath, 'utf-8');
+  } catch (err) {
+    throw new Error(
+      `Cannot read manifest at "${manifestPath}": ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  let manifest: SkillManifest;
+  try {
+    manifest = JSON.parse(raw) as SkillManifest;
+  } catch (err) {
+    throw new Error(
+      `Invalid JSON in manifest at "${manifestPath}": ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  const result = validateManifest(manifest);
+  if (!result.valid) {
+    throw new Error(
+      `Manifest at "${manifestPath}" failed validation: ${result.errors.join('; ')}`,
+    );
+  }
+
+  return manifest;
+}
+
+export async function instantiateSkill(
+  manifest: SkillManifest,
+  config: SkillConfig,
+  skillDir: string,
+): Promise<ISkill> {
+  const resolvedDir = path.resolve(skillDir);
+
+  const SkillClass = await tryLoadSkillClass(resolvedDir);
+  if (SkillClass) {
+    return new SkillClass();
+  }
+
+  const executor = new SkillExecutor();
+  const toolDefs = manifest.tools ?? [];
+
+  class ManifestSkill extends BaseSkill {
+    override async initialize(ctx: SkillContext): Promise<void> {
+      await super.initialize(ctx);
+
+      const settings = manifest.settings;
+      if (settings?.required) {
+        for (const key of settings.required) {
+          if (!Object.prototype.hasOwnProperty.call(settings.properties, key)) continue;
+          if (!(key in config.fields)) {
+            ctx.logger.warn(
+              `Skill "${manifest.name}" requires setting "${key}" but it is not configured.`,
+            );
+          }
+        }
+      }
+    }
+
+    getTools() {
+      return toolDefs.map((t) => ({ ...t }));
+    }
+
+    async executeTool(toolName: string, params: Record<string, unknown>): Promise<unknown> {
+      const tool = toolDefs.find((t) => t.name === toolName);
+      if (!tool) {
+        throw new Error(`Tool "${toolName}" not found in skill "${manifest.name}".`);
+      }
+      return executor.executeHandler(tool.handler, params, {
+        cwd: resolvedDir,
+        timeout: tool.timeout ?? DEFAULT_TIMEOUT,
+      });
+    }
+  }
+
+  return new ManifestSkill();
+}
+
+// ── SkillLoader Class ──────────────────────────────────────────────────
+
 export class SkillLoader {
-  /** Absolute path to the skills directory. */
   private readonly skillsDir: string;
-
-  /** Map of loaded skills keyed by skill name. */
   private readonly loaded = new Map<string, LoadedSkill>();
-
-  /** Cache of discovered manifests keyed by skill name. */
   private readonly discovered = new Map<string, SkillManifest>();
-
-  /** Shared executor instance. */
+  private readonly instances = new Map<string, ISkill>();
   private readonly executor = new SkillExecutor();
 
-  /**
-   * Create a new SkillLoader.
-   *
-   * @param skillsDir - Path to the directory containing skill subdirectories.
-   */
   constructor(skillsDir: string) {
     this.skillsDir = path.resolve(skillsDir);
   }
 
-  /**
-   * Discover all valid skills in the skills directory.
-   *
-   * Scans for subdirectories containing a `manifest.json`, validates each,
-   * and returns the valid manifests. Invalid manifests are silently skipped.
-   *
-   * @returns Array of validated skill manifests.
-   */
   async discoverAll(): Promise<SkillManifest[]> {
     const manifests: SkillManifest[] = [];
 
@@ -77,17 +219,10 @@ export class SkillLoader {
         const st = await stat(skillDir);
         if (!st.isDirectory()) continue;
 
-        const manifestPath = path.join(skillDir, 'manifest.json');
-        const raw = await readFile(manifestPath, 'utf-8');
-        const manifest: SkillManifest = JSON.parse(raw);
-        const result = validateManifest(manifest);
-
-        if (result.valid) {
-          manifests.push(manifest);
-          this.discovered.set(manifest.name, manifest);
-        }
+        const manifest = await loadSkillManifest(skillDir);
+        manifests.push(manifest);
+        this.discovered.set(manifest.name, manifest);
       } catch {
-        // Skip directories without valid manifest.json
         continue;
       }
     }
@@ -95,42 +230,28 @@ export class SkillLoader {
     return manifests;
   }
 
-  /**
-   * Load a specific skill by name.
-   *
-   * Reads the manifest, validates it, checks dependencies, runs the preLoad
-   * hook if defined, reads SKILL.md and optional worker prompt, and registers
-   * tool executors.
-   *
-   * @param skillName - The name (slug) of the skill to load.
-   * @returns The fully loaded skill.
-   * @throws If the skill directory or manifest is missing, validation fails,
-   *         or the preLoad hook exits non-zero.
-   */
+  async discoverReady(): Promise<SkillManifest[]> {
+    const all = await this.discoverAll();
+    return all.filter((m) => {
+      const config = readSkillConfig(this.skillsDir, m.name);
+      if (!config.enabled) return false;
+      if (m.setup?.required && !config.configured) return false;
+      return true;
+    });
+  }
+
   async load(skillName: string): Promise<LoadedSkill> {
     const skillDir = path.join(this.skillsDir, skillName);
 
-    // Read and parse manifest
-    const manifestPath = path.join(skillDir, 'manifest.json');
     let manifest: SkillManifest;
     try {
-      const raw = await readFile(manifestPath, 'utf-8');
-      manifest = JSON.parse(raw);
+      manifest = await loadSkillManifest(skillDir);
     } catch (err) {
       throw new Error(
-        `Failed to read manifest for skill "${skillName}": ${err instanceof Error ? err.message : String(err)}`,
+        `Failed to load skill "${skillName}": ${err instanceof Error ? err.message : String(err)}`,
       );
     }
 
-    // Validate
-    const validation = validateManifest(manifest);
-    if (!validation.valid) {
-      throw new Error(
-        `Skill "${skillName}" manifest validation failed: ${validation.errors.join('; ')}`,
-      );
-    }
-
-    // Check dependencies
     const depCheck = await this.checkDependencies(manifest);
     if (!depCheck.valid) {
       throw new Error(
@@ -138,7 +259,6 @@ export class SkillLoader {
       );
     }
 
-    // Run preLoad hook if defined
     if (manifest.hooks?.preLoad) {
       const hookPath = path.resolve(skillDir, manifest.hooks.preLoad);
       try {
@@ -150,15 +270,13 @@ export class SkillLoader {
       }
     }
 
-    // Read SKILL.md
     let skillDoc = '';
     try {
       skillDoc = await readFile(path.join(skillDir, 'SKILL.md'), 'utf-8');
     } catch {
-      // SKILL.md is optional but expected; leave empty
+      // Leave empty
     }
 
-    // Read prompts/worker.md if present
     let workerPrompt: string | undefined;
     try {
       workerPrompt = await readFile(path.join(skillDir, 'prompts', 'worker.md'), 'utf-8');
@@ -166,17 +284,15 @@ export class SkillLoader {
       // Optional
     }
 
-    // Register tool executors
     const tools: RegisteredTool[] = (manifest.tools ?? []).map((toolDef) => ({
       name: toolDef.name,
       description: toolDef.description,
       inputSchema: toolDef.inputSchema,
-      execute: async (params: Record<string, unknown>): Promise<unknown> => {
-        return this.executor.executeHandler(toolDef.handler, params, {
+      execute: async (params: Record<string, unknown>): Promise<unknown> =>
+        this.executor.executeHandler(toolDef.handler, params, {
           cwd: skillDir,
           timeout: toolDef.timeout ?? DEFAULT_TIMEOUT,
-        });
-      },
+        }),
     }));
 
     const loaded: LoadedSkill = {
@@ -193,113 +309,83 @@ export class SkillLoader {
     return loaded;
   }
 
-  /**
-   * Unload a previously loaded skill, freeing its resources.
-   *
-   * @param skillName - The name of the skill to unload.
-   */
-  unload(skillName: string): void {
-    this.loaded.delete(skillName);
+  async loadISkill(skillName: string, ctx?: SkillContext): Promise<ISkill> {
+    if (!this.loaded.has(skillName)) {
+      await this.load(skillName);
+    }
+
+    const loaded = this.loaded.get(skillName)!;
+    const config = readSkillConfig(this.skillsDir, skillName);
+
+    const skill = await instantiateSkill(loaded.manifest, config, loaded.skillDir);
+    this.instances.set(skillName, skill);
+
+    if (ctx) {
+      await skill.initialize(ctx);
+      await skill.activate();
+    }
+
+    return skill;
   }
 
-  /**
-   * Get a loaded skill by name.
-   *
-   * @param skillName - The skill name to look up.
-   * @returns The loaded skill, or undefined if not loaded.
-   */
+  getISkill(skillName: string): ISkill | undefined {
+    return this.instances.get(skillName);
+  }
+
+  unload(skillName: string): void {
+    this.loaded.delete(skillName);
+    this.instances.delete(skillName);
+  }
+
   get(skillName: string): LoadedSkill | undefined {
     return this.loaded.get(skillName);
   }
 
-  /**
-   * Get all currently loaded skills.
-   *
-   * @returns Array of all loaded skills.
-   */
   getAll(): LoadedSkill[] {
     return Array.from(this.loaded.values());
   }
-
-  /**
-   * Match user input against skill triggers.
-   *
-   * Checks slash commands first (exact prefix match), then keywords
-   * (case-insensitive substring), then regex patterns. Returns all
-   * matching manifests from the discovered set.
-   *
-   * @param userInput - The raw user input string to match.
-   * @returns Array of matching skill manifests, ordered by match type
-   *          (commands first, then keywords, then patterns).
-   */
-  /**
-   * Discover all skills that are ready to use (enabled + configured).
-   * Skills that require setup but haven't been configured are excluded.
-   * Skills explicitly disabled via config are excluded.
-   */
-  async discoverReady(): Promise<SkillManifest[]> {
-    const all = await this.discoverAll();
-    return all.filter((m) => {
-      const config = readSkillConfig(this.skillsDir, m.name);
-      if (!config.enabled) return false;
-      if (m.setup?.required && !config.configured) return false;
-      return true;
-    });
-  }
-
 
   matchSkills(userInput: string): SkillManifest[] {
     const matched = new Map<string, SkillManifest>();
     const input = userInput.trim();
     const inputLower = input.toLowerCase();
 
-    // Collect manifests from both discovered and loaded
     const allManifests = new Map<string, SkillManifest>(this.discovered);
     for (const [name, loaded] of this.loaded) {
       allManifests.set(name, loaded.manifest);
     }
 
-    // 1. Slash commands — exact prefix match
     for (const [, manifest] of allManifests) {
-      if (manifest.triggers.commands) {
-        for (const cmd of manifest.triggers.commands) {
-          if (
-            inputLower === cmd.toLowerCase() ||
-            inputLower.startsWith(cmd.toLowerCase() + ' ')
-          ) {
-            matched.set(manifest.name, manifest);
-          }
+      for (const cmd of manifest.triggers.commands ?? []) {
+        if (
+          inputLower === cmd.toLowerCase() ||
+          inputLower.startsWith(cmd.toLowerCase() + ' ')
+        ) {
+          matched.set(manifest.name, manifest);
         }
       }
     }
 
-    // 2. Keywords — case-insensitive substring
     for (const [, manifest] of allManifests) {
       if (matched.has(manifest.name)) continue;
-      if (manifest.triggers.keywords) {
-        for (const kw of manifest.triggers.keywords) {
-          if (inputLower.includes(kw.toLowerCase())) {
+      for (const kw of manifest.triggers.keywords ?? []) {
+        if (inputLower.includes(kw.toLowerCase())) {
+          matched.set(manifest.name, manifest);
+          break;
+        }
+      }
+    }
+
+    for (const [, manifest] of allManifests) {
+      if (matched.has(manifest.name)) continue;
+      for (const pattern of manifest.triggers.patterns ?? []) {
+        try {
+          if (new RegExp(pattern, 'i').test(input)) {
             matched.set(manifest.name, manifest);
             break;
           }
-        }
-      }
-    }
-
-    // 3. Regex patterns
-    for (const [, manifest] of allManifests) {
-      if (matched.has(manifest.name)) continue;
-      if (manifest.triggers.patterns) {
-        for (const pattern of manifest.triggers.patterns) {
-          try {
-            const re = new RegExp(pattern, 'i');
-            if (re.test(input)) {
-              matched.set(manifest.name, manifest);
-              break;
-            }
-          } catch {
-            // Invalid regex — skip silently
-          }
+        } catch {
+          // Invalid regex — skip
         }
       }
     }
@@ -307,64 +393,41 @@ export class SkillLoader {
     return Array.from(matched.values());
   }
 
-  /**
-   * Check if a skill's external dependencies are met.
-   *
-   * Verifies required CLI commands exist on PATH, required environment
-   * variables are set, and required skills are loaded.
-   *
-   * @param manifest - The skill manifest to check dependencies for.
-   * @returns Validation result with any unmet dependency errors.
-   */
   async checkDependencies(manifest: SkillManifest): Promise<ValidationResult> {
     const errors: string[] = [];
     const warnings: string[] = [];
 
-    // Check required commands
-    if (manifest.requires.commands) {
-      for (const cmd of manifest.requires.commands) {
-        try {
-          await execFileAsync('which', [cmd]);
-        } catch {
-          errors.push(`Required command not found: "${cmd}".`);
-        }
+    for (const cmd of manifest.requires.commands ?? []) {
+      try {
+        await execFileAsync('which', [cmd]);
+      } catch {
+        errors.push(`Required command not found: "${cmd}".`);
       }
     }
 
-    // Check required environment variables
-    if (manifest.requires.env) {
-      for (const envVar of manifest.requires.env) {
-        if (!process.env[envVar]) {
-          errors.push(`Required environment variable not set: "${envVar}".`);
-        }
+    for (const envVar of manifest.requires.env ?? []) {
+      if (!process.env[envVar]) {
+        errors.push(`Required environment variable not set: "${envVar}".`);
       }
     }
 
-    // Check required skills are loaded
-    if (manifest.requires.skills) {
-      for (const skillName of manifest.requires.skills) {
-        if (!this.loaded.has(skillName) && !this.discovered.has(skillName)) {
-          errors.push(`Required skill not available: "${skillName}".`);
-        }
+    for (const skillName of manifest.requires.skills ?? []) {
+      if (!this.loaded.has(skillName) && !this.discovered.has(skillName)) {
+        errors.push(`Required skill not available: "${skillName}".`);
       }
     }
 
-    // Ports and services are advisory warnings (can't reliably check portably)
-    if (manifest.requires.ports && manifest.requires.ports.length > 0) {
+    if ((manifest.requires.ports ?? []).length > 0) {
       warnings.push(
-        `Skill requires ports [${manifest.requires.ports.join(', ')}] — not verified at load time.`,
+        `Skill requires ports [${manifest.requires.ports!.join(', ')}] — not verified at load time.`,
       );
     }
-    if (manifest.requires.services && manifest.requires.services.length > 0) {
+    if ((manifest.requires.services ?? []).length > 0) {
       warnings.push(
-        `Skill requires services [${manifest.requires.services.join(', ')}] — not verified at load time.`,
+        `Skill requires services [${manifest.requires.services!.join(', ')}] — not verified at load time.`,
       );
     }
 
-    return {
-      valid: errors.length === 0,
-      errors,
-      warnings,
-    };
+    return { valid: errors.length === 0, errors, warnings };
   }
 }

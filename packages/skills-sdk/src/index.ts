@@ -4,30 +4,117 @@
  *
  * @example
  * ```typescript
- * import { SkillLoader, SkillExecutor, validateManifest, scaffoldSkill } from '@orionomega/skills-sdk';
+ * import {
+ *   SkillLoader,
+ *   SkillExecutor,
+ *   discoverSkills,
+ *   loadSkillManifest,
+ *   instantiateSkill,
+ *   validateManifest,
+ *   resolveSettings,
+ *   validateSettings,
+ *   getSettingsSchema,
+ *   maskSecrets,
+ *   scaffoldSkill,
+ * } from '@orionomega/skills-sdk';
  *
- * // Discover and load skills
+ * // High-level: discover and load all skills
  * const loader = new SkillLoader('/path/to/skills');
  * const manifests = await loader.discoverAll();
- * const skill = await loader.load('my-skill');
+ * const skill = await loader.load('github');
  *
- * // Match user input to skills
- * const matches = loader.matchSkills('/gh list issues');
+ * // Low-level: discover directories, load a single manifest
+ * const dirs = await discoverSkills('/path/to/skills');
+ * const manifest = await loadSkillManifest(dirs[0]);
  *
- * // Check skill config
- * import { readSkillConfig, isSkillReady } from '@orionomega/skills-sdk';
+ * // Create an ISkill instance from a manifest (async — prefers skill.js class over manifest mode)
  * const config = readSkillConfig('/path/to/skills', 'github');
+ * const instance = await instantiateSkill(manifest, config, dirs[0]);
+ * await instance.initialize(ctx);
+ *
+ * // Settings
+ * const schema = getSettingsSchema(manifest);
+ * const resolved = resolveSettings(manifest, config.fields);
+ * const { valid, errors } = validateSettings(manifest, resolved);
+ * const safe = maskSecrets(resolved, manifest);
  * ```
  */
 
-export { SkillLoader } from './loader.js';
+// ── Loader ─────────────────────────────────────────────────────────────
+
+export {
+  SkillLoader,
+  discoverSkills,
+  loadSkillManifest,
+  instantiateSkill,
+} from './loader.js';
+
+// ── Executor ───────────────────────────────────────────────────────────
+
 export { SkillExecutor } from './executor.js';
+
+// ── Validator ──────────────────────────────────────────────────────────
+
 export { validateManifest } from './validator.js';
-export { scaffoldSkill } from './scaffold.js';
+
+// ── Settings ───────────────────────────────────────────────────────────
+
+export {
+  getSettingsSchema,
+  resolveSettings,
+  validateSettings,
+  maskSecrets,
+  splitSecrets,
+  shimFieldsToSettings,
+} from './settings.js';
+
+// ── Interfaces ─────────────────────────────────────────────────────────
+
+export type { ISkill } from './interfaces.js';
+export { BaseSkill } from './interfaces.js';
+
+// ── Skill Config ───────────────────────────────────────────────────────
+
 export {
   readSkillConfig,
   writeSkillConfig,
   isSkillReady,
   listSkillConfigs,
 } from './skill-config.js';
-export type * from './types.js';
+
+// ── Scaffold ───────────────────────────────────────────────────────────
+
+export { scaffoldSkill } from './scaffold.js';
+
+// ── Types ──────────────────────────────────────────────────────────────
+
+export type {
+  // Manifest
+  SkillManifest,
+  SkillTool,
+  // Settings schema
+  SkillSettingsBlock,
+  SkillSettingSchema,
+  // Health & context
+  HealthStatus,
+  HealthErrorCode,
+  SkillLogger,
+  SkillContext,
+  // Loaded skill
+  LoadedSkill,
+  RegisteredTool,
+  // Validation
+  ValidationResult,
+  SkillInstallResult,
+  // Setup & config
+  SkillSetup,
+  SkillSetupField,
+  SkillAuthMethod,
+  SkillConfig,
+} from './types.js';
+
+export {
+  // Enums (values, not just types)
+  SkillSettingGroup,
+  SkillSettingType,
+} from './types.js';

@@ -1,146 +1,168 @@
 /**
  * @module scaffold
- * Template generator for new OrionOmega skills.
- * Creates a complete skill directory structure with manifest, docs, and scripts.
+ * Creates a new skill directory pre-populated from the built-in template.
+ *
+ * The generated skill includes a minimal `manifest.json`, a stub handler
+ * script, and a `SKILL.md` documentation template — ready to be extended
+ * by the skill author.
  */
 
-import { mkdir, writeFile, chmod } from 'node:fs/promises';
+import { mkdirSync, writeFileSync, chmodSync, existsSync } from 'node:fs';
 import path from 'node:path';
 
-/**
- * Scaffold a new skill directory with all required files.
- *
- * Creates the following structure:
- * ```
- * {name}/
- * ├── manifest.json
- * ├── SKILL.md
- * ├── scripts/
- * │   └── run.sh
- * └── tests/
- *     └── test.sh
- * ```
- *
- * @param name - The skill slug name (used as directory name and manifest name).
- * @param targetDir - Parent directory where the skill directory will be created.
- */
-export async function scaffoldSkill(name: string, targetDir: string): Promise<void> {
-  const skillDir = path.join(targetDir, name);
-  const scriptsDir = path.join(skillDir, 'scripts');
-  const testsDir = path.join(skillDir, 'tests');
+export interface ScaffoldOptions {
+  name: string;
+  description: string;
+  author: string;
+  version?: string;
+  license?: string;
+}
 
-  // Create directories
-  await mkdir(scriptsDir, { recursive: true });
-  await mkdir(testsDir, { recursive: true });
+export interface ScaffoldResult {
+  success: boolean;
+  dir: string;
+  errors: string[];
+}
 
-  // --- manifest.json ---
-  const manifest = {
-    name,
-    version: '0.1.0',
-    description: `TODO: Describe what the ${name} skill does`,
-    author: 'TODO: Your Name',
-    license: 'MIT',
-    orionomega: '>=0.1.0',
-    requires: {
-      commands: [],
-      skills: [],
-      env: [],
-    },
-    tools: [
-      {
-        name: `${name}-run`,
-        description: `Execute the ${name} skill`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            input: { type: 'string', description: 'Input value' },
+export function scaffoldSkill(
+  skillsDirOrName: string,
+  optionsOrDir: ScaffoldOptions | string,
+): ScaffoldResult {
+  let skillsDir: string;
+  let name: string;
+  let description: string;
+  let author: string;
+  let version: string;
+  let license: string;
+
+  if (typeof optionsOrDir === 'string') {
+    name = skillsDirOrName;
+    skillsDir = optionsOrDir;
+    description = `${name} skill`;
+    author = 'OrionOmega';
+    version = '0.1.0';
+    license = 'MIT';
+  } else {
+    skillsDir = skillsDirOrName;
+    ({ name, description, author, version = '0.1.0', license = 'MIT' } = optionsOrDir);
+  }
+
+  const skillDir = path.resolve(path.join(skillsDir, name));
+  const errors: string[] = [];
+
+  if (existsSync(skillDir)) {
+    return {
+      success: false,
+      dir: skillDir,
+      errors: [`Skill directory "${skillDir}" already exists. Delete it first to re-scaffold.`],
+    };
+  }
+
+  try {
+    mkdirSync(path.join(skillDir, 'handlers'), { recursive: true });
+
+    const manifest = {
+      name,
+      version,
+      description,
+      author,
+      license,
+      orionomega: '>=0.1.0',
+      requires: {
+        commands: [] as string[],
+        skills: [] as string[],
+        env: [] as string[],
+      },
+      triggers: {
+        keywords: [name],
+        commands: [`/${name}`],
+      },
+      tools: [
+        {
+          name: `${name.replace(/-/g, '_')}_example`,
+          description: `Example tool for the ${name} skill. Replace with your own implementation.`,
+          handler: 'handlers/example.js',
+          timeout: 30_000,
+          inputSchema: {
+            type: 'object',
+            properties: {
+              query: {
+                type: 'string',
+                description: 'Input query for this tool',
+              },
+            },
+            required: ['query'],
           },
         },
-        handler: 'scripts/run.sh',
-        timeout: 30000,
-      },
-    ],
-    triggers: {
-      keywords: [name],
-      patterns: [],
-      commands: [`/${name}`],
-    },
-  };
+      ],
+    };
 
-  await writeFile(
-    path.join(skillDir, 'manifest.json'),
-    JSON.stringify(manifest, null, 2) + '\n',
-    'utf-8',
-  );
+    writeFileSync(
+      path.join(skillDir, 'manifest.json'),
+      JSON.stringify(manifest, null, 2),
+      'utf-8',
+    );
 
-  // --- SKILL.md ---
-  const skillDoc = `# ${name}
+    const skillMd = `# ${name}
 
-> TODO: Brief description of the skill.
+${description}
 
-## Prerequisites
+## Tools
 
-- List any required CLI tools or services here.
+### ${name.replace(/-/g, '_')}_example
 
-## Available Tools
+Example tool — replace with a description of what this tool does.
 
-### \`${name}-run\`
+**Parameters**
 
-Execute the ${name} skill with the given input.
+| Name    | Type   | Required | Description          |
+|---------|--------|----------|----------------------|
+| \`query\` | string | yes      | Input query for this tool |
 
-**Parameters:**
-| Name  | Type   | Required | Description |
-|-------|--------|----------|-------------|
-| input | string | no       | Input value |
+**Returns**
 
-## Usage Patterns
-
-\`\`\`
-/${name} <input>
+\`\`\`json
+{ "result": "..." }
 \`\`\`
 
-## Notes
+## Examples
 
-- Add any caveats, tips, or configuration notes here.
+- "${name} example query"
+- "Use ${name} to …"
 `;
 
-  await writeFile(path.join(skillDir, 'SKILL.md'), skillDoc, 'utf-8');
+    writeFileSync(path.join(skillDir, 'SKILL.md'), skillMd, 'utf-8');
 
-  // --- scripts/run.sh ---
-  const runScript = `#!/usr/bin/env bash
-# Handler for ${name}-run tool
-# Reads JSON from stdin, returns JSON on stdout
+    const handlerJs = `#!/usr/bin/env node
+const chunks = [];
+process.stdin.on('data', (chunk) => chunks.push(chunk));
+process.stdin.on('end', () => {
+  try {
+    const input = JSON.parse(Buffer.concat(chunks).toString('utf-8'));
+    const { query } = input;
 
-set -euo pipefail
+    if (!query) {
+      process.stderr.write('Missing required parameter: query\\n');
+      process.exitCode = 1;
+      return;
+    }
 
-INPUT=$(cat)
-
-echo "{ \\"success\\": true, \\"input\\": $INPUT }"
+    const result = { result: \`${name} received: \${query}\` };
+    process.stdout.write(JSON.stringify(result));
+  } catch (err) {
+    process.stderr.write(\`Error: \${err instanceof Error ? err.message : String(err)}\\n\`);
+    process.exitCode = 1;
+  }
+});
 `;
 
-  const runPath = path.join(scriptsDir, 'run.sh');
-  await writeFile(runPath, runScript, 'utf-8');
-  await chmod(runPath, 0o755);
+    const handlerFile = path.join(skillDir, 'handlers', 'example.js');
+    writeFileSync(handlerFile, handlerJs, 'utf-8');
+    chmodSync(handlerFile, 0o755);
 
-  // --- tests/test.sh ---
-  const testScript = `#!/usr/bin/env bash
-# Basic smoke test for ${name} skill
-set -euo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "\${BASH_SOURCE[0]}")/.." && pwd)"
-
-echo '{"input":"hello"}' | "\${SCRIPT_DIR}/scripts/run.sh" > /dev/null 2>&1
-
-if [ $? -eq 0 ]; then
-  echo "PASS: run.sh executed successfully"
-  exit 0
-else
-  echo "FAIL: run.sh returned non-zero"
-  exit 1
-fi
-`;
-
-  const testPath = path.join(testsDir, 'test.sh');
-  await writeFile(testPath, testScript, 'utf-8');
-  await chmod(testPath, 0o755);
+    return { success: true, dir: skillDir, errors };
+  } catch (err) {
+    errors.push(err instanceof Error ? err.message : String(err));
+    return { success: false, dir: skillDir, errors };
+  }
 }

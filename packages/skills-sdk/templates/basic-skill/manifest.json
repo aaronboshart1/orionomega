@@ -1,0 +1,49 @@
+{
+  "$schema": "https://orionomega.dev/schemas/skill-manifest.v1.json",
+  "name": "{{SKILL_NAME}}",
+  "version": "0.1.0",
+  "description": "{{SKILL_DESCRIPTION}}",
+  "author": "{{AUTHOR}}",
+  "license": "MIT",
+  "orionomega": ">=0.1.0",
+  "requires": {
+    "commands": [],
+    "skills": [],
+    "env": []
+  },
+  "triggers": {
+    "keywords": ["{{SKILL_NAME}}"],
+    "commands": ["/{{SKILL_NAME}}"]
+  },
+  "tools": [
+    {
+      "name": "{{SKILL_NAME}}_example",
+      "description": "Example tool for {{SKILL_NAME}}. Replace with your own implementation.",
+      "handler": "handlers/example-tool.js",
+      "timeout": 30000,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Input query"
+          }
+        },
+        "required": ["query"]
+      }
+    }
+  ],
+  "settings": {
+    "type": "object",
+    "properties": {
+      "api_key": {
+        "type": "password",
+        "label": "API Key",
+        "description": "API key for the service (if needed)",
+        "required": false,
+        "group": "auth",
+        "widget": "secret"
+      }
+    }
+  }
+}

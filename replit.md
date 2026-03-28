@@ -12,7 +12,7 @@ OrionOmega is a lightweight AI agent orchestration platform with a pnpm monorepo
 | `packages/gateway` | Node.js WebSocket/HTTP backend | 8000 (console) |
 | `packages/core` | AI agent orchestration engine | — |
 | `packages/hindsight` | Memory/context persistence | — |
-| `packages/skills-sdk` | Skills plugin system | — |
+| `packages/skills-sdk` | Skills plugin system (v0.2.0 — settings, interfaces, dual-mode) | — |
 | `packages/tui` | Terminal UI | — |
 
 ## Replit Workflows
@@ -85,6 +85,21 @@ Users can place `.md` files in `~/orionomega/commands/` to create custom slash c
 - Built-in commands take priority over file commands with the same name (warning logged)
 - File commands appear in `/help` output, WebUI autocomplete (via `GET /api/commands`), and TUI autocomplete
 - Example commands ship in `commands/` at repo root and are copied during install
+
+## Skills SDK v0.2.0
+
+The skills SDK (`@orionomega/skills-sdk`) was upgraded from v0.1.0 to v0.2.0 with these additions:
+
+- **Settings system**: `settings.ts` module — schema extraction, resolution, validation, secret masking, and legacy `setup.fields` shimming
+- **TypeScript-native skills**: `interfaces.ts` module — `ISkill` interface and `BaseSkill` abstract class with lifecycle hooks (`initialize → activate → deactivate → dispose`)
+- **Dual-mode loading**: `loader.ts` auto-detects `skill.js` class files alongside `manifest.json` for in-process TypeScript skills
+- **Settings UI**: `packages/web/src/components/settings/SkillsSettings.tsx` renders per-skill settings forms from manifest schemas
+- **Gateway skills route**: `GET /api/skills` lists skills with schemas; `PUT /api/skills/:name/config` saves settings with validation
+- **Manifest `settings` block**: Default skills (`github`, `web-search`) updated with `settings` schemas and `$schema` pointers
+- **Skill class files**: `default-skills/github/skill.ts` and `default-skills/web-search/skill.ts` extend `BaseSkill`
+- **Package exports**: Sub-path exports added (`@orionomega/skills-sdk/settings`, `/interfaces`, `/loader`, etc.)
+- **Docs & templates**: `packages/skills-sdk/docs/ARCHITECTURE.md` and `packages/skills-sdk/templates/basic-skill/`
+- **Migration guide**: `packages/skills-sdk/MIGRATION.md`
 
 ## CLI Shared Utilities
 

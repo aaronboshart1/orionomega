@@ -1,178 +1,166 @@
 /**
  * @module validator
- * Manifest validation for OrionOmega skills.
- * Validates structure, semver, platform compatibility, and tool definitions
- * without touching the filesystem.
+ * Validates skill manifests against the SkillManifest schema.
+ *
+ * The validator performs structural and semantic checks without requiring
+ * a full JSON Schema library, keeping the package lightweight. It reports
+ * all errors in a single pass so authors can fix multiple issues at once.
  */
 
 import type { SkillManifest, ValidationResult } from './types.js';
 
-/** Loose semver regex — matches X.Y.Z with optional pre-release/build. */
-const SEMVER_RE =
-  /^\d+\.\d+\.\d+(?:-[\dA-Za-z-]+(?:\.[\dA-Za-z-]+)*)?(?:\+[\dA-Za-z-]+(?:\.[\dA-Za-z-]+)*)?$/;
-
-/** Matches common semver range operators used in compatibility strings. */
-const SEMVER_RANGE_RE =
-  /^(?:[~^]|[><=!]+\s*)?\d+(?:\.\d+(?:\.\d+)?)?(?:\s*(?:[-|]|&&|\|\|)\s*(?:[~^]|[><=!]+\s*)?\d+(?:\.\d+(?:\.\d+)?)?)*$/;
-
-/**
- * Parse a semver string into its numeric components.
- * Returns null if the string is not valid semver.
- */
-function parseSemver(v: string): { major: number; minor: number; patch: number } | null {
-  const m = v.match(/^(\d+)\.(\d+)\.(\d+)/);
-  if (!m) return null;
-  return { major: Number(m[1]), minor: Number(m[2]), patch: Number(m[3]) };
-}
-
-/**
- * Very simple compatibility check: extracts a base version from a range string
- * and ensures currentVersion >= that base. Supports ^, ~, >=, and bare versions.
- * For anything more complex, this returns true (benefit of the doubt) with a warning.
- */
-function isCompatible(range: string, currentVersion: string): boolean | null {
-  const current = parseSemver(currentVersion);
-  if (!current) return null;
-
-  // Extract the first version-like segment from the range
-  const m = range.match(/(\d+\.\d+\.\d+)/);
-  if (!m) return null;
-
-  const base = parseSemver(m[1]);
-  if (!base) return null;
-
-  // Simple >=: current must be >= base
-  const currentNum = current.major * 1_000_000 + current.minor * 1_000 + current.patch;
-  const baseNum = base.major * 1_000_000 + base.minor * 1_000 + base.patch;
-
-  return currentNum >= baseNum;
-}
-
-/**
- * Validate a skill manifest for structural correctness.
- *
- * Checks required fields, semver validity, platform compatibility,
- * and tool definition completeness. Does **not** check filesystem paths.
- *
- * @param manifest - The skill manifest to validate.
- * @param currentVersion - The running OrionOmega version, for compatibility checks.
- * @returns A {@link ValidationResult} with errors and warnings.
- */
-export function validateManifest(
-  manifest: SkillManifest,
-  currentVersion?: string,
-): ValidationResult {
+export function validateManifest(manifest: SkillManifest): ValidationResult {
   const errors: string[] = [];
   const warnings: string[] = [];
 
-  // --- Required string fields ---
-  const requiredStrings: (keyof SkillManifest)[] = [
-    'name',
-    'version',
-    'description',
-    'author',
-    'license',
-    'orionomega',
-  ];
+  // ── Required identity fields ──────────────────────────────────────────
 
-  for (const field of requiredStrings) {
-    const val = manifest[field];
-    if (val === undefined || val === null || (typeof val === 'string' && val.trim() === '')) {
-      errors.push(`Missing required field: "${field}".`);
+  if (!manifest.name || typeof manifest.name !== 'string') {
+    errors.push('manifest.name is required and must be a string');
+  } else {
+    if (!/^[a-z][a-z0-9-]*$/.test(manifest.name)) {
+      warnings.push(
+        `manifest.name "${manifest.name}" should be lowercase kebab-case (e.g. "my-skill")`,
+      );
     }
   }
 
-  // --- Semver version ---
-  if (manifest.version && !SEMVER_RE.test(manifest.version)) {
+  if (!manifest.version || typeof manifest.version !== 'string') {
     errors.push(
-      `Invalid semver version "${manifest.version}". Expected format: X.Y.Z[-prerelease][+build].`,
+      'manifest.version is required (semver string, e.g. "1.0.0")',
     );
   }
 
-  // --- Compatibility range ---
-  if (manifest.orionomega) {
-    if (!SEMVER_RANGE_RE.test(manifest.orionomega.trim())) {
+  if (!manifest.description || typeof manifest.description !== 'string') {
+    errors.push('manifest.description is required');
+  }
+
+  if (!manifest.author || typeof manifest.author !== 'string') {
+    errors.push('manifest.author is required');
+  }
+
+  if (!manifest.license || typeof manifest.license !== 'string') {
+    errors.push(
+      'manifest.license is required (SPDX identifier, e.g. "MIT")',
+    );
+  }
+
+  // ── Compatibility ─────────────────────────────────────────────────────
+
+  if (!manifest.orionomega || typeof manifest.orionomega !== 'string') {
+    errors.push(
+      'manifest.orionomega is required (version range, e.g. ">=0.1.0")',
+    );
+  }
+
+  // ── Dependencies ─────────────────────────────────────────────────────
+
+  if (!manifest.requires || typeof manifest.requires !== 'object' || Array.isArray(manifest.requires)) {
+    errors.push(
+      'manifest.requires is required (use {} for no requirements)',
+    );
+  } else {
+    for (const field of ['commands', 'skills', 'env', 'ports', 'services'] as const) {
+      const val = manifest.requires[field];
+      if (val !== undefined && !Array.isArray(val)) {
+        errors.push(`manifest.requires.${field} must be an array`);
+      }
+    }
+  }
+
+  // ── Triggers ──────────────────────────────────────────────────────────
+
+  if (!manifest.triggers || typeof manifest.triggers !== 'object' || Array.isArray(manifest.triggers)) {
+    errors.push('manifest.triggers is required');
+  } else {
+    const { keywords, patterns, commands } = manifest.triggers;
+    if (keywords !== undefined && !Array.isArray(keywords)) {
+      errors.push('manifest.triggers.keywords must be an array');
+    }
+    if (patterns !== undefined && !Array.isArray(patterns)) {
+      errors.push('manifest.triggers.patterns must be an array');
+    }
+    if (commands !== undefined && !Array.isArray(commands)) {
+      errors.push('manifest.triggers.commands must be an array');
+    }
+
+    const hasAnyTrigger =
+      (keywords?.length ?? 0) > 0 ||
+      (patterns?.length ?? 0) > 0 ||
+      (commands?.length ?? 0) > 0;
+
+    if (!hasAnyTrigger) {
       warnings.push(
-        `Compatibility range "${manifest.orionomega}" could not be parsed — skipping range check.`,
+        'manifest.triggers has no keywords, patterns, or commands — the skill will never match user input automatically',
       );
-    } else if (currentVersion) {
-      const compat = isCompatible(manifest.orionomega, currentVersion);
-      if (compat === false) {
+    }
+
+    for (const pattern of patterns ?? []) {
+      try {
+        new RegExp(pattern);
+      } catch {
         errors.push(
-          `Skill requires orionomega "${manifest.orionomega}" but current version is "${currentVersion}".`,
-        );
-      } else if (compat === null) {
-        warnings.push(
-          `Could not parse current version "${currentVersion}" for compatibility check.`,
+          `manifest.triggers.patterns contains an invalid regex: "${pattern}"`,
         );
       }
     }
   }
 
-  // --- OS compatibility ---
-  if (manifest.os && manifest.os.length > 0) {
-    const platform = process.platform;
-    // Map Node platform names to common manifest values
-    const platformMap: Record<string, string> = {
-      linux: 'linux',
-      darwin: 'darwin',
-      win32: 'windows',
-    };
-    const currentOs = platformMap[platform] ?? platform;
-    if (!manifest.os.includes(currentOs)) {
-      warnings.push(
-        `Skill lists supported OS [${manifest.os.join(', ')}] but current platform is "${currentOs}".`,
-      );
-    }
-  }
+  // ── Tools ─────────────────────────────────────────────────────────────
 
-  // --- Arch compatibility ---
-  if (manifest.arch && manifest.arch.length > 0) {
-    const currentArch = process.arch;
-    if (!manifest.arch.includes(currentArch)) {
-      warnings.push(
-        `Skill lists supported architectures [${manifest.arch.join(', ')}] but current arch is "${currentArch}".`,
-      );
-    }
-  }
+  if (manifest.tools !== undefined) {
+    if (!Array.isArray(manifest.tools)) {
+      errors.push('manifest.tools must be an array');
+    } else {
+      for (const [i, tool] of manifest.tools.entries()) {
+        if (!tool.name || typeof tool.name !== 'string') {
+          errors.push(`manifest.tools[${i}].name is required`);
+        } else if (!/^[a-z][a-z0-9_]*$/.test(tool.name)) {
+          warnings.push(
+            `tools[${i}].name "${tool.name}" should be snake_case (e.g. "my_tool")`,
+          );
+        }
 
-  // --- Requires block ---
-  if (!manifest.requires || typeof manifest.requires !== 'object') {
-    errors.push('Missing required field: "requires" (must be an object).');
-  }
+        if (!tool.description || typeof tool.description !== 'string') {
+          errors.push(`manifest.tools[${i}].description is required`);
+        }
 
-  // --- Triggers block ---
-  if (!manifest.triggers || typeof manifest.triggers !== 'object') {
-    errors.push('Missing required field: "triggers" (must be an object).');
-  }
+        if (!tool.handler || typeof tool.handler !== 'string') {
+          errors.push(`manifest.tools[${i}].handler is required`);
+        }
 
-  // --- Tool definitions ---
-  if (manifest.tools && Array.isArray(manifest.tools)) {
-    for (let i = 0; i < manifest.tools.length; i++) {
-      const tool = manifest.tools[i];
-      const prefix = `tools[${i}]`;
+        if (!tool.inputSchema || typeof tool.inputSchema !== 'object') {
+          errors.push(
+            `manifest.tools[${i}].inputSchema is required and must be an object`,
+          );
+        } else if ((tool.inputSchema as Record<string, unknown>).type !== 'object') {
+          errors.push(
+            `manifest.tools[${i}].inputSchema must have type "object" at the top level`,
+          );
+        }
 
-      if (!tool.name || typeof tool.name !== 'string' || tool.name.trim() === '') {
-        errors.push(`${prefix}: Missing or empty "name".`);
-      }
-      if (!tool.handler || typeof tool.handler !== 'string' || tool.handler.trim() === '') {
-        errors.push(`${prefix}: Missing or empty "handler".`);
-      }
-      if (!tool.inputSchema || typeof tool.inputSchema !== 'object') {
-        errors.push(`${prefix}: Missing or invalid "inputSchema" (must be an object).`);
-      }
-      if (!tool.description || typeof tool.description !== 'string') {
-        warnings.push(`${prefix}: Missing "description" — recommended for discoverability.`);
-      }
-      if (tool.timeout !== undefined && (typeof tool.timeout !== 'number' || tool.timeout <= 0)) {
-        warnings.push(`${prefix}: "timeout" should be a positive number (ms).`);
+        if (tool.timeout !== undefined && typeof tool.timeout !== 'number') {
+          errors.push(
+            `manifest.tools[${i}].timeout must be a number (milliseconds)`,
+          );
+        }
       }
     }
   }
 
-  return {
-    valid: errors.length === 0,
-    errors,
-    warnings,
-  };
+  // ── Settings block (optional) ─────────────────────────────────────────
+
+  if (manifest.settings !== undefined) {
+    if (manifest.settings.type !== 'object') {
+      errors.push('manifest.settings.type must be "object"');
+    }
+    if (
+      !manifest.settings.properties ||
+      typeof manifest.settings.properties !== 'object'
+    ) {
+      errors.push('manifest.settings.properties is required and must be an object');
+    }
+  }
+
+  return { valid: errors.length === 0, errors, warnings };
 }

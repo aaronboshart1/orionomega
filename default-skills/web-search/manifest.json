@@ -1,6 +1,7 @@
 {
+  "$schema": "https://orionomega.dev/schemas/skill-manifest.v1.json",
   "name": "web-search",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Search the web using DuckDuckGo and return formatted results with titles, URLs, and snippets",
   "author": "OrionOmega",
   "license": "MIT",
@@ -36,6 +37,43 @@
       }
     }
   ],
+  "settings": {
+    "type": "object",
+    "properties": {
+      "default_count": {
+        "type": "number",
+        "label": "Default Result Count",
+        "description": "Number of search results to return when count is not specified (1-20)",
+        "default": 5,
+        "required": false,
+        "group": "preferences",
+        "validation": {
+          "min": 1,
+          "max": 20
+        }
+      },
+      "max_chars": {
+        "type": "number",
+        "label": "Max Characters per Snippet",
+        "description": "Maximum characters to return per search result snippet",
+        "default": 500,
+        "required": false,
+        "group": "advanced",
+        "validation": {
+          "min": 100,
+          "max": 5000
+        }
+      },
+      "user_agent": {
+        "type": "string",
+        "label": "User Agent",
+        "description": "Custom User-Agent header for web requests",
+        "placeholder": "OrionOmega/1.0",
+        "required": false,
+        "group": "advanced"
+      }
+    }
+  },
   "workerProfile": {
     "tier": "lightweight",
     "tools": ["web_search"],

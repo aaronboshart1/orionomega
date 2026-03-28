@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import FocusTrap from 'focus-trap-react';
 import { X, Eye, EyeOff, Save, Loader2, CheckCircle, AlertCircle, ChevronDown, RefreshCw } from 'lucide-react';
 import { TabGroup, type TabDef } from '../shared/TabGroup';
+import { SkillsTab as SkillsSettingsTab } from './SkillsSettings';
 import { Z } from '@/lib/z-index';
 
 type TabId = 'omegaclaw' | 'memory' | 'skills' | 'webui';
@@ -682,7 +683,7 @@ function MemoryTab({
   );
 }
 
-function SkillsTab({
+function SkillsConfigTab({
   config,
   onChange,
 }: {
@@ -704,6 +705,23 @@ function SkillsTab({
           onChange={(v) => onChange('skills.autoLoad', v)}
         />
       </FormField>
+    </div>
+  );
+}
+
+function SkillsTab({
+  config,
+  onChange,
+}: {
+  config: ConfigData;
+  onChange: (path: string, value: unknown) => void;
+}) {
+  return (
+    <div className="space-y-4">
+      <SkillsConfigTab config={config} onChange={onChange} />
+      <div className="border-t border-zinc-800 pt-4">
+        <SkillsSettingsTab />
+      </div>
     </div>
   );
 }

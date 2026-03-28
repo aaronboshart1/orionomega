@@ -1,6 +1,7 @@
 {
+  "$schema": "https://orionomega.dev/schemas/skill-manifest.v1.json",
   "name": "github",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Full-featured GitHub integration via the gh CLI. Manage repositories, issues, pull requests, CI/CD workflows, releases, code search, and the GitHub API. Designed for autonomous orchestration workflows.",
   "author": "OrionOmega",
   "license": "MIT",
@@ -402,6 +403,28 @@
     "tier": "lightweight",
     "tools": ["gh_repo", "gh_issue", "gh_pr", "gh_workflow", "gh_release", "gh_api"],
     "maxTimeout": 120000
+  },
+  "settings": {
+    "type": "object",
+    "properties": {
+      "gh_token": {
+        "type": "password",
+        "label": "GitHub Token",
+        "description": "Personal access token or OAuth token for GitHub API access",
+        "placeholder": "ghp_xxxxxxxxxxxx",
+        "required": false,
+        "group": "auth",
+        "widget": "secret"
+      },
+      "default_owner": {
+        "type": "string",
+        "label": "Default Repository Owner",
+        "description": "Your GitHub username or org — used when --repo is omitted",
+        "placeholder": "my-org",
+        "required": false,
+        "group": "preferences"
+      }
+    }
   },
   "hooks": {
     "healthCheck": "hooks/health.js",

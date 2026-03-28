@@ -1,62 +1,104 @@
 /**
  * @module skill-config
- * Read, write, and query per-skill configuration files.
- * Config is stored at `{skillsDir}/{name}/config.json`.
+ * Read, write, and query persisted skill configuration files.
+ *
+ * Configuration files are stored at:
+ *   `{skillsDir}/{skillName}/config.json`
+ *
+ * All functions are synchronous to avoid requiring callers to `await` simple
+ * config reads in hot paths (e.g. skill trigger matching and health checks).
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { readFileSync, writeFileSync, mkdirSync, readdirSync, existsSync } from 'node:fs';
+import path from 'node:path';
 import type { SkillConfig, SkillManifest } from './types.js';
 
-/**
- * Read a skill's configuration.
- * Returns a default config if the file doesn't exist.
- */
-export function readSkillConfig(skillsDir: string, name: string): SkillConfig {
-  const configPath = join(skillsDir, name, 'config.json');
+function configPath(skillsDir: string, skillName: string): string {
+  return path.join(path.resolve(skillsDir), skillName, 'config.json');
+}
+
+function defaultConfig(skillName: string): SkillConfig {
+  return {
+    name: skillName,
+    enabled: true,
+    configured: false,
+    fields: {},
+  };
+}
+
+export function readSkillConfig(skillsDir: string, skillName: string): SkillConfig {
+  const p = configPath(skillsDir, skillName);
+
+  if (!existsSync(p)) {
+    return defaultConfig(skillName);
+  }
+
   try {
-    const raw = readFileSync(configPath, 'utf-8');
-    return JSON.parse(raw) as SkillConfig;
-  } catch {
+    const raw = readFileSync(p, 'utf-8');
+    const parsed = JSON.parse(raw) as SkillConfig;
     return {
-      name,
-      enabled: true,
-      configured: false,
-      fields: {},
+      name: parsed.name ?? skillName,
+      enabled: parsed.enabled ?? true,
+      configured: parsed.configured ?? false,
+      authMethod: parsed.authMethod,
+      configuredAt: parsed.configuredAt,
+      fields: parsed.fields ?? {},
     };
+  } catch {
+    return defaultConfig(skillName);
   }
 }
 
-/**
- * Write a skill's configuration.
- * Creates the skill directory if it doesn't exist.
- */
-export function writeSkillConfig(skillsDir: string, config: SkillConfig): void {
-  const dir = join(skillsDir, config.name);
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
+export function writeSkillConfig(
+  skillsDir: string,
+  skillNameOrConfig: string | SkillConfig,
+  config?: SkillConfig,
+): void {
+  let skillName: string;
+  let configObj: SkillConfig;
+
+  if (typeof skillNameOrConfig === 'string') {
+    skillName = skillNameOrConfig;
+    configObj = config!;
+  } else {
+    configObj = skillNameOrConfig;
+    skillName = configObj.name;
   }
-  const configPath = join(dir, 'config.json');
-  writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n', 'utf-8');
+
+  const dir = path.join(path.resolve(skillsDir), skillName);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    path.join(dir, 'config.json'),
+    JSON.stringify(configObj, null, 2),
+    'utf-8',
+  );
 }
 
-/**
- * Check if a skill is configured and enabled.
- * A skill that has no setup.required is always considered configured.
- */
-export function isSkillReady(skillsDir: string, manifest: SkillManifest): boolean {
-  const config = readSkillConfig(skillsDir, manifest.name);
+export function isSkillReady(config: SkillConfig, manifest: SkillManifest): boolean {
   if (!config.enabled) return false;
-  if (!manifest.setup?.required) return true;
-  return config.configured;
+  if (manifest.setup?.required && !config.configured) return false;
+  return true;
 }
 
-/**
- * Get configs for all skills in a directory.
- */
-export function listSkillConfigs(skillsDir: string, manifests: SkillManifest[]): Array<SkillConfig & { manifest: SkillManifest }> {
-  return manifests.map((m) => ({
-    ...readSkillConfig(skillsDir, m.name),
-    manifest: m,
-  }));
+export function listSkillConfigs(skillsDir: string): SkillConfig[] {
+  const resolved = path.resolve(skillsDir);
+  const configs: SkillConfig[] = [];
+
+  if (!existsSync(resolved)) {
+    return configs;
+  }
+
+  try {
+    const entries = readdirSync(resolved, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const p = path.join(resolved, entry.name, 'config.json');
+      if (!existsSync(p)) continue;
+      configs.push(readSkillConfig(resolved, entry.name));
+    }
+  } catch {
+    // Return whatever we collected before the error
+  }
+
+  return configs;
 }
