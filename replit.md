@@ -137,7 +137,7 @@ The orchestration pane now opens by default with a "Memory" tab as the first tab
 - **Frontend**: `MemoryFeed` component in `packages/web/src/components/orchestration/MemoryFeed.tsx` renders events with color-coded icons per operation type
 - **OrchestrationPane**: single-row tablist with a "Memory" tab (default) and per-workflow tabs rendered inline (no separate WorkflowTabs component)
 - **page.tsx**: orchestration pane toggle is always visible (not gated on workflow existence); uses `orchPaneOpen` from store
-- Memory events are ephemeral (not persisted to localStorage), capped at 200
+- Memory events are persisted to localStorage (via `partialize`), capped at 200
 
 ## Multi-Workflow Tabs
 

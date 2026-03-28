@@ -52,7 +52,7 @@ Most AI agent frameworks grow into monoliths — hundreds of plugins, abstractio
 - 🤖 **Anthropic-native** — built for Claude models (Haiku, Sonnet, Opus) with native fetch, no SDK overhead
 - ⚡ **Lean footprint** — six focused packages, minimal dependencies
 - 🛠️ **Slash commands** — `/stop`, `/status`, `/restart`, `/reset`, `/plan`, `/workers`
-- 🔒 **Secure gateway** — API-key-hashed auth, local-bind-only by default, CORS allowlist
+- 🔒 **Secure gateway** — supports API-key-hashed auth, configurable bind address, CORS allowlist (defaults are permissive; see Configuration section to harden)
 
 ---
 
