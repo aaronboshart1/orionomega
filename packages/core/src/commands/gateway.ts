@@ -19,10 +19,10 @@ const RESET = '\x1b[0m';
 
 const PID_FILE = join(homedir(), '.orionomega', 'gateway.pid');
 
-/** Check whether systemd is available. */
+/** Check whether systemd is available AND the orionomega unit is installed. */
 function hasSystemd(): boolean {
   try {
-    execSync('systemctl --version', { stdio: 'ignore' });
+    execSync('systemctl cat orionomega 2>/dev/null', { stdio: 'ignore' });
     return true;
   } catch {
     return false;
@@ -146,8 +146,19 @@ export async function runGateway(args: string[]): Promise<void> {
     // Use systemd
     try {
       if (sub === 'status') {
-        const out = execSync('systemctl status orionomega 2>&1', { encoding: 'utf-8' });
-        process.stdout.write(out + '\n');
+        try {
+          const out = execSync('systemctl is-active orionomega 2>&1', { encoding: 'utf-8' }).trim();
+          if (out === 'active') {
+            const config = readConfig();
+            const pid = execSync('systemctl show orionomega --property=MainPID --value 2>/dev/null', { encoding: 'utf-8' }).trim();
+            process.stdout.write(`${GREEN}✓${RESET} Gateway is running (PID ${pid}, port ${config.gateway.port}, systemd)\n`);
+          } else {
+            process.stdout.write(`${RED}✗${RESET} Gateway is ${out} (systemd)\n`);
+          }
+        } catch {
+          process.stdout.write(`${RED}✗${RESET} Gateway is not running (systemd)\n`);
+        }
+        return;
       } else {
         // Use sudo for service management — avoids polkit auth prompts.
         // A passwordless sudoers rule should be in /etc/sudoers.d/orionomega.

@@ -289,8 +289,19 @@ export async function runUI(args: string[]): Promise<void> {
   if (hasSystemd() && hasSystemdUnit()) {
     try {
       if (sub === 'status') {
-        const out = execSync(`systemctl status ${SYSTEMD_UNIT} 2>&1`, { encoding: 'utf-8' });
-        process.stdout.write(out + '\n');
+        try {
+          const active = execSync(`systemctl is-active ${SYSTEMD_UNIT} 2>&1`, { encoding: 'utf-8' }).trim();
+          if (active === 'active') {
+            const fullConfig = readConfig();
+            const pid = execSync(`systemctl show ${SYSTEMD_UNIT} --property=MainPID --value 2>/dev/null`, { encoding: 'utf-8' }).trim();
+            process.stdout.write(`${GREEN}✓${RESET} Web UI is running (PID ${pid}, port ${fullConfig.webui.port}, systemd)\n`);
+          } else {
+            process.stdout.write(`${RED}✗${RESET} Web UI is ${active} (systemd)\n`);
+          }
+        } catch {
+          process.stdout.write(`${RED}✗${RESET} Web UI is not running (systemd)\n`);
+        }
+        return;
       } else {
         execSync(`sudo systemctl ${sub} ${SYSTEMD_UNIT}`, { stdio: 'inherit' });
         const pastTense: Record<string, string> = { start: 'started', stop: 'stopped', restart: 'restarted' };
