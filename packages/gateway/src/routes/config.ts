@@ -5,7 +5,7 @@ import { validateToken } from '../auth.js';
 import type { GatewayConfig } from '../types.js';
 
 const VALID_TOP_LEVEL_KEYS = new Set([
-  'gateway', 'hindsight', 'models', 'orchestration', 'workspace', 'logging', 'skills', 'autonomous', 'agentSdk',
+  'gateway', 'hindsight', 'models', 'orchestration', 'workspace', 'logging', 'skills', 'autonomous', 'agentSdk', 'webui', 'commands',
 ]);
 
 const VALID_AUTH_MODES = new Set(['api-key', 'none']);
@@ -192,6 +192,22 @@ function validateConfig(config: Record<string, unknown>): string[] {
     }
     if (skills.autoLoad !== undefined && typeof skills.autoLoad !== 'boolean') {
       errors.push('skills.autoLoad must be a boolean');
+    }
+  }
+
+  const webui = config.webui as Record<string, unknown> | undefined;
+  if (webui) {
+    if (webui.port !== undefined && (typeof webui.port !== 'number' || webui.port < 1 || webui.port > 65535)) {
+      errors.push('webui.port must be a number between 1 and 65535');
+    }
+    if (webui.bind !== undefined && typeof webui.bind !== 'string') {
+      if (Array.isArray(webui.bind)) {
+        if (!webui.bind.every((b: unknown) => typeof b === 'string')) {
+          errors.push('webui.bind array entries must be strings');
+        }
+      } else {
+        errors.push('webui.bind must be a string or array of strings');
+      }
     }
   }
 

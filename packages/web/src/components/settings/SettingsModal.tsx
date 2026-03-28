@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { X, Eye, EyeOff, Save, Loader2, CheckCircle, AlertCircle, ChevronDown, RefreshCw } from 'lucide-react';
 
-type TabId = 'omegaclaw' | 'memory' | 'skills';
+type TabId = 'omegaclaw' | 'memory' | 'skills' | 'webui';
 
 interface SettingsModalProps {
   open: boolean;
@@ -698,8 +698,43 @@ function SkillsTab({
   );
 }
 
+function WebUITab({
+  config,
+  onChange,
+}: {
+  config: ConfigData;
+  onChange: (path: string, value: unknown) => void;
+}) {
+  return (
+    <div className="space-y-2">
+      <SectionTitle>Web UI Server</SectionTitle>
+      <FormField label="Port">
+        <NumberInput
+          value={Number(getNestedValue(config, 'webui.port') ?? 5000)}
+          onChange={(v) => onChange('webui.port', v)}
+        />
+      </FormField>
+      <FormField label="Bind Addresses">
+        <TextInput
+          value={(() => {
+            const bind = getNestedValue(config, 'webui.bind');
+            if (Array.isArray(bind)) return bind.join(', ');
+            return String(bind ?? '0.0.0.0');
+          })()}
+          onChange={(v) => onChange('webui.bind', v.split(',').map((s) => s.trim()).filter(Boolean))}
+          placeholder="0.0.0.0, 127.0.0.1"
+        />
+      </FormField>
+      <div className="mt-4 rounded-md border border-zinc-800 bg-zinc-900/50 px-3 py-2 text-[11px] text-zinc-500 leading-relaxed">
+        The Web UI port and bind addresses control where the <span className="text-zinc-400">orionomega ui</span> command serves the web interface.
+        CLI flags and environment variables (<span className="text-zinc-400">HOST</span>, <span className="text-zinc-400">PORT</span>) override these values at launch time.
+      </div>
+    </div>
+  );
+}
+
 function getTabValidity(config: ConfigData | null): Record<TabId, boolean> {
-  if (!config) return { omegaclaw: false, memory: false, skills: false };
+  if (!config) return { omegaclaw: false, memory: false, skills: false, webui: false };
 
   const apiKey = String(getNestedValue(config, 'models.apiKey') ?? '');
   const defaultModel = String(getNestedValue(config, 'models.default') ?? '');
@@ -713,13 +748,17 @@ function getTabValidity(config: ConfigData | null): Record<TabId, boolean> {
   const skillsDir = String(getNestedValue(config, 'skills.directory') ?? '');
   const skillsValid = skillsDir.length > 0;
 
-  return { omegaclaw: omegaclawValid, memory: memoryValid, skills: skillsValid };
+  const webuiPort = Number(getNestedValue(config, 'webui.port') ?? 0);
+  const webuiValid = webuiPort > 0 && webuiPort <= 65535;
+
+  return { omegaclaw: omegaclawValid, memory: memoryValid, skills: skillsValid, webui: webuiValid };
 }
 
 const TABS: { id: TabId; label: string }[] = [
   { id: 'omegaclaw', label: 'OmegaClaw' },
   { id: 'memory', label: 'Memory' },
   { id: 'skills', label: 'Skills' },
+  { id: 'webui', label: 'WebUI' },
 ];
 
 export function SettingsModal({ open, onClose }: SettingsModalProps) {
@@ -873,6 +912,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
               {activeTab === 'omegaclaw' && <OmegaClawTab config={config} onChange={handleChange} models={anthropicModels} modelsLoading={modelsLoading} onRefreshModels={refetchModels} />}
               {activeTab === 'memory' && <MemoryTab config={config} onChange={handleChange} />}
               {activeTab === 'skills' && <SkillsTab config={config} onChange={handleChange} />}
+              {activeTab === 'webui' && <WebUITab config={config} onChange={handleChange} />}
             </>
           )}
         </div>
