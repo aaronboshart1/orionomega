@@ -6,7 +6,7 @@
  */
 
 import { execSync, spawn } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, symlinkSync, unlinkSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -127,6 +127,25 @@ export function stopGateway(port = 8000): number | null {
   return gatewayPid;
 }
 
+export function relinkCli(installDir: string): void {
+  const binDir = join(homedir(), '.orionomega', 'bin');
+  const binTarget = join(binDir, 'orionomega');
+  const binScript = join(installDir, 'packages', 'core', 'bin', 'orionomega');
+  const cliJs = join(installDir, 'packages', 'core', 'dist', 'cli.js');
+
+  mkdirSync(binDir, { recursive: true });
+
+  try { unlinkSync(binTarget); } catch { /* doesn't exist yet */ }
+
+  if (existsSync(binScript)) {
+    symlinkSync(binScript, binTarget);
+    try { chmodSync(binScript, 0o755); } catch { /* ok */ }
+  } else if (existsSync(cliJs)) {
+    writeFileSync(binTarget, `#!/usr/bin/env bash\nexec node "${cliJs}" "$@"\n`, 'utf-8');
+    chmodSync(binTarget, 0o755);
+  }
+}
+
 export function startGateway(installDir: string): number | null {
   const gatewayEntry = join(installDir, 'packages', 'gateway', 'dist', 'server.js');
   const child = spawn(process.execPath, [gatewayEntry], {
@@ -170,6 +189,8 @@ export async function runUpdate(): Promise<void> {
   });
 
   if (!ok) return;
+
+  relinkCli(installDir);
 
   process.stdout.write(`\n  ${DIM}Starting gateway...${RESET} `);
   const pid = startGateway(installDir);

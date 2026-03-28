@@ -40,9 +40,12 @@ echo ""
 # ═══════════════════════════════════════════════════════════════
 step "Preflight Checks"
 
-# Linux only
-[[ "$(uname -s)" == "Linux" ]] || die "OrionOmega requires Linux. Detected: $(uname -s)"
-ok "Linux detected"
+OS="$(uname -s)"
+case "$OS" in
+    Linux)  ok "Linux detected" ;;
+    Darwin) ok "macOS detected" ;;
+    *)      die "Unsupported OS: $OS. OrionOmega supports Linux and macOS." ;;
+esac
 
 # Root or sudo
 if [[ "$EUID" -ne 0 ]]; then
@@ -62,7 +65,9 @@ case "$ARCH" in
 esac
 
 # Package manager detection
-if command -v apt-get &>/dev/null; then
+if command -v brew &>/dev/null; then
+    PKG="brew"
+elif command -v apt-get &>/dev/null; then
     PKG="apt"
 elif command -v dnf &>/dev/null; then
     PKG="dnf"
@@ -79,6 +84,7 @@ fi
 if ! command -v git &>/dev/null; then
     info "Installing git..."
     case "$PKG" in
+        brew)   brew install git ;;
         apt)    $SUDO apt-get update -qq && $SUDO apt-get install -y -qq git ;;
         dnf)    $SUDO dnf install -y -q git ;;
         yum)    $SUDO yum install -y -q git ;;
@@ -92,6 +98,7 @@ ok "git $(git --version | awk '{print $3}')"
 if ! command -v curl &>/dev/null; then
     info "Installing curl..."
     case "$PKG" in
+        brew)   brew install curl ;;
         apt)    $SUDO apt-get install -y -qq curl ;;
         dnf)    $SUDO dnf install -y -q curl ;;
         yum)    $SUDO yum install -y -q curl ;;
@@ -107,8 +114,12 @@ ok "curl available"
 step "Node.js"
 
 install_node() {
-    info "Installing Node.js 22 via NodeSource..."
+    info "Installing Node.js 22..."
     case "$PKG" in
+        brew)
+            brew install node@22
+            brew link --overwrite node@22 2>/dev/null || true
+            ;;
         apt)
             curl -fsSL https://deb.nodesource.com/setup_22.x | $SUDO -E bash - 2>/dev/null
             $SUDO apt-get install -y -qq nodejs
@@ -161,12 +172,12 @@ else
         warn "Backed up existing $INSTALL_DIR"
     fi
     info "Cloning repository..."
-    $SUDO git clone --depth 1 "$REPO_URL" "$INSTALL_DIR" || die "Failed to clone. Check network and try again."
+    git clone --depth 1 "$REPO_URL" "$INSTALL_DIR" || die "Failed to clone. Check network and try again."
     ok "Cloned to $INSTALL_DIR"
 fi
 
-# Fix ownership and git safe.directory
-[[ -n "${SUDO:-}" ]] && $SUDO chown -R "$(id -u):$(id -g)" "$INSTALL_DIR"
+# Fix ownership and git safe.directory (only needed on Linux with sudo)
+[[ -n "${SUDO:-}" && "$OS" == "Linux" ]] && $SUDO chown -R "$(id -u):$(id -g)" "$INSTALL_DIR"
 git config --global --add safe.directory "$INSTALL_DIR" 2>/dev/null || true
 
 # Set git identity if not configured (needed for merge/pull operations)
@@ -202,25 +213,52 @@ step "CLI"
 
 CLI_JS="$INSTALL_DIR/packages/core/dist/cli.js"
 BIN_SCRIPT="$INSTALL_DIR/packages/core/bin/orionomega"
-BIN_TARGET="/usr/local/bin/orionomega"
+BIN_DIR="$CONFIG_DIR/bin"
+BIN_TARGET="$BIN_DIR/orionomega"
 
-# Create a proper wrapper script if the bin entry exists
+# Remove stale /usr/local/bin/orionomega if it exists (legacy installs)
+if [[ -f "/usr/local/bin/orionomega" ]]; then
+    $SUDO rm -f "/usr/local/bin/orionomega" 2>/dev/null || true
+    info "Removed stale /usr/local/bin/orionomega from previous install"
+fi
+
+mkdir -p "$BIN_DIR"
+
 if [[ -f "$BIN_SCRIPT" ]]; then
-    $SUDO ln -sf "$BIN_SCRIPT" "$BIN_TARGET" 2>/dev/null || true
-    $SUDO chmod +x "$BIN_SCRIPT" 2>/dev/null || true
+    ln -sf "$BIN_SCRIPT" "$BIN_TARGET"
+    chmod +x "$BIN_SCRIPT" 2>/dev/null || true
 elif [[ -f "$CLI_JS" ]]; then
-    # Fallback: create a shell wrapper that invokes node
-    $SUDO tee "$BIN_TARGET" >/dev/null <<WRAPPER
+    cat > "$BIN_TARGET" <<WRAPPER
 #!/usr/bin/env bash
 exec node "$CLI_JS" "\$@"
 WRAPPER
-    $SUDO chmod +x "$BIN_TARGET"
+    chmod +x "$BIN_TARGET"
+fi
+
+# Add ~/.orionomega/bin to PATH in shell config if not already present
+add_to_path() {
+    local shell_rc="$1"
+    local path_line="export PATH=\"\$HOME/.orionomega/bin:\$PATH\""
+    if [[ -f "$shell_rc" ]]; then
+        if ! grep -qF '.orionomega/bin' "$shell_rc" 2>/dev/null; then
+            echo "" >> "$shell_rc"
+            echo "# OrionOmega CLI" >> "$shell_rc"
+            echo "$path_line" >> "$shell_rc"
+            info "Added to PATH in $(basename "$shell_rc")"
+        fi
+    fi
+}
+
+if [[ ! ":$PATH:" == *":$BIN_DIR:"* ]]; then
+    add_to_path "$HOME/.bashrc"
+    add_to_path "$HOME/.zshrc"
+    export PATH="$BIN_DIR:$PATH"
 fi
 
 if command -v orionomega &>/dev/null; then
     ok "orionomega command available"
 else
-    warn "Could not add orionomega to PATH. Run manually: node $CLI_JS"
+    warn "Open a new terminal or run: export PATH=\"\$HOME/.orionomega/bin:\$PATH\""
 fi
 
 # ═══════════════════════════════════════════════════════════════
