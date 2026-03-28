@@ -314,18 +314,18 @@ export class MainAgent {
   async handleMessage(
     content: string,
     replyContext?: { messageId: string; content: string; role: string; dagId?: string; workflowId?: string },
+    attachments?: { name: string; size: number; type: string; data?: string; textContent?: string }[],
   ): Promise<void> {
-    // Ensure init() has completed before processing any message
     if (this.initPromise) {
       await this.initPromise;
     }
 
-    if (!content?.trim()) {
+    if (!content?.trim() && (!attachments || attachments.length === 0)) {
       this.callbacks.onText('I didn\'t catch that. Could you say that again?', false, true);
       return;
     }
 
-    const trimmed = content.trim();
+    const trimmed = (content || '').trim();
     log.verbose('Handling message', {
       contentLength: trimmed.length,
       contentPreview: trimmed.slice(0, 200),
@@ -333,12 +333,27 @@ export class MainAgent {
       hasReplyContext: !!replyContext,
       replyToDagId: replyContext?.dagId,
       replyToWorkflowId: replyContext?.workflowId,
+      attachmentCount: attachments?.length ?? 0,
     });
 
     const replyDagId = replyContext?.dagId || replyContext?.workflowId;
-    const userContent = replyContext
+    let userContent = replyContext
       ? `[Replying to ${replyContext.role} message${replyDagId ? ` (workflow: ${replyDagId})` : ''}: "${replyContext.content.slice(0, 200)}"]\n\n${trimmed}`
       : trimmed;
+
+    if (attachments && attachments.length > 0) {
+      const attachmentDescriptions = attachments.map((att) => {
+        if (att.textContent) {
+          return `\n\n--- Attached file: ${att.name} (${att.type}, ${att.size} bytes) ---\n${att.textContent}\n--- End of ${att.name} ---`;
+        }
+        if (att.data && att.type.startsWith('image/')) {
+          return `\n\n[Attached image: ${att.name} (${att.type}, ${att.size} bytes) — image data provided as base64]`;
+        }
+        return `\n\n[Attached file: ${att.name} (${att.type}, ${att.size} bytes)]`;
+      });
+      userContent += attachmentDescriptions.join('');
+    }
+
     this.pushHistory({ role: 'user', content: userContent });
 
     this.activeAbort?.abort();
@@ -424,7 +439,7 @@ export class MainAgent {
       if (this.matchesAvailableSkill(trimmed)) {
         log.verbose('Route: ORCHESTRATE (skill match)', { guarded: isGuardedRequest(trimmed) });
         await this.orchestration.dispatchFullDAG(
-          trimmed,
+          userContent,
           (e) => this.pushHistory(e as HistoryEntry),
           { requireConfirmation: isGuardedRequest(trimmed) },
         );
@@ -436,7 +451,7 @@ export class MainAgent {
         log.verbose('Route: CHAT fast-path');
         this.emitStep('route', 'Routing request', 'done', 'Chat fast-path');
         this.callbacks.onThinking('Thinking…', true, false);
-        await this.respondConversationally(trimmed, signal);
+        await this.respondConversationally(userContent, signal);
         return;
       }
 
@@ -446,7 +461,7 @@ export class MainAgent {
         this.emitStep('route', 'Routing request', 'done', 'Orchestration fast-path');
         const guarded = isGuardedRequest(trimmed);
         await this.orchestration.dispatchFullDAG(
-          trimmed,
+          userContent,
           (e) => this.pushHistory(e as HistoryEntry),
           { requireConfirmation: guarded },
         );
@@ -463,19 +478,19 @@ export class MainAgent {
 
       switch (intent) {
         case 'CHAT':
-          await this.respondConversationally(trimmed, signal);
+          await this.respondConversationally(userContent, signal);
           break;
         case 'ORCHESTRATE':
           log.verbose('Route: ORCHESTRATE (LLM classified)', { guarded: isGuardedRequest(trimmed) });
           await this.orchestration.dispatchFullDAG(
-            trimmed,
+            userContent,
             (e) => this.pushHistory(e as HistoryEntry),
             { requireConfirmation: isGuardedRequest(trimmed) },
           );
           break;
         case 'CHAT_ASYNC':
           // Fire-and-forget: returns immediately, async work continues in background
-          void this.respondConversationally(trimmed, signal).catch((err) => {
+          void this.respondConversationally(userContent, signal).catch((err) => {
             const msg = err instanceof Error ? err.message : String(err);
             log.error('Async conversational response error', { error: msg });
             this.callbacks.onText(`Something went wrong: ${msg}`, false, true);

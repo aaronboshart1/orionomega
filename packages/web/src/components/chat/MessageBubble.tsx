@@ -1,6 +1,6 @@
 'use client';
 
-import type { ChatMessage } from '@/stores/chat';
+import type { ChatMessage, MessageAttachment } from '@/stores/chat';
 import { useChatStore } from '@/stores/chat';
 import { useOrchestrationStore } from '@/stores/orchestration';
 import { InlineDAGCard } from './InlineDAGCard';
@@ -9,7 +9,7 @@ import { DAGConfirmationCard } from './DAGConfirmationCard';
 import { ToolCallCard } from './ToolCallCard';
 import { MarkdownContent } from './MarkdownContent';
 import { useGateway } from '@/lib/gateway';
-import { Reply } from 'lucide-react';
+import { Reply, FileText } from 'lucide-react';
 
 interface MessageBubbleProps {
   message: ChatMessage;
@@ -31,6 +31,48 @@ function truncateContent(text: string, maxLen = 80): string {
   return single.length > maxLen ? single.slice(0, maxLen) + '…' : single;
 }
 
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function AttachmentDisplay({ attachments }: { attachments: MessageAttachment[] }) {
+  return (
+    <div className="mt-2 flex flex-wrap gap-2">
+      {attachments.map((att, i) => {
+        const isImage = att.type.startsWith('image/');
+        if (isImage && att.dataUrl) {
+          return (
+            <div key={i} className="overflow-hidden rounded-lg border border-white/10">
+              <img
+                src={att.dataUrl}
+                alt={att.name}
+                className="max-h-48 max-w-[280px] object-contain"
+              />
+              <div className="bg-black/30 px-2 py-1 text-[10px] text-white/60">
+                {att.name} ({formatBytes(att.size)})
+              </div>
+            </div>
+          );
+        }
+        return (
+          <div
+            key={i}
+            className="flex items-center gap-2 rounded-lg border border-white/10 bg-black/20 px-3 py-2"
+          >
+            <FileText size={16} className="shrink-0 text-white/50" />
+            <div className="min-w-0">
+              <div className="truncate text-xs text-white/80">{att.name}</div>
+              <div className="text-[10px] text-white/40">{formatBytes(att.size)}</div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function ReplyButton({ onClick }: { onClick: () => void }) {
   return (
     <button
@@ -44,7 +86,7 @@ function ReplyButton({ onClick }: { onClick: () => void }) {
 }
 
 export function MessageBubble({ message, onScrollToMessage }: MessageBubbleProps) {
-  const { role, content, type, dagId, replyTo } = message;
+  const { role, content, type, dagId, replyTo, attachments } = message;
   const isStreaming = useChatStore((s) => s.isStreaming);
   const messages = useChatStore((s) => s.messages);
   const setReplyTarget = useChatStore((s) => s.setReplyTarget);
@@ -165,6 +207,9 @@ export function MessageBubble({ message, onScrollToMessage }: MessageBubbleProps
           }`}
         >
           {isUser ? formatPlainText(content) : <MarkdownContent content={content} isStreaming={isActivelyStreaming} />}
+          {isUser && attachments && attachments.length > 0 && (
+            <AttachmentDisplay attachments={attachments} />
+          )}
         </div>
         <ReplyButton onClick={handleReply} />
       </div>

@@ -30,6 +30,13 @@ export interface ReplyToData {
   dagId?: string;
 }
 
+export interface MessageAttachment {
+  name: string;
+  size: number;
+  type: string;
+  dataUrl?: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
@@ -50,6 +57,7 @@ export interface ChatMessage {
   toolCall?: ToolCallData;
   interrupted?: boolean;
   replyTo?: ReplyToData;
+  attachments?: MessageAttachment[];
 }
 
 interface ChatStore {

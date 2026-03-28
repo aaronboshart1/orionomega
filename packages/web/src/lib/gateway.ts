@@ -355,16 +355,55 @@ export function useGateway() {
   }, []);
 
   const sendChat = useCallback(
-    (content: string, replyToId?: string, attachments?: FileAttachment[]) => {
+    async (content: string, replyToId?: string, attachments?: FileAttachment[]) => {
       const chat = useChatStore.getState();
       const replyTarget = chat.replyTarget;
       const msgId = crypto.randomUUID();
+
+      let messageAttachments: import('@/stores/chat').MessageAttachment[] | undefined;
+      const payloadAttachments: { name: string; size: number; type: string; data?: string; textContent?: string }[] = [];
+
+      if (attachments && attachments.length > 0) {
+        const readResults = await Promise.all(
+          attachments.map(async (a) => {
+            const isImage = a.type.startsWith('image/');
+            if (isImage) {
+              const dataUrl = await new Promise<string>((resolve) => {
+                const reader = new FileReader();
+                reader.onloadend = () => resolve(reader.result as string);
+                reader.readAsDataURL(a.file);
+              });
+              return { name: a.name, size: a.size, type: a.type, dataUrl, data: dataUrl };
+            } else {
+              const textContent = await a.file.text();
+              return { name: a.name, size: a.size, type: a.type, textContent };
+            }
+          }),
+        );
+        messageAttachments = readResults.map((r) => ({
+          name: r.name,
+          size: r.size,
+          type: r.type,
+          dataUrl: r.dataUrl,
+        }));
+        readResults.forEach((r) => {
+          payloadAttachments.push({
+            name: r.name,
+            size: r.size,
+            type: r.type,
+            data: r.data,
+            textContent: r.textContent,
+          });
+        });
+      }
+
       chat.addMessage({
         id: msgId,
         role: 'user',
         content,
         timestamp: new Date().toISOString(),
         replyTo: replyTarget ?? undefined,
+        attachments: messageAttachments,
       });
       chat.setStreaming(true);
       chat.setStreamingStatus('Thinking…');
@@ -375,12 +414,8 @@ export function useGateway() {
         payload.replyToRole = replyTarget.role;
         if (replyTarget.dagId) payload.replyToDagId = replyTarget.dagId;
       }
-      if (attachments && attachments.length > 0) {
-        payload.attachments = attachments.map((a) => ({
-          name: a.name,
-          size: a.size,
-          type: a.type,
-        }));
+      if (payloadAttachments.length > 0) {
+        payload.attachments = payloadAttachments;
       }
       send(payload);
     },

@@ -41,6 +41,8 @@ export interface ClientMessage {
   replyToRole?: string;
   /** DAG/workflow ID associated with the referenced message. */
   replyToDagId?: string;
+  /** File attachments sent with the message. */
+  attachments?: { name: string; size: number; type: string; data?: string; textContent?: string }[];
 }
 
 /** Gateway → Client message envelope. */
