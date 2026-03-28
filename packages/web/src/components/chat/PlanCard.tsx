@@ -97,6 +97,8 @@ export function PlanCard({ plan, onRespond }: PlanCardProps) {
             placeholder="Describe modifications..."
             className="flex-1 rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-xs text-zinc-200 placeholder-zinc-500 outline-none focus:border-blue-600"
             autoFocus
+            autoCorrect="off"
+            autoCapitalize="none"
           />
           <button
             onClick={handleModify}

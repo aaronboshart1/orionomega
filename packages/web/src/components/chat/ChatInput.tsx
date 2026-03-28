@@ -4,6 +4,8 @@ import { useState, useCallback, useRef, useEffect, useMemo, type KeyboardEvent, 
 import { Send, X, Reply, Paperclip, FileText, Image } from 'lucide-react';
 import { useChatStore } from '@/stores/chat';
 import { formatBytes } from '@/utils/format';
+import { useToastStore } from '@/stores/toast';
+import { Z } from '@/lib/z-index';
 
 export interface FileAttachment {
   id: string;
@@ -41,7 +43,9 @@ function useFileCommands() {
           })),
         );
       })
-      .catch(() => {});
+      .catch(() => {
+        useToastStore.getState().addToast('Failed to load slash commands', 'warning', 3000);
+      });
   }, []);
 
   return fileCommands;
@@ -319,7 +323,7 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
       aria-label="Chat input area — drop files here to attach"
     >
       {isDraggingOver && (
-        <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-lg border-2 border-dashed border-blue-500 bg-blue-950/30">
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-lg border-2 border-dashed border-blue-500 bg-blue-950/30" style={{ zIndex: 10 }}>
           <p className="text-sm font-medium text-blue-400">Drop files to attach</p>
         </div>
       )}
@@ -347,6 +351,7 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
         <div
           ref={acListRef}
           className="absolute bottom-full left-3 right-3 md:left-6 md:right-6 mb-2 overflow-hidden rounded-xl border border-zinc-700 bg-zinc-900 shadow-xl"
+          style={{ zIndex: Z.commandPalette }}
           role="listbox"
           aria-label="Command suggestions"
         >
@@ -371,7 +376,7 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
       )}
 
       {showPalette && (
-        <div className="absolute bottom-full left-3 right-3 md:left-6 md:right-6 mb-2 overflow-hidden rounded-xl border border-zinc-700 bg-zinc-900 shadow-xl">
+        <div className="absolute bottom-full left-3 right-3 md:left-6 md:right-6 mb-2 overflow-hidden rounded-xl border border-zinc-700 bg-zinc-900 shadow-xl" style={{ zIndex: Z.commandPalette }}>
           <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-2">
             <span className="text-xs font-medium text-zinc-400">Commands</span>
             <button
@@ -471,6 +476,7 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
           aria-label="Message input"
           aria-multiline="true"
           enterKeyHint="send"
+          autoComplete="off"
         />
 
         {/* Paperclip / attach button */}

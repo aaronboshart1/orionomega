@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import FocusTrap from 'focus-trap-react';
 import { X, Eye, EyeOff, Save, Loader2, CheckCircle, AlertCircle, ChevronDown, RefreshCw } from 'lucide-react';
 import { TabGroup, type TabDef } from '../shared/TabGroup';
+import { Z } from '@/lib/z-index';
 
 type TabId = 'omegaclaw' | 'memory' | 'skills' | 'webui';
 
@@ -207,7 +208,7 @@ function ModelSelect({
       </button>
 
       {open && (
-        <div className="absolute z-50 mt-1 w-full rounded-md border border-zinc-700 bg-zinc-800 shadow-xl">
+        <div className="absolute mt-1 w-full rounded-md border border-zinc-700 bg-zinc-800 shadow-xl" style={{ zIndex: Z.dropdown }}>
           <div className="border-b border-zinc-700 p-1.5">
             <input
               autoFocus
@@ -292,6 +293,7 @@ function ApiKeyInput({
         value={editing && isMasked ? '' : value}
         onChange={(e) => onChange(e.target.value)}
         placeholder="Enter new API key"
+        autoComplete="off"
         className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2.5 md:py-1.5 pr-10 md:pr-8 text-sm md:text-xs text-zinc-100 outline-none focus:border-blue-500 transition-colors"
       />
       <button
@@ -848,9 +850,12 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
       setConfig(body as ConfigData);
       setSaveStatus('success');
       setTimeout(() => setSaveStatus('idle'), 3000);
+      (await import('@/stores/toast')).useToastStore.getState().addToast('Settings saved', 'success', 2500);
     } catch (err) {
       setSaveStatus('error');
-      setErrorMsg(err instanceof Error ? err.message : 'Failed to save config');
+      const errMsg = err instanceof Error ? err.message : 'Failed to save config';
+      setErrorMsg(errMsg);
+      (await import('@/stores/toast')).useToastStore.getState().addToast(errMsg, 'error');
     } finally {
       setSaving(false);
     }
@@ -861,7 +866,8 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   return (
     <FocusTrap focusTrapOptions={{ allowOutsideClick: true, escapeDeactivates: false }}>
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+      className="fixed inset-0 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+      style={{ zIndex: Z.modal }}
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
       onKeyDown={(e) => { if (e.key === 'Escape') onClose(); }}
     >

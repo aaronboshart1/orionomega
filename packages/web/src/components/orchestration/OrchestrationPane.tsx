@@ -195,6 +195,9 @@ export function OrchestrationPane() {
       ) : (
         <>
           <div className="flex-[4] min-h-0 border-b border-zinc-800">
+            <div className="px-3 py-1 border-b border-zinc-800/50">
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-600">Graph</span>
+            </div>
             <ErrorBoundary>
               <DAGVisualization />
             </ErrorBoundary>
@@ -207,6 +210,9 @@ export function OrchestrationPane() {
           </div>
 
           <div className="flex-[2] min-h-0">
+            <div className="px-3 py-1 border-b border-zinc-800/50">
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-600">Summary</span>
+            </div>
             <WorkflowSummary />
           </div>
         </>

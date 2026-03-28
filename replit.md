@@ -145,6 +145,27 @@ The web UI renders inline tool-call cards in the chat stream when workers invoke
 - Chat message list uses `react-virtuoso` for list virtualization — only visible messages plus a buffer are rendered to the DOM, keeping performance smooth for long conversations (100+ messages)
 - Smart auto-scroll: `followOutput="smooth"` keeps the list pinned to the bottom during streaming; when the user scrolls up, a "New messages" pill appears to jump back down
 
+## Toast Notifications
+
+A global toast notification system provides transient feedback for WebSocket events, errors, and settings save operations:
+
+- **Store**: `packages/web/src/stores/toast.ts` — Zustand store with `addToast(message, variant, duration)` and auto-dismiss
+- **Component**: `packages/web/src/components/ToastContainer.tsx` — rendered in root layout, stacked at top-center with slide-in animation
+- **Variants**: `info`, `success`, `error`, `warning` with distinct color schemes
+- **Integration points**: gateway connect/disconnect, WebSocket errors, settings save success/failure, slash command load failure
+
+## Z-Index Scale
+
+Centralized z-index constants in `packages/web/src/lib/z-index.ts`:
+
+| Constant | Value | Usage |
+|---|---|---|
+| `scrollToBottom` | 10 | Scroll-to-bottom button, drag overlay |
+| `orchPaneToggle` | 20 | Orchestration pane toggle button |
+| `orchPaneMobile` | 30 | Mobile orchestration pane overlay |
+| `dropdown` / `modal` / `commandPalette` | 50 | Dropdowns, settings modal, command palettes |
+| `toast` | 60 | Toast notifications (topmost) |
+
 ## Markdown Rendering
 
 Chat assistant/system messages render full markdown via `react-markdown` with `remark-gfm`, `rehype-highlight` (syntax highlighting), and `rehype-sanitize`. The `MarkdownContent` component lives at `packages/web/src/components/chat/MarkdownContent.tsx`. User messages remain plain text. Streaming updates are throttled via `requestAnimationFrame` to avoid excessive re-renders. The highlight.js `github-dark` theme is imported in `packages/web/src/app/layout.tsx`.

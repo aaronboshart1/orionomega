@@ -18,6 +18,8 @@ import { BackgroundTaskIndicator } from './BackgroundTaskIndicator';
 import { ConnectionStatus } from './ConnectionStatus';
 import type { ChatMessage } from '@/stores/chat';
 import dynamic from 'next/dynamic';
+import Image from 'next/image';
+import { Z } from '@/lib/z-index';
 
 const SettingsModal = dynamic(
   () => import('../settings/SettingsModal').then((m) => m.SettingsModal),
@@ -210,7 +212,7 @@ export function ChatPane() {
   return (
     <div className="flex h-full flex-col bg-[var(--background)]">
       <div className="flex items-center gap-3 px-3 md:px-6 py-4">
-        <img src="/omegaclaw-logo.png" alt="OmegaClaw" className="h-8 w-8 rounded-lg" />
+        <Image src="/omegaclaw-logo.png" alt="OmegaClaw" width={32} height={32} className="rounded-lg" />
         <div className="flex-1">
           <h1 className="text-sm font-semibold text-zinc-100">OmegaClaw</h1>
           <p className="text-xs leading-tight text-zinc-500">
@@ -221,10 +223,11 @@ export function ChatPane() {
         <BackgroundTaskIndicator />
         <button
           onClick={() => setSettingsOpen(true)}
-          className="rounded-md p-2.5 md:p-1.5 text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200 min-h-[44px] min-w-[44px] md:min-h-0 md:min-w-0 flex items-center justify-center"
+          className="rounded-md p-2.5 md:px-2.5 md:py-1.5 text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200 min-h-[44px] min-w-[44px] md:min-h-0 md:min-w-0 flex items-center justify-center gap-1.5"
           title="Settings"
         >
           <Settings size={16} />
+          <span className="hidden md:inline text-xs">Settings</span>
         </button>
       </div>
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
@@ -250,7 +253,7 @@ export function ChatPane() {
           </div>
         ) : messages.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center text-zinc-600">
-            <img src="/omegaclaw-logo.png" alt="OmegaClaw" className="mb-3 h-12 w-12" />
+            <Image src="/omegaclaw-logo.png" alt="OmegaClaw" width={48} height={48} className="mb-3" />
             <p className="text-sm">Send a message to begin</p>
             <p className="mt-1 text-xs text-zinc-700">
               Ask anything — I&apos;ll handle the orchestration
@@ -277,7 +280,8 @@ export function ChatPane() {
         {!atBottom && messages.length > 0 && (
           <button
             onClick={scrollToBottom}
-            className="absolute bottom-4 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-zinc-700 bg-zinc-800/90 px-3 py-1.5 text-xs text-zinc-300 shadow-lg backdrop-blur transition-colors hover:border-zinc-600 hover:text-zinc-100"
+            className="absolute bottom-4 left-1/2 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-zinc-700 bg-zinc-800/90 px-3 py-1.5 text-xs text-zinc-300 shadow-lg backdrop-blur transition-colors hover:border-zinc-600 hover:text-zinc-100"
+            style={{ zIndex: Z.scrollToBottom }}
           >
             <ArrowDown size={12} />
             New messages

@@ -45,6 +45,10 @@ function AttachmentDisplay({ attachments }: { attachments: MessageAttachment[] }
                 src={att.dataUrl}
                 alt={att.name}
                 className="max-h-48 max-w-[280px] object-contain"
+                loading="lazy"
+                decoding="async"
+                width={280}
+                height={192}
               />
               <div className="bg-emerald-700 px-2 py-1 text-xs text-white/60">
                 {att.name} ({formatBytes(att.size)})

@@ -4,6 +4,7 @@ import dynamic from 'next/dynamic';
 import { PanelRightOpen, PanelRightClose, X } from 'lucide-react';
 import { ChatPane } from '@/components/chat/ChatPane';
 import { useOrchestrationStore, useOrchHydrated } from '@/stores/orchestration';
+import { Z } from '@/lib/z-index';
 
 const OrchestrationPane = dynamic(
   () => import('@/components/orchestration/OrchestrationPane').then((m) => m.OrchestrationPane),
@@ -32,7 +33,8 @@ export default function Home() {
 
       <button
         onClick={() => setOrchPaneOpen(!orchPaneOpen)}
-        className="absolute right-3 top-3 z-20 rounded-lg border border-zinc-700 bg-zinc-800 p-2.5 md:p-2 text-zinc-400 shadow-lg transition-colors hover:border-zinc-600 hover:text-zinc-200 min-h-[44px] min-w-[44px] flex items-center justify-center"
+        className="absolute right-3 top-3 rounded-lg border border-zinc-700 bg-zinc-800 p-2.5 md:p-2 text-zinc-400 shadow-lg transition-colors hover:border-zinc-600 hover:text-zinc-200 min-h-[44px] min-w-[44px] flex items-center justify-center"
+        style={{ zIndex: Z.orchPaneToggle }}
         title={showOrchPane ? 'Hide detail pane' : 'Show detail pane'}
         aria-label={showOrchPane ? 'Hide detail pane' : 'Show detail pane'}
       >
@@ -41,7 +43,7 @@ export default function Home() {
 
       {showOrchPane && (
         <>
-          <div className="fixed inset-0 z-30 flex flex-col bg-[var(--background)] md:relative md:inset-auto md:z-auto md:w-1/2 md:border-l md:border-zinc-800">
+          <div className="fixed inset-0 flex flex-col bg-[var(--background)] md:relative md:inset-auto md:z-auto md:w-1/2 md:border-l md:border-zinc-800" style={{ zIndex: Z.orchPaneMobile }}>
             <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-3 md:hidden">
               <h2 className="text-sm font-semibold text-zinc-100">Orchestration</h2>
               <button

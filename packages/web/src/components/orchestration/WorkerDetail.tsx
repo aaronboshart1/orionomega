@@ -16,7 +16,14 @@ export function WorkerDetail() {
   const toggleCollapsed = useOrchestrationStore((s) => s.toggleActivitySectionCollapsed);
   const [activeTab, setActiveTab] = useState<Tab>('activity');
 
+  const activeWorkflowId = useOrchestrationStore((s) => s.activeWorkflowId);
+  const inlineDAGs = useOrchestrationStore((s) => s.inlineDAGs);
+
   const node = selectedWorker && graphState ? graphState.nodes[selectedWorker] : null;
+
+  const workflowLabel = activeWorkflowId
+    ? inlineDAGs[activeWorkflowId]?.summary || graphState?.name || activeWorkflowId.slice(0, 8)
+    : null;
 
   const workerEvents = useMemo(
     () => events.filter((e) => e.workerId === selectedWorker),
@@ -77,8 +84,14 @@ export function WorkerDetail() {
             size={14}
             className={`text-zinc-500 transition-transform duration-300 ${collapsed ? '-rotate-90' : 'rotate-0'}`}
           />
-          <div className="flex items-center gap-3">
-            <h3 className="text-xs font-semibold text-zinc-200">{node.label}</h3>
+          <div className="flex items-center gap-3 min-w-0">
+            {workflowLabel && (
+              <span className="flex items-center gap-1 text-[10px] text-zinc-500 shrink-0">
+                <span className="max-w-[100px] truncate">{workflowLabel}</span>
+                <span>/</span>
+              </span>
+            )}
+            <h3 className="text-xs font-semibold text-zinc-200 truncate">{node.label}</h3>
             {node.agent && (
               <span className="rounded bg-zinc-700 px-1.5 py-0.5 text-xs text-zinc-400">
                 {node.agent.model}

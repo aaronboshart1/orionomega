@@ -5,6 +5,7 @@ import ReconnectingWebSocket from 'reconnecting-websocket';
 import { useOrchestrationStore } from '@/stores/orchestration';
 import { useChatStore } from '@/stores/chat';
 import { useConnectionStore } from '@/stores/connection';
+import { useToastStore } from '@/stores/toast';
 import type { ChatMessage } from '@/stores/chat';
 import type { FileAttachment } from '@/components/chat/ChatInput';
 
@@ -299,6 +300,7 @@ function bindListeners(ws: ReconnectingWebSocket): void {
           timestamp: new Date().toISOString(),
           type: 'error',
         });
+        useToastStore.getState().addToast(msg.error || msg.message || 'An error occurred', 'error');
         break;
       case 'ack':
         try {
@@ -354,6 +356,7 @@ function bindListeners(ws: ReconnectingWebSocket): void {
 
   ws.onopen = () => {
     useConnectionStore.getState().setGatewayConnected(true);
+    useToastStore.getState().addToast('Gateway connected', 'success', 2500);
     if (pendingRestart) {
       pendingRestart = false;
       window.location.reload();
@@ -364,6 +367,7 @@ function bindListeners(ws: ReconnectingWebSocket): void {
     const connStore = useConnectionStore.getState();
     connStore.setGatewayConnected(false);
     connStore.setHindsightStatus(false, false);
+    useToastStore.getState().addToast('Gateway disconnected — reconnecting…', 'warning', 5000);
 
     useChatStore.getState().markLastInterrupted();
     useOrchestrationStore.getState().markAllInterrupted();
