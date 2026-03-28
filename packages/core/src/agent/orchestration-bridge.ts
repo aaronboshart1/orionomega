@@ -24,7 +24,7 @@ import type {
   DAGConfirmInfo,
 } from '../orchestration/types.js';
 import type { MemoryBridge } from './memory-bridge.js';
-import type { MainAgentCallbacks } from './main-agent.js';
+import type { MainAgentCallbacks, ThinkingStep, ThinkingStepStatus } from './main-agent.js';
 import { createLogger } from '../logging/logger.js';
 import { randomBytes } from 'node:crypto';
 
@@ -138,6 +138,30 @@ export class OrchestrationBridge {
   /** Whether there are any guarded DAG confirmations awaiting approval. */
   get hasPendingConfirmations(): boolean { return this.pendingConfirmations.size > 0; }
 
+  // ── Thinking step helper ─────────────────────────────────────────
+
+  private _stepTimers = new Map<string, number>();
+
+  private emitStep(id: string, name: string, status: ThinkingStepStatus, detail?: string): void {
+    const now = Date.now();
+    if (status === 'active') {
+      this._stepTimers.set(id, now);
+    }
+    const startedAt = this._stepTimers.get(id);
+    const step: ThinkingStep = {
+      id,
+      name,
+      status,
+      startedAt,
+      ...(status === 'done' ? { completedAt: now, elapsedMs: startedAt ? now - startedAt : undefined } : {}),
+      ...(detail ? { detail } : {}),
+    };
+    if (status === 'done') {
+      this._stepTimers.delete(id);
+    }
+    this.callbacks.onThinkingStep?.(step);
+  }
+
   // ── Full DAG dispatch (ORCHESTRATE tier) ──────────────────────────
 
   /**
@@ -149,15 +173,20 @@ export class OrchestrationBridge {
     pushHistory: (entry: { role: string; content: string }) => void,
     opts: { requireConfirmation?: boolean } = {},
   ): Promise<void> {
+    this.emitStep('memory', 'Recalling memory', 'active');
     this.callbacks.onThinking('Planning…', true, false);
 
     try {
       const memories = await this.memory.recallForPlanning(task);
+      this.emitStep('memory', 'Recalling memory', 'done', `${memories.length} source${memories.length !== 1 ? 's' : ''} found`);
+      this.emitStep('planning', 'Generating plan', 'active');
       const preRecalledContext = memories.length ? memories.join('\n') : undefined;
       const plan = await this.planner.plan(task, {
         ...(memories.length ? { memories } : {}),
         ...(this.availableSkills.length ? { availableSkills: this.availableSkills } : {}),
       }, preRecalledContext);
+      const nodeCount = plan.graph?.nodes ? (plan.graph.nodes instanceof Map ? plan.graph.nodes.size : Object.keys(plan.graph.nodes).length) : 0;
+      this.emitStep('planning', 'Generating plan', 'done', `${nodeCount} node${nodeCount !== 1 ? 's' : ''} in DAG`);
       this.callbacks.onThinking('', true, true);
 
       if (opts.requireConfirmation) {
@@ -273,15 +302,21 @@ export class OrchestrationBridge {
     task: string,
     pushHistory: (entry: { role: string; content: string }) => void,
   ): Promise<void> {
+    this.emitStep('memory', 'Recalling memory', 'active');
     this.callbacks.onThinking('Analysing your request and building an execution plan…', true, false);
 
     try {
       const memories = await this.memory.recallForPlanning(task);
+      this.emitStep('memory', 'Recalling memory', 'done', `${memories.length} source${memories.length !== 1 ? 's' : ''} found`);
+      this.emitStep('planning', 'Generating plan', 'active');
       const preRecalledContext = memories.length ? memories.join('\n') : undefined;
       const plan = await this.planner.plan(task, {
         ...(memories.length ? { memories } : {}),
         ...(this.availableSkills.length ? { availableSkills: this.availableSkills } : {}),
       }, preRecalledContext);
+
+      const nodeCount = plan.graph?.nodes ? (plan.graph.nodes instanceof Map ? plan.graph.nodes.size : Object.keys(plan.graph.nodes).length) : 0;
+      this.emitStep('planning', 'Generating plan', 'done', `${nodeCount} node${nodeCount !== 1 ? 's' : ''} in DAG`);
 
       this.pendingPlans.set(plan.graph.id, {
         id: plan.graph.id,
@@ -308,15 +343,20 @@ export class OrchestrationBridge {
     task: string,
     pushHistory: (entry: { role: string; content: string }) => void,
   ): Promise<void> {
+    this.emitStep('memory', 'Recalling memory', 'active');
     this.callbacks.onThinking('Planning and executing immediately…', true, false);
 
     try {
       const memories = await this.memory.recallForPlanning(task);
+      this.emitStep('memory', 'Recalling memory', 'done', `${memories.length} source${memories.length !== 1 ? 's' : ''} found`);
+      this.emitStep('planning', 'Generating plan', 'active');
       const preRecalledContext = memories.length ? memories.join('\n') : undefined;
       const plan = await this.planner.plan(task, {
         ...(memories.length ? { memories } : {}),
         ...(this.availableSkills.length ? { availableSkills: this.availableSkills } : {}),
       }, preRecalledContext);
+      const nodeCount = plan.graph?.nodes ? (plan.graph.nodes instanceof Map ? plan.graph.nodes.size : Object.keys(plan.graph.nodes).length) : 0;
+      this.emitStep('planning', 'Generating plan', 'done', `${nodeCount} node${nodeCount !== 1 ? 's' : ''} in DAG`);
       this.callbacks.onThinking('', true, true);
       this.callbacks.onPlan(plan);
       pushHistory({ role: 'assistant', content: `[Plan auto-approved] ${plan.summary}` });

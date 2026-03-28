@@ -61,9 +61,22 @@ export interface MainAgentConfig {
 // ── Callbacks ──────────────────────────────────────────────────────────────
 
 /** Callbacks through which the agent communicates outward (typically to the gateway). */
+export type ThinkingStepStatus = 'pending' | 'active' | 'done';
+
+export interface ThinkingStep {
+  id: string;
+  name: string;
+  status: ThinkingStepStatus;
+  startedAt?: number;
+  completedAt?: number;
+  elapsedMs?: number;
+  detail?: string;
+}
+
 export interface MainAgentCallbacks {
   onText: (text: string, streaming: boolean, done: boolean, workflowId?: string) => void;
   onThinking: (text: string, streaming: boolean, done: boolean) => void;
+  onThinkingStep?: (step: ThinkingStep) => void;
   /** @deprecated Use onDAGConfirm for guarded plans. Kept for backward compat during migration. */
   onPlan: (plan: PlannerOutput) => void;
   onEvent: (event: WorkerEvent) => void;
@@ -421,6 +434,7 @@ export class MainAgent {
       // 3. CHAT fast-path
       if (isFastConversational(trimmed)) {
         log.verbose('Route: CHAT fast-path');
+        this.emitStep('route', 'Routing request', 'done', 'Chat fast-path');
         this.callbacks.onThinking('Thinking…', true, false);
         await this.respondConversationally(trimmed, signal);
         return;
@@ -429,6 +443,7 @@ export class MainAgent {
       // 4. ORCHESTRATE fast-path — full planner DAG
       if (isOrchestrateRequest(trimmed)) {
         log.verbose('Route: ORCHESTRATE fast-path', { guarded: isGuardedRequest(trimmed) });
+        this.emitStep('route', 'Routing request', 'done', 'Orchestration fast-path');
         const guarded = isGuardedRequest(trimmed);
         await this.orchestration.dispatchFullDAG(
           trimmed,
@@ -440,8 +455,10 @@ export class MainAgent {
 
       // 5. Ambiguous — LLM 2-tier classifier
       log.verbose('Route: LLM intent classification');
+      this.emitStep('classify', 'Classifying intent', 'active');
       this.callbacks.onThinking('Classifying intent…', true, false);
       const intent = await classifyIntent(this.anthropic, this.config.model, trimmed, this.config.cheapModel);
+      this.emitStep('classify', 'Classifying intent', 'done', `Intent: ${intent}`);
       log.verbose(`Intent classified: ${intent}`);
 
       switch (intent) {
@@ -823,8 +840,30 @@ export class MainAgent {
     });
   }
 
+  private _stepTimers = new Map<string, number>();
+
+  private emitStep(id: string, name: string, status: ThinkingStepStatus, detail?: string): void {
+    const now = Date.now();
+    if (status === 'active') {
+      this._stepTimers.set(id, now);
+    }
+    const startedAt = this._stepTimers.get(id);
+    const step: ThinkingStep = {
+      id,
+      name,
+      status,
+      startedAt,
+      ...(status === 'done' ? { completedAt: now, elapsedMs: startedAt ? now - startedAt : undefined } : {}),
+      ...(detail ? { detail } : {}),
+    };
+    if (status === 'done') {
+      this._stepTimers.delete(id);
+    }
+    this.callbacks.onThinkingStep?.(step);
+  }
+
   private async respondConversationally(userMessage: string, abortSignal?: AbortSignal): Promise<void> {
-    // Signal that we're assembling context (visible in TUI spinner)
+    this.emitStep('context', 'Assembling context', 'active');
     this.callbacks.onThinking('Assembling context…', true, false);
 
     // Assemble context: hot window + Hindsight recall (parallel with prompt build)
@@ -832,6 +871,9 @@ export class MainAgent {
       this.getSystemPrompt(),
       this.context.assemble(userMessage),
     ]);
+
+    const msgCount = assembled.hotMessages.length + (assembled.priorContext ? 2 : 0);
+    this.emitStep('context', 'Assembling context', 'done', `${msgCount} messages assembled`);
 
     // Build messages: prior context (if any) + hot window
     const messages: AnthropicMessage[] = [];
@@ -846,7 +888,7 @@ export class MainAgent {
       })),
     );
 
-    // Signal that we're waiting for the LLM
+    this.emitStep('llm', 'Generating response', 'active', `Model: ${this.config.model}`);
     this.callbacks.onThinking('Generating response…', true, false);
 
     try {
@@ -858,9 +900,11 @@ export class MainAgent {
         workspaceDir: this.config.workspaceDir,
         onText: this.callbacks.onText,
         onThinking: this.callbacks.onThinking,
+        onThinkingStep: this.callbacks.onThinkingStep ? (step) => this.callbacks.onThinkingStep!(step as ThinkingStep) : undefined,
         maxInputTokens: 100_000,
         abortSignal,
       });
+      this.emitStep('llm', 'Generating response', 'done');
       this.cumulativeInputTokens += result.inputTokens;
       this.cumulativeOutputTokens += result.outputTokens;
       this.cumulativeCacheCreationTokens += result.cacheCreationTokens;

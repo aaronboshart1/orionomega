@@ -194,6 +194,13 @@ async function initMainAgent(): Promise<void> {
         currentThinkingId = randomBytes(8).toString('hex');
       }
     },
+    onThinkingStep(step: { id: string; name: string; status: 'pending' | 'active' | 'done'; startedAt?: number; completedAt?: number; elapsedMs?: number; detail?: string }) {
+      wsHandler.broadcast({
+        id: randomBytes(8).toString('hex'),
+        type: 'thinking_step',
+        step,
+      });
+    },
     onPlan(plan) {
       // Use graph.id as the message ID so the TUI can send it back
       // in plan_response and the MainAgent can match it to pendingPlanId.

@@ -10,6 +10,7 @@ import { MessageBubble } from './MessageBubble';
 import { ToolCallGroup } from './ToolCallCard';
 import { ChatInput } from './ChatInput';
 import { ThinkingIndicator } from './ThinkingIndicator';
+import { ThinkingTimeline } from './ThinkingTimeline';
 import { ErrorMessage } from './ErrorMessage';
 import { PlanCard } from './PlanCard';
 import { BackgroundTaskIndicator } from './BackgroundTaskIndicator';
@@ -72,6 +73,7 @@ export function ChatPane() {
   const isStreaming = useChatStore((s) => s.isStreaming);
   const thinkingContent = useChatStore((s) => s.thinkingContent);
   const streamingStatus = useChatStore((s) => s.streamingStatus);
+  const thinkingSteps = useChatStore((s) => s.thinkingSteps);
   const activePlan = useOrchestrationStore((s) => s.activePlan);
   const inlineDAGs = useOrchestrationStore((s) => s.inlineDAGs);
   const { sendChat, sendCommand, respondToPlan } = useGateway();
@@ -173,15 +175,22 @@ export function ChatPane() {
 
         {(thinkingContent || isStreaming) && (
           <div className="px-6">
-            <ThinkingIndicator
-              content={thinkingContent || undefined}
-              statusText={streamingStatus || undefined}
-            />
+            {thinkingSteps.length > 0 ? (
+              <ThinkingTimeline
+                steps={thinkingSteps}
+                statusText={streamingStatus || undefined}
+              />
+            ) : (
+              <ThinkingIndicator
+                content={thinkingContent || undefined}
+                statusText={streamingStatus || undefined}
+              />
+            )}
           </div>
         )}
       </div>
     );
-  }, [activePlan, showAdvancedPlan, respondToPlan, thinkingContent, isStreaming, streamingStatus]);
+  }, [activePlan, showAdvancedPlan, respondToPlan, thinkingContent, isStreaming, streamingStatus, thinkingSteps]);
 
   return (
     <div className="flex h-full flex-col bg-[var(--background)]">

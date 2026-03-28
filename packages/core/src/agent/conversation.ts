@@ -307,11 +307,12 @@ export async function streamConversation(opts: {
   workspaceDir: string;
   onText: (text: string, streaming: boolean, done: boolean) => void;
   onThinking?: (text: string, streaming: boolean, done: boolean) => void;
+  onThinkingStep?: (step: { id: string; name: string; status: 'pending' | 'active' | 'done'; startedAt?: number; completedAt?: number; elapsedMs?: number; detail?: string }) => void;
   maxToolRounds?: number;
   maxInputTokens?: number;
   abortSignal?: AbortSignal;
 }): Promise<{ text: string; inputTokens: number; outputTokens: number; cacheCreationTokens: number; cacheReadTokens: number }> {
-  const { client, model, systemPrompt, workspaceDir, onText, onThinking, abortSignal } = opts;
+  const { client, model, systemPrompt, workspaceDir, onText, onThinking, onThinkingStep, abortSignal } = opts;
   let messages = [...opts.messages];
 
   if (opts.maxInputTokens && messages.length > 2) {
@@ -369,6 +370,7 @@ export async function streamConversation(opts: {
     }
     const roundStart = Date.now();
     if (round > 0) {
+      onThinkingStep?.({ id: `round-${round + 1}`, name: `LLM round ${round + 1}`, status: 'active', startedAt: roundStart, detail: `Model: ${model}` });
       onThinking?.(`Thinking… (round ${round + 1})`, true, false);
     }
     log.verbose(`Conversation round ${round + 1}`, {
@@ -451,6 +453,9 @@ export async function streamConversation(opts: {
     }
 
     const roundDuration = Date.now() - roundStart;
+    if (round > 0) {
+      onThinkingStep?.({ id: `round-${round + 1}`, name: `LLM round ${round + 1}`, status: 'done', completedAt: Date.now(), elapsedMs: roundDuration });
+    }
     log.verbose(`Round ${round + 1} complete`, {
       durationMs: roundDuration,
       stopReason,
@@ -517,7 +522,6 @@ export async function streamConversation(opts: {
         continue;
       }
 
-      // Emit thinking event so the TUI spinner shows activity
       const toolSummary = tc.name === 'exec'
         ? `Running: ${String(tc.input.command ?? '').slice(0, 80)}`
         : tc.name === 'read_file'
@@ -526,11 +530,19 @@ export async function streamConversation(opts: {
             ? `Writing: ${String(tc.input.path ?? '')}`
             : `Tool: ${tc.name}`;
       onThinking?.(toolSummary, true, false);
+      const toolStepId = `tool-${tc.id}`;
+      const toolDetail = tc.name === 'exec'
+        ? String(tc.input.command ?? '').slice(0, 120)
+        : tc.name === 'read_file' || tc.name === 'write_file'
+          ? String(tc.input.path ?? '')
+          : undefined;
+      onThinkingStep?.({ id: toolStepId, name: toolSummary, status: 'active', startedAt: Date.now(), detail: toolDetail });
 
       const toolStart = Date.now();
       log.verbose(`Tool call: ${tc.name}`, { input: tc.input });
       const result = await executeMainTool(tc.name, tc.input, workspaceDir);
       const toolDuration = Date.now() - toolStart;
+      onThinkingStep?.({ id: toolStepId, name: toolSummary, status: 'done', completedAt: Date.now(), elapsedMs: toolDuration });
       log.verbose(`Tool result: ${tc.name}`, {
         durationMs: toolDuration,
         resultLength: result.length,

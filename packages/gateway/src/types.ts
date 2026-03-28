@@ -47,7 +47,7 @@ export interface ClientMessage {
 export interface ServerMessage {
   id: string;
   type:
-    | 'text' | 'thinking' | 'plan' | 'event' | 'status'
+    | 'text' | 'thinking' | 'thinking_step' | 'plan' | 'event' | 'status'
     | 'command_result' | 'session_status' | 'error' | 'ack' | 'history'
     | 'dag_dispatched' | 'dag_progress' | 'dag_complete' | 'dag_confirm'
     | 'hindsight_status';
@@ -66,6 +66,7 @@ export interface ServerMessage {
   commandResult?: CommandResult;
   sessionStatus?: { model: string; inputTokens: number; outputTokens: number; cacheCreationTokens?: number; cacheReadTokens?: number; maxContextTokens: number; sessionCostUsd?: number };
   hindsightStatus?: { connected: boolean; busy: boolean };
+  step?: { id: string; name: string; status: 'pending' | 'active' | 'done'; startedAt?: number; completedAt?: number; elapsedMs?: number; detail?: string };
   error?: string;
   history?: Array<{ id: string; role: string; content: string; timestamp: string }>;
 

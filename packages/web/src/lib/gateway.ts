@@ -75,7 +75,13 @@ function bindListeners(ws: ReconnectingWebSocket): void {
         break;
       case 'thinking':
         if (msg.streaming) chat.appendThinking(msg.thinking || '');
-        if (msg.done) chat.setThinking('');
+        if (msg.done) {
+          chat.setThinking('');
+          chat.clearThinkingSteps();
+        }
+        break;
+      case 'thinking_step':
+        if (msg.step) chat.upsertThinkingStep(msg.step);
         break;
       case 'tool_call':
         chat.setStreamingStatus(statusFromToolCall(msg.toolName || msg.name));

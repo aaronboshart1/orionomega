@@ -2,6 +2,16 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { useEffect, useState } from 'react';
 
+export interface ThinkingStep {
+  id: string;
+  name: string;
+  status: 'pending' | 'active' | 'done';
+  startedAt?: number;
+  completedAt?: number;
+  elapsedMs?: number;
+  detail?: string;
+}
+
 export interface ToolCallData {
   toolName: string;
   action?: string;
@@ -47,6 +57,7 @@ interface ChatStore {
   isStreaming: boolean;
   thinkingContent: string;
   streamingStatus: string;
+  thinkingSteps: ThinkingStep[];
   replyTarget: ReplyToData | null;
   addMessage: (msg: ChatMessage) => void;
   setMessages: (msgs: ChatMessage[]) => void;
@@ -54,6 +65,8 @@ interface ChatStore {
   setStreaming: (s: boolean) => void;
   setThinking: (t: string) => void;
   appendThinking: (t: string) => void;
+  upsertThinkingStep: (step: ThinkingStep) => void;
+  clearThinkingSteps: () => void;
   updateToolCallStatus: (messageId: string, status: 'running' | 'done' | 'error') => void;
   setStreamingStatus: (status: string) => void;
   markLastInterrupted: () => void;
@@ -69,6 +82,7 @@ export const useChatStore = create<ChatStore>()(
       isStreaming: false,
       thinkingContent: '',
       streamingStatus: '',
+      thinkingSteps: [],
       replyTarget: null,
       addMessage: (msg) => set((s) => ({ messages: [...s.messages, msg] })),
       setMessages: (messages) => set({ messages }),
@@ -94,6 +108,17 @@ export const useChatStore = create<ChatStore>()(
         set(isStreaming ? { isStreaming } : { isStreaming, streamingStatus: '' }),
       setThinking: (thinkingContent) => set({ thinkingContent }),
       appendThinking: (t) => set((s) => ({ thinkingContent: s.thinkingContent + t })),
+      upsertThinkingStep: (step) =>
+        set((s) => {
+          const idx = s.thinkingSteps.findIndex((ts) => ts.id === step.id);
+          if (idx >= 0) {
+            const updated = [...s.thinkingSteps];
+            updated[idx] = step;
+            return { thinkingSteps: updated };
+          }
+          return { thinkingSteps: [...s.thinkingSteps, step] };
+        }),
+      clearThinkingSteps: () => set({ thinkingSteps: [] }),
       updateToolCallStatus: (messageId, status) =>
         set((s) => ({
           messages: s.messages.map((m) =>
@@ -113,7 +138,7 @@ export const useChatStore = create<ChatStore>()(
               interrupted: true,
             };
           }
-          return { messages: msgs, isStreaming: false, streamingStatus: '', thinkingContent: '' };
+          return { messages: msgs, isStreaming: false, streamingStatus: '', thinkingContent: '', thinkingSteps: [] };
         }),
       updateMessage: (id, updates) =>
         set((s) => ({
