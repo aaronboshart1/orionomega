@@ -177,6 +177,9 @@ export function ChatPane() {
         <img src="/omegaclaw-logo.png" alt="OmegaClaw" className="h-8 w-8 rounded-lg" />
         <div className="flex-1">
           <h1 className="text-sm font-semibold text-zinc-100">OmegaClaw</h1>
+          <p className="text-[10px] leading-tight text-zinc-500">
+            v{process.env.NEXT_PUBLIC_APP_VERSION} ({process.env.NEXT_PUBLIC_GIT_HASH})
+          </p>
         </div>
         <ConnectionStatus />
         <BackgroundTaskIndicator />
