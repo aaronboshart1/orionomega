@@ -464,7 +464,8 @@ export class ContextAssembler {
         : `## Context from ${r.bank}`;
       const formattedItems = r.items.map((i) => {
         const score = i.relevance.toFixed(2);
-        return `[relevance: ${score}] ${i.content}`;
+        const enriched = this.buildCausalChain(i.content);
+        return `[relevance: ${score}] ${enriched}`;
       });
       return `${header}\n${formattedItems.join('\n\n')}`;
     });
@@ -476,6 +477,46 @@ export class ContextAssembler {
     }
 
     return output;
+  }
+
+  // ── Causal Chain ────────────────────────────────────────────
+
+  private static readonly DECISION_MARKER = /\b(decided|decision|chose|agreed|ruling|went with|settled on)\b/i;
+  private static readonly ACTION_MARKER = /\b(implemented|built|created|deployed|migrated|configured|refactored)\b/i;
+  private static readonly OUTCOME_MARKER = /\b(result|outcome|because|resolved|fixed|caused|led to|broke|improved)\b/i;
+
+  private buildCausalChain(content: string): string {
+    const lines = content.split('\n').filter(Boolean);
+    if (lines.length < 2) return content;
+
+    const decision: string[] = [];
+    const action: string[] = [];
+    const outcome: string[] = [];
+    const other: string[] = [];
+
+    for (const line of lines) {
+      if (ContextAssembler.DECISION_MARKER.test(line)) {
+        decision.push(line);
+      } else if (ContextAssembler.OUTCOME_MARKER.test(line)) {
+        outcome.push(line);
+      } else if (ContextAssembler.ACTION_MARKER.test(line)) {
+        action.push(line);
+      } else {
+        other.push(line);
+      }
+    }
+
+    if (decision.length === 0 && action.length === 0 && outcome.length === 0) {
+      return content;
+    }
+
+    const chain: string[] = [];
+    if (decision.length > 0) chain.push(`Decision: ${decision.join('; ')}`);
+    if (action.length > 0) chain.push(`Action: ${action.join('; ')}`);
+    if (outcome.length > 0) chain.push(`Outcome: ${outcome.join('; ')}`);
+    if (other.length > 0) chain.push(other.join('\n'));
+
+    return chain.join(' → ');
   }
 
   // ── Disk Persistence ─────────────────────────────────────────

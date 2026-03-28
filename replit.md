@@ -54,6 +54,13 @@ The gateway reads from `~/.orionomega/config.yaml`. Defaults:
 - CORS: http://localhost:*
 - `models.cheap`: `claude-haiku-4-5-20251001` — lightweight model for intent classification, loop judges, and output compression
 
+## Hindsight Intelligence Layer (Phase 3)
+
+- **Memory quality scoring**: `scoreMemoryQuality()` in `packages/core/src/memory/retention-engine.ts` scores every memory candidate on information density before storage. Decisions, specs, and blockers score high; bare acknowledgments and status-only messages are rejected. Configurable via `RetentionConfig.qualityThreshold` (default: 0.3).
+- **Session anchors**: `SessionBootstrap.storeSessionAnchor()` captures active project, last request, pending decisions, and unfinished work at session end. New sessions recall the most recent anchor first and inject it as "Where We Left Off" in the bootstrap context block.
+- **Self-knowledge**: `SelfKnowledge` class in `packages/hindsight/src/self-knowledge.ts` stores Hindsight's own config (API endpoint, bank dispositions, tuning parameters, architectural decisions) as memories. `retainConfigChange()` auto-captures ongoing config changes.
+- **Causal chain retrieval**: `ContextAssembler.buildCausalChain()` classifies recalled memory lines as decision/action/outcome and formats them as `Decision → Action → Outcome` narrative chains for "why did we do X?" queries.
+
 ## Token & Cost Optimizations
 
 - **Prompt caching**: System prompt, tools, and penultimate conversation message all get `cache_control: ephemeral` breakpoints. The `anthropic-beta: prompt-caching-2024-07-31` header is sent on every request.

@@ -7,7 +7,8 @@
  * keeps both focused and readable.
  */
 
-import { HindsightClient, BankManager, SessionBootstrap, MentalModelManager } from '@orionomega/hindsight';
+import { HindsightClient, BankManager, SessionBootstrap, MentalModelManager, SelfKnowledge } from '@orionomega/hindsight';
+import type { SessionAnchor } from '@orionomega/hindsight';
 import { AnthropicClient } from '../anthropic/client.js';
 import { EventBus } from '../orchestration/event-bus.js';
 import { RetentionEngine } from '../memory/retention-engine.js';
@@ -41,6 +42,7 @@ export class MemoryBridge {
   private retentionEngine: RetentionEngine | null = null;
   private sessionSummarizer: SessionSummarizer | null = null;
   private compactionFlush: CompactionFlush | null = null;
+  private selfKnowledge: SelfKnowledge | null = null;
 
   private activeProjectBank: string | null = null;
   private initialised = false;
@@ -125,11 +127,31 @@ export class MemoryBridge {
       const ctx = await this.sessionBootstrap.bootstrap(this.activeProjectBank ?? undefined);
       const contextBlock = this.sessionBootstrap.buildContextBlock(ctx);
 
-      // Start listening for events
+      this.selfKnowledge = new SelfKnowledge(this.hindsightClient);
+
       this.retentionEngine.start();
 
       this.initialised = true;
       log.info('Memory subsystem initialised', { url: hsCfg.url });
+
+      this.selfKnowledge.bootstrap({
+        apiEndpoint: hsCfg.url,
+        deduplicationThreshold: 0.85,
+        relevanceFloor: 0.3,
+        qualityThreshold: 0.3,
+        budgetTiers: { low: 1024, mid: 4096, high: 8192 },
+        architecturalDecisions: [
+          'Hindsight stores memories in isolated banks with namespace separation',
+          'Mental models are pre-synthesized context documents refreshed on retention triggers',
+          'Session anchors capture continuity state at session boundaries',
+          'Memory quality scoring filters low-signal content before storage',
+          'Causal chain retrieval formats decision → action → outcome narratives in recall',
+        ],
+      }).catch((err) => {
+        log.warn('Self-knowledge bootstrap failed', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
 
       return contextBlock || undefined;
     } catch (err) {
@@ -219,6 +241,28 @@ export class MemoryBridge {
       log.info('Session summarised');
     } catch (err) {
       log.warn('Session summary failed', { error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  async storeSessionAnchor(anchor: SessionAnchor): Promise<void> {
+    if (!this.sessionBootstrap) return;
+    try {
+      await this.sessionBootstrap.storeSessionAnchor(anchor);
+    } catch (err) {
+      log.warn('Failed to store session anchor', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  async retainConfigChange(description: string): Promise<void> {
+    if (!this.selfKnowledge) return;
+    try {
+      await this.selfKnowledge.retainConfigChange(description);
+    } catch (err) {
+      log.warn('Failed to retain config change', {
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 }

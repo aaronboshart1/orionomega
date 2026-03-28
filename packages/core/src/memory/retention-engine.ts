@@ -21,6 +21,8 @@ export interface RetentionConfig {
   defaultBank?: string;
   /** Similarity threshold for storage-time deduplication. Default: 0.85. */
   deduplicationThreshold?: number;
+  /** Minimum quality score (0-1) for a memory to be retained. Default: 0.3. */
+  qualityThreshold?: number;
 }
 
 /** Outcome data for workflow completion retention. */
@@ -37,6 +39,92 @@ export interface WorkflowOutcome {
   errors: { worker: string; message: string; resolution?: string }[];
   infraChanges?: string[];
 }
+
+/** Quality score result for a memory candidate. */
+export interface QualityScore {
+  score: number;
+  signals: string[];
+}
+
+/** Configurable quality threshold. Memories below this score are rejected. Default: 0.3. */
+const DEFAULT_QUALITY_THRESHOLD = 0.3;
+
+const HIGH_SIGNAL_PATTERNS: Array<{ pattern: RegExp; weight: number; label: string }> = [
+  { pattern: /\b(decided|decision|chose|chosen|agreed|ruling)\b/i, weight: 0.3, label: 'decision' },
+  { pattern: /\b(spec|specification|requirement|constraint|must|shall)\b/i, weight: 0.25, label: 'spec' },
+  { pattern: /\b(blocked|blocker|blocking|impediment|stuck|can'?t proceed)\b/i, weight: 0.3, label: 'blocker' },
+  { pattern: /\b(architecture|design pattern|trade-?off|approach)\b/i, weight: 0.25, label: 'architecture' },
+  { pattern: /\b(error|bug|fix|resolved|root cause|regression)\b/i, weight: 0.2, label: 'error-resolution' },
+  { pattern: /\b(lesson|learned|insight|discovery|realized|turns out)\b/i, weight: 0.2, label: 'lesson' },
+  { pattern: /\b(prefer|preference|always use|never use|convention)\b/i, weight: 0.2, label: 'preference' },
+  { pattern: /\b(api|endpoint|schema|interface|contract)\b/i, weight: 0.15, label: 'api-spec' },
+  { pattern: /\b(config|configuration|environment|variable|secret)\b/i, weight: 0.15, label: 'config' },
+  { pattern: /\b(migration|deploy|release|rollback|upgrade)\b/i, weight: 0.15, label: 'ops' },
+];
+
+const LOW_SIGNAL_PATTERNS: Array<{ pattern: RegExp; penalty: number; label: string }> = [
+  { pattern: /^(ok|okay|done|got it|sure|yes|no|thanks|thank you|sounds good|lgtm)\.?$/i, penalty: 0.5, label: 'bare-ack' },
+  { pattern: /^(starting|working on|beginning|looking at)\b/i, penalty: 0.3, label: 'status-start' },
+  { pattern: /^(completed|finished|all done)\b(?!.*(?:because|decision|by|using|with))/i, penalty: 0.3, label: 'bare-completion' },
+  { pattern: /^task:/i, penalty: 0.1, label: 'task-header-only' },
+  { pattern: /^(node|worker|workflow):\s*\S+\s*$/i, penalty: 0.3, label: 'bare-metadata' },
+];
+
+const CONTEXT_WEIGHT_BOOSTS: Record<string, number> = {
+  decision: 0.3,
+  preference: 0.25,
+  lesson: 0.2,
+  architecture: 0.25,
+  infrastructure: 0.15,
+  blocker: 0.3,
+  session_anchor: 0.35,
+  self_knowledge: 0.2,
+};
+
+function scoreMemoryQuality(content: string, context: string): QualityScore {
+  let score = 0.5;
+  const signals: string[] = [];
+
+  const contextBoost = CONTEXT_WEIGHT_BOOSTS[context] ?? 0;
+  if (contextBoost > 0) {
+    score += contextBoost;
+    signals.push(`context:${context}(+${contextBoost})`);
+  }
+
+  for (const { pattern, weight, label } of HIGH_SIGNAL_PATTERNS) {
+    if (pattern.test(content)) {
+      score += weight;
+      signals.push(`high:${label}(+${weight})`);
+    }
+  }
+
+  for (const { pattern, penalty, label } of LOW_SIGNAL_PATTERNS) {
+    if (pattern.test(content)) {
+      score -= penalty;
+      signals.push(`low:${label}(-${penalty})`);
+    }
+  }
+
+  const wordCount = content.split(/\s+/).filter(Boolean).length;
+  if (wordCount < 5) {
+    score -= 0.2;
+    signals.push('short(<5 words)');
+  } else if (wordCount > 20) {
+    score += 0.1;
+    signals.push('substantive(>20 words)');
+  }
+
+  const lineCount = content.split('\n').filter(Boolean).length;
+  if (lineCount > 3) {
+    score += 0.1;
+    signals.push('structured(>3 lines)');
+  }
+
+  score = Math.max(0, Math.min(1, score));
+  return { score, signals };
+}
+
+export { scoreMemoryQuality };
 
 /** Phrases indicating user preferences. */
 const PREFERENCE_PATTERNS = [
@@ -133,13 +221,26 @@ export class RetentionEngine {
    */
   async retain(bankId: string, content: string, context: string): Promise<void> {
     try {
+      const quality = scoreMemoryQuality(content, context);
+      const threshold = this.config.qualityThreshold ?? DEFAULT_QUALITY_THRESHOLD;
+
+      if (quality.score < threshold) {
+        log.debug('Rejected low-quality memory', {
+          bankId, context, score: quality.score, threshold, signals: quality.signals,
+        });
+        return;
+      }
+
       const isDup = await this.hs.isDuplicateContent(bankId, content, this.config.deduplicationThreshold ?? 0.85);
       if (isDup) {
         log.debug('Skipped duplicate memory retention', { bankId, context, length: content.length });
         return;
       }
       await this.hs.retainOne(bankId, content, context);
-      log.debug('Retained memory', { bankId, context, length: content.length });
+      log.debug('Retained memory', {
+        bankId, context, length: content.length,
+        qualityScore: quality.score, signals: quality.signals,
+      });
     } catch (err) {
       log.warn('Failed to retain memory', {
         bankId,
@@ -194,13 +295,28 @@ export class RetentionEngine {
     } = outcome;
 
     try {
-      // Main outcome summary
+      const hasSubstance = decisions.length > 0 || findings.length > 0
+        || errors.length > 0 || (infraChanges && infraChanges.length > 0);
+
       const summary = [
         `Task: ${taskSummary}`,
         `Workers: ${workerCount} | Duration: ${durationSec.toFixed(1)}s`,
         outputPaths.length > 0 ? `Outputs: ${outputPaths.join(', ')}` : null,
         errors.length > 0 ? `Errors: ${errors.length}` : null,
+        decisions.length > 0 ? `Decisions: ${decisions.length}` : null,
+        findings.length > 0 ? `Findings: ${findings.length}` : null,
       ].filter(Boolean).join('\n');
+
+      if (!hasSubstance) {
+        const quality = scoreMemoryQuality(summary, 'project_update');
+        const threshold = this.config.qualityThreshold ?? DEFAULT_QUALITY_THRESHOLD;
+        if (quality.score < threshold) {
+          log.debug('Skipped low-substance workflow outcome', {
+            bankId, score: quality.score, threshold,
+          });
+          return;
+        }
+      }
 
       await this.retain(bankId, summary, 'project_update');
 

@@ -1,12 +1,23 @@
 /**
  * @module memory/session-bootstrap
  * Loads context from Hindsight at session start to prime the system prompt.
+ * Supports session anchors for seamless handoff between sessions.
  */
 
 import { HindsightClient } from './client.js';
 import { createLogger } from './logger.js';
 
 const log = createLogger('session-bootstrap');
+
+/** Data captured at session end for seamless handoff. */
+export interface SessionAnchor {
+  activeProject?: string;
+  lastUserRequest?: string;
+  pendingDecisions: string[];
+  unfinishedWork: string[];
+  summary: string;
+  timestamp: string;
+}
 
 /** Context loaded from Hindsight during session bootstrap. */
 export interface BootstrapContext {
@@ -18,6 +29,8 @@ export interface BootstrapContext {
   projectMemories: string;
   /** Infrastructure topology and service map. */
   infraContext: string;
+  /** Most recent session anchor for continuity. */
+  sessionAnchor: string;
 }
 
 /**
@@ -36,16 +49,16 @@ export class SessionBootstrap {
    * @returns Populated bootstrap context (empty strings for unavailable data).
    */
   async bootstrap(projectBank?: string): Promise<BootstrapContext> {
-    const [userProfile, sessionContext, infraContext, projectMemories, recentSessions] =
+    const [userProfile, sessionContext, infraContext, projectMemories, recentSessions, sessionAnchor] =
       await Promise.all([
         this.getMentalModel('core', 'user-profile'),
         this.getMentalModel('core', 'session-context'),
         this.getMentalModel('infra', 'infra-map'),
         projectBank ? this.recallProjectMemories(projectBank) : Promise.resolve(''),
         this.recallCoreMemories(),
+        this.recallSessionAnchor(),
       ]);
 
-    // Use mental model for session context if available, fall back to raw session recall
     const effectiveSessionContext = sessionContext || recentSessions;
 
     log.debug('Bootstrap complete', {
@@ -54,9 +67,10 @@ export class SessionBootstrap {
       usedSessionFallback: !sessionContext && recentSessions.length > 0,
       hasInfraContext: infraContext.length > 0,
       hasProjectMemories: projectMemories.length > 0,
+      hasSessionAnchor: sessionAnchor.length > 0,
     });
 
-    return { userProfile, sessionContext: effectiveSessionContext, projectMemories, infraContext };
+    return { userProfile, sessionContext: effectiveSessionContext, projectMemories, infraContext, sessionAnchor };
   }
 
   /**
@@ -70,6 +84,9 @@ export class SessionBootstrap {
   buildContextBlock(ctx: BootstrapContext): string {
     const sections: string[] = [];
 
+    if (ctx.sessionAnchor) {
+      sections.push(`## Where We Left Off\n${ctx.sessionAnchor}`);
+    }
     if (ctx.userProfile) {
       sections.push(`## User Profile\n${ctx.userProfile}`);
     }
@@ -86,6 +103,39 @@ export class SessionBootstrap {
     if (sections.length === 0) return '';
 
     return `\n\n# Memory Context (from Hindsight)\n\n${sections.join('\n\n')}`;
+  }
+
+  async storeSessionAnchor(anchor: SessionAnchor): Promise<void> {
+    try {
+      const parts: string[] = [
+        `[Session Anchor — ${anchor.timestamp}]`,
+        anchor.summary,
+      ];
+      if (anchor.activeProject) {
+        parts.push(`Active project: ${anchor.activeProject}`);
+      }
+      if (anchor.lastUserRequest) {
+        parts.push(`Last user request: ${anchor.lastUserRequest}`);
+      }
+      if (anchor.pendingDecisions.length > 0) {
+        parts.push(`Pending decisions:\n${anchor.pendingDecisions.map(d => `  - ${d}`).join('\n')}`);
+      }
+      if (anchor.unfinishedWork.length > 0) {
+        parts.push(`Unfinished work:\n${anchor.unfinishedWork.map(w => `  - ${w}`).join('\n')}`);
+      }
+
+      const content = parts.join('\n');
+      await this.hs.retainOne('core', content, 'session_anchor');
+      log.info('Session anchor stored', {
+        hasProject: !!anchor.activeProject,
+        pendingDecisions: anchor.pendingDecisions.length,
+        unfinishedWork: anchor.unfinishedWork.length,
+      });
+    } catch (err) {
+      log.warn('Failed to store session anchor', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   /**
@@ -144,6 +194,32 @@ export class SessionBootstrap {
     } catch (err) {
       log.warn('Project memories not available', {
         bankId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return '';
+    }
+  }
+
+  private async recallSessionAnchor(): Promise<string> {
+    try {
+      const result = await this.hs.recall(
+        'core',
+        'session anchor, where we left off, pending decisions, unfinished work',
+        { maxTokens: 1024, budget: 'low', minRelevance: 0.2 },
+      );
+      const anchors = result.results.filter((m) =>
+        m.context === 'session_anchor' || m.content.includes('[Session Anchor'),
+      );
+      if (anchors.length === 0) return '';
+      anchors.sort((a, b) => {
+        if (!a.timestamp && !b.timestamp) return 0;
+        if (!a.timestamp) return 1;
+        if (!b.timestamp) return -1;
+        return b.timestamp.localeCompare(a.timestamp);
+      });
+      return anchors[0].content;
+    } catch (err) {
+      log.warn('Session anchor recall not available', {
         error: err instanceof Error ? err.message : String(err),
       });
       return '';
