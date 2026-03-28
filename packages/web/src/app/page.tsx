@@ -26,7 +26,7 @@ export default function Home() {
   const showOrchPane = orchHydrated && orchPaneOpen;
 
   return (
-    <div className="flex h-screen max-h-dvh">
+    <div className="fixed inset-0 flex">
       <div className={showOrchPane ? 'hidden md:block md:w-1/2' : 'w-full'}>
         <ChatPane />
       </div>
