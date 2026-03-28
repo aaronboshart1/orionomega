@@ -72,7 +72,7 @@ export function OrchestrationPane() {
         >
           Memory
           {memoryCount > 0 && (
-            <span className="ml-1.5 text-[10px] bg-violet-500/20 text-violet-400 rounded-full px-1.5 py-0.5 font-mono">
+            <span className="ml-1.5 text-xs bg-violet-500/20 text-violet-400 rounded-full px-1.5 py-0.5 font-mono">
               {memoryCount}
             </span>
           )}

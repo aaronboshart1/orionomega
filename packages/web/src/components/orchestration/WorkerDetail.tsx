@@ -3,6 +3,7 @@
 import { useState, useMemo } from 'react';
 import { X, ChevronDown } from 'lucide-react';
 import { useOrchestrationStore, type WorkerEvent } from '@/stores/orchestration';
+import { TabGroup } from '../shared/TabGroup';
 
 type Tab = 'activity' | 'reasoning' | 'tools' | 'output';
 
@@ -79,11 +80,11 @@ export function WorkerDetail() {
           <div className="flex items-center gap-3">
             <h3 className="text-xs font-semibold text-zinc-200">{node.label}</h3>
             {node.agent && (
-              <span className="rounded bg-zinc-700 px-1.5 py-0.5 text-[10px] text-zinc-400">
+              <span className="rounded bg-zinc-700 px-1.5 py-0.5 text-xs text-zinc-400">
                 {node.agent.model}
               </span>
             )}
-            <span className={`text-[10px] font-medium ${statusColor[node.status] || 'text-zinc-400'}`}>
+            <span className={`text-xs font-medium ${statusColor[node.status] || 'text-zinc-400'}`}>
               {node.status.toUpperCase()}
             </span>
           </div>
@@ -99,20 +100,13 @@ export function WorkerDetail() {
       {!collapsed && (
         <>
           {/* Tabs */}
-          <div className="flex border-b border-zinc-800">
-            {tabs.map((tab) => (
-              <button
-                key={tab.key}
-                onClick={() => setActiveTab(tab.key)}
-                className={`px-4 py-2 text-[11px] font-medium transition-colors ${
-                  activeTab === tab.key
-                    ? 'border-b-2 border-blue-500 text-blue-400'
-                    : 'text-zinc-500 hover:text-zinc-300'
-                }`}
-              >
-                {tab.label}
-              </button>
-            ))}
+          <div className="border-b border-zinc-800">
+            <TabGroup
+              tabs={tabs}
+              active={activeTab}
+              onSelect={setActiveTab}
+              variant="underline"
+            />
           </div>
 
           {/* Content */}
@@ -158,11 +152,11 @@ export function WorkerDetail() {
                   </summary>
                   <div className="border-t border-zinc-800 px-3 py-2">
                     {pair.result ? (
-                      <pre className="overflow-x-auto text-[10px] text-zinc-500">
+                      <pre className="overflow-x-auto text-xs text-zinc-500">
                         {pair.result.message || JSON.stringify(pair.result.data, null, 2)}
                       </pre>
                     ) : (
-                      <p className="text-[10px] text-zinc-600">Awaiting result…</p>
+                      <p className="text-xs text-zinc-600">Awaiting result…</p>
                     )}
                   </div>
                 </details>

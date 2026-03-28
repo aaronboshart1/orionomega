@@ -37,7 +37,7 @@ function NodeRow({ node }: { node: InlineDAGNode }) {
           {node.label}
         </span>
         {node.status === 'running' && node.progress !== undefined && (
-          <span className="text-[10px] text-blue-400">{node.progress}%</span>
+          <span className="text-xs text-blue-400">{node.progress}%</span>
         )}
         {hasOutput && (
           expanded
@@ -46,7 +46,7 @@ function NodeRow({ node }: { node: InlineDAGNode }) {
         )}
       </button>
       {expanded && node.output && (
-        <div className="ml-6 mt-1 mb-1 rounded bg-zinc-900 px-3 py-2 text-[11px] text-zinc-400">
+        <div className="ml-6 mt-1 mb-1 rounded bg-zinc-900 px-3 py-2 text-xs text-zinc-400">
           {node.output}
         </div>
       )}
@@ -98,7 +98,7 @@ export function InlineDAGCard({ dag }: InlineDAGCardProps) {
           {dag.summary}
         </span>
 
-        <span className="text-[10px] text-zinc-500">
+        <span className="text-xs text-zinc-500">
           {dag.completedCount}/{dag.totalCount}
         </span>
 
@@ -163,7 +163,7 @@ export function InlineDAGCard({ dag }: InlineDAGCardProps) {
       )}
 
       {(isActive || isPaused) && dag.elapsed > 0 && (
-        <div className="mt-1 text-right text-[10px] text-zinc-600">
+        <div className="mt-1 text-right text-xs text-zinc-600">
           {isPaused && <span className="mr-1 text-amber-500">paused</span>}
           {dag.elapsed < 60 ? `${Math.round(dag.elapsed)}s` : `${Math.floor(dag.elapsed / 60)}m ${Math.round(dag.elapsed % 60)}s`}
         </div>
@@ -174,6 +174,23 @@ export function InlineDAGCard({ dag }: InlineDAGCardProps) {
           {dag.nodes.map((node) => (
             <NodeRow key={node.id} node={node} />
           ))}
+        </div>
+      )}
+
+      {expanded && dag.nodes.length === 0 && isActive && (
+        <div className="mt-2 space-y-2 border-t border-zinc-700/50 pt-2">
+          <div className="flex items-center gap-2 px-2">
+            <div className="h-3 w-3 animate-pulse rounded-full bg-zinc-700" />
+            <div className="h-3 w-2/3 animate-pulse rounded bg-zinc-700" />
+          </div>
+          <div className="flex items-center gap-2 px-2">
+            <div className="h-3 w-3 animate-pulse rounded-full bg-zinc-700/70" />
+            <div className="h-3 w-1/2 animate-pulse rounded bg-zinc-700/70" />
+          </div>
+          <div className="flex items-center gap-2 px-2">
+            <div className="h-3 w-3 animate-pulse rounded-full bg-zinc-700/50" />
+            <div className="h-3 w-3/5 animate-pulse rounded bg-zinc-700/50" />
+          </div>
         </div>
       )}
 

@@ -5,20 +5,10 @@ import { CheckCircle2, XCircle, Circle, FileText, ChevronRight } from 'lucide-re
 import type { InlineDAG, ModelUsageEntry } from '@/stores/orchestration';
 import { MarkdownContent } from './MarkdownContent';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
+import { formatTokens as fmtTokens, formatElapsed as fmtDuration } from '@/utils/format';
 
 interface RunSummaryCardProps {
   dag: InlineDAG;
-}
-
-function fmtTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
-  return String(n);
-}
-
-function fmtDuration(sec: number): string {
-  if (sec < 60) return `${Math.round(sec)}s`;
-  return `${Math.floor(sec / 60)}m ${Math.round(sec % 60)}s`;
 }
 
 export function RunSummaryCard({ dag }: RunSummaryCardProps) {
@@ -56,7 +46,7 @@ export function RunSummaryCard({ dag }: RunSummaryCardProps) {
         <span className="text-xs font-semibold text-zinc-200">Run Summary</span>
       </div>
 
-      <div className="flex items-center gap-3 text-[10px] text-zinc-500">
+      <div className="flex items-center gap-3 text-xs text-zinc-500">
         {dag.durationSec !== undefined && <span>{fmtDuration(dag.durationSec)}</span>}
         {dag.workerCount !== undefined && <span>{dag.workerCount} worker{dag.workerCount !== 1 ? 's' : ''}</span>}
         {dag.toolCallCount != null && dag.toolCallCount > 0 && <span>{dag.toolCallCount} tool call{dag.toolCallCount !== 1 ? 's' : ''}</span>}
@@ -67,7 +57,7 @@ export function RunSummaryCard({ dag }: RunSummaryCardProps) {
 
       {hasModels && (
         <div className="mt-1.5 space-y-0.5">
-          <div className="grid grid-cols-[1fr_3rem_3rem_3rem_3rem_3.5rem] gap-1 text-[9px] text-zinc-600">
+          <div className="grid grid-cols-[1fr_3rem_3rem_3rem_3rem_3.5rem] gap-1 text-xs text-zinc-600">
             <span>Model</span>
             <span className="text-right">Input</span>
             <span className="text-right">Output</span>
@@ -76,7 +66,7 @@ export function RunSummaryCard({ dag }: RunSummaryCardProps) {
             <span className="text-right">Cost</span>
           </div>
           {dag.modelUsage!.map((m) => (
-            <div key={m.model} className="grid grid-cols-[1fr_3rem_3rem_3rem_3rem_3.5rem] gap-1 text-[10px]">
+            <div key={m.model} className="grid grid-cols-[1fr_3rem_3rem_3rem_3rem_3.5rem] gap-1 text-xs">
               <span className="truncate text-purple-400">{m.model}</span>
               <span className="text-right text-zinc-400">{fmtTokens(m.inputTokens)}</span>
               <span className="text-right text-zinc-400">{fmtTokens(m.outputTokens)}</span>
@@ -86,7 +76,7 @@ export function RunSummaryCard({ dag }: RunSummaryCardProps) {
             </div>
           ))}
           {totals && (
-            <div className="grid grid-cols-[1fr_3rem_3rem_3rem_3rem_3.5rem] gap-1 border-t border-zinc-700/30 pt-0.5 text-[10px] font-medium">
+            <div className="grid grid-cols-[1fr_3rem_3rem_3rem_3rem_3.5rem] gap-1 border-t border-zinc-700/30 pt-0.5 text-xs font-medium">
               <span className="text-zinc-400">Total</span>
               <span className="text-right text-zinc-300">{fmtTokens(totals.input)}</span>
               <span className="text-right text-zinc-300">{fmtTokens(totals.output)}</span>
@@ -100,16 +90,16 @@ export function RunSummaryCard({ dag }: RunSummaryCardProps) {
 
       {dag.nodeOutputPaths && Object.keys(dag.nodeOutputPaths).length > 0 && (
         <div className="mt-2 border-t border-zinc-700/50 pt-2">
-          <div className="flex items-center gap-1.5 text-[10px] font-medium text-zinc-400 mb-1">
+          <div className="flex items-center gap-1.5 text-xs font-medium text-zinc-400 mb-1">
             <FileText size={10} />
             <span>Artifacts</span>
           </div>
           <div className="space-y-1">
             {Object.entries(dag.nodeOutputPaths).map(([nodeLabel, paths]) => (
               <div key={nodeLabel}>
-                <div className="text-[10px] font-medium text-zinc-300">{nodeLabel}</div>
+                <div className="text-xs font-medium text-zinc-300">{nodeLabel}</div>
                 {paths.map((p) => (
-                  <div key={p} className="ml-3 text-[10px] text-blue-400/80">{p}</div>
+                  <div key={p} className="ml-3 text-xs text-blue-400/80">{p}</div>
                 ))}
               </div>
             ))}
@@ -123,7 +113,7 @@ export function RunSummaryCard({ dag }: RunSummaryCardProps) {
             type="button"
             aria-expanded={summaryOpen}
             onClick={() => setSummaryOpen((o) => !o)}
-            className="flex w-full items-center gap-1.5 text-[10px] font-medium text-zinc-400 hover:text-zinc-300 transition-colors"
+            className="flex w-full items-center gap-1.5 text-xs font-medium text-zinc-400 hover:text-zinc-300 transition-colors"
           >
             <ChevronRight
               size={10}

@@ -5,10 +5,7 @@ import { ChevronDown, ChevronRight, Check, Loader2 } from 'lucide-react';
 import { OmegaSpinner } from './OmegaSpinner';
 import type { ThinkingStep } from '@/stores/chat';
 
-function formatElapsed(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  return `${(ms / 1000).toFixed(1)}s`;
-}
+import { formatElapsedMs as formatElapsed } from '@/utils/format';
 
 function LiveElapsed({ startedAt }: { startedAt: number }) {
   const [elapsed, setElapsed] = useState(Date.now() - startedAt);
@@ -63,7 +60,7 @@ export function ThinkingTimeline({ steps, statusText }: ThinkingTimelineProps) {
               {!expanded && steps.length > 3 && (
                 <button
                   onClick={() => setExpanded(true)}
-                  className="mb-1 flex items-center gap-1 text-[10px] text-zinc-500 hover:text-zinc-400"
+                  className="mb-1 flex items-center gap-1 text-xs text-zinc-500 hover:text-zinc-400"
                 >
                   <ChevronRight size={10} />
                   {steps.length - 3} earlier step{steps.length - 3 !== 1 ? 's' : ''}
@@ -73,7 +70,7 @@ export function ThinkingTimeline({ steps, statusText }: ThinkingTimelineProps) {
               {expanded && steps.length > 3 && (
                 <button
                   onClick={() => setExpanded(false)}
-                  className="mb-1 flex items-center gap-1 text-[10px] text-zinc-500 hover:text-zinc-400"
+                  className="mb-1 flex items-center gap-1 text-xs text-zinc-500 hover:text-zinc-400"
                 >
                   <ChevronDown size={10} />
                   Collapse
@@ -99,7 +96,7 @@ export function ThinkingTimeline({ steps, statusText }: ThinkingTimelineProps) {
                         >
                           {step.name}
                         </span>
-                        <span className="text-[10px]">
+                        <span className="text-xs">
                           {step.status === 'done' && step.elapsedMs != null && (
                             <span className="text-zinc-500">{formatElapsed(step.elapsedMs)}</span>
                           )}
@@ -109,7 +106,7 @@ export function ThinkingTimeline({ steps, statusText }: ThinkingTimelineProps) {
                         </span>
                       </div>
                       {step.detail && (
-                        <p className="mt-0.5 text-[10px] text-zinc-500">{step.detail}</p>
+                        <p className="mt-0.5 text-xs text-zinc-500">{step.detail}</p>
                       )}
                     </div>
                   </div>

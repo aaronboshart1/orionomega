@@ -77,7 +77,7 @@ export function ToolCallCard({ toolCall }: ToolCallCardProps) {
       </button>
 
       {expanded && hasDetails && (
-        <div className="mt-1.5 space-y-1 border-t border-zinc-700/40 pt-1.5 text-[11px] text-zinc-500">
+        <div className="mt-1.5 space-y-1 border-t border-zinc-700/40 pt-1.5 text-xs text-zinc-500">
           {action && (
             <div>
               <span className="text-zinc-600">action: </span>
@@ -110,7 +110,7 @@ export function ToolCallGroup({ nodeLabel, toolCalls }: ToolCallGroupProps) {
         <div className="rounded-xl border border-zinc-700/40 bg-zinc-850/50 overflow-hidden">
           <button
             onClick={() => setExpanded(!expanded)}
-            className="flex w-full items-center gap-2 px-3 py-2 text-left text-[11px] text-zinc-500 hover:bg-zinc-700/30 transition-colors"
+            className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-zinc-500 hover:bg-zinc-700/30 transition-colors"
           >
             {expanded
               ? <ChevronDown size={12} />

@@ -1,18 +1,20 @@
 'use client';
 
 import { useRef, useEffect, useCallback } from 'react';
-import { ChevronDown } from 'lucide-react';
+import { ChevronDown, Brain, Wrench, ClipboardList, Lightbulb, BarChart3, XCircle, CheckCircle2 } from 'lucide-react';
 import { useOrchestrationStore, type WorkerEvent } from '@/stores/orchestration';
 
-const typeIcons: Record<string, string> = {
-  thinking: '🧠',
-  tool_call: '🔧',
-  tool_result: '📋',
-  finding: '💡',
-  status: '📊',
-  error: '❌',
-  done: '✅',
+const typeIcons: Record<string, React.ReactNode> = {
+  thinking: <Brain size={12} aria-hidden className="text-purple-400" />,
+  tool_call: <Wrench size={12} aria-hidden className="text-yellow-400" />,
+  tool_result: <ClipboardList size={12} aria-hidden className="text-zinc-400" />,
+  finding: <Lightbulb size={12} aria-hidden className="text-green-400" />,
+  status: <BarChart3 size={12} aria-hidden className="text-blue-400" />,
+  error: <XCircle size={12} aria-hidden className="text-red-400" />,
+  done: <CheckCircle2 size={12} aria-hidden className="text-green-400" />,
 };
+
+const defaultIcon = <BarChart3 size={12} aria-hidden className="text-zinc-400" />;
 
 function formatTime(ts: string) {
   try {
@@ -24,12 +26,12 @@ function formatTime(ts: string) {
 }
 
 function EventRow({ event }: { event: WorkerEvent }) {
-  const icon = typeIcons[event.type] || '📊';
+  const icon = typeIcons[event.type] || defaultIcon;
 
   return (
     <div className="flex items-start gap-2 border-b border-zinc-800/50 px-4 py-1.5 text-xs font-mono hover:bg-zinc-800/30">
       <span className="shrink-0 text-zinc-600">{formatTime(event.timestamp)}</span>
-      <span className="shrink-0">{icon}</span>
+      <span className="shrink-0 flex items-center">{icon}</span>
       <span className="shrink-0 text-zinc-500">{event.workerId}</span>
       <span className="min-w-0 flex-1 truncate">
         {event.type === 'tool_call' && event.tool && (
@@ -116,7 +118,7 @@ export function ActivityFeed() {
             />
             <h3 className="text-xs font-semibold text-zinc-400">Activity Feed</h3>
           </div>
-          <span className="text-[10px] text-zinc-600">0 events</span>
+          <span className="text-xs text-zinc-600">0 events</span>
         </button>
         <div className="flex flex-1 items-center justify-center text-xs text-zinc-600">
           Waiting for events…
@@ -138,7 +140,7 @@ export function ActivityFeed() {
           />
           <h3 className="text-xs font-semibold text-zinc-400">Activity Feed</h3>
         </div>
-        <span className="text-[10px] text-zinc-600">{events.length} events</span>
+        <span className="text-xs text-zinc-600">{events.length} events</span>
       </button>
       {!collapsed && (
         <div className="flex-1 overflow-y-auto" ref={scrollContainerRef} onScroll={handleScroll}>

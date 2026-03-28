@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Clock, DollarSign, Users, Play, Pencil, X } from 'lucide-react';
+import { Clock, DollarSign, Users, Play, Pencil, X, Bot, Wrench, GitFork, Zap, Link, Package, ClipboardList } from 'lucide-react';
 import type { PlanData, GraphNode } from '@/stores/orchestration';
 
 interface PlanCardProps {
@@ -9,14 +9,15 @@ interface PlanCardProps {
   onRespond: (planId: string, action: string, modification?: string) => void;
 }
 
-function nodeTypeIcon(type: string) {
+function NodeTypeIcon({ type }: { type: string }) {
+  const props = { size: 14, 'aria-hidden': true as const };
   switch (type) {
-    case 'AGENT': return '🤖';
-    case 'TOOL': return '🔧';
-    case 'ROUTER': return '🔀';
-    case 'PARALLEL': return '⚡';
-    case 'JOIN': return '🔗';
-    default: return '📦';
+    case 'AGENT': return <Bot {...props} className="text-blue-400" />;
+    case 'TOOL': return <Wrench {...props} className="text-yellow-400" />;
+    case 'ROUTER': return <GitFork {...props} className="text-purple-400" />;
+    case 'PARALLEL': return <Zap {...props} className="text-amber-400" />;
+    case 'JOIN': return <Link {...props} className="text-cyan-400" />;
+    default: return <Package {...props} className="text-zinc-400" />;
   }
 }
 
@@ -39,7 +40,10 @@ export function PlanCard({ plan, onRespond }: PlanCardProps) {
     <div className="rounded-xl border border-zinc-700 bg-zinc-900 p-5">
       {/* Header */}
       <div className="mb-3 flex items-center justify-between">
-        <h3 className="text-sm font-semibold text-zinc-100">📋 Execution Plan</h3>
+        <h3 className="text-sm font-semibold text-zinc-100 flex items-center gap-2">
+              <ClipboardList size={16} aria-hidden className="text-zinc-400" />
+              Execution Plan
+            </h3>
         <div className="flex items-center gap-4 text-xs text-zinc-400">
           <span className="flex items-center gap-1">
             <Clock size={12} />
@@ -70,10 +74,10 @@ export function PlanCard({ plan, onRespond }: PlanCardProps) {
               key={node.id}
               className="flex items-center gap-3 rounded-lg bg-zinc-800 px-3 py-2 text-xs"
             >
-              <span>{nodeTypeIcon(node.type)}</span>
+              <NodeTypeIcon type={node.type} />
               <span className="flex-1 text-zinc-200">{node.label}</span>
               {node.agent && (
-                <span className="rounded bg-zinc-700 px-2 py-0.5 text-[10px] text-zinc-400">
+                <span className="rounded bg-zinc-700 px-2 py-0.5 text-xs text-zinc-400">
                   {node.agent.model}
                 </span>
               )}

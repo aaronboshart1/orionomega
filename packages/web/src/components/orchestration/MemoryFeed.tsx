@@ -48,11 +48,11 @@ function MemoryEventRow({ event }: { event: MemoryEvent }) {
         <div className="flex items-center gap-2">
           <span className={`text-xs font-medium ${cfg.color}`}>{cfg.label}</span>
           {event.bank && (
-            <span className="text-[10px] text-zinc-500 bg-zinc-800 rounded px-1.5 py-0.5 font-mono">
+            <span className="text-xs text-zinc-500 bg-zinc-800 rounded px-1.5 py-0.5 font-mono">
               {event.bank}
             </span>
           )}
-          <span className="text-[10px] text-zinc-600 ml-auto flex-shrink-0">
+          <span className="text-xs text-zinc-600 ml-auto flex-shrink-0">
             {formatTime(event.timestamp)}
           </span>
         </div>

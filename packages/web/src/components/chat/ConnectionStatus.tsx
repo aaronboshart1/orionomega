@@ -42,7 +42,7 @@ export function ConnectionStatus() {
         ) : (
           <>
             <Diamond size={12} className="text-red-400" fill="currentColor" aria-hidden="true" />
-            <span className="text-[10px] font-medium text-red-400">
+            <span className="text-xs font-medium text-red-400">
               OFFLINE
             </span>
             <span className="sr-only">Hindsight disconnected</span>

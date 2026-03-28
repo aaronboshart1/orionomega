@@ -66,7 +66,7 @@ const components: Components = {
       <div className="my-3 overflow-x-auto rounded-lg bg-zinc-900 text-xs">
         <div className="flex items-center justify-between border-b border-zinc-700/50 px-4 py-1.5">
           {lang ? (
-            <span className="text-[10px] font-medium uppercase tracking-wider text-zinc-500">
+            <span className="text-xs font-medium uppercase tracking-wider text-zinc-500">
               {lang}
             </span>
           ) : (

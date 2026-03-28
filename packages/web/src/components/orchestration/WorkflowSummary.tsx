@@ -6,18 +6,7 @@ import { useOrchestrationStore } from '@/stores/orchestration';
 import type { ModelUsageEntry } from '@/stores/orchestration';
 import { MarkdownContent } from '../chat/MarkdownContent';
 
-function formatElapsed(seconds: number): string {
-  if (seconds < 60) return `${Math.round(seconds)}s`;
-  const mins = Math.floor(seconds / 60);
-  const secs = Math.round(seconds % 60);
-  return `${mins}m ${secs}s`;
-}
-
-function fmtTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
-  return String(n);
-}
+import { formatElapsed, formatTokens as fmtTokens } from '@/utils/format';
 
 const statusBadge: Record<string, { bg: string; text: string }> = {
   planning: { bg: 'bg-yellow-500/10', text: 'text-yellow-500' },
@@ -41,7 +30,7 @@ function ModelUsageTable({ models, totalCostUsd }: { models: ModelUsageEntry[]; 
   );
 
   return (
-    <div className="mt-2 space-y-0.5 text-[10px]">
+    <div className="mt-2 space-y-0.5 text-xs">
       <div className="grid grid-cols-[1fr_4rem_4rem_4rem_4rem_4.5rem] gap-1 text-zinc-600 font-medium">
         <span>Model</span>
         <span className="text-right">Input</span>
@@ -122,17 +111,17 @@ export function WorkflowSummary() {
       <div className="h-full overflow-y-auto px-6 py-3">
         <div className="flex items-center gap-3 mb-2">
           <h3 className="text-sm font-semibold text-zinc-200">Run Summary</h3>
-          <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${badge.bg} ${badge.text}`}>
+          <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${badge.bg} ${badge.text}`}>
             {completedDAG.status.toUpperCase()}
           </span>
           {completedDAG.durationSec !== undefined && (
-            <span className="text-[10px] text-zinc-500">⏱ {formatElapsed(completedDAG.durationSec)}</span>
+            <span className="text-xs text-zinc-500">⏱ {formatElapsed(completedDAG.durationSec)}</span>
           )}
           {completedDAG.workerCount !== undefined && (
-            <span className="text-[10px] text-zinc-500">{completedDAG.workerCount} worker{completedDAG.workerCount !== 1 ? 's' : ''}</span>
+            <span className="text-xs text-zinc-500">{completedDAG.workerCount} worker{completedDAG.workerCount !== 1 ? 's' : ''}</span>
           )}
           {completedDAG.totalCostUsd !== undefined && (
-            <span className="text-[10px] font-medium text-green-400">${completedDAG.totalCostUsd.toFixed(4)}</span>
+            <span className="text-xs font-medium text-green-400">${completedDAG.totalCostUsd.toFixed(4)}</span>
           )}
         </div>
         {completedDAG.modelUsage && completedDAG.modelUsage.length > 0 && (
@@ -141,16 +130,16 @@ export function WorkflowSummary() {
 
         {completedDAG.nodeOutputPaths && Object.keys(completedDAG.nodeOutputPaths).length > 0 && (
           <div className="mt-2 border-t border-zinc-700/50 pt-2">
-            <div className="flex items-center gap-1.5 text-[10px] font-medium text-zinc-400 mb-1">
+            <div className="flex items-center gap-1.5 text-xs font-medium text-zinc-400 mb-1">
               <FileText size={10} />
               <span>Artifacts</span>
             </div>
             <div className="space-y-1">
               {Object.entries(completedDAG.nodeOutputPaths).map(([nodeLabel, paths]) => (
                 <div key={nodeLabel}>
-                  <div className="text-[10px] font-medium text-zinc-300">{nodeLabel}</div>
+                  <div className="text-xs font-medium text-zinc-300">{nodeLabel}</div>
                   {paths.map((p) => (
-                    <div key={p} className="ml-3 text-[10px] text-blue-400/80">{p}</div>
+                    <div key={p} className="ml-3 text-xs text-blue-400/80">{p}</div>
                   ))}
                 </div>
               ))}
@@ -164,7 +153,7 @@ export function WorkflowSummary() {
               type="button"
               aria-expanded={summaryOpen}
               onClick={() => setSummaryOpen((o) => !o)}
-              className="flex w-full items-center gap-1.5 text-[10px] font-medium text-zinc-400 hover:text-zinc-300 transition-colors"
+              className="flex w-full items-center gap-1.5 text-xs font-medium text-zinc-400 hover:text-zinc-300 transition-colors"
             >
               <ChevronRight
                 size={10}
@@ -203,7 +192,7 @@ export function WorkflowSummary() {
     <div className="flex h-full items-center gap-6 px-6">
       <div className="flex items-center gap-3">
         <h3 className="text-sm font-semibold text-zinc-200">{graphState.name}</h3>
-        <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${badge.bg} ${badge.text}`}>
+        <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${badge.bg} ${badge.text}`}>
           {graphState.status.toUpperCase()}
         </span>
       </div>

@@ -213,7 +213,7 @@ export function ChatPane() {
         <img src="/omegaclaw-logo.png" alt="OmegaClaw" className="h-8 w-8 rounded-lg" />
         <div className="flex-1">
           <h1 className="text-sm font-semibold text-zinc-100">OmegaClaw</h1>
-          <p className="text-[10px] leading-tight text-zinc-500">
+          <p className="text-xs leading-tight text-zinc-500">
             v{process.env.NEXT_PUBLIC_APP_VERSION} ({process.env.NEXT_PUBLIC_GIT_HASH})
           </p>
         </div>
@@ -231,8 +231,22 @@ export function ChatPane() {
 
       <div className="relative flex-1">
         {!hydrated ? (
-          <div className="flex h-full items-center justify-center">
-            <div className="h-5 w-5 animate-spin rounded-full border-2 border-zinc-600 border-t-zinc-300" />
+          <div className="flex h-full flex-col gap-4 p-6">
+            <div className="flex justify-start">
+              <div className="h-16 w-3/4 animate-pulse rounded-xl bg-zinc-800/60" />
+            </div>
+            <div className="flex justify-end">
+              <div className="h-10 w-1/2 animate-pulse rounded-xl bg-zinc-800/40" />
+            </div>
+            <div className="flex justify-start">
+              <div className="h-24 w-4/5 animate-pulse rounded-xl bg-zinc-800/60" />
+            </div>
+            <div className="flex justify-end">
+              <div className="h-10 w-2/5 animate-pulse rounded-xl bg-zinc-800/40" />
+            </div>
+            <div className="flex justify-start">
+              <div className="h-16 w-3/5 animate-pulse rounded-xl bg-zinc-800/60" />
+            </div>
           </div>
         ) : messages.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center text-zinc-600">

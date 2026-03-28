@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import FocusTrap from 'focus-trap-react';
 import { X, Eye, EyeOff, Save, Loader2, CheckCircle, AlertCircle, ChevronDown, RefreshCw } from 'lucide-react';
+import { TabGroup, type TabDef } from '../shared/TabGroup';
 
 type TabId = 'omegaclaw' | 'memory' | 'skills' | 'webui';
 
@@ -226,7 +227,7 @@ function ModelSelect({
               if (tierModels.length === 0) return null;
               return (
                 <div key={tier}>
-                  <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                  <div className="px-3 py-1 text-xs font-semibold uppercase tracking-wider text-zinc-500">
                     {tierLabels[tier]}
                   </div>
                   {tierModels.map((m) => (
@@ -243,7 +244,7 @@ function ModelSelect({
                       }`}
                     >
                       <span className="flex-1 truncate">{m.displayName}</span>
-                      <span className="shrink-0 text-[10px] text-zinc-500">{m.id}</span>
+                      <span className="shrink-0 text-xs text-zinc-500">{m.id}</span>
                     </button>
                   ))}
                 </div>
@@ -368,7 +369,7 @@ function OmegaClawTab({
           type="button"
           onClick={onRefreshModels}
           disabled={modelsLoading}
-          className="mb-1 flex items-center gap-1 rounded px-2 py-0.5 text-[10px] text-zinc-500 transition-colors hover:bg-zinc-700 hover:text-zinc-300 disabled:opacity-50"
+          className="mb-1 flex items-center gap-1 rounded px-2 py-0.5 text-xs text-zinc-500 transition-colors hover:bg-zinc-700 hover:text-zinc-300 disabled:opacity-50"
           title="Refresh models from Anthropic"
         >
           <RefreshCw size={10} className={modelsLoading ? 'animate-spin' : ''} />
@@ -732,7 +733,7 @@ function WebUITab({
           placeholder="0.0.0.0, 127.0.0.1"
         />
       </FormField>
-      <div className="mt-4 rounded-md border border-zinc-800 bg-zinc-900/50 px-3 py-2 text-[11px] text-zinc-500 leading-relaxed">
+      <div className="mt-4 rounded-md border border-zinc-800 bg-zinc-900/50 px-3 py-2 text-xs text-zinc-500 leading-relaxed">
         The Web UI port and bind addresses control where the <span className="text-zinc-400">orionomega ui</span> command serves the web interface.
         CLI flags and environment variables (<span className="text-zinc-400">HOST</span>, <span className="text-zinc-400">PORT</span>) override these values at launch time.
       </div>
@@ -876,29 +877,25 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           </button>
         </div>
 
-        <div className="flex border-b border-zinc-800 overflow-x-auto">
-          {TABS.map((tab) => {
-            const validity = getTabValidity(config);
-            const isValid = validity[tab.id];
-            return (
-              <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
-                className={`flex items-center gap-1.5 px-4 md:px-5 py-3 md:py-2.5 text-xs font-medium transition-colors min-h-[44px] whitespace-nowrap ${
-                  activeTab === tab.id
-                    ? 'border-b-2 border-blue-500 text-blue-400'
-                    : 'text-zinc-500 hover:text-zinc-300'
-                }`}
-              >
-                {config && (
-                  isValid
+        <div className="border-b border-zinc-800 overflow-x-auto">
+          <TabGroup
+            tabs={TABS.map((tab) => {
+              const validity = getTabValidity(config);
+              const isValid = validity[tab.id];
+              return {
+                key: tab.id,
+                label: tab.label,
+                icon: config
+                  ? isValid
                     ? <CheckCircle size={12} className="text-green-400" />
                     : <AlertCircle size={12} className="text-amber-400" />
-                )}
-                {tab.label}
-              </button>
-            );
-          })}
+                  : undefined,
+              } as TabDef<TabId>;
+            })}
+            active={activeTab}
+            onSelect={setActiveTab}
+            variant="underline"
+          />
         </div>
 
         <div className="flex-1 overflow-y-auto px-4 md:px-6 py-4">

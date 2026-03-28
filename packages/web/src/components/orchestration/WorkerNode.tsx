@@ -81,7 +81,7 @@ function WorkerNodeComponent({ data, id }: NodeProps) {
         {/* Model badge */}
         {d.model && (
           <div className="mt-1.5">
-            <span className="rounded bg-zinc-700 px-1.5 py-0.5 text-[9px] text-zinc-500">
+            <span className="rounded bg-zinc-700 px-1.5 py-0.5 text-xs text-zinc-500">
               {d.model as string}
             </span>
           </div>

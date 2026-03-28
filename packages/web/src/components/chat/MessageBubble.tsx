@@ -11,6 +11,7 @@ import { MarkdownContent } from './MarkdownContent';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { useGateway } from '@/lib/gateway';
 import { Reply, FileText } from 'lucide-react';
+import { formatBytes } from '@/utils/format';
 
 interface MessageBubbleProps {
   message: ChatMessage;
@@ -32,12 +33,6 @@ function truncateContent(text: string, maxLen = 80): string {
   return single.length > maxLen ? single.slice(0, maxLen) + '…' : single;
 }
 
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
 function AttachmentDisplay({ attachments }: { attachments: MessageAttachment[] }) {
   return (
     <div className="mt-2 flex flex-wrap gap-2">
@@ -51,7 +46,7 @@ function AttachmentDisplay({ attachments }: { attachments: MessageAttachment[] }
                 alt={att.name}
                 className="max-h-48 max-w-[280px] object-contain"
               />
-              <div className="bg-emerald-700 px-2 py-1 text-[10px] text-white/60">
+              <div className="bg-emerald-700 px-2 py-1 text-xs text-white/60">
                 {att.name} ({formatBytes(att.size)})
               </div>
             </div>
@@ -65,7 +60,7 @@ function AttachmentDisplay({ attachments }: { attachments: MessageAttachment[] }
             <FileText size={16} className="shrink-0 text-white/50" />
             <div className="min-w-0">
               <div className="truncate text-xs text-white/80">{att.name}</div>
-              <div className="text-[10px] text-white/40">{formatBytes(att.size)}</div>
+              <div className="text-xs text-white/40">{formatBytes(att.size)}</div>
             </div>
           </div>
         );

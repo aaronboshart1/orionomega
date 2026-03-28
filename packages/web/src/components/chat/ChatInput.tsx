@@ -3,6 +3,7 @@
 import { useState, useCallback, useRef, useEffect, useMemo, type KeyboardEvent, type DragEvent } from 'react';
 import { Send, X, Reply, Paperclip, FileText, Image } from 'lucide-react';
 import { useChatStore } from '@/stores/chat';
+import { formatBytes } from '@/utils/format';
 
 export interface FileAttachment {
   id: string;
@@ -67,12 +68,6 @@ const ACCEPTED_EXTENSIONS = /\.(jpg|jpeg|png|gif|webp|pdf|txt|md|js|ts|jsx|tsx|p
 
 function isImageType(type: string): boolean {
   return type.startsWith('image/');
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 export function ChatInput({ onSend, disabled }: ChatInputProps) {

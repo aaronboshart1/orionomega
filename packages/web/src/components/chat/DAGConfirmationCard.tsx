@@ -25,7 +25,7 @@ export function DAGConfirmationCard({ confirmation, onRespond }: DAGConfirmation
             <div key={node.id} className="flex items-center gap-2 rounded bg-zinc-900 px-3 py-1.5 text-xs">
               <ShieldAlert size={10} className="text-yellow-600" />
               <span className="flex-1 text-zinc-300">{node.label}</span>
-              <span className="text-[10px] text-yellow-500/70">{node.risk}</span>
+              <span className="text-xs text-yellow-500/70">{node.risk}</span>
             </div>
           ))}
         </div>
