@@ -317,12 +317,32 @@ async function initMainAgent(): Promise<void> {
 
     // DAG lifecycle callbacks — route through EventStreamer for subscription filtering
     onDAGDispatched(dispatch) {
+      const msgId = randomBytes(8).toString('hex');
       eventStreamer.emitDAGMessage({
-        id: randomBytes(8).toString('hex'),
+        id: msgId,
         type: 'dag_dispatched',
         workflowId: dispatch.workflowId,
         dagDispatch: dispatch,
       });
+      const sid = sessionManager.listSessions()[0]?.id;
+      if (sid) {
+        sessionManager.addMessage(sid, {
+          id: msgId,
+          role: 'assistant',
+          content: dispatch.summary || 'Working on it...',
+          timestamp: new Date().toISOString(),
+          type: 'dag-dispatched',
+          metadata: {
+            workflowId: dispatch.workflowId,
+            dagDispatch: {
+              workflowId: dispatch.workflowId,
+              summary: dispatch.summary,
+              nodeCount: dispatch.nodeCount,
+              nodes: dispatch.nodes,
+            },
+          },
+        });
+      }
     },
     onDAGProgress(progress) {
       eventStreamer.emitDAGMessage({
@@ -333,20 +353,68 @@ async function initMainAgent(): Promise<void> {
       });
     },
     onDAGComplete(result) {
+      const msgId = randomBytes(8).toString('hex');
       eventStreamer.emitDAGMessage({
-        id: randomBytes(8).toString('hex'),
+        id: msgId,
         type: 'dag_complete',
         workflowId: result.workflowId,
         dagComplete: result,
       });
+      const sid = sessionManager.listSessions()[0]?.id;
+      if (sid) {
+        sessionManager.addMessage(sid, {
+          id: msgId,
+          role: 'assistant',
+          content: result.status === 'error'
+            ? `Something went wrong: ${result.summary}`
+            : result.output || result.summary || 'Done.',
+          timestamp: new Date().toISOString(),
+          type: 'dag-complete',
+          metadata: {
+            workflowId: result.workflowId,
+            dagComplete: {
+              workflowId: result.workflowId,
+              status: result.status,
+              summary: result.summary,
+              output: result.output,
+              durationSec: result.durationSec,
+              workerCount: result.workerCount,
+              totalCostUsd: result.totalCostUsd,
+              toolCallCount: result.toolCallCount,
+              modelUsage: result.modelUsage,
+              nodeOutputPaths: result.nodeOutputPaths,
+            },
+          },
+        });
+      }
     },
     onDAGConfirm(confirm) {
+      const msgId = randomBytes(8).toString('hex');
       eventStreamer.emitDAGMessage({
-        id: randomBytes(8).toString('hex'),
+        id: msgId,
         type: 'dag_confirm',
         workflowId: confirm.workflowId,
         dagConfirm: confirm,
       });
+      const sid = sessionManager.listSessions()[0]?.id;
+      if (sid) {
+        sessionManager.addMessage(sid, {
+          id: msgId,
+          role: 'assistant',
+          content: confirm.summary,
+          timestamp: new Date().toISOString(),
+          type: 'dag-confirmation',
+          metadata: {
+            workflowId: confirm.workflowId,
+            dagConfirm: {
+              workflowId: confirm.workflowId,
+              summary: confirm.summary,
+              reasoning: confirm.reasoning,
+              guardedActions: confirm.guardedActions,
+            },
+          },
+        });
+      }
     },
   };
 

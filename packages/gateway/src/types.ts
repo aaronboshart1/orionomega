@@ -71,7 +71,7 @@ export interface ServerMessage {
   memoryEvent?: { id: string; timestamp: string; op: string; detail: string; bank?: string; meta?: Record<string, unknown> };
   step?: { id: string; name: string; status: 'pending' | 'active' | 'done'; startedAt?: number; completedAt?: number; elapsedMs?: number; detail?: string };
   error?: string;
-  history?: Array<{ id: string; role: string; content: string; timestamp: string }>;
+  history?: Array<{ id: string; role: string; content: string; timestamp: string; type?: string; metadata?: Record<string, unknown> }>;
 
   // New DAG lifecycle fields
   dagDispatch?: {

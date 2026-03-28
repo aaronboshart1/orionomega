@@ -40,6 +40,186 @@ let singletonWs: ReconnectingWebSocket | null = null;
 let boundWs: ReconnectingWebSocket | null = null;
 let pendingRestart = false;
 
+interface HistoryMessage {
+  id: string;
+  role: string;
+  content: string;
+  timestamp: string;
+  type?: string;
+  dagId?: string;
+  metadata?: {
+    workflowId?: string;
+    background?: boolean;
+    dagDispatch?: {
+      workflowId: string;
+      summary: string;
+      nodeCount: number;
+      nodes: { id: string; label: string; type: string }[];
+    };
+    dagComplete?: {
+      workflowId: string;
+      status: string;
+      summary?: string;
+      output?: string;
+      durationSec?: number;
+      workerCount?: number;
+      totalCostUsd?: number;
+      toolCallCount?: number;
+      modelUsage?: Array<{
+        model: string;
+        inputTokens: number;
+        outputTokens: number;
+        cacheReadTokens: number;
+        cacheCreationTokens: number;
+        workerCount: number;
+        costUsd: number;
+      }>;
+      nodeOutputPaths?: Record<string, string[]>;
+    };
+    dagConfirm?: {
+      workflowId: string;
+      summary: string;
+      reasoning: string;
+      guardedActions: string[];
+    };
+  };
+}
+
+function waitForHydration(): Promise<void> {
+  const chatHydrated = useChatStore.persist.hasHydrated();
+  const orchHydrated = useOrchestrationStore.persist.hasHydrated();
+  if (chatHydrated && orchHydrated) return Promise.resolve();
+
+  return new Promise<void>((resolve) => {
+    let chatDone = chatHydrated;
+    let orchDone = orchHydrated;
+    let unsub1: (() => void) | null = null;
+    let unsub2: (() => void) | null = null;
+
+    const check = () => {
+      if (chatDone && orchDone) {
+        unsub1?.();
+        unsub2?.();
+        resolve();
+      }
+    };
+
+    if (!chatDone) {
+      unsub1 = useChatStore.persist.onFinishHydration(() => { chatDone = true; check(); });
+    }
+    if (!orchDone) {
+      unsub2 = useOrchestrationStore.persist.onFinishHydration(() => { orchDone = true; check(); });
+    }
+  });
+}
+
+function processHistoryWhenHydrated(history: HistoryMessage[]): void {
+  waitForHydration().then(() => {
+    const serverMessages: ChatMessage[] = history
+      .filter((m) => m.role === 'user' || m.role === 'assistant')
+      .map((m) => {
+        const wfId = m.metadata?.workflowId
+          || m.metadata?.dagDispatch?.workflowId
+          || m.metadata?.dagComplete?.workflowId
+          || m.metadata?.dagConfirm?.workflowId;
+        return {
+          id: m.id,
+          role: m.role as 'user' | 'assistant',
+          content: m.content,
+          timestamp: m.timestamp,
+          type: m.type as ChatMessage['type'],
+          dagId: m.dagId || wfId,
+          workflowId: m.metadata?.workflowId,
+          isBackground: m.metadata?.background,
+        };
+      });
+
+    if (serverMessages.length > 0) {
+      const local = useChatStore.getState().messages;
+      if (local.length === 0) {
+        useChatStore.getState().setMessages(serverMessages);
+      } else {
+        const localIds = new Set(local.map((m) => m.id));
+        const dagTypes = new Set(['dag-dispatched', 'dag-complete', 'dag-confirmation']);
+        const localDagKeys = new Set(
+          local
+            .filter((m) => m.type && dagTypes.has(m.type) && m.dagId)
+            .map((m) => `${m.type}:${m.dagId}`),
+        );
+        const missing = serverMessages.filter((m) => {
+          if (localIds.has(m.id)) return false;
+          if (m.type && dagTypes.has(m.type) && m.dagId && localDagKeys.has(`${m.type}:${m.dagId}`)) return false;
+          return true;
+        });
+        if (missing.length > 0) {
+          const merged = [...local];
+          for (const m of missing) {
+            const insertIdx = merged.findIndex((lm) => lm.timestamp > m.timestamp);
+            if (insertIdx === -1) {
+              merged.push(m);
+            } else {
+              merged.splice(insertIdx, 0, m);
+            }
+          }
+          useChatStore.getState().setMessages(merged);
+        }
+      }
+    }
+
+    const orch = useOrchestrationStore.getState();
+    for (const m of history) {
+      if (m.type === 'dag-dispatched' && m.metadata?.dagDispatch) {
+        const d = m.metadata.dagDispatch;
+        if (!orch.inlineDAGs[d.workflowId]) {
+          orch.upsertInlineDAG({
+            dagId: d.workflowId,
+            summary: d.summary,
+            status: 'dispatched',
+            nodes: d.nodes.map((n) => ({
+              ...n, status: 'pending' as const,
+            })),
+            completedCount: 0,
+            totalCount: d.nodeCount,
+            elapsed: 0,
+          });
+        }
+      } else if (m.type === 'dag-complete' && m.metadata?.dagComplete) {
+        const c = m.metadata.dagComplete;
+        const existingDag = useOrchestrationStore.getState().inlineDAGs[c.workflowId];
+        if (existingDag && (existingDag.status === 'complete' || existingDag.status === 'error' || existingDag.status === 'stopped')) {
+          // eslint-disable-next-line no-continue
+          continue;
+        }
+        if (!existingDag) {
+          useOrchestrationStore.getState().upsertInlineDAG({
+            dagId: c.workflowId,
+            summary: c.summary || c.output || '',
+            status: 'dispatched',
+            nodes: [],
+            completedCount: 0,
+            totalCount: 0,
+            elapsed: 0,
+          });
+        }
+        useOrchestrationStore.getState().completeDAG(
+          c.workflowId,
+          c.output ?? c.summary,
+          c.status === 'error' ? c.summary : undefined,
+          {
+            durationSec: c.durationSec,
+            workerCount: c.workerCount,
+            totalCostUsd: c.totalCostUsd,
+            toolCallCount: c.toolCallCount,
+            modelUsage: c.modelUsage,
+            nodeOutputPaths: c.nodeOutputPaths,
+            stopped: c.status === 'stopped',
+          },
+        );
+      }
+    }
+  });
+}
+
 function getOrCreateWs(): ReconnectingWebSocket {
   if (!singletonWs || singletonWs.readyState === WebSocket.CLOSED) {
     boundWs = null;
@@ -132,7 +312,7 @@ function bindListeners(ws: ReconnectingWebSocket): void {
           elapsed: 0,
         });
         chat.addMessage({
-          id: uuid(),
+          id: msg.id || uuid(),
           role: 'assistant',
           content: d.summary || 'Working on it...',
           timestamp: new Date().toISOString(),
@@ -217,7 +397,7 @@ function bindListeners(ws: ReconnectingWebSocket): void {
           },
         );
         chat.addMessage({
-          id: uuid(),
+          id: msg.id || uuid(),
           role: 'assistant',
           content: c.status === 'error'
             ? `Something went wrong: ${c.summary}`
@@ -240,7 +420,7 @@ function bindListeners(ws: ReconnectingWebSocket): void {
           })),
         });
         chat.addMessage({
-          id: uuid(),
+          id: msg.id || uuid(),
           role: 'assistant',
           content: cf.summary,
           timestamp: new Date().toISOString(),
@@ -314,24 +494,7 @@ function bindListeners(ws: ReconnectingWebSocket): void {
         break;
       case 'history': {
         if (msg.history && Array.isArray(msg.history)) {
-          const restored: ChatMessage[] = msg.history
-            .filter((m: { role: string }) => m.role === 'user' || m.role === 'assistant')
-            .map((m: { id: string; role: string; content: string; timestamp: string; type?: string; dagId?: string; metadata?: { workflowId?: string; background?: boolean } }) => ({
-              id: m.id,
-              role: m.role as 'user' | 'assistant',
-              content: m.content,
-              timestamp: m.timestamp,
-              type: m.type as ChatMessage['type'],
-              dagId: m.dagId,
-              workflowId: m.metadata?.workflowId,
-              isBackground: m.metadata?.background,
-            }));
-          if (restored.length > 0) {
-            const current = useChatStore.getState().messages;
-            if (current.length === 0) {
-              chat.setMessages(restored);
-            }
-          }
+          processHistoryWhenHydrated(msg.history);
         }
         break;
       }

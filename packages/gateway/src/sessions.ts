@@ -33,7 +33,7 @@ export interface Message {
   role: 'user' | 'assistant' | 'system';
   content: string;
   timestamp: string;
-  type?: 'text' | 'plan' | 'orchestration-update' | 'command-result' | 'event' | 'dag-update' | 'workflow-result';
+  type?: 'text' | 'plan' | 'orchestration-update' | 'command-result' | 'event' | 'dag-update' | 'workflow-result' | 'dag-dispatched' | 'dag-complete' | 'dag-confirmation' | 'tool-call';
   metadata?: Record<string, unknown>;
   replyToId?: string;
 }
