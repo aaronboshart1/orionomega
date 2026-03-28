@@ -114,6 +114,7 @@ interface OrchestrationStore {
   inlineDAGs: Record<string, InlineDAG>;
   pendingConfirmation: DAGConfirmation | null;
   orchPaneOpen: boolean;
+  scrollToDagId: string | null;
   memoryEvents: MemoryEvent[];
   activeOrchTab: 'memory' | 'activity';
 
@@ -134,6 +135,7 @@ interface OrchestrationStore {
   removeInlineDAG: (dagId: string) => void;
   setPendingConfirmation: (c: DAGConfirmation | null) => void;
   setOrchPaneOpen: (open: boolean) => void;
+  clearScrollToDagId: () => void;
   openOrchPane: (dagId: string) => void;
   markAllInterrupted: () => void;
   pauseDAG: (dagId: string) => void;
@@ -160,6 +162,7 @@ export const useOrchestrationStore = create<OrchestrationStore>()(
   inlineDAGs: {},
   pendingConfirmation: null,
   orchPaneOpen: true,
+  scrollToDagId: null,
   memoryEvents: [],
   activeOrchTab: 'memory',
   graphState: null,
@@ -176,6 +179,7 @@ export const useOrchestrationStore = create<OrchestrationStore>()(
     set((s) => ({
       activeWorkflowId: id,
       selectedWorker: null,
+      scrollToDagId: id,
       ...deriveActive(s.workflows, id),
     })),
 
@@ -312,6 +316,7 @@ export const useOrchestrationStore = create<OrchestrationStore>()(
   setPendingConfirmation: (pendingConfirmation) => set({ pendingConfirmation }),
 
   setOrchPaneOpen: (open) => set({ orchPaneOpen: open }),
+  clearScrollToDagId: () => set({ scrollToDagId: null }),
 
   openOrchPane: (dagId) =>
     set((s) => ({
@@ -431,6 +436,7 @@ export const useOrchestrationStore = create<OrchestrationStore>()(
       inlineDAGs: {},
       pendingConfirmation: null,
       orchPaneOpen: true,
+      scrollToDagId: null,
       memoryEvents: [],
       activeOrchTab: 'memory',
     }),

@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useState, useCallback, useMemo } from 'react';
+import { useRef, useState, useCallback, useMemo, useEffect } from 'react';
 import { Virtuoso, VirtuosoHandle } from 'react-virtuoso';
 import { Settings2, ArrowDown, AlertOctagon, Settings } from 'lucide-react';
 import { useChatStore, useChatHydrated } from '@/stores/chat';
@@ -110,6 +110,20 @@ export function ChatPane() {
       align: 'end',
     });
   }, []);
+
+  const scrollToDagId = useOrchestrationStore((s) => s.scrollToDagId);
+  const clearScrollToDagId = useOrchestrationStore((s) => s.clearScrollToDagId);
+
+  useEffect(() => {
+    if (!scrollToDagId) return;
+    const idx = renderItems.findIndex(
+      (item) => item.kind === 'message' && item.message.type === 'dag-dispatched' && item.message.dagId === scrollToDagId,
+    );
+    if (idx >= 0) {
+      virtuosoRef.current?.scrollToIndex({ index: idx, behavior: 'smooth', align: 'center' });
+      clearScrollToDagId();
+    }
+  }, [scrollToDagId, renderItems, clearScrollToDagId]);
 
   const itemContent = useCallback(
     (index: number) => {
