@@ -46,7 +46,7 @@ function computeLayout(nodes: Record<string, GraphNode>) {
       rfNodes.push({
         id: nodeId,
         type: 'worker',
-        position: { x: layerIdx * 220, y: nodeIdx * 110 },
+        position: { x: layerIdx * 350, y: nodeIdx * 110 },
         data: {
           label: gn.label,
           nodeType: gn.type,
