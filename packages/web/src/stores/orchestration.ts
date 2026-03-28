@@ -46,13 +46,13 @@ export interface PlanData {
   graph: { nodes: Record<string, GraphNode> };
 }
 
-export type InlineDAGStatus = 'dispatched' | 'running' | 'complete' | 'error' | 'stopped';
+export type InlineDAGStatus = 'dispatched' | 'running' | 'complete' | 'error' | 'stopped' | 'paused' | 'interrupted';
 
 export interface InlineDAGNode {
   id: string;
   label: string;
   type: string;
-  status: 'pending' | 'running' | 'done' | 'error' | 'skipped';
+  status: 'pending' | 'running' | 'done' | 'error' | 'skipped' | 'cancelled';
   progress?: number;
   output?: string;
 }
@@ -136,6 +136,9 @@ interface OrchestrationStore {
   setOrchPaneOpen: (open: boolean) => void;
   openOrchPane: (dagId: string) => void;
   markAllInterrupted: () => void;
+  pauseDAG: (dagId: string) => void;
+  resumeDAG: (dagId: string) => void;
+  stopDAG: (dagId: string) => void;
   reset: () => void;
 }
 
@@ -265,7 +268,7 @@ export const useOrchestrationStore = create<OrchestrationStore>()(
         n.id === nodeId ? { ...n, ...update } : n,
       );
       const completedCount = nodes.filter(
-        (n) => n.status === 'done' || n.status === 'error' || n.status === 'skipped',
+        (n) => n.status === 'done' || n.status === 'error' || n.status === 'skipped' || n.status === 'cancelled',
       ).length;
       return {
         inlineDAGs: {
@@ -318,6 +321,52 @@ export const useOrchestrationStore = create<OrchestrationStore>()(
       ...deriveActive(s.workflows, dagId),
     })),
 
+  pauseDAG: (dagId) =>
+    set((s) => {
+      const dag = s.inlineDAGs[dagId];
+      if (!dag) return s;
+      return {
+        inlineDAGs: {
+          ...s.inlineDAGs,
+          [dagId]: { ...dag, status: 'paused' },
+        },
+      };
+    }),
+
+  resumeDAG: (dagId) =>
+    set((s) => {
+      const dag = s.inlineDAGs[dagId];
+      if (!dag) return s;
+      return {
+        inlineDAGs: {
+          ...s.inlineDAGs,
+          [dagId]: { ...dag, status: 'running' },
+        },
+      };
+    }),
+
+  stopDAG: (dagId) =>
+    set((s) => {
+      const dag = s.inlineDAGs[dagId];
+      if (!dag) return s;
+      return {
+        inlineDAGs: {
+          ...s.inlineDAGs,
+          [dagId]: {
+            ...dag,
+            status: 'stopped',
+            nodes: dag.nodes.map((n) =>
+              n.status === 'pending'
+                ? { ...n, status: 'cancelled' as const }
+                : n.status === 'running'
+                  ? { ...n, status: 'cancelled' as const }
+                  : n,
+            ),
+          },
+        },
+      };
+    }),
+
   markAllInterrupted: () =>
     set((s) => {
       const activeStatuses = new Set<InlineDAGStatus>(['dispatched', 'running']);
@@ -329,7 +378,7 @@ export const useOrchestrationStore = create<OrchestrationStore>()(
           changed = true;
           updatedDAGs[id] = {
             ...dag,
-            status: 'stopped',
+            status: 'interrupted',
             error: 'Gateway disconnected — run interrupted',
             nodes: dag.nodes.map((n) =>
               n.status === 'running'

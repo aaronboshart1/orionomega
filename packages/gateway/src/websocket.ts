@@ -348,7 +348,7 @@ export class WebSocketHandler {
 
     if (this.mainAgent) {
       try {
-        await this.mainAgent.handleCommand(command);
+        await this.mainAgent.handleCommand(command, msg.workflowId);
       } catch (err) {
         log.error('MainAgent.handleCommand error', { error: err instanceof Error ? err.message : String(err) });
         this.send(conn.ws, {

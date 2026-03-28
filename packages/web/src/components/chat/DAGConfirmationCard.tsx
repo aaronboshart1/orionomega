@@ -1,6 +1,6 @@
 'use client';
 
-import { ShieldAlert, Check, X } from 'lucide-react';
+import { ShieldAlert, Play, X } from 'lucide-react';
 import type { DAGConfirmation } from '@/stores/orchestration';
 
 interface DAGConfirmationCardProps {
@@ -34,10 +34,10 @@ export function DAGConfirmationCard({ confirmation, onRespond }: DAGConfirmation
       <div className="flex items-center gap-2">
         <button
           onClick={() => onRespond(confirmation.dagId, true)}
-          className="flex items-center gap-1.5 rounded-lg bg-yellow-600 px-4 py-2 text-xs font-medium text-white transition-colors hover:bg-yellow-500"
+          className="flex items-center gap-1.5 rounded-lg bg-green-600 px-4 py-2 text-xs font-medium text-white transition-colors hover:bg-green-500"
         >
-          <Check size={12} />
-          Approve
+          <Play size={12} />
+          Start
         </button>
         <button
           onClick={() => onRespond(confirmation.dagId, false)}

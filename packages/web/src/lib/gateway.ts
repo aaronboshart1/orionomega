@@ -445,6 +445,20 @@ export function useGateway() {
     [send],
   );
 
+  const sendWorkflowCommand = useCallback(
+    (command: 'pause' | 'resume' | 'stop', workflowId: string) => {
+      if (command === 'stop') {
+        useOrchestrationStore.getState().stopDAG(workflowId);
+      } else if (command === 'pause') {
+        useOrchestrationStore.getState().pauseDAG(workflowId);
+      } else if (command === 'resume') {
+        useOrchestrationStore.getState().resumeDAG(workflowId);
+      }
+      send({ id: crypto.randomUUID(), type: 'command', command: `/${command}`, workflowId });
+    },
+    [send],
+  );
+
   const respondToPlan = useCallback(
     (planId: string, action: string, modification?: string) => {
       send({ id: crypto.randomUUID(), type: 'plan_response', planId, action, modification });
@@ -468,5 +482,5 @@ export function useGateway() {
     [respondToDAG],
   );
 
-  return { send, sendChat, sendCommand, respondToPlan, respondToDAG, respondToConfirmation };
+  return { send, sendChat, sendCommand, sendWorkflowCommand, respondToPlan, respondToDAG, respondToConfirmation };
 }

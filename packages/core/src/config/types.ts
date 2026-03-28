@@ -59,6 +59,8 @@ export interface OrionOmegaConfig {
     planFirst: boolean;
     /** Checkpoint interval in seconds. */
     checkpointInterval: number;
+    /** Whether to auto-resume interrupted workflows on reconnect. */
+    autoResume: boolean;
     eventBatching: {
       /** TUI event batching interval in milliseconds. */
       tuiIntervalMs: number;

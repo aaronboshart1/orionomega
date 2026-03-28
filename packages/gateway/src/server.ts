@@ -130,6 +130,7 @@ async function initMainAgent(): Promise<void> {
     skillsDir: fullConfig?.skills?.directory,
     commandsDir: fullConfig?.commands?.directory,
     hindsight: fullConfig?.hindsight,
+    autoResume: fullConfig?.orchestration?.autoResume ?? true,
   };
 
   // Stable IDs for streaming — each new response starts a fresh ID,

@@ -56,6 +56,7 @@ export interface MainAgentConfig {
   skillsDir?: string;
   commandsDir?: string;
   hindsight?: OrionOmegaConfig['hindsight'];
+  autoResume?: boolean;
 }
 
 // ── Callbacks ──────────────────────────────────────────────────────────────
@@ -304,36 +305,46 @@ export class MainAgent {
       this.config.model,
     );
 
-    // 4. Check for interrupted workflows and auto-resume them
+    // 4. Check for interrupted workflows and auto-resume them (or list for manual resume)
     const interrupted = this.orchestration.checkForInterruptedWorkflows();
     if (interrupted.length > 0) {
-      this.interruptedWorkflows = [];
+      const autoResume = this.config.autoResume !== false;
       const list = interrupted
         .map((c, i) =>
           `  ${i + 1}. ${c.task} (layer ${c.currentLayer}/${c.graph.layers.length}, ${Object.values(c.nodeOutputs).length} nodes done)`,
         )
         .join('\n');
-      this.callbacks.onText(
-        `🔄 Auto-resuming ${interrupted.length} interrupted workflow(s):\n${list}`,
-        false, true,
-      );
 
-      for (const checkpoint of interrupted) {
-        void this.orchestration.resumeFromCheckpoint(
-          checkpoint,
-          (e) => this.pushHistory(e as HistoryEntry),
-        ).then(() => {
-          this.callbacks.onText(
-            `Auto-resume complete: ${checkpoint.task}`,
-            false, true,
-          );
-        }).catch((err) => {
-          const msg = err instanceof Error ? err.message : String(err);
-          this.callbacks.onText(
-            `Auto-resume failed for '${checkpoint.task}': ${msg}`,
-            false, true,
-          );
-        });
+      if (autoResume) {
+        this.interruptedWorkflows = [];
+        this.callbacks.onText(
+          `🔄 Auto-resuming ${interrupted.length} interrupted workflow(s):\n${list}`,
+          false, true,
+        );
+
+        for (const checkpoint of interrupted) {
+          void this.orchestration.resumeFromCheckpoint(
+            checkpoint,
+            (e) => this.pushHistory(e as HistoryEntry),
+          ).then(() => {
+            this.callbacks.onText(
+              `Auto-resume complete: ${checkpoint.task}`,
+              false, true,
+            );
+          }).catch((err) => {
+            const msg = err instanceof Error ? err.message : String(err);
+            this.callbacks.onText(
+              `Auto-resume failed for '${checkpoint.task}': ${msg}`,
+              false, true,
+            );
+          });
+        }
+      } else {
+        this.interruptedWorkflows = interrupted;
+        this.callbacks.onText(
+          `⏸️ ${interrupted.length} interrupted workflow(s) found (auto-resume is off):\n${list}\nUse the Resume button on each workflow to continue manually.`,
+          false, true,
+        );
       }
     }
   }
@@ -577,8 +588,8 @@ export class MainAgent {
     }
   }
 
-  /** Handle a slash command. */
-  async handleCommand(command: string): Promise<void> {
+  /** Handle a slash command, optionally targeting a specific workflow. */
+  async handleCommand(command: string, workflowId?: string): Promise<void> {
     // Ensure init() has completed
     if (this.initPromise) await this.initPromise;
 
@@ -657,6 +668,35 @@ export class MainAgent {
         return;
       }
 
+      if (cmd === '/resume' && workflowId && this.interruptedWorkflows.length > 0) {
+        const checkpoint = this.interruptedWorkflows.find(
+          (c) => c.workflowId === workflowId || c.workflowId.startsWith(workflowId),
+        );
+        if (checkpoint) {
+          this.callbacks.onCommandResult({
+            command: '/resume', success: true,
+            message: `Resuming interrupted workflow: ${checkpoint.task}`,
+          });
+          void this.orchestration.resumeFromCheckpoint(
+            checkpoint,
+            (e) => this.pushHistory(e as HistoryEntry),
+          ).then(() => {
+            this.interruptedWorkflows = this.interruptedWorkflows.filter((c) => c !== checkpoint);
+            this.callbacks.onText(
+              `Resume complete: ${checkpoint.task}`,
+              false, true,
+            );
+          }).catch((err) => {
+            const msg = err instanceof Error ? err.message : String(err);
+            this.callbacks.onText(
+              `Resume failed for '${checkpoint.task}': ${msg}`,
+              false, true,
+            );
+          });
+          return;
+        }
+      }
+
       if (cmd === "/skills" || cmd.startsWith("/skills ")) {
         await this.handleSkillsCommand(cmd);
         return;
@@ -696,16 +736,21 @@ export class MainAgent {
       }
 
       if (cmd === '/stop') {
-        let stopped = false;
-        if (this.activeAbort && !this.activeAbort.signal.aborted) {
-          this.activeAbort.abort();
-          stopped = true;
+        if (workflowId && this.orchestration?.commands) {
+          const orchResult = await this.orchestration.commands.handle(`/stop ${workflowId}`);
+          this.callbacks.onCommandResult({ command: '/stop', success: orchResult.success, message: orchResult.message });
+        } else {
+          let stopped = false;
+          if (this.activeAbort && !this.activeAbort.signal.aborted) {
+            this.activeAbort.abort();
+            stopped = true;
+          }
+          this.orchestration.stopAll();
+          this.callbacks.onCommandResult({
+            command: '/stop', success: true,
+            message: stopped ? 'Stopped.' : 'Nothing running to stop.',
+          });
         }
-        this.orchestration.stopAll();
-        this.callbacks.onCommandResult({
-          command: '/stop', success: true,
-          message: stopped ? 'Stopped.' : 'Nothing running to stop.',
-        });
         return;
       }
 
@@ -717,7 +762,8 @@ export class MainAgent {
         return;
       }
 
-      const orchResult = await this.orchestration.commands.handle(cmd);
+      const orchCmd = workflowId ? `${cmd} ${workflowId}` : cmd;
+      const orchResult = await this.orchestration.commands.handle(orchCmd);
       if (orchResult.success || !orchResult.message.startsWith('Unknown command')) {
         this.callbacks.onCommandResult({ command: cmd, success: orchResult.success, message: orchResult.message });
         return;

@@ -497,6 +497,12 @@ function OmegaClawTab({
           onChange={(v) => onChange('orchestration.checkpointInterval', v)}
         />
       </FormField>
+      <FormField label="Auto Resume">
+        <Toggle
+          checked={Boolean(getNestedValue(config, 'orchestration.autoResume') ?? true)}
+          onChange={(v) => onChange('orchestration.autoResume', v)}
+        />
+      </FormField>
       <FormField label="TUI Batch Interval (ms)">
         <NumberInput
           value={Number(getNestedValue(config, 'orchestration.eventBatching.tuiIntervalMs') ?? 250)}
