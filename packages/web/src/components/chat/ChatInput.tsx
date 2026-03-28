@@ -169,6 +169,23 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
     return () => window.removeEventListener('keydown', handler);
   }, [onSend]);
 
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const update = () => {
+      const offset = Math.max(0, window.innerHeight - vv.height);
+      document.documentElement.style.setProperty('--kb-inset-bottom', `${offset}px`);
+    };
+    update();
+    vv.addEventListener('resize', update);
+    vv.addEventListener('scroll', update);
+    return () => {
+      vv.removeEventListener('resize', update);
+      vv.removeEventListener('scroll', update);
+      document.documentElement.style.setProperty('--kb-inset-bottom', '0px');
+    };
+  }, []);
+
   const selectCommand = (cmd: string) => {
     setInput(cmd);
     setShowPalette(false);
@@ -238,9 +255,10 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
 
   return (
     <div
-      className={`relative px-6 py-4 transition-colors ${
+      className={`relative px-3 md:px-6 py-3 md:py-4 transition-colors ${
         isDraggingOver ? 'bg-blue-950/20' : ''
       }`}
+      style={{ paddingBottom: `calc(0.75rem + var(--kb-inset-bottom, 0px))` }}
       onDragEnter={handleDragEnter}
       onDragLeave={handleDragLeave}
       onDragOver={handleDragOver}
@@ -272,7 +290,7 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
       )}
 
       {showPalette && (
-        <div className="absolute bottom-full left-6 right-6 mb-2 overflow-hidden rounded-xl border border-zinc-700 bg-zinc-900 shadow-xl">
+        <div className="absolute bottom-full left-3 right-3 md:left-6 md:right-6 mb-2 overflow-hidden rounded-xl border border-zinc-700 bg-zinc-900 shadow-xl">
           <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-2">
             <span className="text-xs font-medium text-zinc-400">Commands</span>
             <button
@@ -288,7 +306,7 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
               <button
                 key={cmd.command}
                 onClick={() => selectCommand(cmd.command)}
-                className="flex w-full items-center gap-3 px-4 py-2 text-left text-sm hover:bg-zinc-800"
+                className="flex w-full items-center gap-3 px-4 py-3 md:py-2 text-left text-sm hover:bg-zinc-800 min-h-[44px]"
               >
                 <code className="text-xs text-blue-400">{cmd.command}</code>
                 <span className="text-xs text-zinc-500">{cmd.description}</span>
@@ -359,7 +377,7 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
         tabIndex={-1}
       />
 
-      <div className="flex items-end gap-3 rounded-xl border border-zinc-700 bg-zinc-900 px-4 py-3 focus-within:border-blue-600">
+      <div className="flex items-end gap-2 md:gap-3 rounded-xl border border-zinc-700 bg-zinc-900 px-3 md:px-4 py-2.5 md:py-3 focus-within:border-blue-600">
         <textarea
           ref={textareaRef}
           value={input}
@@ -378,7 +396,7 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
           type="button"
           onClick={() => fileInputRef.current?.click()}
           disabled={disabled}
-          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-30 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1 focus:ring-offset-zinc-900"
+          className="flex h-11 w-11 md:h-8 md:w-8 shrink-0 items-center justify-center rounded-lg text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-30 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1 focus:ring-offset-zinc-900"
           aria-label="Attach files"
           title="Attach files"
         >
@@ -388,14 +406,14 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
         <button
           onClick={handleSend}
           disabled={!canSend}
-          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-600 text-white transition-colors hover:bg-blue-500 disabled:opacity-30 disabled:hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-offset-1 focus:ring-offset-zinc-900"
+          className="flex h-11 w-11 md:h-8 md:w-8 shrink-0 items-center justify-center rounded-lg bg-blue-600 text-white transition-colors hover:bg-blue-500 disabled:opacity-30 disabled:hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-offset-1 focus:ring-offset-zinc-900"
           aria-label="Send message"
         >
           <Send size={16} />
         </button>
       </div>
 
-      <p className="mt-2 text-center text-xs text-zinc-600">
+      <p className="mt-2 hidden md:block text-center text-xs text-zinc-600">
         Enter to send · Shift+Enter for new line · Esc to stop ·{' '}
         <span className="inline-flex items-center gap-0.5">
           <Command size={10} className="inline" />/

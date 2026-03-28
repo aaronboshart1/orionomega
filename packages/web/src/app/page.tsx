@@ -1,6 +1,6 @@
 'use client';
 
-import { PanelRightOpen, PanelRightClose } from 'lucide-react';
+import { PanelRightOpen, PanelRightClose, X } from 'lucide-react';
 import { ChatPane } from '@/components/chat/ChatPane';
 import { OrchestrationPane } from '@/components/orchestration/OrchestrationPane';
 import { useOrchestrationStore, useOrchHydrated } from '@/stores/orchestration';
@@ -13,23 +13,38 @@ export default function Home() {
   const showOrchPane = orchHydrated && orchPaneOpen;
 
   return (
-    <div className="flex h-screen">
-      <div className={showOrchPane ? 'w-1/2 min-w-[400px]' : 'w-full'}>
+    <div className="flex h-dvh">
+      <div className={showOrchPane ? 'hidden md:block md:w-1/2' : 'w-full'}>
         <ChatPane />
       </div>
 
       <button
         onClick={() => setOrchPaneOpen(!orchPaneOpen)}
-        className="absolute right-3 top-3 z-10 rounded-lg border border-zinc-700 bg-zinc-800 p-2 text-zinc-400 shadow-lg transition-colors hover:border-zinc-600 hover:text-zinc-200"
+        className="absolute right-3 top-3 z-20 rounded-lg border border-zinc-700 bg-zinc-800 p-2.5 md:p-2 text-zinc-400 shadow-lg transition-colors hover:border-zinc-600 hover:text-zinc-200 min-h-[44px] min-w-[44px] flex items-center justify-center"
         title={showOrchPane ? 'Hide detail pane' : 'Show detail pane'}
+        aria-label={showOrchPane ? 'Hide detail pane' : 'Show detail pane'}
       >
         {showOrchPane ? <PanelRightClose size={16} /> : <PanelRightOpen size={16} />}
       </button>
 
       {showOrchPane && (
-        <div className="w-1/2 border-l border-zinc-800">
-          <OrchestrationPane />
-        </div>
+        <>
+          <div className="fixed inset-0 z-30 flex flex-col bg-[var(--background)] md:relative md:inset-auto md:z-auto md:w-1/2 md:border-l md:border-zinc-800">
+            <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-3 md:hidden">
+              <h2 className="text-sm font-semibold text-zinc-100">Orchestration</h2>
+              <button
+                onClick={() => setOrchPaneOpen(false)}
+                className="rounded-md p-2 text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200 min-h-[44px] min-w-[44px] flex items-center justify-center"
+                aria-label="Close orchestration pane"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="flex-1 min-h-0">
+              <OrchestrationPane />
+            </div>
+          </div>
+        </>
       )}
     </div>
   );

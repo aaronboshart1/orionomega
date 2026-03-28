@@ -3,6 +3,7 @@
 :root {
   --background: #09090b;
   --foreground: #fafafa;
+  --kb-inset-bottom: 0px;
   --card: #18181b;
   --card-foreground: #fafafa;
   --primary: #3b82f6;

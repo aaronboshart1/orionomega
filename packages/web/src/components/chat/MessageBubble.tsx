@@ -110,7 +110,7 @@ export function MessageBubble({ message, onScrollToMessage }: MessageBubbleProps
     const dag = inlineDAGs[dagId];
     return (
       <div className="group my-3 flex justify-start">
-        <div className="relative max-w-[85%]">
+        <div className="relative max-w-[95%] md:max-w-[85%]">
           {dag ? (
             <InlineDAGCard dag={dag} />
           ) : (
@@ -127,7 +127,7 @@ export function MessageBubble({ message, onScrollToMessage }: MessageBubbleProps
   if (type === 'dag-confirmation' && dagId && pendingConfirmation?.dagId === dagId) {
     return (
       <div className="my-3 flex justify-start">
-        <div className="max-w-[85%]">
+        <div className="max-w-[95%] md:max-w-[85%]">
           <DAGConfirmationCard
             confirmation={pendingConfirmation}
             onRespond={respondToConfirmation}
@@ -141,7 +141,7 @@ export function MessageBubble({ message, onScrollToMessage }: MessageBubbleProps
     const dag = inlineDAGs[dagId];
     return (
       <div className="group my-3 flex justify-start">
-        <div className="relative max-w-[85%]">
+        <div className="relative max-w-[95%] md:max-w-[85%]">
           {dag ? (
             <RunSummaryCard dag={dag} />
           ) : (
@@ -158,7 +158,7 @@ export function MessageBubble({ message, onScrollToMessage }: MessageBubbleProps
   if (type === 'tool-call' && message.toolCall) {
     return (
       <div className="my-1 flex justify-start">
-        <div className="max-w-[85%] w-full">
+        <div className="max-w-[95%] md:max-w-[85%] w-full">
           <ToolCallCard toolCall={message.toolCall} />
         </div>
       </div>
@@ -197,7 +197,7 @@ export function MessageBubble({ message, onScrollToMessage }: MessageBubbleProps
 
   return (
     <div className={`group my-3 flex ${isUser ? 'justify-end' : 'justify-start'}`}>
-      <div className="relative max-w-[80%]">
+      <div className="relative max-w-[92%] md:max-w-[80%]">
         {replyQuote}
         <div
           className={`rounded-2xl px-4 py-3 text-sm leading-relaxed ${

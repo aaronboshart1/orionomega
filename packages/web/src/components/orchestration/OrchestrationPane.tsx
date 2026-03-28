@@ -17,10 +17,10 @@ export function OrchestrationPane() {
 
   return (
     <div className="flex h-full flex-col bg-[var(--background)]">
-      <div className="flex items-center border-b border-zinc-800">
+      <div className="flex items-center border-b border-zinc-800 overflow-x-auto">
         <button
           onClick={() => setActiveOrchTab('memory')}
-          className={`px-4 py-2.5 text-xs font-medium transition-colors relative ${
+          className={`px-4 py-3 md:py-2.5 text-xs font-medium transition-colors relative min-h-[44px] ${
             activeOrchTab === 'memory'
               ? 'text-violet-400'
               : 'text-zinc-500 hover:text-zinc-300'
@@ -38,7 +38,7 @@ export function OrchestrationPane() {
         </button>
         <button
           onClick={() => setActiveOrchTab('activity')}
-          className={`px-4 py-2.5 text-xs font-medium transition-colors relative ${
+          className={`px-4 py-3 md:py-2.5 text-xs font-medium transition-colors relative min-h-[44px] ${
             activeOrchTab === 'activity'
               ? 'text-blue-400'
               : 'text-zinc-500 hover:text-zinc-300'

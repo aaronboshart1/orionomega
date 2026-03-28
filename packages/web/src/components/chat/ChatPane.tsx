@@ -117,14 +117,14 @@ export function ChatPane() {
       if (!item) return null;
       if (item.kind === 'error') {
         return (
-          <div className="px-6">
+          <div className="px-3 md:px-6">
             <ErrorMessage key={item.message.id} content={item.message.content} />
           </div>
         );
       }
       if (item.kind === 'tool-group') {
         return (
-          <div className="px-6">
+          <div className="px-3 md:px-6">
             <ToolCallGroup
               key={`group-${item.toolCalls[0].id}`}
               nodeLabel={item.nodeLabel}
@@ -134,7 +134,7 @@ export function ChatPane() {
         );
       }
       return (
-        <div className="px-6">
+        <div className="px-3 md:px-6">
           <MessageBubble key={item.message.id} message={item.message} onScrollToMessage={scrollToMessage} />
           {item.message.interrupted && (
             <div className="mb-2 ml-1 flex items-center gap-1.5 text-xs text-amber-400/80">
@@ -152,13 +152,13 @@ export function ChatPane() {
     return (
       <div className="pb-6">
         {activePlan && showAdvancedPlan && (
-          <div className="my-4 px-6">
+          <div className="my-4 px-3 md:px-6">
             <PlanCard plan={activePlan} onRespond={respondToPlan} />
           </div>
         )}
 
         {activePlan && !showAdvancedPlan && (
-          <div className="my-3 flex justify-start px-6">
+          <div className="my-3 flex justify-start px-3 md:px-6">
             <button
               onClick={() => setShowAdvancedPlan(true)}
               className="flex items-center gap-2 rounded-xl border border-zinc-700 bg-zinc-800/60 px-4 py-2 text-xs text-zinc-400 transition-colors hover:border-zinc-600 hover:text-zinc-300"
@@ -170,7 +170,7 @@ export function ChatPane() {
         )}
 
         {(thinkingContent || isStreaming) && (
-          <div className="px-6">
+          <div className="px-3 md:px-6">
             {thinkingSteps.length > 0 ? (
               <ThinkingTimeline
                 steps={thinkingSteps}
@@ -190,7 +190,7 @@ export function ChatPane() {
 
   return (
     <div className="flex h-full flex-col bg-[var(--background)]">
-      <div className="flex items-center gap-3 px-6 py-4">
+      <div className="flex items-center gap-3 px-3 md:px-6 py-4">
         <img src="/omegaclaw-logo.png" alt="OmegaClaw" className="h-8 w-8 rounded-lg" />
         <div className="flex-1">
           <h1 className="text-sm font-semibold text-zinc-100">OmegaClaw</h1>
@@ -202,7 +202,7 @@ export function ChatPane() {
         <BackgroundTaskIndicator />
         <button
           onClick={() => setSettingsOpen(true)}
-          className="rounded-md p-1.5 text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
+          className="rounded-md p-2.5 md:p-1.5 text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200 min-h-[44px] min-w-[44px] md:min-h-0 md:min-w-0 flex items-center justify-center"
           title="Settings"
         >
           <Settings size={16} />

@@ -42,10 +42,10 @@ function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean
     <button
       type="button"
       onClick={() => onChange(!checked)}
-      className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${checked ? 'bg-blue-600' : 'bg-zinc-600'}`}
+      className={`relative inline-flex h-7 w-12 md:h-5 md:w-9 items-center rounded-full transition-colors ${checked ? 'bg-blue-600' : 'bg-zinc-600'}`}
     >
       <span
-        className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${checked ? 'translate-x-[18px]' : 'translate-x-[3px]'}`}
+        className={`inline-block h-5 w-5 md:h-3.5 md:w-3.5 transform rounded-full bg-white transition-transform ${checked ? 'translate-x-[22px] md:translate-x-[18px]' : 'translate-x-[3px]'}`}
       />
     </button>
   );
@@ -83,7 +83,7 @@ function TextInput({
       value={value}
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
-      className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-xs text-zinc-100 placeholder-zinc-500 outline-none focus:border-blue-500 transition-colors"
+      className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2.5 md:py-1.5 text-sm md:text-xs text-zinc-100 placeholder-zinc-500 outline-none focus:border-blue-500 transition-colors"
     />
   );
 }
@@ -100,7 +100,7 @@ function NumberInput({
       type="number"
       value={value}
       onChange={(e) => onChange(Number(e.target.value))}
-      className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-xs text-zinc-100 outline-none focus:border-blue-500 transition-colors"
+      className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2.5 md:py-1.5 text-sm md:text-xs text-zinc-100 outline-none focus:border-blue-500 transition-colors"
     />
   );
 }
@@ -118,7 +118,7 @@ function SelectInput({
     <select
       value={value}
       onChange={(e) => onChange(e.target.value)}
-      className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-xs text-zinc-100 outline-none focus:border-blue-500 transition-colors"
+      className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2.5 md:py-1.5 text-sm md:text-xs text-zinc-100 outline-none focus:border-blue-500 transition-colors"
     >
       {options.map((opt) => (
         <option key={opt} value={opt}>
@@ -192,7 +192,7 @@ function ModelSelect({
       <button
         type="button"
         onClick={() => setOpen(!open)}
-        className="flex w-full items-center justify-between rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-xs text-zinc-100 outline-none transition-colors hover:border-zinc-600 focus:border-blue-500"
+        className="flex w-full items-center justify-between rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2.5 md:py-1.5 text-sm md:text-xs text-zinc-100 outline-none transition-colors hover:border-zinc-600 focus:border-blue-500 min-h-[44px] md:min-h-0"
       >
         <span className={value ? 'text-zinc-100' : 'text-zinc-500'}>
           {loading ? 'Loading models…' : selectedDisplay || placeholder || 'Select a model'}
@@ -275,7 +275,7 @@ function ApiKeyInput({
         <button
           type="button"
           onClick={() => setEditing(true)}
-          className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-400 hover:text-zinc-200 hover:border-zinc-500 transition-colors"
+          className="rounded-md border border-zinc-700 px-3 md:px-2 py-2 md:py-1 text-sm md:text-xs text-zinc-400 hover:text-zinc-200 hover:border-zinc-500 transition-colors min-h-[44px] md:min-h-0"
         >
           Change
         </button>
@@ -290,12 +290,12 @@ function ApiKeyInput({
         value={editing && isMasked ? '' : value}
         onChange={(e) => onChange(e.target.value)}
         placeholder="Enter new API key"
-        className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 pr-8 text-xs text-zinc-100 outline-none focus:border-blue-500 transition-colors"
+        className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2.5 md:py-1.5 pr-10 md:pr-8 text-sm md:text-xs text-zinc-100 outline-none focus:border-blue-500 transition-colors"
       />
       <button
         type="button"
         onClick={() => setRevealed(!revealed)}
-        className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300"
+        className="absolute right-1 top-1/2 -translate-y-1/2 p-1.5 text-zinc-500 hover:text-zinc-300"
       >
         {revealed ? <EyeOff size={14} /> : <Eye size={14} />}
       </button>
@@ -858,18 +858,19 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="relative flex h-[85vh] w-full max-w-2xl flex-col rounded-xl border border-zinc-700 bg-[var(--background)] shadow-2xl">
-        <div className="flex items-center justify-between border-b border-zinc-800 px-6 py-4">
+      <div className="relative flex h-full w-full md:h-[85vh] md:max-w-2xl flex-col md:rounded-xl md:border md:border-zinc-700 bg-[var(--background)] md:shadow-2xl">
+        <div className="flex items-center justify-between border-b border-zinc-800 px-4 md:px-6 py-4">
           <h2 className="text-sm font-semibold text-zinc-100">Settings</h2>
           <button
             onClick={onClose}
-            className="rounded-md p-1 text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
+            className="rounded-md p-2 md:p-1 text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200 min-h-[44px] min-w-[44px] md:min-h-0 md:min-w-0 flex items-center justify-center"
+            aria-label="Close settings"
           >
             <X size={18} />
           </button>
         </div>
 
-        <div className="flex border-b border-zinc-800">
+        <div className="flex border-b border-zinc-800 overflow-x-auto">
           {TABS.map((tab) => {
             const validity = getTabValidity(config);
             const isValid = validity[tab.id];
@@ -877,7 +878,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id)}
-                className={`flex items-center gap-1.5 px-5 py-2.5 text-xs font-medium transition-colors ${
+                className={`flex items-center gap-1.5 px-4 md:px-5 py-3 md:py-2.5 text-xs font-medium transition-colors min-h-[44px] whitespace-nowrap ${
                   activeTab === tab.id
                     ? 'border-b-2 border-blue-500 text-blue-400'
                     : 'text-zinc-500 hover:text-zinc-300'
@@ -894,7 +895,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           })}
         </div>
 
-        <div className="flex-1 overflow-y-auto px-6 py-4">
+        <div className="flex-1 overflow-y-auto px-4 md:px-6 py-4">
           {loading ? (
             <div className="flex h-full items-center justify-center">
               <Loader2 size={20} className="animate-spin text-zinc-500" />
@@ -923,7 +924,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           )}
         </div>
 
-        <div className="flex items-center justify-between border-t border-zinc-800 px-6 py-3">
+        <div className="flex items-center justify-between border-t border-zinc-800 px-4 md:px-6 py-3">
           <div className="flex items-center gap-2 text-xs">
             {saveStatus === 'success' && (
               <>
@@ -941,7 +942,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           <button
             onClick={handleSave}
             disabled={saving || loading}
-            className="flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-xs font-medium text-white transition-colors hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-3 md:py-2 text-sm md:text-xs font-medium text-white transition-colors hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed min-h-[44px]"
           >
             {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
             {saving ? 'Saving...' : 'Save Settings'}
