@@ -340,7 +340,8 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
           </div>
           <button
             onClick={() => setReplyTarget(null)}
-            className="shrink-0 text-zinc-500 hover:text-zinc-300"
+            className="flex h-11 w-11 shrink-0 items-center justify-center text-zinc-500 hover:text-zinc-300 md:h-auto md:w-auto"
+            aria-label="Cancel reply"
           >
             <X size={14} />
           </button>
@@ -474,6 +475,7 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
           className="max-h-64 flex-1 resize-none bg-transparent text-sm leading-relaxed text-zinc-100 placeholder-zinc-500 outline-none transition-[height] duration-150 ease-out disabled:opacity-50"
           aria-label="Message input"
           aria-multiline="true"
+          enterKeyHint="send"
         />
 
         {/* Paperclip / attach button */}

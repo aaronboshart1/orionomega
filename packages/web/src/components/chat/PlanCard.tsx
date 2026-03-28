@@ -96,7 +96,7 @@ export function PlanCard({ plan, onRespond }: PlanCardProps) {
           />
           <button
             onClick={handleModify}
-            className="rounded-lg bg-blue-600 px-3 py-2 text-xs text-white hover:bg-blue-500"
+            className="min-h-[44px] rounded-lg bg-blue-600 px-3 py-2 text-sm text-white hover:bg-blue-500 md:min-h-0 md:text-xs"
           >
             Send
           </button>
@@ -107,21 +107,21 @@ export function PlanCard({ plan, onRespond }: PlanCardProps) {
       <div className="flex items-center gap-2">
         <button
           onClick={() => onRespond(plan.id, 'approve')}
-          className="flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-xs font-medium text-white transition-colors hover:bg-blue-500"
+          className="flex min-h-[44px] items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-500 md:min-h-0 md:text-xs"
         >
           <Play size={12} />
           Approve & Execute
         </button>
         <button
           onClick={() => setShowModify(!showModify)}
-          className="flex items-center gap-1.5 rounded-lg border border-zinc-600 px-4 py-2 text-xs font-medium text-zinc-300 transition-colors hover:border-zinc-500 hover:text-zinc-100"
+          className="flex min-h-[44px] items-center gap-1.5 rounded-lg border border-zinc-600 px-4 py-2 text-sm font-medium text-zinc-300 transition-colors hover:border-zinc-500 hover:text-zinc-100 md:min-h-0 md:text-xs"
         >
           <Pencil size={12} />
           Modify
         </button>
         <button
           onClick={() => onRespond(plan.id, 'reject')}
-          className="flex items-center gap-1.5 rounded-lg px-4 py-2 text-xs font-medium text-zinc-500 transition-colors hover:text-zinc-300"
+          className="flex min-h-[44px] items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-medium text-zinc-500 transition-colors hover:text-zinc-300 md:min-h-0 md:text-xs"
         >
           <X size={12} />
           Reject

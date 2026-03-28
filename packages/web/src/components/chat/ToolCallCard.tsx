@@ -53,9 +53,10 @@ export function ToolCallCard({ toolCall }: ToolCallCardProps) {
     <div className="rounded-lg border border-zinc-700/50 bg-zinc-800/60 px-3 py-2 transition-colors">
       <button
         onClick={() => hasDetails && setExpanded(!expanded)}
-        className={`flex w-full items-center gap-2 text-left text-xs ${
+        className={`flex w-full min-h-[44px] md:min-h-0 items-center gap-2 text-left text-xs ${
           hasDetails ? 'cursor-pointer' : 'cursor-default'
         }`}
+        aria-expanded={hasDetails ? expanded : undefined}
       >
         {statusIcon[status]}
         {getToolIcon(toolName)}
