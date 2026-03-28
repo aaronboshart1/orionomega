@@ -229,14 +229,27 @@ export class RetentionEngine {
         log.debug('Rejected low-quality memory', {
           bankId, context, score: quality.score, threshold, signals: quality.signals,
         });
-        this.onMemoryEvent?.('quality', `Rejected low-quality memory (score: ${quality.score.toFixed(2)})`, bankId, { score: quality.score, context });
+        this.onMemoryEvent?.('quality', `Rejected low-quality memory (score: ${quality.score.toFixed(2)})`, bankId, {
+          score: quality.score,
+          threshold,
+          context,
+          signals: quality.signals,
+          contentPreview: content.slice(0, 200),
+          wordCount: content.split(/\s+/).filter(Boolean).length,
+        });
         return;
       }
 
-      const isDup = await this.hs.isDuplicateContent(bankId, content, this.config.deduplicationThreshold ?? 0.85);
+      const dedupThreshold = this.config.deduplicationThreshold ?? 0.85;
+      const isDup = await this.hs.isDuplicateContent(bankId, content, dedupThreshold);
       if (isDup) {
         log.debug('Skipped duplicate memory retention', { bankId, context, length: content.length });
-        this.onMemoryEvent?.('dedup', `Skipped duplicate memory (${context})`, bankId, { context });
+        this.onMemoryEvent?.('dedup', `Skipped duplicate memory (${context})`, bankId, {
+          context,
+          contentPreview: content.slice(0, 200),
+          bankId,
+          similarityThreshold: dedupThreshold,
+        });
         return;
       }
       await this.hs.retainOne(bankId, content, context);
@@ -244,7 +257,13 @@ export class RetentionEngine {
         bankId, context, length: content.length,
         qualityScore: quality.score, signals: quality.signals,
       });
-      this.onMemoryEvent?.('retain', `Retained ${context} memory (quality: ${quality.score.toFixed(2)})`, bankId, { context, score: quality.score });
+      this.onMemoryEvent?.('retain', `Retained ${context} memory (quality: ${quality.score.toFixed(2)})`, bankId, {
+        context,
+        score: quality.score,
+        signals: quality.signals,
+        contentPreview: content.slice(0, 200),
+        contentLength: content.length,
+      });
     } catch (err) {
       log.warn('Failed to retain memory', {
         bankId,

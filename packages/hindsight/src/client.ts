@@ -1,6 +1,6 @@
 import { HindsightError } from './errors.js';
 import { createLogger } from './logger.js';
-import { deduplicateByContent, trigramSimilarity } from './similarity.js';
+import { computeClientRelevance, deduplicateByContent, trigramSimilarity } from './similarity.js';
 import type {
   BankConfig,
   BankInfo,
@@ -144,13 +144,13 @@ export class HindsightClient {
 
   /**
    * Check whether a bank exists.
-   * Uses the list endpoint since the API does not support GET on individual banks.
+   * Uses the cached list endpoint to avoid redundant API calls.
    * @param bankId - The bank identifier.
    * @returns `true` if the bank exists, `false` otherwise.
    */
   async bankExists(bankId: string): Promise<boolean> {
     try {
-      const banks = await this.listBanks();
+      const banks = await this.listBanksCached();
       return banks.some((b) => b.bank_id === bankId);
     } catch (err) {
       log.warn('bankExists check failed', {
@@ -191,7 +191,17 @@ export class HindsightClient {
       op: 'retain',
       bank: bankId,
       detail: `Stored ${preview} [${contexts}]`,
-      meta: { itemCount: items.length, contexts: contexts.split(', '), durationMs },
+      meta: {
+        itemCount: items.length,
+        contexts: contexts.split(', '),
+        durationMs,
+        items: items.map(i => ({
+          content: i.content,
+          context: i.context,
+          timestamp: i.timestamp,
+        })),
+        result: { success: result.success, bankId: result.bank_id, itemsCount: result.items_count },
+      },
     });
     return result;
   }
@@ -214,6 +224,12 @@ export class HindsightClient {
 
   /**
    * Recall memories from a bank matching a natural-language query.
+   *
+   * When the API returns relevance=0 for all results (a known backend issue),
+   * this method computes client-side relevance scores using trigram + keyword
+   * similarity as a proxy. This ensures the minRelevance filter and
+   * confidence propagation pipeline still function correctly.
+   *
    * @param bankId - Source bank identifier.
    * @param query - Natural-language search query.
    * @param opts - Optional recall parameters (maxTokens, budget).
@@ -256,12 +272,30 @@ export class HindsightClient {
     const shouldDedup = opts?.deduplicate !== false;
     const dedupThreshold = opts?.deduplicationThreshold ?? 0.85;
 
-    const allResults = (raw.results ?? []).map((r) => ({
+    let allResults = (raw.results ?? []).map((r) => ({
       content: (r.text as string) ?? (r.content as string) ?? '',
       context: (r.context as string) ?? '',
       timestamp: (r.mentioned_at as string) ?? (r.timestamp as string) ?? '',
       relevance: (r.relevance as number) ?? 0,
     }));
+
+    // ── Fix 1: Client-side relevance when API returns all zeros ──
+    // The Hindsight API sometimes returns relevance=0 for all results.
+    // When this happens, compute client-side relevance scores so that
+    // the minRelevance filter and confidence propagation still work.
+    const allZeroRelevance = allResults.length > 0 &&
+      allResults.every((r) => r.relevance === 0);
+
+    if (allZeroRelevance) {
+      log.verbose('API returned all-zero relevance scores, computing client-side relevance', {
+        bankId,
+        resultCount: allResults.length,
+      });
+      allResults = allResults.map((r) => ({
+        ...r,
+        relevance: computeClientRelevance(query, r.content),
+      }));
+    }
 
     let filtered = allResults.filter((r) => r.relevance >= minRelevance);
 
@@ -270,6 +304,7 @@ export class HindsightClient {
       totalFromApi: allResults.length,
       aboveThreshold: filtered.length,
       minRelevance,
+      usedClientRelevance: allZeroRelevance,
     });
 
     if (shouldDedup && filtered.length > 1) {
@@ -294,15 +329,42 @@ export class HindsightClient {
       this.onIO?.({
         op: 'recall',
         bank: bankId,
-        detail: `Retrieved ${result.results.length} memories (top relevance: ${topScore.toFixed(2)})`,
-        meta: { resultCount: result.results.length, topScore, durationMs, queryPreview: query.slice(0, 80) },
+        detail: `Retrieved ${result.results.length} memories (top relevance: ${topScore.toFixed(2)}${allZeroRelevance ? ', client-scored' : ''})`,
+        meta: {
+          query,
+          resultCount: result.results.length,
+          totalFromApi: allResults.length,
+          droppedByRelevance: allResults.length - filtered.length,
+          topScore,
+          durationMs,
+          clientScored: allZeroRelevance,
+          tokensUsed: result.tokens_used,
+          budget: tier,
+          maxTokens: effectiveMaxTokens,
+          minRelevance,
+          results: result.results.map(r => ({
+            content: r.content,
+            context: r.context,
+            timestamp: r.timestamp,
+            relevance: r.relevance,
+          })),
+        },
       });
     } else {
       this.onIO?.({
         op: 'recall',
         bank: bankId,
         detail: 'No matching memories found',
-        meta: { resultCount: 0, durationMs, queryPreview: query.slice(0, 80) },
+        meta: {
+          query,
+          resultCount: 0,
+          totalFromApi: allResults.length,
+          droppedByRelevance: allResults.length,
+          durationMs,
+          budget: tier,
+          maxTokens: effectiveMaxTokens,
+          minRelevance,
+        },
       });
     }
     return result;
@@ -371,14 +433,13 @@ export class HindsightClient {
       ...temporalPromises,
     ]);
 
+    // Merge results — use trigram dedup instead of exact-match Set
+    // (the old seenContents Set was redundant since deduplicateByContent
+    // already handles exact matches via its trigram comparison)
     const merged = [...primary.results];
-    const seenContents = new Set(merged.map((r) => r.content));
     for (const temporal of temporalResults) {
       for (const r of temporal.results) {
-        if (!seenContents.has(r.content)) {
-          seenContents.add(r.content);
-          merged.push(r);
-        }
+        merged.push(r);
       }
     }
 

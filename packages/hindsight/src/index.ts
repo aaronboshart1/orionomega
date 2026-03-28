@@ -11,4 +11,4 @@ export { SelfKnowledge } from './self-knowledge.js';
 export type { SelfKnowledgeConfig } from './self-knowledge.js';
 export { createLogger, setLogLevel } from './logger.js';
 export type { Logger, LogLevel } from './logger.js';
-export { trigramSimilarity, deduplicateByContent } from './similarity.js';
+export { trigramSimilarity, deduplicateByContent, computeClientRelevance } from './similarity.js';
