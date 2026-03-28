@@ -357,9 +357,9 @@ export class MainAgent {
   /**
    * Handle an incoming user message.
    *
-   * 2-tier routing: CHAT → direct response (blocking), CHAT_ASYNC → fire-and-forget.
-   * Fast-path check for ORCHESTRATE still dispatches to full planner DAG.
-   * handleMessage() returns quickly in all cases.
+   * 2-tier routing: CHAT → direct response, ORCHESTRATE → planner DAG.
+   * Fast-path check for ORCHESTRATE dispatches to full planner DAG.
+   * All tool-using tasks route through orchestration.
    */
   async handleMessage(
     content: string,
@@ -531,20 +531,13 @@ export class MainAgent {
           await this.respondConversationally(userContent, signal);
           break;
         case 'ORCHESTRATE':
+        default:
           log.verbose('Route: ORCHESTRATE (LLM classified)', { guarded: isGuardedRequest(trimmed) });
           await this.orchestration.dispatchFullDAG(
             userContent,
             (e) => this.pushHistory(e as HistoryEntry),
             { requireConfirmation: isGuardedRequest(trimmed) },
           );
-          break;
-        case 'CHAT_ASYNC':
-          // Fire-and-forget: returns immediately, async work continues in background
-          void this.respondConversationally(userContent, signal).catch((err) => {
-            const msg = err instanceof Error ? err.message : String(err);
-            log.error('Async conversational response error', { error: msg });
-            this.callbacks.onText(`Something went wrong: ${msg}`, false, true);
-          });
           break;
       }
     } catch (err) {

@@ -49,7 +49,7 @@ const CONVERSATIONAL_FAST = [
   /^(never\s*mind|nvm|forget\s*it|cancel)\b/i,
 ];
 
-/** Quick-match patterns that almost certainly need orchestration (multi-step). */
+/** Quick-match patterns that need orchestration (any tool use, single or multi-step). */
 const ORCHESTRATE_FAST = [
   /\b(research|investigate|analyze|compare)\b.*\b(and|then|also|plus)\b/i,
   /\bstep[- ]by[- ]step\b/i,
@@ -63,6 +63,12 @@ const ORCHESTRATE_FAST = [
   /\bwe\s+need\s+to\b.*\b(fix|change|update|implement|add|create|build)\b/i,
   /\b(fix|implement|add|create)\b.*\b(now|immediately|asap|today)\b/i,
   /\b(make|ensure)\b.*\b(work|function|run|pass|compile|build)\b/i,
+  /\brun\s+(npm|npx|yarn|pnpm|node|python|pip|cargo|go|make|docker|sh|bash)\b/i,
+  /\b(cat|ls|grep|exec)\s+\S/i,
+  /\b(read|open|show|view|check|inspect)\b.*\b\w+\.(ts|js|tsx|jsx|json|yaml|yml|toml|py|go|rs|rb|java|css|scss|html|xml|sql|md|txt|cfg|ini|conf|env|sh|lock|log)\b/i,
+  /\b(read|open|show|view|check|inspect|list|search)\b.*\b(file|folder|directory|config|package|module|settings|logs?)\b/i,
+  /\b(read|open|show|view|check|inspect)\b.*[/\\]\S+/i,
+  /\brun\s+(tests?|lint|build|check|format|typecheck|compile|benchmark|audit|ci)\b/i,
 ];
 
 /** Patterns for guarded (destructive/expensive) operations that require confirmation. */
@@ -77,12 +83,11 @@ const GUARDED_PATTERNS = [
 const CLASSIFY_PROMPT = `You are an intent classifier for an AI orchestration system.
 Given a user message, classify it as one of:
 - CHAT: Conversational, simple questions, greetings, opinions, or answers the assistant can give directly without using tools. Examples: "what is 2+2?", "explain quantum computing", "tell me a joke", "what do you think about X?"
-- CHAT_ASYNC: Single-step tasks that require tool use — file reads, command execution, quick lookups. Examples: "read config.yaml", "run npm test", "search for X in the codebase"
-- ORCHESTRATE: Multi-step tasks requiring planning, multiple file changes, research-then-action, building features, fixing bugs across files, implementing plans, or any request that involves more than 2-3 tool calls in sequence. Examples: "fix the orchestration system", "implement the readiness plan", "build a landing page", "refactor the auth module", "we need to fix X and Y"
+- ORCHESTRATE: Any task that requires tool use — file reads, command execution, code changes, lookups, builds, fixes, or multi-step plans. Examples: "read config.yaml", "run npm test", "search for X in the codebase", "fix the orchestration system", "implement the readiness plan", "build a landing page", "refactor the auth module"
 
-Bias: Prefer ORCHESTRATE for anything involving code changes across multiple files, bug fixes, feature implementation, or multi-step plans. Prefer CHAT_ASYNC for single-tool tasks. Only use CHAT when no tools are needed.
+Bias: Prefer ORCHESTRATE for anything that would require reading files, running commands, writing code, or making changes. Only use CHAT when no tools are needed at all.
 
-Respond with ONLY the word CHAT, CHAT_ASYNC, or ORCHESTRATE.`;
+Respond with ONLY the word CHAT or ORCHESTRATE.`;
 /** Tool definitions available to the main agent for conversational responses. */
 export const MAIN_AGENT_TOOLS = [
   {
@@ -130,14 +135,24 @@ export function isImmediateExecution(content: string): boolean {
 
 const TASKY_VERBS = /^(fix|add|build|create|refactor|deploy|implement|update|change|remove|delete|install|configure|set\s*up|write|generate|migrate|upgrade)\b/i;
 
+const TOOL_INDICATORS = [
+  /\b\w+\.(ts|js|tsx|jsx|json|yaml|yml|toml|py|go|rs|rb|java|css|scss|html|xml|sql|md|txt|cfg|ini|conf|env|sh|bash|lock|log)\b/i,
+  /\b(file|folder|directory|config|package|module|component|endpoint|route|server|database|db)\b/i,
+  /\b(npm|npx|yarn|pnpm|node|python|pip|cargo|go|make|docker|git|bash|sh|curl|wget)\b/i,
+  /\b(src|lib|dist|build|test|spec|bin|public|assets|static|config|env)\b/i,
+  /[/\\]\S+/,
+  /\b(code|codebase|repo|repository|project|workspace|source)\b/i,
+  /\b(error|bug|issue|warning|log|stack\s*trace|exception|crash)\b/i,
+  /\b(port|localhost|http|https|api|url|endpoint)\b/i,
+];
+
 export function isFastConversational(content: string): boolean {
   const trimmed = content.trim();
   const wordCount = trimmed.split(/\s+/).length;
   if (TASKY_VERBS.test(trimmed)) return false;
   if (ORCHESTRATE_FAST.some((p) => p.test(trimmed))) return false;
-  if (wordCount <= 2 && CONVERSATIONAL_FAST.some((p) => p.test(trimmed))) return true;
+  if (TOOL_INDICATORS.some((p) => p.test(trimmed))) return false;
   if (wordCount <= 12 && CONVERSATIONAL_FAST.some((p) => p.test(trimmed))) return true;
-  if (wordCount <= 15 && !TASKY_VERBS.test(trimmed) && !ORCHESTRATE_FAST.some((p) => p.test(trimmed))) return true;
   return false;
 }
 
@@ -157,7 +172,7 @@ export function isFastTask(content: string): boolean {
 }
 
 /** Intent type returned by the 2-tier classifier. */
-export type IntentType = 'CHAT' | 'CHAT_ASYNC' | 'ORCHESTRATE';
+export type IntentType = 'CHAT' | 'ORCHESTRATE';
 
 export async function classifyIntent(
   client: AnthropicClient,
@@ -174,17 +189,16 @@ export async function classifyIntent(
       temperature: 0,
     });
 
-    const text = response.content?.[0]?.text?.trim().toUpperCase() ?? 'CHAT';
+    const text = response.content?.[0]?.text?.trim().toUpperCase() ?? 'ORCHESTRATE';
     log.info('Intent classified', { message: message.slice(0, 80), intent: text });
 
-    if (text.includes('ORCHESTRATE')) return 'ORCHESTRATE';
-    if (text.includes('CHAT_ASYNC') || text.includes('ACTION') || text.includes('TASK')) return 'CHAT_ASYNC';
-    return 'CHAT';
+    if (text === 'CHAT') return 'CHAT';
+    return 'ORCHESTRATE';
   } catch (err) {
-    log.warn('Intent classification failed, defaulting to CHAT', {
+    log.warn('Intent classification failed, defaulting to ORCHESTRATE', {
       error: err instanceof Error ? err.message : String(err),
     });
-    return 'CHAT';
+    return 'ORCHESTRATE';
   }
 }
 
