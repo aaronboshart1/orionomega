@@ -39,10 +39,27 @@ const handle = app.getRequestHandler();
 app.prepare().then(() => {
   const nextUpgradeHandler = app.getUpgradeHandler();
 
+  function stripGatewayPrefix(rawUrl) {
+    const prefix = '/api/gateway';
+    try {
+      const parsed = new URL(rawUrl, 'http://localhost');
+      if (!parsed.pathname.startsWith(prefix)) return rawUrl;
+      const stripped = parsed.pathname.slice(prefix.length);
+      const path = stripped.startsWith('/') ? stripped : '/' + stripped;
+      return path + parsed.search + parsed.hash;
+    } catch {
+      const idx = rawUrl.indexOf(prefix);
+      if (idx === -1) return rawUrl;
+      const stripped = rawUrl.slice(idx + prefix.length);
+      return stripped.startsWith('/') ? stripped : '/' + stripped;
+    }
+  }
+
   function createHandler(req, res) {
     const parsedUrl = parse(req.url, true);
     if (parsedUrl.pathname.startsWith('/api/gateway/')) {
-      const targetPath = req.url.replace('/api/gateway', '');
+      const targetPath = stripGatewayPrefix(req.url);
+      console.log(`[proxy] ${req.method} ${req.url} -> ${gatewayHost}:${gatewayPort}${targetPath}`);
       const proxyReq = httpRequest(
         {
           hostname: gatewayHost,
@@ -52,12 +69,13 @@ app.prepare().then(() => {
           headers: { ...req.headers, host: `${gatewayHost}:${gatewayPort}` },
         },
         (proxyRes) => {
+          console.log(`[proxy] ${req.method} ${req.url} <- ${proxyRes.statusCode}`);
           res.writeHead(proxyRes.statusCode, proxyRes.headers);
           proxyRes.pipe(res, { end: true });
         },
       );
       proxyReq.on('error', (err) => {
-        console.error('[proxy] HTTP error:', err.message);
+        console.error(`[proxy] HTTP error for ${req.url}:`, err.message);
         if (!res.headersSent) {
           res.writeHead(502, { 'Content-Type': 'text/plain' });
           res.end('Gateway unavailable');
@@ -72,7 +90,7 @@ app.prepare().then(() => {
   function createUpgradeHandler(req, socket, head) {
     const parsedUrl = parse(req.url, true);
     if (parsedUrl.pathname === '/api/gateway/ws') {
-      const targetPath = req.url.replace('/api/gateway', '');
+      const targetPath = stripGatewayPrefix(req.url);
       const proxySocket = netConnect({ host: gatewayHost, port: gatewayPort }, () => {
         const reqLine = `GET ${targetPath} HTTP/1.1\r\n`;
         const headers = Object.entries({

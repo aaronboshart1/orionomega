@@ -801,6 +801,15 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const fetchConfig = useCallback(async () => {
     setLoading(true);
     setErrorMsg('');
+
+    let gatewayReachable = true;
+    try {
+      const healthRes = await fetch('/api/gateway/api/health', { signal: AbortSignal.timeout(5000) });
+      if (!healthRes.ok) gatewayReachable = false;
+    } catch {
+      gatewayReachable = false;
+    }
+
     const maxRetries = 3;
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
@@ -814,7 +823,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           } catch {
             if (text) message = text;
           }
-          throw new Error(message);
+          throw new Error(`${res.status}: ${message} (endpoint: /api/config)`);
         }
         const data = JSON.parse(text);
         setConfig(data as ConfigData);
@@ -822,10 +831,15 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
         return;
       } catch (err) {
         if (attempt < maxRetries - 1) {
-          await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+          await new Promise((r) => setTimeout(r, 1000 * Math.pow(2, attempt)));
           continue;
         }
-        setErrorMsg(err instanceof Error ? err.message : 'Failed to load config');
+        const msg = err instanceof Error ? err.message : 'Failed to load config';
+        if (!gatewayReachable) {
+          setErrorMsg('Cannot reach gateway — the gateway service may not be running or is unreachable from this network.');
+        } else {
+          setErrorMsg(msg);
+        }
       }
     }
     setLoading(false);
@@ -930,9 +944,16 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
             </div>
           ) : errorMsg && config === null ? (
             <div className="flex h-full flex-col items-center justify-center gap-3">
-              <div className="flex items-center">
-                <AlertCircle size={16} className="text-red-400" />
-                <span className="ml-2 text-xs text-red-400">{errorMsg}</span>
+              <div className="flex flex-col items-center gap-1">
+                <div className="flex items-center">
+                  <AlertCircle size={16} className="text-red-400" />
+                  <span className="ml-2 text-xs text-red-400">{errorMsg}</span>
+                </div>
+                {errorMsg.includes('404') && (
+                  <span className="text-xs text-zinc-500">
+                    A 404 may indicate the gateway is not reachable or the route is misconfigured.
+                  </span>
+                )}
               </div>
               <button
                 onClick={fetchConfig}
