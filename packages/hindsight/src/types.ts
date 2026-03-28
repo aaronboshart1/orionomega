@@ -42,6 +42,12 @@ export interface RecallOptions {
   maxTokens?: number;
   /** Search depth budget (default: 'mid'). */
   budget?: 'low' | 'mid' | 'high';
+  /** Minimum relevance score (0–1). Results below this are dropped. Default: 0.3. */
+  minRelevance?: number;
+  /** Whether to deduplicate near-identical results. Default: true. */
+  deduplicate?: boolean;
+  /** Similarity threshold for retrieval-time deduplication. Default: 0.85. */
+  deduplicationThreshold?: number;
 }
 
 /** A single recalled memory with relevance score. */

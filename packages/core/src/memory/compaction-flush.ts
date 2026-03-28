@@ -4,7 +4,7 @@
  * before context compaction discards them.
  */
 
-import { HindsightClient } from '@orionomega/hindsight';
+import { HindsightClient, deduplicateByContent } from '@orionomega/hindsight';
 import { AnthropicClient } from '../anthropic/client.js';
 import { createLogger } from '../logging/logger.js';
 
@@ -48,11 +48,16 @@ Return empty items array if nothing noteworthy.`;
  * Uses a cheap model (e.g. Haiku) for extraction to minimize cost.
  */
 export class CompactionFlush {
+  private readonly deduplicationThreshold: number;
+
   constructor(
     private readonly hs: HindsightClient,
     private readonly anthropic: AnthropicClient,
     private readonly model: string,
-  ) {}
+    deduplicationThreshold?: number,
+  ) {
+    this.deduplicationThreshold = deduplicationThreshold ?? 0.85;
+  }
 
   /**
    * Extract and retain all important information from conversation messages.
@@ -107,18 +112,35 @@ export class CompactionFlush {
         return { itemsRetained: 0 };
       }
 
-      // Retain all extracted items
-      const items = parsed.items
-        .filter((item) => item.content && item.context)
-        .map((item) => ({
-          content: item.content,
-          context: item.context,
-          timestamp: new Date().toISOString(),
-        }));
+      const candidates = parsed.items
+        .filter((item) => item.content && item.context);
+
+      const intraBatchDeduped = deduplicateByContent(
+        candidates.map((item) => ({ ...item, content: item.content, relevance: 1 })),
+        this.deduplicationThreshold,
+      ).map((item) => ({ content: item.content, context: item.context }));
+
+      const dedupChecks = await Promise.all(
+        intraBatchDeduped.map(async (item) => {
+          const isDup = await this.hs.isDuplicateContent(bankId, item.content, this.deduplicationThreshold);
+          return isDup ? null : item;
+        }),
+      );
+      const uniqueItems = dedupChecks.filter(Boolean) as ExtractedItem[];
+
+      const items = uniqueItems.map((item) => ({
+        content: item.content,
+        context: item.context,
+        timestamp: new Date().toISOString(),
+      }));
 
       if (items.length > 0) {
         await this.hs.retain(bankId, items);
-        log.info('Compaction flush complete', { bankId, itemsRetained: items.length });
+        log.info('Compaction flush complete', {
+          bankId,
+          itemsRetained: items.length,
+          duplicatesSkipped: candidates.length - uniqueItems.length,
+        });
       }
 
       return { itemsRetained: items.length };

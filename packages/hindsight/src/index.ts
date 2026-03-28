@@ -9,3 +9,4 @@ export { SessionBootstrap } from './session-bootstrap.js';
 export type { BootstrapContext } from './session-bootstrap.js';
 export { createLogger, setLogLevel } from './logger.js';
 export type { Logger, LogLevel } from './logger.js';
+export { trigramSimilarity, deduplicateByContent } from './similarity.js';

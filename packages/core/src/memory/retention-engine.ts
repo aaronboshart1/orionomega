@@ -19,6 +19,8 @@ export interface RetentionConfig {
   retainOnError: boolean;
   /** Default bank for event-driven retention when no project bank is known. */
   defaultBank?: string;
+  /** Similarity threshold for storage-time deduplication. Default: 0.85. */
+  deduplicationThreshold?: number;
 }
 
 /** Outcome data for workflow completion retention. */
@@ -131,6 +133,11 @@ export class RetentionEngine {
    */
   async retain(bankId: string, content: string, context: string): Promise<void> {
     try {
+      const isDup = await this.hs.isDuplicateContent(bankId, content, this.config.deduplicationThreshold ?? 0.85);
+      if (isDup) {
+        log.debug('Skipped duplicate memory retention', { bankId, context, length: content.length });
+        return;
+      }
       await this.hs.retainOne(bankId, content, context);
       log.debug('Retained memory', { bankId, context, length: content.length });
     } catch (err) {

@@ -1,5 +1,6 @@
 import { HindsightError } from './errors.js';
 import { createLogger } from './logger.js';
+import { deduplicateByContent, trigramSimilarity } from './similarity.js';
 import type {
   BankConfig,
   BankInfo,
@@ -23,11 +24,21 @@ const log = createLogger('hindsight-client');
  * const result = await client.recall('my-bank', 'what do I prefer?');
  * ```
  */
+const BUDGET_TIER_MAX_TOKENS: Record<string, number> = {
+  low: 1024,
+  mid: 4096,
+  high: 8192,
+};
+
 export class HindsightClient {
   private readonly baseUrl: string;
   private readonly namespace: string;
   private _activeOps = 0;
   private _connected = false;
+
+  private _banksCache: BankInfo[] | null = null;
+  private _banksCacheTime = 0;
+  private static readonly BANKS_CACHE_TTL_MS = 60_000;
 
   /** Callback invoked when I/O activity state changes (busy/idle or connected/disconnected). */
   onActivity?: (status: { connected: boolean; busy: boolean }) => void;
@@ -65,6 +76,7 @@ export class HindsightClient {
    */
   async createBank(bankId: string, config: BankConfig): Promise<void> {
     await this.request<unknown>('PUT', this.bankPath(bankId), config);
+    this.invalidateBanksCache();
   }
 
   /**
@@ -79,6 +91,52 @@ export class HindsightClient {
   async listBanks(): Promise<BankInfo[]> {
     const res = await this.request<{ banks: BankInfo[] }>('GET', `/v1/${this.namespace}/banks`);
     return res.banks;
+  }
+
+  async listBanksCached(): Promise<BankInfo[]> {
+    const now = Date.now();
+    if (this._banksCache && (now - this._banksCacheTime) < HindsightClient.BANKS_CACHE_TTL_MS) {
+      return this._banksCache;
+    }
+    try {
+      this._banksCache = await this.listBanks();
+      this._banksCacheTime = now;
+      return this._banksCache;
+    } catch (err) {
+      log.warn('Failed to refresh banks cache', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return this._banksCache ?? [];
+    }
+  }
+
+  invalidateBanksCache(): void {
+    this._banksCache = null;
+    this._banksCacheTime = 0;
+  }
+
+  async isDuplicateContent(
+    bankId: string,
+    content: string,
+    threshold = 0.85,
+  ): Promise<boolean> {
+    try {
+      const existing = await this.recall(bankId, content, {
+        maxTokens: 512,
+        budget: 'low',
+        minRelevance: 0.0,
+        deduplicate: false,
+      });
+      return existing.results.some(
+        (r) => trigramSimilarity(r.content, content) >= threshold,
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  static budgetMaxTokens(tier: 'low' | 'mid' | 'high'): number {
+    return BUDGET_TIER_MAX_TOKENS[tier] ?? 4096;
   }
 
   /**
@@ -151,35 +209,60 @@ export class HindsightClient {
     opts?: RecallOptions,
   ): Promise<RecallResult> {
     const start = Date.now();
+    const tier = opts?.budget ?? 'mid';
+    const tierCap = BUDGET_TIER_MAX_TOKENS[tier] ?? 4096;
+    const effectiveMaxTokens = Math.min(opts?.maxTokens ?? tierCap, tierCap);
+
     log.verbose(`Recall → ${bankId}`, {
       queryPreview: query.slice(0, 200),
-      maxTokens: opts?.maxTokens ?? 4096,
-      budget: opts?.budget ?? 'mid',
+      maxTokens: effectiveMaxTokens,
+      budget: tier,
+      tierCap,
     });
     const raw = await this.request<{ results: Array<Record<string, unknown>> }>(
       'POST',
       `${this.bankPath(bankId)}/memories/recall`,
       {
         query,
-        max_tokens: opts?.maxTokens ?? 4096,
-        budget: opts?.budget ?? 'mid',
+        max_tokens: effectiveMaxTokens,
+        budget: tier,
       },
     );
 
-    // Normalize API response: the API returns `text` but our types use `content`
+    const minRelevance = opts?.minRelevance ?? 0.3;
+    const shouldDedup = opts?.deduplicate !== false;
+    const dedupThreshold = opts?.deduplicationThreshold ?? 0.85;
+
+    const allResults = (raw.results ?? []).map((r) => ({
+      content: (r.text as string) ?? (r.content as string) ?? '',
+      context: (r.context as string) ?? '',
+      timestamp: (r.mentioned_at as string) ?? (r.timestamp as string) ?? '',
+      relevance: (r.relevance as number) ?? 0,
+    }));
+
+    let filtered = allResults.filter((r) => r.relevance >= minRelevance);
+
+    log.verbose(`Recall relevance filter`, {
+      bankId,
+      totalFromApi: allResults.length,
+      aboveThreshold: filtered.length,
+      minRelevance,
+    });
+
+    if (shouldDedup && filtered.length > 1) {
+      filtered.sort((a, b) => b.relevance - a.relevance);
+      filtered = deduplicateByContent(filtered, dedupThreshold);
+    }
+
     const result: RecallResult = {
-      results: (raw.results ?? []).map((r) => ({
-        content: (r.text as string) ?? (r.content as string) ?? '',
-        context: (r.context as string) ?? '',
-        timestamp: (r.mentioned_at as string) ?? (r.timestamp as string) ?? '',
-        relevance: (r.relevance as number) ?? 0,
-      })),
+      results: filtered,
       tokens_used: (raw as unknown as Record<string, unknown>).tokens_used as number ?? 0,
     };
 
     log.verbose(`Recall ← ${bankId}`, {
       durationMs: Date.now() - start,
       resultCount: result.results.length,
+      droppedByRelevance: allResults.length - filtered.length,
     });
     return result;
   }

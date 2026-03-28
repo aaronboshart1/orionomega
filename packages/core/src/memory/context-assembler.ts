@@ -51,6 +51,12 @@ export interface ContextAssemblerConfig {
   recallBudget?: 'low' | 'mid' | 'high';
   /** Path to persist hot window to disk. If set, survives gateway restarts. */
   persistPath?: string;
+  /** Enable cross-bank federation: discover and query all populated banks. Default: true. */
+  federateBanks?: boolean;
+  /** Minimum relevance score for recalled memories. Default: 0.3. */
+  minRelevance?: number;
+  /** Similarity threshold for storage-time deduplication. Default: 0.85. */
+  storageDeduplicationThreshold?: number;
 }
 
 const DEFAULT_HOT_WINDOW = 20;
@@ -85,6 +91,9 @@ export class ContextAssembler {
   private readonly recallBudget: 'low' | 'mid' | 'high';
   private readonly persistPath: string | null;
   private hs: HindsightClient | null;
+  private readonly federateBanks: boolean;
+  private readonly minRelevance: number;
+  private readonly storageDeduplicationThreshold: number;
 
   /** Track total messages seen (for logging). */
   private totalMessageCount = 0;
@@ -100,6 +109,9 @@ export class ContextAssembler {
     this.additionalBanks = config.additionalBanks ?? [];
     this.recallBudget = config.recallBudget ?? 'mid';
     this.persistPath = config.persistPath ?? null;
+    this.federateBanks = config.federateBanks !== false;
+    this.minRelevance = config.minRelevance ?? 0.3;
+    this.storageDeduplicationThreshold = config.storageDeduplicationThreshold ?? 0.85;
 
     // Restore hot window from disk if available
     if (this.persistPath) {
@@ -261,9 +273,25 @@ export class ContextAssembler {
   private async retainMessage(msg: ConversationMessage): Promise<void> {
     if (!this.hs || !this.conversationBank) return;
 
+    const formattedContent = `[${msg.role}] ${msg.content}`;
+
+    const isDup = await this.hs.isDuplicateContent(
+      this.conversationBank,
+      formattedContent,
+      this.storageDeduplicationThreshold,
+    );
+    if (isDup) {
+      log.debug('Skipped duplicate message retention', {
+        bank: this.conversationBank,
+        role: msg.role,
+        contentLength: msg.content.length,
+      });
+      return;
+    }
+
     await this.hs.retain(this.conversationBank, [
       {
-        content: `[${msg.role}] ${msg.content}`,
+        content: formattedContent,
         context: `conversation_${msg.role}`,
         timestamp: msg.timestamp ?? new Date().toISOString(),
       },
@@ -320,6 +348,25 @@ export class ContextAssembler {
    * additional banks, and within each bank results are sorted newest-first.
    * Short/conversational messages shift budget heavily toward conversation bank.
    */
+  private async discoverFederatedBanks(): Promise<string[]> {
+    if (!this.hs || !this.federateBanks) return [];
+    try {
+      const allBanks = await this.hs.listBanksCached();
+      const knownSet = new Set([
+        ...(this.conversationBank ? [this.conversationBank] : []),
+        ...this.additionalBanks,
+      ]);
+      return allBanks
+        .filter((b) => !knownSet.has(b.bank_id) && (b.memory_count ?? 0) > 0)
+        .map((b) => b.bank_id);
+    } catch (err) {
+      log.debug('Bank federation discovery failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return [];
+    }
+  }
+
   private async recallFromBanks(
     query: string,
     maxTokens: number,
@@ -327,9 +374,12 @@ export class ContextAssembler {
   ): Promise<string | null> {
     if (!this.hs) return null;
 
+    const federatedBanks = await this.discoverFederatedBanks();
+
     const banks = [
       ...(this.conversationBank ? [this.conversationBank] : []),
       ...this.additionalBanks,
+      ...federatedBanks,
     ];
 
     if (banks.length === 0) return null;
@@ -341,6 +391,8 @@ export class ContextAssembler {
       shortReply,
       convShareRatio,
       rawQueryLength: rawQuery.length,
+      totalBanks: banks.length,
+      federatedBanks: federatedBanks.length,
     });
 
     const otherBankCount = banks.length - (this.conversationBank ? 1 : 0);
@@ -355,7 +407,11 @@ export class ContextAssembler {
       const budget = bank === this.conversationBank ? convShare : otherShare;
       if (budget < 200) return Promise.resolve(null);
 
-      return this.hs!.recall(bank, query, { maxTokens: budget, budget: this.recallBudget })
+      return this.hs!.recall(bank, query, {
+        maxTokens: budget,
+        budget: this.recallBudget,
+        minRelevance: this.minRelevance,
+      })
         .then((response) => {
           if (!response.results || response.results.length === 0) return null;
           const items = response.results.map((r) => ({
