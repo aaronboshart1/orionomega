@@ -1,153 +1,184 @@
-# Getting Started
-
-This guide walks you through installing OrionOmega, configuring it, and running your first orchestrated task.
+# Quick Start Guide
 
 ## Prerequisites
 
-- **Linux** — Ubuntu 22.04+, Debian 12+, or any modern distro (macOS and Windows WSL are not yet supported)
-- **Node.js 22+** — the installer handles this if missing
+- **macOS or Linux** (Ubuntu 22.04+, Debian 12+, Kali, or any modern distro)
+- **Node.js 22+**
+- **pnpm** (the installer will install it if missing)
 - **An Anthropic API key** — get one at [console.anthropic.com](https://console.anthropic.com/)
 
 Optional:
 
-- **Hindsight** — temporal knowledge graph for persistent memory (the installer can set this up)
-- **Rust toolchain** — only needed if you want to build Hindsight from source
+- **Docker** — required for Hindsight (persistent memory system)
+
+---
 
 ## Installation
 
-The one-liner installs OrionOmega to `~/.orionomega/src` and links the CLI globally:
+Run the one-liner:
 
 ```bash
-curl -fsSL https://orionomega.dev/install | bash
+curl -fsSL https://raw.githubusercontent.com/aaronboshart1/orionomega/main/scripts/install.sh | bash
 ```
 
 The installer will:
 
-1. **Preflight check** — verify Linux, architecture (x64/arm64), and permissions
-2. **Install Node.js 22** — via NodeSource if not already present
-3. **Install pnpm** — for dependency management
-4. **Clone the repository** — to `~/.orionomega/src`
-5. **Build all packages** — TypeScript compilation across the monorepo
-6. **Link the CLI** — `orionomega` command available globally
-7. **Optionally install Hindsight** — clone, build (Rust), and set up as a systemd service
-8. **Create config directory** — `~/.orionomega/` with default `config.yaml`
-9. **Install gateway service** — systemd service for the WebSocket/REST gateway
+1. Verify Node.js 22+ is installed
+2. Install pnpm if missing
+3. Clone the repository to `~/.orionomega/src`
+4. Install dependencies and build all packages
+5. Link the `orionomega` CLI to `~/.orionomega/bin` and add it to your PATH
+6. Pull the Hindsight Docker image (if Docker is available)
+7. Launch the setup wizard automatically
 
-## Running the Setup Wizard
+---
 
-After installation, run the interactive setup:
+## Setup Wizard
+
+The setup wizard runs automatically after install, or any time with:
 
 ```bash
 orionomega setup
 ```
 
-The wizard walks you through:
+It walks you through each step with a menu you can navigate back and forth:
 
-| Step | What It Does |
-|------|--------------|
-| **API Key** | Sets your Anthropic API key in the config |
-| **Models** | Configures default, planner, and worker models |
-| **Gateway** | Sets the port (default 7800) and authentication mode |
-| **Hindsight** | Configures the Hindsight URL and default memory bank |
-| **Workspace** | Sets the workspace directory path |
-| **Skills** | Sets the skills directory and enables auto-loading |
+| Step | Required | What It Configures |
+|------|----------|--------------------|
+| Anthropic API Key | Yes | Your API key (validated live against the API) |
+| Default Model | Yes | Which Claude model to use (recommends a balanced option) |
+| Gateway Security | Yes | Authentication mode — API key (password-protected) or none |
+| Hindsight Memory | No | Connection to the Hindsight memory system (Docker) |
+| Workspace | Yes | Directory for agent identity files (SOUL.md, USER.md) |
+| Logging | No | Log level and file path |
+| Claude Agent SDK | No | Permissions and token budgets for the Agent SDK |
+| Skills | No | Configure integrations (GitHub, Linear, web search, etc.) |
+| Web UI | No | Port and bind address for the web dashboard |
 
-All settings are written to `~/.orionomega/config.yaml`. You can edit this file directly at any time.
+All settings are saved to `~/.orionomega/config.yaml`.
 
-## Your First Conversation
+After saving, the wizard automatically starts the gateway for you.
 
-Start the TUI:
+---
+
+## CLI Commands
+
+### Service Management
 
 ```bash
-orionomega
+orionomega gateway start       # Start the gateway (port 8000)
+orionomega gateway stop        # Stop the gateway
+orionomega gateway restart     # Restart the gateway
+orionomega gateway status      # Check gateway status
+
+orionomega ui start            # Start the web UI (port 5000)
+orionomega ui stop             # Stop the web UI
+orionomega ui restart          # Restart the web UI
+orionomega ui status           # Check web UI status
+
+orionomega ui start -p 3000    # Start on a custom port
+orionomega ui start -H 0.0.0.0 # Bind to all interfaces
 ```
 
-You'll see a terminal interface. Type a simple message:
+### System Health
 
-```
-> Hello, what can you do?
-```
-
-The agent responds conversationally. For simple questions and direct requests, there's no orchestration overhead — the agent handles them directly.
-
-## Your First Orchestrated Task
-
-Now try something that requires multiple workers:
-
-```
-> Research the top 5 static site generators, compare their features, and write a summary report
+```bash
+orionomega status              # Quick health check (gateway, hindsight, config)
+orionomega doctor              # Full diagnostic scan of the entire environment
 ```
 
-### What Happens
+### Configuration
 
-1. **Planning** — the agent analyzes your request and creates an execution plan:
+```bash
+orionomega config              # Open config.yaml in your $EDITOR
+orionomega config get models.default    # Read a specific value (dot-notation)
+orionomega config set models.default claude-sonnet-4-20250514  # Set a value
+```
 
-   ```
-   📋 Plan: Research Static Site Generators
-   
-   Workers: 5 (parallel research) + 1 (sequential report writer)
-   Estimated cost: $0.12
-   Estimated time: ~45 seconds
-   
-   Worker 1: Research Hugo          [haiku]
-   Worker 2: Research Astro         [haiku]
-   Worker 3: Research Next.js       [haiku]
-   Worker 4: Research Eleventy      [haiku]
-   Worker 5: Research Gatsby        [haiku]
-   Worker 6: Write comparison report [sonnet] (depends on 1-5)
-   
-   Approve? [Y]es / [N]o / [M]odify
-   ```
+### Skills
 
-2. **Approval** — type `y` to approve, `n` to reject, or `m` to modify
+```bash
+orionomega skill list          # List installed skills and their status
+orionomega skill setup         # Configure all skills interactively
+orionomega skill setup github  # Configure a specific skill
+orionomega skill install /path/to/skill  # Install a skill from a directory
+orionomega skill create my-skill         # Scaffold a new skill from template
+orionomega skill test github   # Run a skill's health check
+orionomega skill enable github # Enable a skill
+orionomega skill disable github # Disable a skill
+```
 
-3. **Execution** — workers run in parallel. You see real-time updates:
+### Logs
 
-   ```
-   🔧 Worker 1 (Hugo): Searching web for Hugo features...
-   🔧 Worker 2 (Astro): Searching web for Astro features...
-   💡 Worker 1 (Hugo): Found — Go-based, fastest build times
-   ✅ Worker 3 (Next.js): Research complete
-   ...
-   🔧 Worker 6 (Report): Writing comparison table...
-   ✅ All workers complete — report ready
-   ```
+```bash
+orionomega logs                # Tail the log file
+orionomega logs --level error  # Show only errors
+orionomega logs --level debug  # Show debug output
+```
 
-4. **Results** — the aggregated report is delivered in chat, with output files saved to the workspace
+### Update and Remove
 
-## Understanding the Plan Approval Flow
+```bash
+orionomega update              # Pull latest code, rebuild, restart services
+orionomega remove              # Fully uninstall OrionOmega from this machine
+```
 
-When `planFirst` is enabled (the default), every multi-step task goes through plan approval:
+### Interfaces
 
-### The Plan Shows You
+```bash
+orionomega                     # Launch the Terminal UI (default)
+orionomega tui                 # Same as above — opens the TUI
+orionomega ui start            # Start the Web UI
+```
 
-- **Worker count** — how many parallel agents will be spawned
-- **Dependencies** — which workers depend on others (the DAG structure)
-- **Model assignments** — which Claude model each worker uses (Haiku for research/data, Sonnet for writing/code)
-- **Estimated cost** — based on expected token usage
-- **Estimated time** — based on task complexity and parallelism
-- **Reasoning** — why the planner chose this decomposition
+---
 
-### Your Options
+## Directory Layout
 
-| Action | What It Does |
-|--------|--------------|
-| **Approve** | Execute the plan as-is |
-| **Reject** | Cancel — nothing runs |
-| **Modify** | Describe changes ("add a worker for X", "use Sonnet for all workers", "merge workers 2 and 3") and the planner regenerates |
+```
+~/.orionomega/
+├── config.yaml           # All configuration
+├── src/                  # Source code (cloned by installer)
+├── bin/                  # CLI wrapper script
+├── logs/
+│   └── orionomega.log    # Application log file
+├── gateway.pid           # Gateway process ID (when running)
+├── ui.pid                # Web UI process ID (when running)
+└── ui.log                # Web UI output log
 
-### Why This Matters
+~/orionomega/             # Workspace (user-facing, no dot)
+├── SOUL.md               # Agent personality and behavior
+├── USER.md               # Information about you
+└── commands/             # Custom slash commands
+    ├── summarize.md
+    └── review.md
+```
 
-Plan-first means:
+---
 
-- You never spend tokens on work you didn't want
-- You can catch misunderstandings before they cost money
-- You control the cost/speed tradeoff (fewer workers = cheaper, more = faster)
-- You can see the agent's reasoning and correct it
+## Custom Commands
 
-## Slash Commands
+Custom commands are Markdown files in your workspace `commands/` directory. The filename (without `.md`) becomes the slash command name.
 
-The TUI and Web UI support slash commands for system control:
+### Creating a Command
+
+Create a file at `~/orionomega/commands/summarize.md`:
+
+```markdown
+Summarize the following content concisely. Focus on key points and actionable takeaways.
+Organize the summary with bullet points.
+```
+
+Now you can use `/summarize` followed by your content in the TUI or Web UI. The file's content is sent to the agent as a prompt.
+
+### How Commands Work
+
+- The filename becomes the command: `review.md` → `/review`
+- Content is treated as a user prompt — it goes through the full agent pipeline
+- Built-in commands (`/status`, `/stop`, `/reset`, etc.) take priority over custom ones
+- Commands are loaded at startup — restart the gateway after adding new ones
+
+### Built-in Slash Commands
 
 | Command | Description |
 |---------|-------------|
@@ -158,126 +189,128 @@ The TUI and Web UI support slash commands for system control:
 | `/plan` | Show the last plan |
 | `/workers` | Show status of all active workers |
 
-## Using the Web UI
-
-Launch the web dashboard:
-
-```bash
-orionomega ui start
-```
-
-This starts the Next.js development server and opens your browser. The web UI provides:
-
-- **Chat panel** (left) — same conversational interface as the TUI
-- **DAG visualization** (right) — interactive graph showing the workflow structure, with nodes colored by status
-- **Activity feed** — real-time stream of worker events
-- **Worker detail** — click any node to inspect its full event log, tool calls, and output
-
-The web UI connects to the gateway over WebSocket and receives events at a higher frequency (200ms batching vs. 500ms in the TUI).
+---
 
 ## Customizing Your Agent
 
 ### SOUL.md
 
-Create `~/.orionomega/workspace/SOUL.md` to define your agent's personality and tone:
+Define your agent's personality in `~/orionomega/SOUL.md`:
 
 ```markdown
 # Soul
 
-You are a helpful, concise assistant. You prefer:
-- Direct answers over lengthy explanations
-- Code examples over prose
-- Asking clarifying questions over guessing
+You are a direct, no-nonsense assistant. You prefer:
+- Short, precise answers
+- Code over prose
+- Asking one clarifying question rather than guessing
 ```
-
-The agent reads this on every session start.
 
 ### USER.md
 
-Create `~/.orionomega/workspace/USER.md` to tell the agent about you:
+Tell the agent about yourself in `~/orionomega/USER.md`:
 
 ```markdown
 # About Me
 
-- Name: Alex
-- Role: Full-stack developer
-- Tech stack: TypeScript, React, PostgreSQL
-- Timezone: America/New_York
+- Name: Aaron
+- Role: Security engineer
+- Stack: Python, TypeScript, Kali Linux
+- Timezone: America/Chicago
 ```
 
-This helps the agent tailor responses to your context.
+Both files are read at the start of every session.
 
-## Configuration Deep Dive
+---
 
-### Models
+## Where to Find Output
 
-```yaml
-models:
-  provider: anthropic
-  apiKey: sk-ant-...
-  default: claude-sonnet-4-20250514      # Used for direct conversation
-  planner: claude-sonnet-4-20250514      # Used for plan generation
-  workers:                                # Profile → model mapping
-    research: claude-haiku-4-20250514    # Fast, cheap — good for data gathering
-    code: claude-sonnet-4-20250514       # Capable — good for writing code
-    writing: claude-sonnet-4-20250514    # Capable — good for prose
-    analysis: claude-haiku-4-20250514    # Fast — good for data processing
+| What | Where |
+|------|-------|
+| Application logs | `~/.orionomega/logs/orionomega.log` |
+| Gateway process output | `orionomega logs` (CLI) |
+| Web UI output | `~/.orionomega/ui.log` |
+| Agent responses | Displayed in TUI or Web UI chat panel |
+| Workflow artifacts | Saved to workspace directory |
+| Config | `~/.orionomega/config.yaml` |
+
+---
+
+## Using the Web UI
+
+```bash
+orionomega ui start
 ```
 
-**Cost optimization tip:** Haiku is ~10x cheaper than Sonnet. Use it for research and analysis workers; reserve Sonnet for code and writing.
+Open your browser to `http://localhost:5000`. The web UI provides:
 
-### Orchestration
+- **Chat panel** (left) — conversational interface, same as the TUI
+- **Orchestration panel** (right) — real-time DAG visualization, worker status, memory feed
+- **Settings** — click the gear icon to configure models, gateway, Hindsight, and skills
 
-```yaml
-orchestration:
-  planFirst: true              # Set to false to skip plan approval (not recommended)
-  maxSpawnDepth: 3             # Max nesting depth for agents spawning agents
-  workerTimeout: 300           # Kill workers after 5 minutes
-  maxRetries: 2                # Retry failed workers up to 2 times
-  checkpointInterval: 30       # Save state every 30 seconds (for recovery)
-  eventBatching:
-    tuiIntervalMs: 500         # TUI receives batched events every 500ms
-    webIntervalMs: 200         # Web UI receives events every 200ms
-    immediateTypes:            # These event types bypass batching
-      - error
-      - done
-      - finding
+To access the Web UI from another machine on your network:
+
+```bash
+orionomega ui start -H 0.0.0.0
 ```
 
-### Hindsight
+Then visit `http://<your-ip>:5000` from any device on the same network.
 
-```yaml
-hindsight:
-  url: http://localhost:8888     # Hindsight server URL
-  defaultBank: default           # Default memory bank name
-  retainOnComplete: true         # Store memories when workflows succeed
-  retainOnError: true            # Store memories when workflows fail
+---
+
+## Updating
+
+```bash
+orionomega update
 ```
 
-If Hindsight isn't running, OrionOmega works fine without it — you just won't have cross-session memory.
+This pulls the latest code from GitHub, rebuilds all packages, and restarts the gateway and web UI automatically.
 
-## Verifying Your Setup
+---
 
-Run the diagnostics tool:
+## Uninstalling
+
+```bash
+orionomega remove
+```
+
+This will:
+
+1. Stop the gateway and web UI
+2. Remove the global CLI link
+3. Remove `~/.orionomega` (config, logs, source)
+4. Clean up PATH entries from your shell config
+
+To also remove Hindsight's Docker container and data:
+
+```bash
+docker stop hindsight && docker rm hindsight
+docker volume rm hindsight_data
+docker rmi hindsight
+```
+
+---
+
+## Troubleshooting
+
+| Problem | Fix |
+|---------|-----|
+| `orionomega: command not found` | Run `source ~/.zshrc` (or `~/.bashrc`) or open a new terminal |
+| Gateway won't start | Run `orionomega doctor` to diagnose |
+| Hindsight shows OFFLINE | Check `docker ps` — the container may need restarting |
+| Settings won't load in Web UI | Verify gateway is running: `orionomega gateway status` |
+| Web UI not accessible from LAN | Start with `-H 0.0.0.0`: `orionomega ui start -H 0.0.0.0` |
+| Port already in use | The CLI auto-detects conflicts — it will offer to kill the stale process |
+
+For a full diagnostic:
 
 ```bash
 orionomega doctor
 ```
 
-This checks:
-
-- Node.js version
-- Package build status
-- Gateway connectivity
-- Hindsight connectivity
-- API key validity
-- Skills directory and loaded skills
-- Config file validity
+---
 
 ## Next Steps
 
-- **[Architecture](architecture.md)** — understand how the system works internally
-- **[Skills Guide](skills-guide.md)** — build custom skills to extend your agent
-- **Install skills** — `orionomega skill install <path>` to add capabilities
-- **Explore the API** — the gateway REST endpoints are useful for integrations
-- **Set up Hindsight** — if you skipped it during install, persistent memory is worth configuring
+- [Architecture Guide](architecture.md) — how the system works internally
+- [Skills Guide](skills-guide.md) — build custom skills to extend your agent
