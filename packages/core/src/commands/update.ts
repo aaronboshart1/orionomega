@@ -200,6 +200,19 @@ export async function runUpdate(): Promise<void> {
     process.stdout.write(`${RED}✗${RESET} failed to start\n`);
   }
 
-  process.stdout.write(`\n${GREEN}✓${RESET} ${BOLD}Update complete!${RESET}\n`);
-  process.stdout.write(`  ${DIM}Run 'orionomega ui start' to start the web dashboard${RESET}\n\n`);
+  process.stdout.write(`  ${DIM}Restarting Web UI...${RESET} `);
+  try {
+    const { restartWebUI } = await import('./ui.js');
+    const uiResult = await restartWebUI();
+    if (uiResult.started) {
+      process.stdout.write(`${GREEN}✓${RESET} (PID ${uiResult.started})\n`);
+    } else {
+      process.stdout.write(`${RED}✗${RESET} server.mjs not found\n`);
+    }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    process.stdout.write(`${RED}✗${RESET} ${msg}\n`);
+  }
+
+  process.stdout.write(`\n${GREEN}✓${RESET} ${BOLD}Update complete!${RESET}\n\n`);
 }

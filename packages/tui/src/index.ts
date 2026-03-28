@@ -42,6 +42,7 @@ const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/skills', description: 'View, enable/disable, configure skills' },
   { name: '/reset', description: 'Clear history and detach workflow' },
   { name: '/restart', description: 'Restart the gateway service' },
+  { name: '/update', description: 'Pull latest, rebuild, and restart' },
   { name: '/focus', description: 'Focus a workflow by ID (or /focus to show all)' },
   { name: '/hindsight', description: 'Show Hindsight memory status and troubleshooting' },
   { name: '/exit', description: 'Exit the TUI' },

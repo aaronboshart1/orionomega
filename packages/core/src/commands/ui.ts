@@ -276,6 +276,61 @@ async function runDevMode(sub: string, args: string[]): Promise<void> {
   }
 }
 
+export async function restartWebUI(): Promise<{ stopped: number | null; started: number | null }> {
+  const stopped = readPid();
+  if (stopped) {
+    try {
+      process.kill(stopped, 'SIGTERM');
+      if (existsSync(PID_FILE)) unlinkSync(PID_FILE);
+      if (!waitForExit(stopped)) {
+        try { process.kill(stopped, 'SIGKILL'); } catch {}
+        waitForExit(stopped, 2000);
+      }
+    } catch {}
+  }
+
+  const serverPath = findServerPath();
+  const webDir = findWebDir();
+  if (!serverPath || !webDir) {
+    return { stopped, started: null };
+  }
+
+  const fullConfig = readConfig();
+  const bindAddresses = normalizeBindAddresses(
+    process.env.HOST || fullConfig.webui.bind,
+  );
+  const host = bindAddresses.join(',');
+  const port = process.env.PORT || String(fullConfig.webui.port);
+  const portNum = parseInt(port, 10);
+
+  if (await isPortInUse(portNum)) {
+    killPortHolder(portNum);
+    sleepSync(500);
+  }
+
+  ensureDir();
+  const logFd = openSync(LOG_FILE, 'a');
+
+  const child = spawn('node', [serverPath], {
+    cwd: webDir,
+    detached: true,
+    stdio: ['ignore', logFd, logFd],
+    env: { ...process.env, HOST: host, PORT: port },
+  });
+  child.unref();
+
+  if (child.pid) {
+    writeFileSync(PID_FILE, String(child.pid), 'utf-8');
+    sleepSync(500);
+    if (!isAlive(child.pid)) {
+      try { unlinkSync(PID_FILE); } catch {}
+      return { stopped, started: null };
+    }
+  }
+
+  return { stopped, started: child.pid ?? null };
+}
+
 export async function runUI(args: string[]): Promise<void> {
   const sub = args[0];
 

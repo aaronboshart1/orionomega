@@ -924,6 +924,21 @@ export class MainAgent {
       },
     });
     if (!ok) return;
+
+    this.callbacks.onCommandResult({ command: '/update', success: true, message: 'Restarting Web UI…' });
+    try {
+      const { restartWebUI } = await import('../commands/ui.js');
+      const uiResult = await restartWebUI();
+      if (uiResult.started) {
+        this.callbacks.onCommandResult({ command: '/update', success: true, message: `Web UI restarted (PID ${uiResult.started})` });
+      } else {
+        this.callbacks.onCommandResult({ command: '/update', success: false, message: 'Web UI could not be restarted (server.mjs not found)' });
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.callbacks.onCommandResult({ command: '/update', success: false, message: `Web UI restart failed: ${msg}` });
+    }
+
     this.callbacks.onCommandResult({ command: '/update', success: true, message: 'Update complete — restarting gateway…' });
     setTimeout(() => {
       const args = [...process.execArgv, ...process.argv.slice(1)];
