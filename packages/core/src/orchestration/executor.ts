@@ -154,6 +154,8 @@ export interface ExecutorConfig {
   humanGateCallback?: (action: string, description: string) => Promise<boolean>;
   /** Original task description (for re-planning context). */
   task?: string;
+  /** Callback for memory I/O events (forwarded to HindsightClient.onIO). */
+  onMemoryIO?: (event: { op: 'retain' | 'recall'; bank: string; detail: string; meta?: Record<string, unknown> }) => void;
 }
 
 /**
@@ -1182,6 +1184,9 @@ export class GraphExecutor {
       }
 
       const client = new HindsightClient(hindsightUrl);
+      if (this.config.onMemoryIO) {
+        client.onIO = this.config.onMemoryIO;
+      }
       const defaultBank = config.hindsight?.defaultBank ?? 'default';
 
       // Determine which banks to query

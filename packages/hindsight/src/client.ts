@@ -43,6 +43,9 @@ export class HindsightClient {
   /** Callback invoked when I/O activity state changes (busy/idle or connected/disconnected). */
   onActivity?: (status: { connected: boolean; busy: boolean }) => void;
 
+  /** Callback invoked for every retain/recall I/O operation with details. */
+  onIO?: (event: { op: 'retain' | 'recall'; bank: string; detail: string; meta?: Record<string, unknown> }) => void;
+
   /** Number of in-flight API requests. */
   get activeOps(): number { return this._activeOps; }
 
@@ -177,7 +180,19 @@ export class HindsightClient {
       `${this.bankPath(bankId)}/memories`,
       { items },
     );
-    log.verbose(`Retain ← ${bankId}`, { durationMs: Date.now() - start });
+    const durationMs = Date.now() - start;
+    log.verbose(`Retain ← ${bankId}`, { durationMs });
+
+    const contexts = [...new Set(items.map(i => i.context))].join(', ');
+    const preview = items.length === 1
+      ? items[0].content.slice(0, 120) + (items[0].content.length > 120 ? '…' : '')
+      : `${items.length} items`;
+    this.onIO?.({
+      op: 'retain',
+      bank: bankId,
+      detail: `Stored ${preview} [${contexts}]`,
+      meta: { itemCount: items.length, contexts: contexts.split(', '), durationMs },
+    });
     return result;
   }
 
@@ -267,11 +282,29 @@ export class HindsightClient {
       tokens_used: (raw as unknown as Record<string, unknown>).tokens_used as number ?? 0,
     };
 
+    const durationMs = Date.now() - start;
     log.verbose(`Recall ← ${bankId}`, {
-      durationMs: Date.now() - start,
+      durationMs,
       resultCount: result.results.length,
       droppedByRelevance: allResults.length - filtered.length,
     });
+
+    if (result.results.length > 0) {
+      const topScore = Math.max(...result.results.map(r => r.relevance));
+      this.onIO?.({
+        op: 'recall',
+        bank: bankId,
+        detail: `Retrieved ${result.results.length} memories (top relevance: ${topScore.toFixed(2)})`,
+        meta: { resultCount: result.results.length, topScore, durationMs, queryPreview: query.slice(0, 80) },
+      });
+    } else {
+      this.onIO?.({
+        op: 'recall',
+        bank: bankId,
+        detail: 'No matching memories found',
+        meta: { resultCount: 0, durationMs, queryPreview: query.slice(0, 80) },
+      });
+    }
     return result;
   }
 

@@ -25,7 +25,7 @@ import type {
   DAGConfirmInfo,
 } from '../orchestration/types.js';
 import type { MemoryBridge } from './memory-bridge.js';
-import type { MainAgentCallbacks, ThinkingStep, ThinkingStepStatus } from './main-agent.js';
+import type { MainAgentCallbacks, ThinkingStep, ThinkingStepStatus, MemoryEvent } from './main-agent.js';
 import { createLogger } from '../logging/logger.js';
 import { randomBytes } from 'node:crypto';
 
@@ -526,6 +526,9 @@ export class OrchestrationBridge {
           );
         });
       },
+      onMemoryIO: this.memory.onMemoryEvent
+        ? (event) => this.memory.onMemoryEvent?.(event.op as MemoryEvent['op'], event.detail, event.bank, event.meta)
+        : undefined,
     };
 
     const executor = new GraphExecutor(plan.graph, this.eventBus, executorConfig, restoredState);

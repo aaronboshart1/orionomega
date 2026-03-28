@@ -222,6 +222,9 @@ export class MainAgent {
         this.memory.onMemoryEvent = (op, detail, bank, meta) => {
           this.emitMemoryEvent(op, detail, bank, meta);
         };
+        this.context.onMemoryEvent = (op, detail, bank, meta) => {
+          this.emitMemoryEvent(op, detail, bank, meta);
+        };
       }
 
       // Ensure the conversation bank exists in Hindsight

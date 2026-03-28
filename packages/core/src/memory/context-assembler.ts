@@ -142,6 +142,8 @@ export class ContextAssembler {
   /** Track total messages seen (for logging). */
   private totalMessageCount = 0;
 
+  onMemoryEvent?: (op: 'retain' | 'recall' | 'dedup' | 'quality' | 'bootstrap' | 'flush' | 'session_anchor' | 'summary' | 'self_knowledge', detail: string, bank?: string, meta?: Record<string, unknown>) => void;
+
   constructor(hs: HindsightClient | null, config: ContextAssemblerConfig = {}) {
     this.hs = hs;
     this.hotWindowSize = config.hotWindowSize ?? DEFAULT_HOT_WINDOW;
@@ -198,9 +200,11 @@ export class ContextAssembler {
     // Persist to disk (sync — fast for 20 messages)
     this.saveToDisk();
 
-    // Retain to Hindsight (fire-and-forget)
     if (this.hs && this.conversationBank) {
-      this.retainMessage(msg).catch((err) => {
+      const bank = this.conversationBank;
+      this.retainMessage(msg).then(() => {
+        this.onMemoryEvent?.('retain', `Retained ${msg.role} message (${msg.content.length} chars)`, bank, { role: msg.role, chars: msg.content.length });
+      }).catch((err) => {
         log.warn('Failed to retain message to Hindsight', {
           error: err instanceof Error ? err.message : String(err),
         });
@@ -244,6 +248,8 @@ export class ContextAssembler {
           ? getRecallStrategy(classification)
           : undefined;
 
+        this.onMemoryEvent?.('recall', `Assembling context (${queryType}, budget: ${recallTokens} tokens)`, undefined, { queryType, recallTokens });
+
         const isShort = this.isShortReply(currentQuery);
         const recallQuery = isShort
           ? this.augmentQueryWithRecentContext(currentQuery)
@@ -260,6 +266,7 @@ export class ContextAssembler {
           priorContext = recallResult.formatted;
           recalledTokens = estimateTokens(recallResult.formatted);
           confidenceSummary = recallResult.confidenceSummary;
+          this.onMemoryEvent?.('recall', `Recalled ${recalledTokens} tokens of prior context`, undefined, { recalledTokens, confidenceSummary });
         }
 
         const shouldFallbackToSummary =
