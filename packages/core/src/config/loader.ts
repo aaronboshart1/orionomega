@@ -27,7 +27,7 @@ export function getDefaultConfig(): OrionOmegaConfig {
   return {
     gateway: {
       port: 8000,
-      bind: '0.0.0.0',
+      bind: ['0.0.0.0'],
       auth: {
         mode: 'none',
       },
@@ -127,6 +127,20 @@ function deepMerge(
 }
 
 /**
+ * Normalizes a bind value (string, comma-separated string, or array) into a
+ * deduplicated array of trimmed, non-empty address strings.
+ */
+export function normalizeBindAddresses(bind: string | string[] | undefined): string[] {
+  if (bind === undefined || bind === null) return ['0.0.0.0'];
+  if (Array.isArray(bind)) {
+    const addrs = bind.flatMap((b) => String(b).split(',')).map((s) => s.trim()).filter(Boolean);
+    return [...new Set(addrs.length > 0 ? addrs : ['0.0.0.0'])];
+  }
+  const addrs = String(bind).split(',').map((s) => s.trim()).filter(Boolean);
+  return [...new Set(addrs.length > 0 ? addrs : ['0.0.0.0'])];
+}
+
+/**
  * Reads and parses the YAML configuration file, merging with defaults.
  * If the file does not exist, returns the default configuration.
  *
@@ -143,8 +157,6 @@ export function readConfig(configPath?: string): OrionOmegaConfig {
 
   const raw = readFileSync(filePath, 'utf-8');
 
-  // Dynamic import would require async; use require-style for js-yaml
-  // since it's a CJS package with ESM interop.
   let yaml: typeof import('js-yaml');
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -160,10 +172,13 @@ export function readConfig(configPath?: string): OrionOmegaConfig {
     return defaults;
   }
 
-  return deepMerge(
+  const merged = deepMerge(
     defaults as unknown as Record<string, unknown>,
     parsed as Record<string, unknown>,
   ) as unknown as OrionOmegaConfig;
+
+  merged.gateway.bind = normalizeBindAddresses(merged.gateway.bind);
+  return merged;
 }
 
 /**

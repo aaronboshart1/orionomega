@@ -8,6 +8,8 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { readConfig } from '../config/loader.js';
+import { normalizeBindAddresses } from '../config/loader.js';
 
 const GREEN = '\x1b[32m';
 const RED = '\x1b[31m';
@@ -15,10 +17,26 @@ const BOLD = '\x1b[1m';
 const DIM = '\x1b[2m';
 const RESET = '\x1b[0m';
 
+function parseUIArgs(args: string[]): { host: string | null; port: string | null } {
+  let host: string | null = null;
+  let port: string | null = null;
+  for (let i = 0; i < args.length; i++) {
+    if ((args[i] === '-H' || args[i] === '--hostname') && args[i + 1]) {
+      host = args[i + 1];
+      i++;
+    } else if ((args[i] === '-p' || args[i] === '--port') && args[i + 1]) {
+      port = args[i + 1];
+      i++;
+    }
+  }
+  return { host, port };
+}
+
 /**
  * Start the Next.js web dashboard.
  */
-export async function runUI(): Promise<void> {
+export async function runUI(argv?: string[]): Promise<void> {
+  const cliArgs = parseUIArgs(argv ?? process.argv.slice(3));
   const __dirname = fileURLToPath(new URL('.', import.meta.url));
   const monorepoRoot = join(__dirname, '..', '..', '..', '..');
 
@@ -53,8 +71,12 @@ export async function runUI(): Promise<void> {
   process.stdout.write(`\n${BOLD}Starting OrionOmega Web UI${RESET} ${DIM}(${isDev ? 'development' : 'production'} mode)${RESET}\n`);
   process.stdout.write(`${DIM}Press Ctrl+C to stop${RESET}\n\n`);
 
-  const host = process.env.HOST || '127.0.0.1';
-  const port = process.env.PORT || '5000';
+  const fullConfig = readConfig();
+  const bindAddresses = normalizeBindAddresses(
+    cliArgs.host || process.env.HOST || fullConfig.gateway.bind,
+  );
+  const host = bindAddresses.join(',');
+  const port = cliArgs.port || process.env.PORT || '5000';
   const child = spawn('pnpm', [cmd], {
     cwd: webDir,
     stdio: 'inherit',

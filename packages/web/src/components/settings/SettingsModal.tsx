@@ -426,10 +426,15 @@ function OmegaClawTab({
           onChange={(v) => onChange('gateway.port', v)}
         />
       </FormField>
-      <FormField label="Bind Address">
+      <FormField label="Bind Addresses">
         <TextInput
-          value={String(getNestedValue(config, 'gateway.bind') ?? '0.0.0.0')}
-          onChange={(v) => onChange('gateway.bind', v)}
+          value={(() => {
+            const bind = getNestedValue(config, 'gateway.bind');
+            if (Array.isArray(bind)) return bind.join(', ');
+            return String(bind ?? '0.0.0.0');
+          })()}
+          onChange={(v) => onChange('gateway.bind', v.split(',').map((s) => s.trim()).filter(Boolean))}
+          placeholder="127.0.0.1, 10.0.0.13"
         />
       </FormField>
       <FormField label="Auth Mode">

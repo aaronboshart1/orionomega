@@ -1338,7 +1338,7 @@ async function showSummary(config: OrionOmegaConfig, initialSnap: ConfigSnapshot
 
   println(`  ${BOLD}${CYAN}Gateway${RESET}`);
   println(`    Port:                 ${DIM}${config.gateway.port}${RESET}`);
-  println(`    Bind:                 ${DIM}${config.gateway.bind}${RESET}`);
+  println(`    Bind:                 ${DIM}${Array.isArray(config.gateway.bind) ? config.gateway.bind.join(', ') : config.gateway.bind}${RESET}`);
   const authChanged = changedTag(initialSnap.authMode, config.gateway.auth.mode) || changedTag(initialSnap.keyHash, config.gateway.auth.keyHash);
   println(`    Auth:                 ${colorValue(config.gateway.auth.mode)}${config.gateway.auth.keyHash ? ` ${DIM}(key hash: ${maskSecret(config.gateway.auth.keyHash)})${RESET}` : ''}${authChanged}`);
   println();

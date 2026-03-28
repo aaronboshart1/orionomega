@@ -21,8 +21,14 @@ function parseArgs() {
   return { host, port };
 }
 
+function normalizeHosts(raw) {
+  if (!raw) return ['0.0.0.0'];
+  const addrs = String(raw).split(',').map(s => s.trim()).filter(Boolean);
+  return [...new Set(addrs.length > 0 ? addrs : ['0.0.0.0'])];
+}
+
 const cliArgs = parseArgs();
-const host = cliArgs.host || process.env.HOST || '0.0.0.0';
+const hosts = normalizeHosts(cliArgs.host || process.env.HOST || '0.0.0.0');
 const port = cliArgs.port || parseInt(process.env.PORT || '5000', 10);
 const gatewayHost = process.env.GATEWAY_HOST || 'localhost';
 const gatewayPort = parseInt(process.env.GATEWAY_PORT || '8000', 10);
@@ -33,7 +39,7 @@ const handle = app.getRequestHandler();
 app.prepare().then(() => {
   const nextUpgradeHandler = app.getUpgradeHandler();
 
-  const server = createServer((req, res) => {
+  function createHandler(req, res) {
     const parsedUrl = parse(req.url, true);
     if (parsedUrl.pathname.startsWith('/api/gateway/')) {
       const targetPath = req.url.replace('/api/gateway', '');
@@ -61,9 +67,9 @@ app.prepare().then(() => {
     } else {
       handle(req, res, parsedUrl);
     }
-  });
+  }
 
-  server.on('upgrade', (req, socket, head) => {
+  function createUpgradeHandler(req, socket, head) {
     const parsedUrl = parse(req.url, true);
     if (parsedUrl.pathname === '/api/gateway/ws') {
       const targetPath = req.url.replace('/api/gateway', '');
@@ -93,10 +99,26 @@ app.prepare().then(() => {
     } else {
       nextUpgradeHandler(req, socket, head);
     }
-  });
+  }
 
-  server.listen(port, host, () => {
-    console.log(`> Ready on http://${host}:${port}`);
-    console.log(`> Gateway proxy: ${gatewayHost}:${gatewayPort}`);
+  const allServers = [];
+
+  for (const host of hosts) {
+    const server = createServer(createHandler);
+    server.on('upgrade', createUpgradeHandler);
+    server.on('error', (err) => {
+      console.error(`[server] Error on ${host}:${port}:`, err.message);
+    });
+    server.listen(port, host, () => {
+      console.log(`> Ready on http://${host}:${port}`);
+    });
+    allServers.push(server);
+  }
+
+  console.log(`> Gateway proxy: ${gatewayHost}:${gatewayPort}`);
+
+  process.on('SIGTERM', () => {
+    for (const srv of allServers) srv.close();
+    process.exit(0);
   });
 });

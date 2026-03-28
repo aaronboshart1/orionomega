@@ -141,7 +141,7 @@ export interface CommandResult {
 /** Gateway configuration (mirrors core config gateway section). */
 export interface GatewayConfig {
   port: number;
-  bind: string;
+  bind: string | string[];
   auth: {
     mode: 'api-key' | 'none';
     keyHash?: string;

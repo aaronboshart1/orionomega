@@ -10,6 +10,7 @@ export {
   writeConfig,
   getConfigPath,
   getDefaultConfig,
+  normalizeBindAddresses,
 } from './config/index.js';
 
 // Orchestration types

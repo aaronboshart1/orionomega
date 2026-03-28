@@ -8,7 +8,7 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { randomBytes } from 'node:crypto';
-import { readConfig, MainAgent, createLogger, setGlobalLogLevel, enableFileLogging, discoverModels, clearModelCache } from '@orionomega/core';
+import { readConfig, normalizeBindAddresses, MainAgent, createLogger, setGlobalLogLevel, enableFileLogging, discoverModels, clearModelCache } from '@orionomega/core';
 import type { MainAgentConfig, MainAgentCallbacks, LogLevel } from '@orionomega/core';
 import { setLogLevel as setHindsightLogLevel } from '@orionomega/hindsight';
 import type { GatewayConfig, ServerMessage } from './types.js';
@@ -484,46 +484,80 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
 }
 
 // ---------------------------------------------------------------------------
-// Start Server
+// Start Server — multi-bind support
 // ---------------------------------------------------------------------------
 
-const server = createServer(handleRequest);
-
-let listenAttempts = 0;
-let retryTimer: ReturnType<typeof setTimeout> | null = null;
-const MAX_LISTEN_ATTEMPTS = 10;
-
-server.on('error', (err: NodeJS.ErrnoException) => {
-  if (err.code === 'EADDRINUSE') {
-    log.warn(`Port ${config.port} in use — retrying in 2 s… (attempt ${listenAttempts}/${MAX_LISTEN_ATTEMPTS})`);
-    if (!retryTimer) {
-      retryTimer = setTimeout(startListening, 2000);
-    }
-  } else {
-    log.error('Server error', { error: err.message, code: err.code });
-    process.exit(1);
-  }
-});
-
-wsHandler.attach(server);
+const bindAddresses = normalizeBindAddresses(config.bind);
+const servers: import('node:http').Server[] = [];
 
 const restartDelay = parseInt(process.env.ORIONOMEGA_RESTART_DELAY ?? '0', 10);
 delete process.env.ORIONOMEGA_RESTART_DELAY;
 
-function startListening(): void {
-  retryTimer = null;
-  listenAttempts++;
-  if (listenAttempts > MAX_LISTEN_ATTEMPTS) {
-    log.error(`Failed to bind to port ${config.port} after ${MAX_LISTEN_ATTEMPTS} attempts — exiting`);
+let activeListeners = 0;
+let failedListeners = 0;
+
+function setupServerForAddress(address: string): import('node:http').Server {
+  const srv = createServer(handleRequest);
+  servers.push(srv);
+
+  let listenAttempts = 0;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  const MAX_LISTEN_ATTEMPTS = 10;
+
+  srv.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE') {
+      listenAttempts++;
+      if (listenAttempts >= MAX_LISTEN_ATTEMPTS) {
+        log.error(`Failed to bind to ${address}:${config.port} after ${MAX_LISTEN_ATTEMPTS} attempts — skipping`);
+        failedListeners++;
+        checkAllBindsFailed();
+        return;
+      }
+      log.warn(`Port ${config.port} on ${address} in use — retrying in 2 s… (attempt ${listenAttempts}/${MAX_LISTEN_ATTEMPTS})`);
+      if (!retryTimer) {
+        retryTimer = setTimeout(() => {
+          retryTimer = null;
+          srv.listen(config.port, address);
+        }, 2000);
+      }
+    } else {
+      log.error(`Server error on ${address}`, { error: err.message, code: err.code });
+      failedListeners++;
+      checkAllBindsFailed();
+    }
+  });
+
+  wsHandler.attach(srv);
+  return srv;
+}
+
+function checkAllBindsFailed(): void {
+  if (activeListeners === 0 && failedListeners >= bindAddresses.length) {
+    log.error(`All bind addresses failed — exiting`);
     process.exit(1);
   }
-  server.listen(config.port, config.bind, () => {
-    log.info(`OrionOmega Gateway v0.1.0`);
-    log.info(`Listening on ${config.bind}:${config.port}`);
-    log.info(`Auth mode: ${config.auth.mode}`);
-    log.info(`CORS origins: ${config.cors.origins.join(', ')}`);
-    log.info(`Hindsight: ${hindsightUrl}`);
-  });
+}
+
+for (const address of bindAddresses) {
+  setupServerForAddress(address);
+}
+
+const server = servers[0];
+
+function startListening(): void {
+  log.info(`OrionOmega Gateway v0.1.0`);
+  log.info(`Bind addresses: ${bindAddresses.join(', ')}`);
+  log.info(`Auth mode: ${config.auth.mode}`);
+  log.info(`CORS origins: ${config.cors.origins.join(', ')}`);
+  log.info(`Hindsight: ${hindsightUrl}`);
+
+  for (let i = 0; i < bindAddresses.length; i++) {
+    const address = bindAddresses[i];
+    servers[i].listen(config.port, address, () => {
+      activeListeners++;
+      log.info(`Listening on ${address}:${config.port}`);
+    });
+  }
 }
 
 if (restartDelay > 0) {
@@ -561,11 +595,18 @@ async function shutdown(signal: string): Promise<void> {
   sessionManager.shutdown();
   wsHandler.shutdown();
   eventStreamer.destroy();
-  server.close(() => {
-    log.info(' Server closed.');
-    process.exit(0);
-  });
-  // Force exit after 5 seconds
+
+  let closed = 0;
+  const total = servers.length;
+  for (const srv of servers) {
+    srv.close(() => {
+      closed++;
+      if (closed >= total) {
+        log.info(' All servers closed.');
+        process.exit(0);
+      }
+    });
+  }
   setTimeout(() => {
     log.warn(' Forced exit after timeout.');
     process.exit(1);
@@ -575,4 +616,4 @@ async function shutdown(signal: string): Promise<void> {
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
 
-export { server, sessionManager, commandHandler, eventStreamer, wsHandler };
+export { server, servers, sessionManager, commandHandler, eventStreamer, wsHandler };

@@ -80,7 +80,13 @@ function validateConfig(config: Record<string, unknown>): string[] {
       errors.push('gateway.port must be a number between 1 and 65535');
     }
     if (gateway.bind !== undefined && typeof gateway.bind !== 'string') {
-      errors.push('gateway.bind must be a string');
+      if (Array.isArray(gateway.bind)) {
+        if (!gateway.bind.every((b: unknown) => typeof b === 'string')) {
+          errors.push('gateway.bind array entries must be strings');
+        }
+      } else {
+        errors.push('gateway.bind must be a string or array of strings');
+      }
     }
     const auth = gateway.auth as Record<string, unknown> | undefined;
     if (auth?.mode !== undefined && !VALID_AUTH_MODES.has(String(auth.mode))) {

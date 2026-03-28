@@ -9,4 +9,5 @@ export {
   writeConfig,
   getConfigPath,
   getDefaultConfig,
+  normalizeBindAddresses,
 } from './loader.js';
