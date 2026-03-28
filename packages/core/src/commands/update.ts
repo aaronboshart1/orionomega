@@ -201,5 +201,5 @@ export async function runUpdate(): Promise<void> {
   }
 
   process.stdout.write(`\n${GREEN}✓${RESET} ${BOLD}Update complete!${RESET}\n`);
-  process.stdout.write(`  ${DIM}Run 'orionomega ui' to start the web dashboard${RESET}\n\n`);
+  process.stdout.write(`  ${DIM}Run 'orionomega ui start' to start the web dashboard${RESET}\n\n`);
 }

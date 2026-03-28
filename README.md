@@ -81,7 +81,7 @@ node packages/core/dist/cli.js setup
 node packages/core/dist/cli.js
 
 # Or launch the Web UI
-node packages/core/dist/cli.js ui
+node packages/core/dist/cli.js ui start
 ```
 
 > **One-line installer** (if you have a pre-built release):
@@ -273,7 +273,7 @@ The web dashboard is a split-pane layout:
 | Command | Description |
 |---------|-------------|
 | `orionomega` | Launch TUI |
-| `orionomega ui` | Launch Web UI |
+| `orionomega ui <cmd>` | Manage web UI: start \| stop \| restart \| status |
 | `orionomega setup` | Interactive setup wizard |
 | `orionomega status` | System health check |
 | `orionomega doctor` | Full diagnostics (includes skill health checks) |

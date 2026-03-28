@@ -163,7 +163,7 @@ The TUI and Web UI support slash commands for system control:
 Launch the web dashboard:
 
 ```bash
-orionomega ui
+orionomega ui start
 ```
 
 This starts the Next.js development server and opens your browser. The web UI provides:

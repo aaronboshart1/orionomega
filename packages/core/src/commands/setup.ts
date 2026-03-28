@@ -1518,7 +1518,7 @@ async function finalizeSetup(config: OrionOmegaConfig): Promise<void> {
   println(`  1. Start the gateway:  ${BLUE}orionomega gateway start${RESET}`);
   println(`  2. Check health:       ${BLUE}orionomega status${RESET}`);
   println(`  3. Launch the TUI:     ${BLUE}orionomega tui${RESET}`);
-  println(`  4. Or the web UI:      ${BLUE}orionomega ui${RESET}`);
+  println(`  4. Or the web UI:      ${BLUE}orionomega ui start${RESET}`);
   println();
   println(`  Edit your workspace files to personalize the agent:`);
   println(`  ${DIM}${config.workspace.path}/SOUL.md${RESET}`);

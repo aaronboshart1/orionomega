@@ -25,7 +25,7 @@ const COMMANDS: [string, string][] = [
   ['skill test <name>', "Run a skill's health check"],
   ['logs [--level <lvl>]', 'Tail log file, optionally filtered by level'],
   ['update', 'Pull latest code, rebuild, and restart'],
-  ['ui', 'Start the web dashboard'],
+  ['ui <cmd>', 'Manage web UI: start | stop | restart | status'],
   ['remove', 'Fully uninstall OrionOmega from this machine'],
   ['help', 'Show this help message'],
 ];
