@@ -138,6 +138,10 @@ export class MemoryBridge {
         this.retentionEngine.onMemoryEvent = (op, detail, bank, meta) => {
           this.onMemoryEvent?.(op as MemoryOp, detail, bank, meta);
         };
+
+        this.hindsightClient.onIO = (event) => {
+          this.onMemoryEvent?.(event.op as MemoryOp, event.detail, event.bank, event.meta);
+        };
       }
 
       this.retentionEngine.start();
@@ -204,7 +208,6 @@ export class MemoryBridge {
       const result = await this.hindsightClient.recall('core', task, { maxTokens: 1024 });
       if (result.results.length) {
         memories.push(result.results.map((m) => m.content).join('\n\n'));
-        this.onMemoryEvent?.('recall', `Recalled ${result.results.length} memories from core bank`, 'core', { count: result.results.length });
       }
     } catch (err) {
       log.warn('Core bank recall failed for planning', {
@@ -217,7 +220,6 @@ export class MemoryBridge {
         const result = await this.hindsightClient.recall(this.activeProjectBank, task, { maxTokens: 2048 });
         if (result.results.length) {
           memories.push(result.results.map((m) => m.content).join('\n\n'));
-          this.onMemoryEvent?.('recall', `Recalled ${result.results.length} memories from project bank`, this.activeProjectBank, { count: result.results.length });
         }
       } catch (err) {
         log.warn('Project bank recall failed for planning', {

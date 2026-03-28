@@ -201,10 +201,7 @@ export class ContextAssembler {
     this.saveToDisk();
 
     if (this.hs && this.conversationBank) {
-      const bank = this.conversationBank;
-      this.retainMessage(msg).then(() => {
-        this.onMemoryEvent?.('retain', `Retained ${msg.role} message (${msg.content.length} chars)`, bank, { role: msg.role, chars: msg.content.length });
-      }).catch((err) => {
+      this.retainMessage(msg).catch((err) => {
         log.warn('Failed to retain message to Hindsight', {
           error: err instanceof Error ? err.message : String(err),
         });
@@ -399,6 +396,7 @@ export class ContextAssembler {
         role: msg.role,
         contentLength: msg.content.length,
       });
+      this.onMemoryEvent?.('dedup', `Skipped duplicate ${msg.role} message (${msg.content.length} chars)`, this.conversationBank, { role: msg.role, chars: msg.content.length });
       return;
     }
 
