@@ -6,12 +6,20 @@
  * Replaces the old "accumulate history, compact when full" model.
  * Every message is retained to Hindsight immediately; each turn queries
  * for exactly the context that fits within the token budget.
+ *
+ * Phase 4 additions:
+ * - Adaptive context assembly via query classification
+ * - Dynamic project summary generation as fallback
+ * - Full confidence score propagation with per-section summaries
  */
 
 import { HindsightClient } from '@orionomega/hindsight';
 import { createLogger } from '../logging/logger.js';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { classifyQuery, getRecallStrategy } from './query-classifier.js';
+import type { QueryType, RecallStrategy } from './query-classifier.js';
+import { DynamicSummaryGenerator } from './dynamic-summary.js';
 
 const log = createLogger('context-assembler');
 
@@ -22,6 +30,14 @@ export interface ConversationMessage {
   timestamp?: string;
 }
 
+/** Per-section confidence breakdown included in assembled context. */
+export interface ConfidenceSummary {
+  high: number;
+  moderate: number;
+  low: number;
+  total: number;
+}
+
 /** Assembled context ready for the API call. */
 export interface AssembledContext {
   /** Prior context from Hindsight, formatted as a system block. */
@@ -30,6 +46,10 @@ export interface AssembledContext {
   hotMessages: ConversationMessage[];
   /** Estimated total input tokens for this context. */
   estimatedTokens: number;
+  /** Classified query type that drove the recall strategy. */
+  queryType?: QueryType;
+  /** Aggregate confidence summary across all recalled memories. */
+  confidenceSummary?: ConfidenceSummary;
 }
 
 /** Configuration for the ContextAssembler. */
@@ -59,6 +79,10 @@ export interface ContextAssemblerConfig {
   storageDeduplicationThreshold?: number;
   /** Fraction of per-bank recall budget reserved for temporal diversity sampling (0–1). Default: 0.15. */
   temporalDiversityRatio?: number;
+  /** Enable adaptive query classification for recall strategy. Default: true. */
+  adaptiveRecall?: boolean;
+  /** Enable dynamic summary fallback when detailed recall exceeds budget. Default: true. */
+  dynamicSummaryFallback?: boolean;
 }
 
 const DEFAULT_HOT_WINDOW = 20;
@@ -73,6 +97,20 @@ const DEFAULT_OUTPUT_RESERVE = 4_096;
  */
 function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
+}
+
+function computeConfidenceSummary(
+  items: Array<{ relevance: number }>,
+): ConfidenceSummary {
+  let high = 0;
+  let moderate = 0;
+  let low = 0;
+  for (const item of items) {
+    if (item.relevance >= 0.7) high++;
+    else if (item.relevance >= 0.4) moderate++;
+    else low++;
+  }
+  return { high, moderate, low, total: items.length };
 }
 
 /**
@@ -97,6 +135,9 @@ export class ContextAssembler {
   private readonly minRelevance: number;
   private readonly storageDeduplicationThreshold: number;
   private readonly temporalDiversityRatio: number;
+  private readonly adaptiveRecall: boolean;
+  private readonly dynamicSummaryFallback: boolean;
+  private dynamicSummary: DynamicSummaryGenerator | null = null;
 
   /** Track total messages seen (for logging). */
   private totalMessageCount = 0;
@@ -116,6 +157,12 @@ export class ContextAssembler {
     this.minRelevance = config.minRelevance ?? 0.3;
     this.storageDeduplicationThreshold = config.storageDeduplicationThreshold ?? 0.85;
     this.temporalDiversityRatio = config.temporalDiversityRatio ?? 0.15;
+    this.adaptiveRecall = config.adaptiveRecall !== false;
+    this.dynamicSummaryFallback = config.dynamicSummaryFallback !== false;
+
+    if (hs) {
+      this.dynamicSummary = new DynamicSummaryGenerator(hs);
+    }
 
     // Restore hot window from disk if available
     if (this.persistPath) {
@@ -129,6 +176,8 @@ export class ContextAssembler {
       conversationBank: this.conversationBank,
       persistPath: this.persistPath,
       restoredMessages: this.hotWindow.length,
+      adaptiveRecall: this.adaptiveRecall,
+      dynamicSummaryFallback: this.dynamicSummaryFallback,
     });
   }
 
@@ -163,6 +212,8 @@ export class ContextAssembler {
    * Assemble context for the next API call.
    * Returns prior context from Hindsight + hot window messages.
    *
+   * Uses adaptive query classification to select the optimal recall strategy.
+   *
    * @param currentQuery - The user's current message (used as recall query).
    * @returns Assembled context ready for the API call.
    */
@@ -179,17 +230,63 @@ export class ContextAssembler {
 
     let priorContext: string | null = null;
     let recalledTokens = 0;
+    let queryType: QueryType | undefined;
+    let confidenceSummary: ConfidenceSummary | undefined;
 
     if (this.hs && recallTokens > 500) {
       try {
+        const classification = this.adaptiveRecall
+          ? classifyQuery(currentQuery)
+          : { type: 'task_continuation' as QueryType, confidence: 1 };
+
+        queryType = classification.type;
+        const strategy = this.adaptiveRecall
+          ? getRecallStrategy(classification)
+          : undefined;
+
         const isShort = this.isShortReply(currentQuery);
         const recallQuery = isShort
           ? this.augmentQueryWithRecentContext(currentQuery)
           : currentQuery;
-        const recalled = await this.recallFromBanks(recallQuery, recallTokens, currentQuery);
-        if (recalled) {
-          priorContext = recalled;
-          recalledTokens = estimateTokens(recalled);
+
+        const recallResult = await this.recallFromBanks(
+          recallQuery,
+          recallTokens,
+          currentQuery,
+          strategy,
+        );
+
+        if (recallResult) {
+          priorContext = recallResult.formatted;
+          recalledTokens = estimateTokens(recallResult.formatted);
+          confidenceSummary = recallResult.confidenceSummary;
+        }
+
+        const shouldFallbackToSummary =
+          this.dynamicSummaryFallback &&
+          this.dynamicSummary &&
+          (!priorContext || recalledTokens > recallTokens);
+
+        if (shouldFallbackToSummary) {
+          const summaryBudget = Math.min(recallTokens, 4096);
+          const summaryBanks = [
+            ...(this.conversationBank ? [this.conversationBank] : []),
+            ...this.additionalBanks,
+          ];
+          for (const bank of summaryBanks) {
+            const summaryResult = await this.dynamicSummary!.generateProjectSummary(bank, {
+              maxTokens: summaryBudget,
+            });
+            if (summaryResult) {
+              const reason = !priorContext
+                ? 'no detailed recall available'
+                : 'detailed recall exceeded budget, compressed to summary';
+              priorContext = `[PRIOR CONTEXT — dynamic summary (${reason})]\n\n${summaryResult.formatted}`;
+              recalledTokens = estimateTokens(priorContext);
+              confidenceSummary = summaryResult.confidenceSummary;
+              break;
+            }
+          }
         }
       } catch (err) {
         log.warn('Hindsight recall failed, continuing with hot window only', {
@@ -206,12 +303,16 @@ export class ContextAssembler {
       recalledTokens,
       totalEstimated: estimatedTokens,
       totalMessagesSeen: this.totalMessageCount,
+      queryType,
+      confidenceSummary,
     });
 
     return {
       priorContext,
       hotMessages: [...this.hotWindow],
       estimatedTokens,
+      queryType,
+      confidenceSummary,
     };
   }
 
@@ -249,6 +350,7 @@ export class ContextAssembler {
    */
   setHindsightClient(hs: HindsightClient): void {
     this.hs = hs;
+    this.dynamicSummary = new DynamicSummaryGenerator(hs);
     log.info('Hindsight client attached to context assembler');
   }
 
@@ -345,12 +447,7 @@ export class ContextAssembler {
   }
 
   /**
-   * Recall relevant context from conversation bank + additional banks.
-   * Results are merged and formatted as a single context block.
-   *
-   * Applies recency-first bias: conversation bank results appear before
-   * additional banks, and within each bank results are sorted newest-first.
-   * Short/conversational messages shift budget heavily toward conversation bank.
+   * Discover additional banks from Hindsight for cross-bank federation.
    */
   private async discoverFederatedBanks(): Promise<string[]> {
     if (!this.hs || !this.federateBanks) return [];
@@ -371,11 +468,20 @@ export class ContextAssembler {
     }
   }
 
+  /**
+   * Recall relevant context from conversation bank + additional banks.
+   * Results are merged and formatted as a single context block.
+   *
+   * When a RecallStrategy is provided (from query classification), the
+   * strategy overrides default budget splits, temporal diversity, and
+   * relevance thresholds to optimize for the query type.
+   */
   private async recallFromBanks(
     query: string,
     maxTokens: number,
     rawQuery: string,
-  ): Promise<string | null> {
+    strategy?: RecallStrategy,
+  ): Promise<{ formatted: string; confidenceSummary: ConfidenceSummary } | null> {
     if (!this.hs) return null;
 
     const federatedBanks = await this.discoverFederatedBanks();
@@ -388,15 +494,31 @@ export class ContextAssembler {
 
     if (banks.length === 0) return null;
 
-    const shortReply = this.isShortReply(rawQuery);
-    const convShareRatio = shortReply ? 0.85 : 0.6;
+    const convShareRatio = strategy
+      ? strategy.convBudgetRatio
+      : (this.isShortReply(rawQuery) ? 0.85 : 0.6);
+
+    const effectiveTemporalRatio = strategy
+      ? strategy.temporalDiversityRatio
+      : this.temporalDiversityRatio;
+
+    const effectiveMinRelevance = strategy
+      ? strategy.minRelevance
+      : this.minRelevance;
+
+    const effectiveRecallBudget = strategy
+      ? strategy.recallBudget
+      : this.recallBudget;
 
     log.debug('Recall budget allocation', {
-      shortReply,
       convShareRatio,
       rawQueryLength: rawQuery.length,
       totalBanks: banks.length,
       federatedBanks: federatedBanks.length,
+      strategy: strategy ? 'adaptive' : 'default',
+      temporalDiversityRatio: effectiveTemporalRatio,
+      minRelevance: effectiveMinRelevance,
+      recallBudget: effectiveRecallBudget,
     });
 
     const otherBankCount = banks.length - (this.conversationBank ? 1 : 0);
@@ -413,14 +535,15 @@ export class ContextAssembler {
 
       return this.hs!.recallWithTemporalDiversity(bank, query, {
         maxTokens: budget,
-        budget: this.recallBudget,
-        minRelevance: this.minRelevance,
-        temporalDiversityRatio: this.temporalDiversityRatio,
+        budget: effectiveRecallBudget,
+        minRelevance: effectiveMinRelevance,
+        temporalDiversityRatio: effectiveTemporalRatio,
       })
         .then((response) => {
           if (!response.results || response.results.length === 0) return null;
           const items = response.results.map((r) => ({
             content: r.content,
+            context: r.context,
             timestamp: r.timestamp || '',
             relevance: r.relevance,
           }));
@@ -446,7 +569,11 @@ export class ContextAssembler {
     });
 
     const results = (await Promise.all(recallPromises)).filter(Boolean) as
-      Array<{ bank: string; items: Array<{ content: string; timestamp: string; relevance: number }>; lowConfidence: boolean }>;
+      Array<{
+        bank: string;
+        items: Array<{ content: string; context: string; timestamp: string; relevance: number }>;
+        lowConfidence: boolean;
+      }>;
 
     if (results.length === 0) return null;
 
@@ -456,27 +583,62 @@ export class ContextAssembler {
       return aIsConv - bIsConv;
     });
 
+    const preferredCategories = strategy?.preferredContextCategories ?? [];
+    const temporalBias = strategy?.temporalBias ?? 'recent';
+
+    for (const r of results) {
+      if (preferredCategories.length > 0) {
+        const prefSet = new Set(preferredCategories);
+        r.items.sort((a, b) => {
+          const aPreferred = prefSet.has(a.context) ? 0 : 1;
+          const bPreferred = prefSet.has(b.context) ? 0 : 1;
+          if (aPreferred !== bPreferred) return aPreferred - bPreferred;
+          return b.relevance - a.relevance;
+        });
+      }
+
+      if (temporalBias === 'broad') {
+        r.items.sort((a, b) => b.relevance - a.relevance);
+      } else if (temporalBias === 'recent') {
+        r.items.sort((a, b) => {
+          if (!a.timestamp && !b.timestamp) return b.relevance - a.relevance;
+          if (!a.timestamp) return 1;
+          if (!b.timestamp) return -1;
+          return b.timestamp.localeCompare(a.timestamp);
+        });
+      }
+    }
+
+    const allItems = results.flatMap((r) => r.items);
+    const confidenceSummary = computeConfidenceSummary(allItems);
     const allLowConfidence = results.every((r) => r.lowConfidence);
 
     const sections = results.map((r) => {
       const header = r.bank === this.conversationBank
         ? '## Earlier in this conversation'
         : `## Context from ${r.bank}`;
+
+      const sectionConf = computeConfidenceSummary(r.items);
+      const confLine = `_Confidence: ${sectionConf.high} high, ${sectionConf.moderate} moderate, ${sectionConf.low} low (${sectionConf.total} memories)_`;
+
       const formattedItems = r.items.map((i) => {
         const score = i.relevance.toFixed(2);
+        const ctx = i.context ? ` [${i.context}]` : '';
         const enriched = this.buildCausalChain(i.content);
-        return `[relevance: ${score}] ${enriched}`;
+        return `[confidence: ${score}]${ctx} ${enriched}`;
       });
-      return `${header}\n${formattedItems.join('\n\n')}`;
+      return `${header}\n${confLine}\n${formattedItems.join('\n\n')}`;
     });
 
-    let output = `[PRIOR CONTEXT — recalled from memory]\n\n${sections.join('\n\n---\n\n')}`;
+    const overallConfLine = `**Overall confidence: ${confidenceSummary.high} high, ${confidenceSummary.moderate} moderate, ${confidenceSummary.low} low — ${confidenceSummary.total} memories total**`;
+
+    let output = `[PRIOR CONTEXT — recalled from memory]\n${overallConfLine}\n\n${sections.join('\n\n---\n\n')}`;
 
     if (allLowConfidence) {
       output = `⚠ Low-confidence recall — results below confidence threshold; treat with caution.\n\n${output}`;
     }
 
-    return output;
+    return { formatted: output, confidenceSummary };
   }
 
   // ── Causal Chain ────────────────────────────────────────────

@@ -89,7 +89,7 @@ export type { MainAgentConfig, MainAgentCallbacks, PromptContext } from './agent
 export { MainAgent, buildSystemPrompt } from './agent/index.js';
 
 // Memory
-export type { BootstrapContext, RetentionConfig, WorkflowOutcome, FlushResult } from './memory/index.js';
+export type { BootstrapContext, RetentionConfig, WorkflowOutcome, FlushResult, ConfidenceSummary, QueryType, QueryClassification, RecallStrategy, DynamicSummaryOptions, DynamicSummaryResult } from './memory/index.js';
 export {
   BankManager,
   SessionBootstrap,
@@ -97,6 +97,9 @@ export {
   MentalModelManager,
   SessionSummarizer,
   CompactionFlush,
+  classifyQuery,
+  getRecallStrategy,
+  DynamicSummaryGenerator,
 } from './memory/index.js';
 
 export { discoverModels, buildModelGuide, pickModelByTier, clearModelCache } from "./models/model-discovery.js";

@@ -72,7 +72,9 @@ The gateway reads from `~/.orionomega/config.yaml`. Defaults:
 - **Planner deduplication**: `plan()` accepts `preRecalledContext` to skip redundant Hindsight queries when the caller already has context.
 - **Temporal diversity recall**: `recallWithTemporalDiversity` splits per-bank budgets (configurable ratio, default 15%) into a primary relevance query and multi-bucket temporal queries (14d/90d/365d cutoffs), merging and deduplicating results to break recency bias.
 - **Client-side candidate pre-filtering**: `maxCandidates` parameter caps server-side cross-encoder rerank set, with budget-aware defaults (50/100/150 by token tier).
-- **Relevance score propagation**: Recall results include inline `[relevance: X.XX]` markers in formatted context; a low-confidence warning is prepended when all results score below 0.5.
+- **Relevance score propagation**: Recall results include inline `[confidence: X.XX]` markers in formatted context; per-section and overall confidence summaries (high/moderate/low buckets) are included in the context block and exposed as structured `ConfidenceSummary` on `AssembledContext`.
+- **Adaptive query classification**: `classifyQuery()` categorizes incoming queries as `task_continuation`, `historical_reference`, `decision_lookup`, or `meta_system`. Each type triggers a different `RecallStrategy` adjusting bank budget ratios, temporal diversity, relevance thresholds, preferred context categories, and temporal bias (recent vs broad vs targeted).
+- **Dynamic project summaries**: `DynamicSummaryGenerator` synthesizes on-demand project summaries from recalled memories when detailed recall returns nothing or exceeds budget. Eliminates dependency on pre-compacted summary files.
 
 ## Custom File-Based Slash Commands
 

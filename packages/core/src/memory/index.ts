@@ -22,4 +22,12 @@ export { SessionSummarizer } from './session-summary.js';
 
 // Context Assembler — hot window + Hindsight recall for token-aware context
 export { ContextAssembler } from "./context-assembler.js";
-export type { AssembledContext, ContextAssemblerConfig, ConversationMessage } from "./context-assembler.js";
+export type { AssembledContext, ContextAssemblerConfig, ConversationMessage, ConfidenceSummary } from "./context-assembler.js";
+
+// Query Classifier — adaptive recall strategy per query type
+export { classifyQuery, getRecallStrategy } from "./query-classifier.js";
+export type { QueryType, QueryClassification, RecallStrategy } from "./query-classifier.js";
+
+// Dynamic Summary Generator — on-demand project summaries from recalled memories
+export { DynamicSummaryGenerator } from "./dynamic-summary.js";
+export type { DynamicSummaryOptions, DynamicSummaryResult } from "./dynamic-summary.js";
