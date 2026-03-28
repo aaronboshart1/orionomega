@@ -77,7 +77,7 @@ function ReplyButton({ onClick }: { onClick: () => void }) {
   return (
     <button
       onClick={onClick}
-      className="absolute -top-1 right-0 flex h-6 w-6 items-center justify-center rounded-full bg-zinc-700 text-zinc-400 opacity-0 shadow transition-opacity hover:bg-zinc-600 hover:text-zinc-200 group-hover:opacity-100"
+      className="absolute -bottom-1 right-0 flex h-6 w-6 items-center justify-center rounded-full bg-emerald-600 text-emerald-100 opacity-0 shadow transition-opacity hover:bg-emerald-500 hover:text-white group-hover:opacity-100"
       title="Reply"
     >
       <Reply size={12} />
