@@ -194,7 +194,7 @@ export function OrchestrationPane() {
         </div>
       ) : (
         <>
-          <div className="flex-[4] min-h-0 border-b border-zinc-800">
+          <div className="flex-[4] min-h-0 border-b border-zinc-800 relative overflow-hidden">
             <div className="px-3 py-1 border-b border-zinc-800/50">
               <span className="text-xs font-semibold uppercase tracking-wider text-zinc-600">Graph</span>
             </div>
