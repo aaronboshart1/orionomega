@@ -73,10 +73,10 @@ export async function runUI(argv?: string[]): Promise<void> {
 
   const fullConfig = readConfig();
   const bindAddresses = normalizeBindAddresses(
-    cliArgs.host || process.env.HOST || fullConfig.gateway.bind,
+    cliArgs.host || process.env.HOST || fullConfig.webui.bind,
   );
   const host = bindAddresses.join(',');
-  const port = cliArgs.port || process.env.PORT || '5000';
+  const port = cliArgs.port || process.env.PORT || String(fullConfig.webui.port);
   const child = spawn('pnpm', [cmd], {
     cwd: webDir,
     stdio: 'inherit',

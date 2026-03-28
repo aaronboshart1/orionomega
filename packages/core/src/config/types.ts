@@ -111,6 +111,13 @@ export interface OrionOmegaConfig {
     autoAdvance: boolean;
   };
 
+  webui: {
+    /** Port for the web UI server. */
+    port: number;
+    /** Bind address(es) for the web UI. */
+    bind: string | string[];
+  };
+
   commands: {
     directory: string;
   };

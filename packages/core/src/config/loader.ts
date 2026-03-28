@@ -76,6 +76,10 @@ export function getDefaultConfig(): OrionOmegaConfig {
       directory: join(homedir(), '.orionomega', 'skills'),
       autoLoad: true,
     },
+    webui: {
+      port: 5000,
+      bind: ['0.0.0.0'],
+    },
     commands: {
       directory: join(homedir(), 'orionomega', 'commands'),
     },
@@ -181,6 +185,7 @@ export function readConfig(configPath?: string): OrionOmegaConfig {
   ) as unknown as OrionOmegaConfig;
 
   merged.gateway.bind = normalizeBindAddresses(merged.gateway.bind);
+  merged.webui.bind = normalizeBindAddresses(merged.webui.bind);
   return merged;
 }
 

@@ -46,6 +46,8 @@ interface ConfigSnapshot {
   agentSdkPermission: string;
   agentSdkEffort: string;
   agentSdkBudget: number | undefined;
+  webuiPort: number;
+  webuiBind: string;
 }
 
 function snapshotConfig(c: OrionOmegaConfig): ConfigSnapshot {
@@ -63,6 +65,8 @@ function snapshotConfig(c: OrionOmegaConfig): ConfigSnapshot {
     agentSdkPermission: c.agentSdk.permissionMode,
     agentSdkEffort: c.agentSdk.effort,
     agentSdkBudget: c.agentSdk.maxBudgetUsd,
+    webuiPort: c.webui.port,
+    webuiBind: Array.isArray(c.webui.bind) ? c.webui.bind.join(',') : c.webui.bind,
   };
 }
 
@@ -164,6 +168,15 @@ const STEP_INFO: StepInfo[] = [
     name: 'Skills',
     group: 'optional',
     summary: (_c) => 'see step',
+    configured: (_c) => true,
+  },
+  {
+    name: 'Web UI',
+    group: 'optional',
+    summary: (c) => {
+      const bind = Array.isArray(c.webui.bind) ? c.webui.bind.join(', ') : c.webui.bind;
+      return `port ${c.webui.port}, bind ${bind}`;
+    },
     configured: (_c) => true,
   },
 ];
@@ -871,6 +884,41 @@ async function stepAgentSdk(config: OrionOmegaConfig, stepIdx: number, totalStep
 
 // ── Step 8: Skills ───────────────────────────────────────────────
 
+async function stepWebUI(config: OrionOmegaConfig, stepIdx: number, totalSteps: number): Promise<StepAction> {
+  stepHeading(stepIdx, totalSteps, 'Web UI');
+  const currentBind = Array.isArray(config.webui.bind) ? config.webui.bind.join(', ') : config.webui.bind;
+  showCurrentBox([
+    ['Port', String(config.webui.port)],
+    ['Bind', currentBind],
+  ]);
+
+  const keep = await confirm(`  Keep port ${BOLD}${config.webui.port}${RESET} on ${BOLD}${currentBind}${RESET}?`, true);
+  if (keep) {
+    success(`Keeping Web UI: port ${config.webui.port}, bind ${currentBind}`);
+    return nav(stepIdx, totalSteps);
+  }
+
+  const portStr = await ask('Web UI port', { default: String(config.webui.port) });
+  const port = parseInt(portStr, 10);
+  if (isNaN(port) || port < 1 || port > 65535) {
+    warn('Invalid port number. Keeping current value.');
+  } else {
+    config.webui.port = port;
+  }
+
+  const bindStr = await ask('Bind address(es) (comma-separated)', {
+    default: currentBind,
+  });
+  if (bindStr) {
+    const addrs = bindStr.split(',').map((s: string) => s.trim()).filter(Boolean);
+    config.webui.bind = addrs.length > 0 ? addrs : ['0.0.0.0'];
+  }
+
+  const finalBind = Array.isArray(config.webui.bind) ? config.webui.bind.join(', ') : config.webui.bind;
+  success(`Web UI: port ${config.webui.port}, bind ${finalBind}`);
+  return nav(stepIdx, totalSteps);
+}
+
 async function stepSkills(config: OrionOmegaConfig, stepIdx: number, totalSteps: number): Promise<StepAction> {
   stepHeading(stepIdx, totalSteps, 'Skills');
 
@@ -1363,6 +1411,13 @@ async function showSummary(config: OrionOmegaConfig, initialSnap: ConfigSnapshot
   }
   println();
 
+  const webuiBindStr = Array.isArray(config.webui.bind) ? config.webui.bind.join(', ') : config.webui.bind;
+  const webuiSnapBind = Array.isArray(config.webui.bind) ? config.webui.bind.join(',') : config.webui.bind;
+  println(`  ${BOLD}${CYAN}Web UI${RESET}`);
+  println(`    Port:                 ${DIM}${config.webui.port}${RESET}${changedTag(initialSnap.webuiPort, config.webui.port)}`);
+  println(`    Bind:                 ${DIM}${webuiBindStr}${RESET}${changedTag(initialSnap.webuiBind, webuiSnapBind)}`);
+  println();
+
   println(`  ${BOLD}${CYAN}Logging${RESET}`);
   println(`    Log Level:            ${DIM}${config.logging.level}${RESET}${changedTag(initialSnap.logLevel, config.logging.level)}`);
   println(`    Log File:             ${DIM}${config.logging.file.replace(homedir(), '~')}${RESET}${changedTag(initialSnap.logFile, config.logging.file)}`);
@@ -1495,6 +1550,7 @@ export async function runSetup(): Promise<void> {
     stepLogging,
     stepAgentSdk,
     stepSkills,
+    stepWebUI,
   ];
 
   initRL();
