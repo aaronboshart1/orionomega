@@ -76,7 +76,6 @@ export function ChatPane() {
   const streamingStatus = useChatStore((s) => s.streamingStatus);
   const thinkingSteps = useChatStore((s) => s.thinkingSteps);
   const activePlan = useOrchestrationStore((s) => s.activePlan);
-  const inlineDAGs = useOrchestrationStore((s) => s.inlineDAGs);
   const { sendChat, sendCommand, respondToPlan } = useGateway();
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const [showAdvancedPlan, setShowAdvancedPlan] = useState(false);
@@ -84,10 +83,6 @@ export function ChatPane() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const hydrated = chatHydrated && orchHydrated;
 
-  const hasActiveDAGs = Object.values(inlineDAGs).some(
-    (d) => d.status === 'dispatched' || d.status === 'running',
-  );
-  const inputDisabled = isStreaming && !hasActiveDAGs;
 
   const renderItems = useMemo(() => buildRenderItems(messages), [messages]);
 
@@ -257,7 +252,7 @@ export function ChatPane() {
         )}
       </div>
 
-      <ChatInput onSend={handleSend} disabled={inputDisabled} />
+      <ChatInput onSend={handleSend} />
     </div>
   );
 }
