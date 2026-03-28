@@ -1,10 +1,10 @@
 /**
  * @module commands/ui
- * Launch the OrionOmega web dashboard.
+ * Manage the OrionOmega web UI service (start/stop/restart/status).
  */
 
 import { execSync, spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, unlinkSync, openSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -13,9 +13,103 @@ import { normalizeBindAddresses } from '../config/loader.js';
 
 const GREEN = '\x1b[32m';
 const RED = '\x1b[31m';
+const YELLOW = '\x1b[33m';
 const BOLD = '\x1b[1m';
 const DIM = '\x1b[2m';
 const RESET = '\x1b[0m';
+
+const ORIONOMEGA_DIR = join(homedir(), '.orionomega');
+const PID_FILE = join(ORIONOMEGA_DIR, 'ui.pid');
+const LOG_FILE = join(ORIONOMEGA_DIR, 'ui.log');
+const SYSTEMD_UNIT = 'orionomega-ui';
+
+function ensureDir(): void {
+  mkdirSync(ORIONOMEGA_DIR, { recursive: true });
+}
+
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function waitForExit(pid: number, timeoutMs = 2000): boolean {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (!isAlive(pid)) return true;
+    sleepSync(50);
+  }
+  return !isAlive(pid);
+}
+
+function hasSystemd(): boolean {
+  try {
+    execSync('systemctl --version', { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function hasSystemdUnit(): boolean {
+  try {
+    execSync(`systemctl cat ${SYSTEMD_UNIT} 2>/dev/null`, { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function readPid(): number | null {
+  if (!existsSync(PID_FILE)) return null;
+  const raw = readFileSync(PID_FILE, 'utf-8').trim();
+  const pid = parseInt(raw, 10);
+  if (isNaN(pid)) return null;
+  if (isAlive(pid)) return pid;
+  try { unlinkSync(PID_FILE); } catch {}
+  return null;
+}
+
+function findWebDir(): string | null {
+  const __dirname = fileURLToPath(new URL('.', import.meta.url));
+  const monorepoRoot = join(__dirname, '..', '..', '..', '..');
+
+  const candidates = [
+    join(monorepoRoot, 'packages', 'web'),
+    join(homedir(), '.orionomega', 'src', 'packages', 'web'),
+    join(homedir(), '.orionomega', 'packages', 'web'),
+    `${process.cwd()}/packages/web`,
+  ];
+
+  for (const c of candidates) {
+    if (existsSync(`${c}/package.json`)) return c;
+  }
+  return null;
+}
+
+function findServerPath(): string | null {
+  const __dirname = fileURLToPath(new URL('.', import.meta.url));
+  const monorepoRoot = join(__dirname, '..', '..', '..', '..');
+
+  const candidates = [
+    join(monorepoRoot, 'packages', 'web', 'server.mjs'),
+    join(homedir(), '.orionomega', 'src', 'packages', 'web', 'server.mjs'),
+    join(homedir(), '.orionomega', 'packages', 'web', 'server.mjs'),
+    join(process.cwd(), 'packages', 'web', 'server.mjs'),
+  ];
+
+  for (const c of candidates) {
+    if (existsSync(c)) return c;
+  }
+  return null;
+}
 
 function parseUIArgs(args: string[]): { host: string | null; port: string | null } {
   let host: string | null = null;
@@ -32,63 +126,140 @@ function parseUIArgs(args: string[]): { host: string | null; port: string | null
   return { host, port };
 }
 
-/**
- * Start the Next.js web dashboard.
- */
-export async function runUI(argv?: string[]): Promise<void> {
-  const cliArgs = parseUIArgs(argv ?? process.argv.slice(3));
-  const __dirname = fileURLToPath(new URL('.', import.meta.url));
-  const monorepoRoot = join(__dirname, '..', '..', '..', '..');
-
-  const candidates = [
-    join(monorepoRoot, 'packages', 'web'),
-    join(homedir(), '.orionomega', 'src', 'packages', 'web'),
-    join(homedir(), '.orionomega', 'packages', 'web'),
-    `${process.cwd()}/packages/web`,
-  ];
-
-  let webDir: string | null = null;
-  for (const c of candidates) {
-    if (existsSync(`${c}/package.json`)) {
-      webDir = c;
-      break;
+function startDev(args: string[], force = false): void {
+  const existing = readPid();
+  if (existing) {
+    if (force) {
+      try {
+        process.kill(existing, 'SIGTERM');
+        if (existsSync(PID_FILE)) unlinkSync(PID_FILE);
+        if (!waitForExit(existing)) {
+          process.stdout.write(`${RED}✗${RESET} Existing UI (PID ${existing}) did not stop in time\n`);
+          return;
+        }
+        process.stdout.write(`${GREEN}✓${RESET} Stopped existing UI (PID ${existing})\n`);
+      } catch {}
+    } else {
+      process.stdout.write(`${YELLOW}⚠${RESET} Web UI already running (PID ${existing})\n`);
+      return;
     }
   }
 
-  if (!webDir) {
-    process.stdout.write(`${RED}✗${RESET} Web package not found\n`);
-    process.stdout.write(`  ${DIM}Searched:${RESET}\n`);
-    for (const c of candidates) {
-      process.stdout.write(`  ${DIM}  - ${c}${RESET}\n`);
-    }
+  const serverPath = findServerPath();
+  if (!serverPath) {
+    process.stdout.write(`${RED}✗${RESET} Web UI server.mjs not found\n`);
+    process.stdout.write(`  Ensure the web package is available.\n`);
     return;
   }
 
-  // Determine dev vs production mode
-  const isDev = process.env.NODE_ENV === 'development' || !existsSync(`${webDir}/.next`);
-  const cmd = isDev ? 'dev' : 'start';
+  const webDir = findWebDir();
+  if (!webDir) {
+    process.stdout.write(`${RED}✗${RESET} Web package directory not found\n`);
+    return;
+  }
 
-  process.stdout.write(`\n${BOLD}Starting OrionOmega Web UI${RESET} ${DIM}(${isDev ? 'development' : 'production'} mode)${RESET}\n`);
-  process.stdout.write(`${DIM}Press Ctrl+C to stop${RESET}\n\n`);
-
+  const cliArgs = parseUIArgs(args);
   const fullConfig = readConfig();
   const bindAddresses = normalizeBindAddresses(
     cliArgs.host || process.env.HOST || fullConfig.webui.bind,
   );
   const host = bindAddresses.join(',');
   const port = cliArgs.port || process.env.PORT || String(fullConfig.webui.port);
-  const child = spawn('pnpm', [cmd], {
+
+  ensureDir();
+  const logFd = openSync(LOG_FILE, 'a');
+
+  const child = spawn('node', [serverPath], {
     cwd: webDir,
-    stdio: 'inherit',
+    detached: true,
+    stdio: ['ignore', logFd, logFd],
     env: { ...process.env, HOST: host, PORT: port },
   });
 
-  process.on('SIGINT', () => {
-    child.kill();
-    process.exit(0);
-  });
+  child.unref();
 
-  await new Promise<void>((resolve) => {
-    child.on('close', resolve);
-  });
+  if (child.pid) {
+    writeFileSync(PID_FILE, String(child.pid), 'utf-8');
+    process.stdout.write(`${GREEN}✓${RESET} Web UI started (PID ${child.pid}, http://${host}:${port})\n`);
+    process.stdout.write(`  ${DIM}Log: ${LOG_FILE}${RESET}\n`);
+  } else {
+    process.stdout.write(`${RED}✗${RESET} Failed to start Web UI\n`);
+  }
+}
+
+function stopDev(): void {
+  const pid = readPid();
+  if (!pid) {
+    process.stdout.write(`${YELLOW}⚠${RESET} Web UI is not running\n`);
+    return;
+  }
+
+  try {
+    process.kill(pid, 'SIGTERM');
+    if (existsSync(PID_FILE)) unlinkSync(PID_FILE);
+    if (waitForExit(pid)) {
+      process.stdout.write(`${GREEN}✓${RESET} Web UI stopped (PID ${pid})\n`);
+    } else {
+      process.stdout.write(`${YELLOW}⚠${RESET} Web UI sent SIGTERM (PID ${pid}) but process still running\n`);
+    }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    process.stdout.write(`${RED}✗${RESET} Failed to stop Web UI: ${msg}\n`);
+  }
+}
+
+function statusDev(): void {
+  const pid = readPid();
+  const fullConfig = readConfig();
+  const bindAddresses = normalizeBindAddresses(fullConfig.webui.bind);
+  const host = bindAddresses.join(',');
+  const port = fullConfig.webui.port;
+  if (pid) {
+    process.stdout.write(`${GREEN}✓${RESET} Web UI is running (PID ${pid}, http://${host}:${port})\n`);
+  } else {
+    process.stdout.write(`${RED}✗${RESET} Web UI is not running\n`);
+  }
+}
+
+function runDevMode(sub: string, args: string[]): void {
+  switch (sub) {
+    case 'start': startDev(args); break;
+    case 'stop': stopDev(); break;
+    case 'restart': startDev(args, true); break;
+    case 'status': statusDev(); break;
+  }
+}
+
+export async function runUI(args: string[]): Promise<void> {
+  const sub = args[0];
+
+  if (!sub || !['start', 'stop', 'restart', 'status'].includes(sub)) {
+    process.stdout.write(`\n${BOLD}Usage:${RESET} orionomega ui <start|stop|restart|status>\n\n`);
+    return;
+  }
+
+  const subArgs = args.slice(1);
+
+  if (hasSystemd() && hasSystemdUnit()) {
+    try {
+      if (sub === 'status') {
+        const out = execSync(`systemctl status ${SYSTEMD_UNIT} 2>&1`, { encoding: 'utf-8' });
+        process.stdout.write(out + '\n');
+      } else {
+        execSync(`sudo systemctl ${sub} ${SYSTEMD_UNIT}`, { stdio: 'inherit' });
+        const pastTense: Record<string, string> = { start: 'started', stop: 'stopped', restart: 'restarted' };
+        process.stdout.write(`${GREEN}✓${RESET} Web UI ${pastTense[sub] ?? sub} via systemd\n`);
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (sub === 'status') {
+        process.stdout.write(`${DIM}systemd unit not active, checking dev mode...${RESET}\n`);
+        statusDev();
+      } else {
+        process.stdout.write(`${RED}✗${RESET} systemctl ${sub} failed: ${msg.slice(0, 200)}\n`);
+      }
+    }
+  } else {
+    runDevMode(sub, subArgs);
+  }
 }
