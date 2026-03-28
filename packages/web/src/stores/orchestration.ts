@@ -115,6 +115,7 @@ interface OrchestrationStore {
   pendingConfirmation: DAGConfirmation | null;
   orchPaneOpen: boolean;
   scrollToDagId: string | null;
+  activitySectionCollapsed: boolean;
   memoryEvents: MemoryEvent[];
   activeOrchTab: 'memory' | 'workflow';
 
@@ -136,6 +137,7 @@ interface OrchestrationStore {
   setPendingConfirmation: (c: DAGConfirmation | null) => void;
   setOrchPaneOpen: (open: boolean) => void;
   clearScrollToDagId: () => void;
+  toggleActivitySectionCollapsed: () => void;
   openOrchPane: (dagId: string) => void;
   markAllInterrupted: () => void;
   pauseDAG: (dagId: string) => void;
@@ -163,6 +165,7 @@ export const useOrchestrationStore = create<OrchestrationStore>()(
   pendingConfirmation: null,
   orchPaneOpen: true,
   scrollToDagId: null,
+  activitySectionCollapsed: false,
   memoryEvents: [],
   activeOrchTab: 'memory',
   graphState: null,
@@ -320,6 +323,9 @@ export const useOrchestrationStore = create<OrchestrationStore>()(
   setOrchPaneOpen: (open) => set({ orchPaneOpen: open }),
   clearScrollToDagId: () => set({ scrollToDagId: null }),
 
+  toggleActivitySectionCollapsed: () =>
+    set((s) => ({ activitySectionCollapsed: !s.activitySectionCollapsed })),
+
   openOrchPane: (dagId) =>
     set((s) => ({
       orchPaneOpen: true,
@@ -439,6 +445,7 @@ export const useOrchestrationStore = create<OrchestrationStore>()(
       pendingConfirmation: null,
       orchPaneOpen: true,
       scrollToDagId: null,
+      activitySectionCollapsed: false,
       memoryEvents: [],
       activeOrchTab: 'memory',
     }),

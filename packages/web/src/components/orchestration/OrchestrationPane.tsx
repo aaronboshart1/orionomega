@@ -39,6 +39,7 @@ export function OrchestrationPane() {
   const activeWorkflowId = useOrchestrationStore((s) => s.activeWorkflowId);
   const setActiveWorkflowId = useOrchestrationStore((s) => s.setActiveWorkflowId);
   const removeWorkflow = useOrchestrationStore((s) => s.removeWorkflow);
+  const activitySectionCollapsed = useOrchestrationStore((s) => s.activitySectionCollapsed);
   const { sendWorkflowCommand } = useGateway();
 
   const workflowIds = Object.keys(workflows);
@@ -184,7 +185,9 @@ export function OrchestrationPane() {
             <DAGVisualization />
           </div>
 
-          <div className="flex-[4] min-h-0 border-b border-zinc-800 overflow-hidden">
+          <div
+            className={`border-b border-zinc-800 overflow-hidden transition-[flex] duration-300 ease-in-out ${activitySectionCollapsed ? 'flex-none' : 'flex-[4] min-h-0'}`}
+          >
             {selectedWorker ? <WorkerDetail /> : <ActivityFeed />}
           </div>
 

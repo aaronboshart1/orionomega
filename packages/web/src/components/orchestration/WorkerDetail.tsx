@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useMemo } from 'react';
-import { X } from 'lucide-react';
+import { X, ChevronDown } from 'lucide-react';
 import { useOrchestrationStore, type WorkerEvent } from '@/stores/orchestration';
 
 type Tab = 'activity' | 'reasoning' | 'tools' | 'output';
@@ -11,6 +11,8 @@ export function WorkerDetail() {
   const graphState = useOrchestrationStore((s) => s.graphState);
   const events = useOrchestrationStore((s) => s.events);
   const selectWorker = useOrchestrationStore((s) => s.selectWorker);
+  const collapsed = useOrchestrationStore((s) => s.activitySectionCollapsed);
+  const toggleCollapsed = useOrchestrationStore((s) => s.toggleActivitySectionCollapsed);
   const [activeTab, setActiveTab] = useState<Tab>('activity');
 
   const node = selectedWorker && graphState ? graphState.nodes[selectedWorker] : null;
@@ -65,45 +67,56 @@ export function WorkerDetail() {
   return (
     <div className="flex h-full flex-col">
       {/* Header */}
-      <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-2">
-        <div className="flex items-center gap-3">
-          <h3 className="text-xs font-semibold text-zinc-200">{node.label}</h3>
-          {node.agent && (
-            <span className="rounded bg-zinc-700 px-1.5 py-0.5 text-[10px] text-zinc-400">
-              {node.agent.model}
+      <div className="flex items-center border-b border-zinc-800 shrink-0">
+        <button
+          onClick={toggleCollapsed}
+          className="flex flex-1 items-center gap-2 px-4 py-2 cursor-pointer hover:bg-zinc-800/30 transition-colors"
+        >
+          <ChevronDown
+            size={14}
+            className={`text-zinc-500 transition-transform duration-300 ${collapsed ? '-rotate-90' : 'rotate-0'}`}
+          />
+          <div className="flex items-center gap-3">
+            <h3 className="text-xs font-semibold text-zinc-200">{node.label}</h3>
+            {node.agent && (
+              <span className="rounded bg-zinc-700 px-1.5 py-0.5 text-[10px] text-zinc-400">
+                {node.agent.model}
+              </span>
+            )}
+            <span className={`text-[10px] font-medium ${statusColor[node.status] || 'text-zinc-400'}`}>
+              {node.status.toUpperCase()}
             </span>
-          )}
-          <span className={`text-[10px] font-medium ${statusColor[node.status] || 'text-zinc-400'}`}>
-            {node.status.toUpperCase()}
-          </span>
-        </div>
+          </div>
+        </button>
         <button
           onClick={() => selectWorker(null)}
-          className="rounded p-1 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300"
+          className="rounded p-1 mr-3 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300"
         >
           <X size={14} />
         </button>
       </div>
 
-      {/* Tabs */}
-      <div className="flex border-b border-zinc-800">
-        {tabs.map((tab) => (
-          <button
-            key={tab.key}
-            onClick={() => setActiveTab(tab.key)}
-            className={`px-4 py-2 text-[11px] font-medium transition-colors ${
-              activeTab === tab.key
-                ? 'border-b-2 border-blue-500 text-blue-400'
-                : 'text-zinc-500 hover:text-zinc-300'
-            }`}
-          >
-            {tab.label}
-          </button>
-        ))}
-      </div>
+      {!collapsed && (
+        <>
+          {/* Tabs */}
+          <div className="flex border-b border-zinc-800">
+            {tabs.map((tab) => (
+              <button
+                key={tab.key}
+                onClick={() => setActiveTab(tab.key)}
+                className={`px-4 py-2 text-[11px] font-medium transition-colors ${
+                  activeTab === tab.key
+                    ? 'border-b-2 border-blue-500 text-blue-400'
+                    : 'text-zinc-500 hover:text-zinc-300'
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
 
-      {/* Content */}
-      <div className="flex-1 overflow-y-auto p-4">
+          {/* Content */}
+          <div className="flex-1 overflow-y-auto p-4">
         {activeTab === 'activity' && (
           <div className="space-y-1 font-mono text-xs">
             {workerEvents.length === 0 ? (
@@ -163,7 +176,9 @@ export function WorkerDetail() {
             {node.output ? JSON.stringify(node.output, null, 2) : 'No output yet'}
           </pre>
         )}
-      </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }

@@ -1,6 +1,7 @@
 'use client';
 
 import { useRef, useEffect } from 'react';
+import { ChevronDown } from 'lucide-react';
 import { useOrchestrationStore, type WorkerEvent } from '@/stores/orchestration';
 
 const typeIcons: Record<string, string> = {
@@ -69,32 +70,62 @@ function EventRow({ event }: { event: WorkerEvent }) {
 
 export function ActivityFeed() {
   const events = useOrchestrationStore((s) => s.events);
+  const collapsed = useOrchestrationStore((s) => s.activitySectionCollapsed);
+  const toggleCollapsed = useOrchestrationStore((s) => s.toggleActivitySectionCollapsed);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [events]);
+    if (!collapsed) {
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [events, collapsed]);
 
-  if (events.length === 0) {
+  if (events.length === 0 && !collapsed) {
     return (
-      <div className="flex h-full items-center justify-center text-xs text-zinc-600">
-        Waiting for events…
+      <div className="flex h-full flex-col">
+        <button
+          onClick={toggleCollapsed}
+          className="flex items-center justify-between border-b border-zinc-800 px-4 py-2 w-full cursor-pointer hover:bg-zinc-800/30 transition-colors"
+        >
+          <div className="flex items-center gap-2">
+            <ChevronDown
+              size={14}
+              className="text-zinc-500 transition-transform duration-300 rotate-0"
+            />
+            <h3 className="text-xs font-semibold text-zinc-400">Activity Feed</h3>
+          </div>
+          <span className="text-[10px] text-zinc-600">0 events</span>
+        </button>
+        <div className="flex flex-1 items-center justify-center text-xs text-zinc-600">
+          Waiting for events…
+        </div>
       </div>
     );
   }
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-2">
-        <h3 className="text-xs font-semibold text-zinc-400">Activity Feed</h3>
+      <button
+        onClick={toggleCollapsed}
+        className="flex items-center justify-between border-b border-zinc-800 px-4 py-2 w-full cursor-pointer hover:bg-zinc-800/30 transition-colors shrink-0"
+      >
+        <div className="flex items-center gap-2">
+          <ChevronDown
+            size={14}
+            className={`text-zinc-500 transition-transform duration-300 ${collapsed ? '-rotate-90' : 'rotate-0'}`}
+          />
+          <h3 className="text-xs font-semibold text-zinc-400">Activity Feed</h3>
+        </div>
         <span className="text-[10px] text-zinc-600">{events.length} events</span>
-      </div>
-      <div className="flex-1 overflow-y-auto">
-        {events.map((event, i) => (
-          <EventRow key={`${event.timestamp}-${i}`} event={event} />
-        ))}
-        <div ref={bottomRef} />
-      </div>
+      </button>
+      {!collapsed && (
+        <div className="flex-1 overflow-y-auto">
+          {events.map((event, i) => (
+            <EventRow key={`${event.timestamp}-${i}`} event={event} />
+          ))}
+          <div ref={bottomRef} />
+        </div>
+      )}
     </div>
   );
 }
