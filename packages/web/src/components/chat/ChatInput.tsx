@@ -360,6 +360,19 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
       />
 
       <div className="flex items-end gap-3 rounded-xl border border-zinc-700 bg-zinc-900 px-4 py-3 focus-within:border-blue-600">
+        <textarea
+          ref={textareaRef}
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={handleKeyDown}
+          placeholder="Message OmegaClaw..."
+          disabled={disabled}
+          rows={1}
+          className="max-h-64 flex-1 resize-none bg-transparent text-sm leading-relaxed text-zinc-100 placeholder-zinc-500 outline-none transition-[height] duration-150 ease-out disabled:opacity-50"
+          aria-label="Message input"
+          aria-multiline="true"
+        />
+
         {/* Paperclip / attach button */}
         <button
           type="button"
@@ -371,19 +384,6 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
         >
           <Paperclip size={16} />
         </button>
-
-        <textarea
-          ref={textareaRef}
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder="Message OmegaClaw..."
-          disabled={disabled}
-          rows={4}
-          className="min-h-[5.5rem] max-h-64 flex-1 resize-none bg-transparent text-sm leading-relaxed text-zinc-100 placeholder-zinc-500 outline-none transition-[height] duration-150 ease-out disabled:opacity-50"
-          aria-label="Message input"
-          aria-multiline="true"
-        />
 
         <button
           onClick={handleSend}
