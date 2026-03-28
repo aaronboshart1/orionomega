@@ -317,7 +317,16 @@ export const useOrchestrationStore = create<OrchestrationStore>()(
       orchPaneOpen: state.orchPaneOpen,
       graphState: state.graphState,
       events: state.events,
+      activePlan: state.activePlan,
+      selectedWorker: state.selectedWorker,
     }),
+    onRehydrateStorage: () => (state) => {
+      if (state) {
+        const derived = deriveActive(state.workflows, state.activeWorkflowId);
+        state.graphState = derived.graphState;
+        state.events = derived.events;
+      }
+    },
   },
 ));
 

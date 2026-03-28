@@ -572,13 +572,31 @@ export class GraphExecutor {
             };
           }
 
+          const codingOutputPaths = codingResult.outputPaths ?? [];
+
+          this.eventBus.emit({
+            workflowId: this.graph.id,
+            workerId: node.id,
+            nodeId: node.id,
+            timestamp: new Date().toISOString(),
+            type: 'done',
+            message: `Completed: ${node.label}`,
+            progress: 100,
+            data: {
+              toolCalls: codingResult.toolCalls,
+              nodeLabel: node.label,
+              output: typeof codingResult.output === 'string' ? codingResult.output : undefined,
+              outputPaths: codingOutputPaths,
+            },
+          });
+
           return {
             nodeId: node.id,
             output: codingResult.output,
             durationMs: Date.now() - startMs,
             toolCallCount: codingResult.toolCalls,
             findings: [],
-            outputPaths: codingResult.outputPaths ?? [],
+            outputPaths: codingOutputPaths,
           };
         } catch (err) {
           if (this.stopRequested) {

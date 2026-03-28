@@ -24,10 +24,12 @@ export interface RetentionConfig {
 /** Outcome data for workflow completion retention. */
 export interface WorkflowOutcome {
   bankId: string;
+  workflowId?: string;
   taskSummary: string;
   workerCount: number;
   durationSec: number;
   outputPaths: string[];
+  nodeOutputPaths?: Record<string, string[]>;
   decisions: string[];
   findings: string[];
   errors: { worker: string; message: string; resolution?: string }[];
@@ -219,6 +221,25 @@ export class RetentionEngine {
           this.retain('infra', change, 'infrastructure').catch((err) => { log.debug('Fire-and-forget retain failed', { error: err instanceof Error ? err.message : String(err) }); });
         }
       }
+
+      // Retain aggregated artifact manifest
+      const wfId = outcome.workflowId ?? 'unknown';
+      if (outputPaths.length > 0 || (outcome.nodeOutputPaths && Object.keys(outcome.nodeOutputPaths).length > 0)) {
+        const manifestParts: string[] = [
+          `Task: ${taskSummary}`,
+          `Workflow: ${wfId}`,
+        ];
+        if (outputPaths.length > 0) {
+          manifestParts.push(`Output paths: ${outputPaths.join(', ')}`);
+        }
+        if (outcome.nodeOutputPaths) {
+          const perNode = Object.entries(outcome.nodeOutputPaths)
+            .map(([label, paths]) => `  ${label}: ${paths.join(', ')}`)
+            .join('\n');
+          manifestParts.push(`Per-node artifacts:\n${perNode}`);
+        }
+        this.retain(bankId, manifestParts.join('\n'), 'artifact').catch((err) => { log.debug('Fire-and-forget retain failed', { error: err instanceof Error ? err.message : String(err) }); });
+      }
     } catch (err) {
       log.warn('Failed to retain workflow outcome', {
         bankId,
@@ -277,6 +298,31 @@ export class RetentionEngine {
             this.retain(bankId, finding, 'lesson').catch((err) => { log.debug('Fire-and-forget retain failed', { error: err instanceof Error ? err.message : String(err) }); });
           }
         }
+      }
+
+      const nodeLabel = typeof data.nodeLabel === 'string' ? data.nodeLabel : event.nodeId;
+      const workflowId = event.workflowId ?? 'unknown';
+
+      if (typeof data.output === 'string' && data.output.length > 0) {
+        const outputContent = [
+          `Node: ${nodeLabel}`,
+          `Workflow: ${workflowId}`,
+          typeof data.finalResult === 'string' ? `Result: ${data.finalResult}` : null,
+          `Output: ${data.output.slice(0, 4000)}`,
+        ].filter(Boolean).join('\n');
+        this.retain(bankId, outputContent, 'node_output').catch((err) => { log.debug('Fire-and-forget retain failed', { error: err instanceof Error ? err.message : String(err) }); });
+      } else if (typeof data.finalResult === 'string' && data.finalResult.length > 0) {
+        const resultContent = `Node: ${nodeLabel}\nWorkflow: ${workflowId}\nResult: ${data.finalResult}`;
+        this.retain(bankId, resultContent, 'node_output').catch((err) => { log.debug('Fire-and-forget retain failed', { error: err instanceof Error ? err.message : String(err) }); });
+      }
+
+      if (Array.isArray(data.outputPaths) && data.outputPaths.length > 0) {
+        const artifactContent = [
+          `Node: ${nodeLabel}`,
+          `Workflow: ${workflowId}`,
+          `Artifacts: ${(data.outputPaths as string[]).join(', ')}`,
+        ].join('\n');
+        this.retain(bankId, artifactContent, 'artifact').catch((err) => { log.debug('Fire-and-forget retain failed', { error: err instanceof Error ? err.message : String(err) }); });
       }
     }
   }

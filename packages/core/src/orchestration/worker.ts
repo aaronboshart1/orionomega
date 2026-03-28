@@ -357,7 +357,6 @@ export class WorkerProcess {
       progress: 100,
       data: {
         toolCalls: result.toolCalls,
-        // Token counts not available from Agent SDK — the SDK manages them internally
         inputTokens: 0,
         outputTokens: 0,
         cacheCreationTokens: 0,
@@ -365,6 +364,10 @@ export class WorkerProcess {
         cacheHitRate: 0,
         stoppedByBudget: false,
         ...(result.costUsd !== undefined ? { costUsd: result.costUsd } : {}),
+        nodeLabel: this.node.label,
+        output: typeof result.output === 'string' ? result.output : undefined,
+        finalResult: result.finalResult,
+        outputPaths: result.outputPaths,
       },
     });
 
@@ -546,6 +549,11 @@ Use absolute paths when referencing files outside the workspace.${skillDocs}`;
       type: 'done',
       message: `Tool '${toolConfig.name}' completed`,
       progress: 100,
+      data: {
+        nodeLabel: this.node.label,
+        output: typeof output === 'string' ? output : undefined,
+        outputPaths: [] as string[],
+      },
     });
 
     return {

@@ -512,6 +512,10 @@ export class OrchestrationBridge {
     this.callbacks.onWorkflowStart?.(workflowId, workflowName);
     this.commands.addWorkflow(workflowId, executor, workflowName);
 
+    if (this.memory.retention && this.memory.projectBank) {
+      this.memory.retention.registerWorkflowBank(workflowId, this.memory.projectBank);
+    }
+
     this.callbacks.onText('Workflow started. I\'ll keep you posted on progress.', false, true, workflowId);
     pushHistory({ role: 'assistant', content: '[Workflow execution started]' });
 
@@ -601,10 +605,12 @@ export class OrchestrationBridge {
     if (this.memory.retention && this.memory.projectBank) {
       this.memory.retention.retainWorkflowOutcome({
         bankId: this.memory.projectBank,
+        workflowId: result.workflowId,
         taskSummary: result.taskSummary,
         workerCount: result.workerCount,
         durationSec: result.durationSec,
         outputPaths: result.outputPaths,
+        nodeOutputPaths: result.nodeOutputPaths,
         decisions: result.decisions,
         findings: result.findings,
         errors: result.errors,
@@ -712,6 +718,9 @@ export class OrchestrationBridge {
     this.callbacks.onWorkflowEnd?.(workflowId);
     this.activeWorkflows.delete(workflowId);
     this.commands.removeWorkflow(workflowId);
+    if (this.memory.retention) {
+      this.memory.retention.unregisterWorkflowBank(workflowId);
+    }
   }
 
   /** Clear all pending plans (e.g. on /reset). */
