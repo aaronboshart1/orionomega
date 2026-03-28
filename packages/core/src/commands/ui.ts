@@ -4,6 +4,7 @@
  */
 
 import { execSync, spawn } from 'node:child_process';
+import { createConnection } from 'node:net';
 import { existsSync, readFileSync, writeFileSync, unlinkSync, openSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
@@ -62,6 +63,37 @@ function isAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
+  } catch {
+    return false;
+  }
+}
+
+function isPortInUse(port: number, host = '127.0.0.1'): Promise<boolean> {
+  return new Promise((resolve) => {
+    const sock = createConnection({ port, host });
+    sock.once('connect', () => { sock.destroy(); resolve(true); });
+    sock.once('error', () => { sock.destroy(); resolve(false); });
+    sock.setTimeout(500, () => { sock.destroy(); resolve(false); });
+  });
+}
+
+function killPortHolder(port: number): boolean {
+  try {
+    const out = execSync(`lsof -ti tcp:${port} 2>/dev/null || fuser ${port}/tcp 2>/dev/null`, { encoding: 'utf-8' }).trim();
+    if (!out) return false;
+    const pids = out.split(/\s+/).map((p) => parseInt(p, 10)).filter((p) => !isNaN(p) && p > 0);
+    for (const pid of pids) {
+      try { process.kill(pid, 'SIGTERM'); } catch {}
+    }
+    if (pids.length > 0) {
+      sleepSync(1000);
+      for (const pid of pids) {
+        if (isAlive(pid)) {
+          try { process.kill(pid, 'SIGKILL'); } catch {}
+        }
+      }
+    }
+    return pids.length > 0;
   } catch {
     return false;
   }
@@ -126,7 +158,7 @@ function parseUIArgs(args: string[]): { host: string | null; port: string | null
   return { host, port };
 }
 
-function startDev(args: string[], force = false): void {
+async function startDev(args: string[], force = false): Promise<void> {
   const existing = readPid();
   if (existing) {
     if (force) {
@@ -165,6 +197,20 @@ function startDev(args: string[], force = false): void {
   );
   const host = bindAddresses.join(',');
   const port = cliArgs.port || process.env.PORT || String(fullConfig.webui.port);
+  const portNum = parseInt(port, 10);
+
+  if (await isPortInUse(portNum)) {
+    process.stdout.write(`${YELLOW}⚠${RESET} Port ${port} already in use — attempting to free it...\n`);
+    const killed = killPortHolder(portNum);
+    if (killed) {
+      sleepSync(500);
+    }
+    if (await isPortInUse(portNum)) {
+      process.stdout.write(`${RED}✗${RESET} Port ${port} is still in use. Stop the other process or use --port <N>\n`);
+      return;
+    }
+    process.stdout.write(`${GREEN}✓${RESET} Port ${port} freed\n`);
+  }
 
   ensureDir();
   const logFd = openSync(LOG_FILE, 'a');
@@ -221,11 +267,11 @@ function statusDev(): void {
   }
 }
 
-function runDevMode(sub: string, args: string[]): void {
+async function runDevMode(sub: string, args: string[]): Promise<void> {
   switch (sub) {
-    case 'start': startDev(args); break;
+    case 'start': await startDev(args); break;
     case 'stop': stopDev(); break;
-    case 'restart': startDev(args, true); break;
+    case 'restart': await startDev(args, true); break;
     case 'status': statusDev(); break;
   }
 }
@@ -260,6 +306,6 @@ export async function runUI(args: string[]): Promise<void> {
       }
     }
   } else {
-    runDevMode(sub, subArgs);
+    await runDevMode(sub, subArgs);
   }
 }
