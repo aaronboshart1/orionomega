@@ -363,8 +363,8 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
           onKeyDown={handleKeyDown}
           placeholder="Message OmegaClaw..."
           disabled={disabled}
-          rows={1}
-          className="max-h-32 flex-1 resize-none bg-transparent text-sm text-zinc-100 placeholder-zinc-500 outline-none disabled:opacity-50"
+          rows={2}
+          className="max-h-64 flex-1 resize-none bg-transparent text-sm text-zinc-100 placeholder-zinc-500 outline-none disabled:opacity-50"
           aria-label="Message input"
           aria-multiline="true"
         />
