@@ -11,6 +11,7 @@ import type { FileAttachment } from '@/components/chat/ChatInput';
 import { uuid } from '@/lib/uuid';
 
 const SESSION_KEY = 'orionomega_session_id';
+let statusFetchController: AbortController | null = null;
 
 function getGatewayUrl(): string {
   if (typeof window !== 'undefined') {
@@ -362,9 +363,23 @@ function bindListeners(ws: ReconnectingWebSocket): void {
       pendingRestart = false;
       window.location.reload();
     }
+    if (statusFetchController) statusFetchController.abort();
+    statusFetchController = new AbortController();
+    const { signal } = statusFetchController;
+    fetch('/api/gateway/api/status', { signal })
+      .then((r) => r.ok ? r.json() : null)
+      .then((data) => {
+        if (data?.hindsight && useConnectionStore.getState().gatewayConnected) {
+          useConnectionStore
+            .getState()
+            .setHindsightStatus(!!data.hindsight.connected, !!data.hindsight.busy);
+        }
+      })
+      .catch(() => {});
   };
 
   ws.onclose = () => {
+    if (statusFetchController) { statusFetchController.abort(); statusFetchController = null; }
     const connStore = useConnectionStore.getState();
     connStore.setGatewayConnected(false);
     connStore.setHindsightStatus(false, false);
