@@ -13,6 +13,7 @@ import type { ExecutorConfig } from '../orchestration/executor.js';
 import { EventBus } from '../orchestration/event-bus.js';
 import { OrchestratorCommands } from '../orchestration/commands.js';
 import { CheckpointManager } from '../orchestration/checkpoint.js';
+import { WorkflowState } from '../orchestration/state.js';
 import type {
   PlannerOutput,
   WorkerEvent,
@@ -493,11 +494,12 @@ export class OrchestrationBridge {
   private async executePlan(
     plan: PlannerOutput,
     pushHistory: (entry: { role: string; content: string }) => void,
+    startLayer?: number,
+    restoredState?: WorkflowState,
   ): Promise<void> {
     const workflowId = plan.graph.id;
     const workflowName = plan.graph.name;
 
-    // Remove from pending (it's now moving to execution)
     this.pendingPlans.delete(workflowId);
 
     const executorConfig: ExecutorConfig = {
@@ -526,7 +528,7 @@ export class OrchestrationBridge {
       },
     };
 
-    const executor = new GraphExecutor(plan.graph, this.eventBus, executorConfig);
+    const executor = new GraphExecutor(plan.graph, this.eventBus, executorConfig, restoredState);
 
     // Subscribe to '*' and filter to only this workflow's events
     const eventUnsub = this.eventBus.subscribe('*', (event) => {
@@ -563,7 +565,7 @@ export class OrchestrationBridge {
     pushHistory({ role: 'assistant', content: '[Workflow execution started]' });
 
     try {
-      const result = await executor.execute();
+      const result = await executor.execute(startLayer);
       await this.onExecutionComplete(result, workflowId, pushHistory);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -814,19 +816,25 @@ export class OrchestrationBridge {
     return mgr.findIncomplete();
   }
 
-  /** Resume a workflow from a checkpoint. Re-executes the full graph. */
   async resumeFromCheckpoint(
     checkpoint: WorkflowCheckpoint,
     pushHistory: (entry: { role: string; content: string }) => void,
   ): Promise<void> {
     const graph = CheckpointManager.graphFromCheckpoint(checkpoint);
-    // Reset any nodes stuck in 'running' state back to pending
     for (const [, node] of graph.nodes) {
       if (node.status === 'running') {
         node.status = 'pending';
         node.startedAt = undefined;
       }
     }
+
+    let restoredState: WorkflowState | undefined;
+    try {
+      restoredState = await WorkflowState.restore(checkpoint.workflowId, this.config.checkpointDir);
+    } catch {
+      log.warn(`Could not restore WorkflowState for '${checkpoint.workflowId}' — starting fresh`);
+    }
+
     const plan: PlannerOutput = {
       graph,
       reasoning: `Resuming interrupted workflow from layer ${checkpoint.currentLayer}`,
@@ -834,11 +842,8 @@ export class OrchestrationBridge {
       estimatedTime: 0,
       summary: checkpoint.task,
     };
-    // Remove the checkpoint so we don't prompt to resume again
-    const mgr = new CheckpointManager(this.config.checkpointDir);
-    mgr.remove(checkpoint.workflowId);
-    this.callbacks.onText(`Resuming: ${checkpoint.graph.name}`, false, true);
-    await this.executePlan(plan, pushHistory);
+    this.callbacks.onText(`Resuming: ${checkpoint.graph.name} (from layer ${checkpoint.currentLayer + 1})`, false, true);
+    await this.executePlan(plan, pushHistory, checkpoint.currentLayer, restoredState);
   }
 
   /** Delete a checkpoint without resuming it. */

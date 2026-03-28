@@ -5,7 +5,7 @@
  * On restart, incomplete checkpoints can be detected and resumed.
  */
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createLogger } from '../logging/logger.js';
 import type { WorkflowCheckpoint, WorkflowGraph, WorkflowNode } from './types.js';
@@ -30,10 +30,11 @@ export class CheckpointManager {
    */
   save(checkpoint: WorkflowCheckpoint): void {
     const file = this.filePath(checkpoint.workflowId);
+    const tmpFile = file + '.tmp';
     try {
-      // Serialize graph: convert Map to Record
       const serialized = JSON.stringify(checkpoint, null, 2);
-      writeFileSync(file, serialized, 'utf-8');
+      writeFileSync(tmpFile, serialized, 'utf-8');
+      renameSync(tmpFile, file);
       log.debug('Checkpoint saved', {
         workflowId: checkpoint.workflowId,
         layer: checkpoint.currentLayer,
@@ -44,6 +45,7 @@ export class CheckpointManager {
         workflowId: checkpoint.workflowId,
         error: err instanceof Error ? err.message : String(err),
       });
+      try { unlinkSync(tmpFile); } catch { /* ignore cleanup failure */ }
     }
   }
 

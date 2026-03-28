@@ -304,19 +304,37 @@ export class MainAgent {
       this.config.model,
     );
 
-    // 4. Check for interrupted workflows from previous sessions
+    // 4. Check for interrupted workflows and auto-resume them
     const interrupted = this.orchestration.checkForInterruptedWorkflows();
     if (interrupted.length > 0) {
-      this.interruptedWorkflows = interrupted;
+      this.interruptedWorkflows = [];
       const list = interrupted
         .map((c, i) =>
           `  ${i + 1}. ${c.task} (layer ${c.currentLayer}/${c.graph.layers.length}, ${Object.values(c.nodeOutputs).length} nodes done)`,
         )
         .join('\n');
       this.callbacks.onText(
-        `🔄 Found ${interrupted.length} interrupted workflow(s):\n${list}\n\nSay resume or resume all to continue, or discard to clear.`,
+        `🔄 Auto-resuming ${interrupted.length} interrupted workflow(s):\n${list}`,
         false, true,
       );
+
+      for (const checkpoint of interrupted) {
+        void this.orchestration.resumeFromCheckpoint(
+          checkpoint,
+          (e) => this.pushHistory(e as HistoryEntry),
+        ).then(() => {
+          this.callbacks.onText(
+            `Auto-resume complete: ${checkpoint.task}`,
+            false, true,
+          );
+        }).catch((err) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          this.callbacks.onText(
+            `Auto-resume failed for '${checkpoint.task}': ${msg}`,
+            false, true,
+          );
+        });
+      }
     }
   }
 

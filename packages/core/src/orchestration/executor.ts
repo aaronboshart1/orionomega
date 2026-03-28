@@ -25,6 +25,71 @@ import { HindsightClient } from '@orionomega/hindsight';
 
 const log = createLogger('executor');
 
+type ErrorClassification = 'transient' | 'permanent';
+
+const PERMANENT_ERROR_PATTERNS = [
+  /authentication failed/i,
+  /unauthorized/i,
+  /forbidden/i,
+  /invalid api key/i,
+  /invalid.*token/i,
+  /permission denied/i,
+  /access denied/i,
+  /validation error/i,
+  /invalid.*parameter/i,
+  /invalid.*argument/i,
+  /missing required/i,
+  /schema.*validation/i,
+  /not found/i,
+  /404/,
+  /401/,
+  /403/,
+  /422/,
+];
+
+const TRANSIENT_ERROR_PATTERNS = [
+  /timeout/i,
+  /timed out/i,
+  /ETIMEDOUT/,
+  /ECONNRESET/,
+  /ECONNREFUSED/,
+  /ENOTFOUND/,
+  /socket hang up/i,
+  /network error/i,
+  /rate limit/i,
+  /too many requests/i,
+  /429/,
+  /500/,
+  /502/,
+  /503/,
+  /504/,
+  /service unavailable/i,
+  /internal server error/i,
+  /bad gateway/i,
+  /gateway timeout/i,
+  /overloaded/i,
+];
+
+function classifyError(err: Error): ErrorClassification {
+  const msg = err.message;
+  for (const pattern of TRANSIENT_ERROR_PATTERNS) {
+    if (pattern.test(msg)) return 'transient';
+  }
+  for (const pattern of PERMANENT_ERROR_PATTERNS) {
+    if (pattern.test(msg)) return 'permanent';
+  }
+  return 'transient';
+}
+
+const BASE_BACKOFF_MS = 1000;
+const MAX_BACKOFF_MS = 30000;
+
+function computeBackoffDelay(attempt: number): number {
+  const exponential = Math.min(BASE_BACKOFF_MS * Math.pow(2, attempt - 1), MAX_BACKOFF_MS);
+  const jitter = exponential * (0.5 + Math.random() * 0.5);
+  return Math.round(jitter);
+}
+
 function saveTextOutputIfEmpty(outputDir: string, text: string, filename: string = 'output.md'): string | null {
   try {
     if (!existsSync(outputDir)) return null;
@@ -129,12 +194,13 @@ export class GraphExecutor {
     graph: WorkflowGraph,
     eventBus: EventBus,
     config: ExecutorConfig,
+    existingState?: WorkflowState,
   ) {
     this.graph = graph;
     this.eventBus = eventBus;
     this.config = config;
     this.startedAt = new Date().toISOString();
-    this.state = new WorkflowState(graph.id, config.checkpointDir);
+    this.state = existingState ?? new WorkflowState(graph.id, config.checkpointDir);
     this.checkpointMgr = new CheckpointManager(config.checkpointDir);
   }
 
@@ -146,11 +212,12 @@ export class GraphExecutor {
    *
    * @returns The final execution result.
    */
-  async execute(): Promise<ExecutionResult> {
+  async execute(startLayer?: number): Promise<ExecutionResult> {
     this.status = 'running';
     const startTime = Date.now();
+    const effectiveStartLayer = startLayer ?? 0;
 
-    log.info(`Starting workflow: ${this.graph.name} (${this.graph.id})`);
+    log.info(`Starting workflow: ${this.graph.name} (${this.graph.id})${effectiveStartLayer > 0 ? ` (resuming from layer ${effectiveStartLayer})` : ''}`);
 
     if (this.graph.layers.length === 0) {
       this.status = 'complete';
@@ -161,6 +228,13 @@ export class GraphExecutor {
 
     try {
       for (let layerIdx = 0; layerIdx < this.graph.layers.length; layerIdx++) {
+        if (layerIdx < effectiveStartLayer) {
+          log.info(`Skipping already-completed layer ${layerIdx + 1}`);
+          this.completedLayers = layerIdx + 1;
+          this.state.completedLayers = this.completedLayers;
+          continue;
+        }
+
         if (this.stopRequested) {
           this.status = 'stopped';
           for (let futureIdx = layerIdx; futureIdx < this.graph.layers.length; futureIdx++) {
@@ -175,7 +249,6 @@ export class GraphExecutor {
           return stoppedResult;
         }
 
-        // Check pause before each layer
         if (this.pauseRequested) {
           this.status = 'paused';
           log.info('Workflow paused');
@@ -186,7 +259,15 @@ export class GraphExecutor {
         }
 
         const layer = this.graph.layers[layerIdx];
-        const runnableNodes = layer.filter((id) => !this.skippedNodes.has(id));
+        const runnableNodes = layer.filter((id) => {
+          if (this.skippedNodes.has(id)) return false;
+          const node = this.graph.nodes.get(id);
+          if (node && node.status === 'done') {
+            log.info(`Skipping already-completed node '${id}'`);
+            return false;
+          }
+          return true;
+        });
 
         this.emitOrchestrator(
           'status',
@@ -391,8 +472,12 @@ export class GraphExecutor {
 
       try {
         if (attempt > 0) {
-          log.info(`Retrying node '${nodeId}' (attempt ${attempt + 1}/${maxRetries + 1})`);
-          this.emitOrchestrator('status', `Retrying '${node.label}' (attempt ${attempt + 1})`);
+          const delayMs = computeBackoffDelay(attempt);
+          log.info(`Retrying node '${nodeId}' (attempt ${attempt + 1}/${maxRetries + 1}) after ${delayMs}ms backoff`);
+          this.emitOrchestrator('status', `Retrying '${node.label}' (attempt ${attempt + 1}) in ${Math.round(delayMs / 1000)}s`, {
+            retry: { attempt, maxRetries, delayMs },
+          });
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
         }
 
         const result = await this.executeNodeByType(node);
@@ -400,6 +485,11 @@ export class GraphExecutor {
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
         log.warn(`Node '${nodeId}' attempt ${attempt + 1} failed: ${lastError.message}`);
+
+        if (classifyError(lastError) === 'permanent') {
+          log.warn(`Node '${nodeId}' failed with permanent error — skipping remaining retries`);
+          break;
+        }
       }
     }
 

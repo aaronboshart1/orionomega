@@ -3,7 +3,7 @@
  * Workflow state management with checkpoint/restore support.
  */
 
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 /** A single entry in the workflow state store. */
@@ -128,11 +128,15 @@ export class WorkflowState {
       checkpointedAt: new Date().toISOString(),
     };
 
-    await writeFile(
-      join(dir, 'state.json'),
-      JSON.stringify(data, null, 2),
-      'utf-8',
-    );
+    const filePath = join(dir, 'state.json');
+    const tmpPath = filePath + '.tmp';
+    try {
+      await writeFile(tmpPath, JSON.stringify(data, null, 2), 'utf-8');
+      await rename(tmpPath, filePath);
+    } catch (err) {
+      try { await unlink(tmpPath); } catch { /* ignore cleanup failure */ }
+      throw err;
+    }
   }
 
   /**
