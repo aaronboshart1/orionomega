@@ -85,7 +85,7 @@ export type {
 } from './anthropic/index.js';
 
 // Agent
-export type { MainAgentConfig, MainAgentCallbacks, PromptContext } from './agent/index.js';
+export type { MainAgentConfig, MainAgentCallbacks, PromptContext, MemoryEvent } from './agent/index.js';
 export { MainAgent, buildSystemPrompt } from './agent/index.js';
 
 // Memory

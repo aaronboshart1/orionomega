@@ -106,10 +106,22 @@ Shared readline/CLI helpers (colors, `ask`, `choose`, `confirm`, `askSecret`, `m
 Both the chat and orchestration Zustand stores use `persist` middleware with localStorage to survive page refreshes:
 
 - **Chat store** (`orionomega-chat`): persists `messages` (including tool-call messages with full `ToolCallData`)
-- **Orchestration store** (`orionomega-orchestration`): persists `inlineDAGs`, `workflows` (graphState + events per workflow), `activeWorkflowId`, `orchPaneOpen`, `graphState`, `events`
-- Ephemeral state (`activePlan`, `selectedWorker`, `pendingConfirmation`, `isStreaming`) is NOT persisted — it resets on refresh
+- **Orchestration store** (`orionomega-orchestration`): persists `inlineDAGs`, `workflows` (graphState + events per workflow), `activeWorkflowId`, `orchPaneOpen`, `activeOrchTab`, `graphState`, `events`
+- Ephemeral state (`activePlan`, `selectedWorker`, `pendingConfirmation`, `isStreaming`, `memoryEvents`) is NOT persisted — it resets on refresh
 - **Hydration guards**: `useChatHydrated()` and `useOrchHydrated()` hooks prevent flash of empty state during localStorage rehydration; `ChatPane` and `page.tsx` gate rendering on hydration completion
 - Gateway session ID stored in `orionomega_session_id` localStorage key for reconnection
+
+## Memory Feed (Orchestration Pane)
+
+The orchestration pane now opens by default with a "Memory" tab as the first tab, showing a real-time feed of Hindsight memory operations:
+
+- **Core**: `MemoryEvent` type defined in `packages/core/src/agent/main-agent.ts` with ops: `retain`, `recall`, `dedup`, `quality`, `bootstrap`, `flush`, `session_anchor`, `summary`, `self_knowledge`
+- **MemoryBridge**: emits events via `onMemoryEvent` callback for key operations (init, recall, flush, summarize, anchor)
+- **Gateway**: broadcasts `memory_event` WebSocket messages to all clients
+- **Frontend**: `MemoryFeed` component in `packages/web/src/components/orchestration/MemoryFeed.tsx` renders events with color-coded icons per operation type
+- **OrchestrationPane**: tabs for "Memory" (default) and "Activity" (DAG/workflow detail)
+- **page.tsx**: orchestration pane toggle is always visible (no longer gated on `hasWorkflows`)
+- Memory events are ephemeral (not persisted to localStorage), capped at 200
 
 ## Multi-Workflow Tabs
 

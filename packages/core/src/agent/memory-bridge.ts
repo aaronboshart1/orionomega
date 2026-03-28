@@ -15,9 +15,12 @@ import { RetentionEngine } from '../memory/retention-engine.js';
 import { CompactionFlush } from '../memory/compaction-flush.js';
 import { SessionSummarizer } from '../memory/session-summary.js';
 import type { OrionOmegaConfig } from '../config/types.js';
+import type { MemoryEvent } from './main-agent.js';
 import { createLogger } from '../logging/logger.js';
 
 const log = createLogger('memory-bridge');
+
+type MemoryOp = MemoryEvent['op'];
 
 /** Memory subsystem configuration. */
 export interface MemoryConfig {
@@ -46,6 +49,8 @@ export class MemoryBridge {
 
   private activeProjectBank: string | null = null;
   private initialised = false;
+
+  onMemoryEvent?: (op: MemoryOp, detail: string, bank?: string, meta?: Record<string, unknown>) => void;
 
   constructor(
     private readonly config: MemoryConfig,
@@ -129,10 +134,17 @@ export class MemoryBridge {
 
       this.selfKnowledge = new SelfKnowledge(this.hindsightClient);
 
+      if (this.onMemoryEvent) {
+        this.retentionEngine.onMemoryEvent = (op, detail, bank, meta) => {
+          this.onMemoryEvent?.(op as MemoryOp, detail, bank, meta);
+        };
+      }
+
       this.retentionEngine.start();
 
       this.initialised = true;
       log.info('Memory subsystem initialised', { url: hsCfg.url });
+      this.onMemoryEvent?.('bootstrap', 'Memory subsystem initialised', undefined, { url: hsCfg.url });
 
       this.selfKnowledge.bootstrap({
         apiEndpoint: hsCfg.url,
@@ -170,6 +182,7 @@ export class MemoryBridge {
     if (!this.bankManager) return null;
     try {
       this.activeProjectBank = await this.bankManager.ensureProjectBank(task);
+      this.onMemoryEvent?.('bootstrap', `Project bank ready: ${this.activeProjectBank}`, this.activeProjectBank);
       return this.activeProjectBank;
     } catch (err) {
       log.warn('Failed to ensure project bank', {
@@ -191,6 +204,7 @@ export class MemoryBridge {
       const result = await this.hindsightClient.recall('core', task, { maxTokens: 1024 });
       if (result.results.length) {
         memories.push(result.results.map((m) => m.content).join('\n\n'));
+        this.onMemoryEvent?.('recall', `Recalled ${result.results.length} memories from core bank`, 'core', { count: result.results.length });
       }
     } catch (err) {
       log.warn('Core bank recall failed for planning', {
@@ -203,6 +217,7 @@ export class MemoryBridge {
         const result = await this.hindsightClient.recall(this.activeProjectBank, task, { maxTokens: 2048 });
         if (result.results.length) {
           memories.push(result.results.map((m) => m.content).join('\n\n'));
+          this.onMemoryEvent?.('recall', `Recalled ${result.results.length} memories from project bank`, this.activeProjectBank, { count: result.results.length });
         }
       } catch (err) {
         log.warn('Project bank recall failed for planning', {
@@ -225,6 +240,7 @@ export class MemoryBridge {
     try {
       const result = await this.compactionFlush.flush(history, bankId);
       log.info('Memory flushed before compaction', { itemsRetained: result.itemsRetained });
+      this.onMemoryEvent?.('flush', `Flushed ${result.itemsRetained} items to memory`, bankId, { itemsRetained: result.itemsRetained });
     } catch (err) {
       log.warn('Memory flush failed', { error: err instanceof Error ? err.message : String(err) });
     }
@@ -239,6 +255,7 @@ export class MemoryBridge {
     try {
       await this.sessionSummarizer.summarize(history, this.activeProjectBank ?? undefined);
       log.info('Session summarised');
+      this.onMemoryEvent?.('summary', 'Session summary retained', this.activeProjectBank ?? undefined);
     } catch (err) {
       log.warn('Session summary failed', { error: err instanceof Error ? err.message : String(err) });
     }
@@ -248,6 +265,7 @@ export class MemoryBridge {
     if (!this.sessionBootstrap) return;
     try {
       await this.sessionBootstrap.storeSessionAnchor(anchor);
+      this.onMemoryEvent?.('session_anchor', 'Session anchor stored');
     } catch (err) {
       log.warn('Failed to store session anchor', {
         error: err instanceof Error ? err.message : String(err),
@@ -259,6 +277,7 @@ export class MemoryBridge {
     if (!this.selfKnowledge) return;
     try {
       await this.selfKnowledge.retainConfigChange(description);
+      this.onMemoryEvent?.('self_knowledge', `Config change retained: ${description}`);
     } catch (err) {
       log.warn('Failed to retain config change', {
         error: err instanceof Error ? err.message : String(err),

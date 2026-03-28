@@ -85,6 +85,15 @@ export interface InlineDAG {
   nodeOutputPaths?: Record<string, string[]>;
 }
 
+export interface MemoryEvent {
+  id: string;
+  timestamp: string;
+  op: 'retain' | 'recall' | 'dedup' | 'quality' | 'bootstrap' | 'flush' | 'session_anchor' | 'summary' | 'self_knowledge';
+  detail: string;
+  bank?: string;
+  meta?: Record<string, unknown>;
+}
+
 export interface DAGConfirmation {
   dagId: string;
   summary: string;
@@ -105,10 +114,14 @@ interface OrchestrationStore {
   inlineDAGs: Record<string, InlineDAG>;
   pendingConfirmation: DAGConfirmation | null;
   orchPaneOpen: boolean;
+  memoryEvents: MemoryEvent[];
+  activeOrchTab: 'memory' | 'activity';
 
   graphState: GraphState | null;
   events: WorkerEvent[];
 
+  addMemoryEvent: (e: MemoryEvent) => void;
+  setActiveOrchTab: (tab: 'memory' | 'activity') => void;
   setActiveWorkflowId: (id: string | null) => void;
   removeWorkflow: (id: string) => void;
   setGraphState: (s: GraphState) => void;
@@ -142,9 +155,18 @@ export const useOrchestrationStore = create<OrchestrationStore>()(
   selectedWorker: null,
   inlineDAGs: {},
   pendingConfirmation: null,
-  orchPaneOpen: false,
+  orchPaneOpen: true,
+  memoryEvents: [],
+  activeOrchTab: 'memory',
   graphState: null,
   events: [],
+
+  addMemoryEvent: (e) =>
+    set((s) => ({
+      memoryEvents: [...s.memoryEvents.slice(-199), e],
+    })),
+
+  setActiveOrchTab: (tab) => set({ activeOrchTab: tab }),
 
   setActiveWorkflowId: (id) =>
     set((s) => ({
@@ -305,7 +327,9 @@ export const useOrchestrationStore = create<OrchestrationStore>()(
       selectedWorker: null,
       inlineDAGs: {},
       pendingConfirmation: null,
-      orchPaneOpen: false,
+      orchPaneOpen: true,
+      memoryEvents: [],
+      activeOrchTab: 'memory',
     }),
   }),
   {
@@ -315,6 +339,7 @@ export const useOrchestrationStore = create<OrchestrationStore>()(
       workflows: state.workflows,
       activeWorkflowId: state.activeWorkflowId,
       orchPaneOpen: state.orchPaneOpen,
+      activeOrchTab: state.activeOrchTab,
       graphState: state.graphState,
       events: state.events,
       activePlan: state.activePlan,

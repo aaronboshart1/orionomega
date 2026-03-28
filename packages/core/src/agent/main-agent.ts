@@ -94,6 +94,18 @@ export interface MainAgentCallbacks {
 
   /** Hindsight I/O activity state change (connected/busy). */
   onHindsightActivity?: (status: { connected: boolean; busy: boolean }) => void;
+
+  /** Granular memory operation event for live activity feed. */
+  onMemoryEvent?: (event: MemoryEvent) => void;
+}
+
+export interface MemoryEvent {
+  id: string;
+  timestamp: string;
+  op: 'retain' | 'recall' | 'dedup' | 'quality' | 'bootstrap' | 'flush' | 'session_anchor' | 'summary' | 'self_knowledge';
+  detail: string;
+  bank?: string;
+  meta?: Record<string, unknown>;
 }
 
 // ── History ────────────────────────────────────────────────────────────────
@@ -203,6 +215,12 @@ export class MainAgent {
       // Wire hindsight I/O activity tracking to gateway callback
       if (this.callbacks.onHindsightActivity) {
         this.memory.client.onActivity = this.callbacks.onHindsightActivity;
+      }
+
+      if (this.callbacks.onMemoryEvent) {
+        this.memory.onMemoryEvent = (op, detail, bank, meta) => {
+          this.emitMemoryEvent(op, detail, bank, meta);
+        };
       }
 
       // Ensure the conversation bank exists in Hindsight
@@ -856,6 +874,17 @@ export class MainAgent {
   }
 
   private _stepTimers = new Map<string, number>();
+
+  emitMemoryEvent(op: MemoryEvent['op'], detail: string, bank?: string, meta?: Record<string, unknown>): void {
+    this.callbacks.onMemoryEvent?.({
+      id: `mem-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+      timestamp: new Date().toISOString(),
+      op,
+      detail,
+      bank,
+      meta,
+    });
+  }
 
   private emitStep(id: string, name: string, status: ThinkingStepStatus, detail?: string): void {
     const now = Date.now();

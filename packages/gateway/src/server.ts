@@ -272,6 +272,13 @@ async function initMainAgent(): Promise<void> {
         hindsightStatus: status,
       });
     },
+    onMemoryEvent(event) {
+      wsHandler.broadcast({
+        id: randomBytes(8).toString('hex'),
+        type: 'memory_event',
+        memoryEvent: event,
+      });
+    },
 
     // DAG lifecycle callbacks — route through EventStreamer for subscription filtering
     onDAGDispatched(dispatch) {

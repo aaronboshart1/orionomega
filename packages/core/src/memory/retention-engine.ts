@@ -165,6 +165,7 @@ export class RetentionEngine {
   private unsubscribe: (() => void) | null = null;
   /** Map workflowId → bankId, set by the orchestration bridge when dispatching. */
   private workflowBanks = new Map<string, string>();
+  onMemoryEvent?: (op: string, detail: string, bank?: string, meta?: Record<string, unknown>) => void;
 
   constructor(
     private readonly hs: HindsightClient,
@@ -228,12 +229,14 @@ export class RetentionEngine {
         log.debug('Rejected low-quality memory', {
           bankId, context, score: quality.score, threshold, signals: quality.signals,
         });
+        this.onMemoryEvent?.('quality', `Rejected low-quality memory (score: ${quality.score.toFixed(2)})`, bankId, { score: quality.score, context });
         return;
       }
 
       const isDup = await this.hs.isDuplicateContent(bankId, content, this.config.deduplicationThreshold ?? 0.85);
       if (isDup) {
         log.debug('Skipped duplicate memory retention', { bankId, context, length: content.length });
+        this.onMemoryEvent?.('dedup', `Skipped duplicate memory (${context})`, bankId, { context });
         return;
       }
       await this.hs.retainOne(bankId, content, context);
@@ -241,6 +244,7 @@ export class RetentionEngine {
         bankId, context, length: content.length,
         qualityScore: quality.score, signals: quality.signals,
       });
+      this.onMemoryEvent?.('retain', `Retained ${context} memory (quality: ${quality.score.toFixed(2)})`, bankId, { context, score: quality.score });
     } catch (err) {
       log.warn('Failed to retain memory', {
         bankId,

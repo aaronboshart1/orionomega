@@ -1,5 +1,5 @@
 export { MainAgent } from './main-agent.js';
-export type { MainAgentConfig, MainAgentCallbacks } from './main-agent.js';
+export type { MainAgentConfig, MainAgentCallbacks, MemoryEvent } from './main-agent.js';
 
 export { MemoryBridge } from './memory-bridge.js';
 export type { MemoryConfig } from './memory-bridge.js';

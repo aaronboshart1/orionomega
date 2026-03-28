@@ -317,6 +317,13 @@ function bindListeners(ws: ReconnectingWebSocket): void {
         }
         break;
       }
+      case 'memory_event': {
+        const me = msg.memoryEvent;
+        if (me) {
+          useOrchestrationStore.getState().addMemoryEvent(me);
+        }
+        break;
+      }
       default:
         console.debug('[gateway] unhandled message type:', msg.type, msg);
     }

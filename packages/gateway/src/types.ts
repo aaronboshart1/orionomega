@@ -52,7 +52,7 @@ export interface ServerMessage {
     | 'text' | 'thinking' | 'thinking_step' | 'plan' | 'event' | 'status'
     | 'command_result' | 'session_status' | 'error' | 'ack' | 'history'
     | 'dag_dispatched' | 'dag_progress' | 'dag_complete' | 'dag_confirm'
-    | 'hindsight_status';
+    | 'hindsight_status' | 'memory_event';
   /** Identifies which workflow this message relates to (events, status updates, plans). */
   workflowId?: string;
   /** The user message ID this response is answering (set by handleChat). */
@@ -68,6 +68,7 @@ export interface ServerMessage {
   commandResult?: CommandResult;
   sessionStatus?: { model: string; inputTokens: number; outputTokens: number; cacheCreationTokens?: number; cacheReadTokens?: number; maxContextTokens: number; sessionCostUsd?: number };
   hindsightStatus?: { connected: boolean; busy: boolean };
+  memoryEvent?: { id: string; timestamp: string; op: string; detail: string; bank?: string; meta?: Record<string, unknown> };
   step?: { id: string; name: string; status: 'pending' | 'active' | 'done'; startedAt?: number; completedAt?: number; elapsedMs?: number; detail?: string };
   error?: string;
   history?: Array<{ id: string; role: string; content: string; timestamp: string }>;
