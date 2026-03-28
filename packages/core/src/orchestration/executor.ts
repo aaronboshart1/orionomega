@@ -22,6 +22,7 @@ import { CheckpointManager } from './checkpoint.js';
 import { createLogger } from '../logging/logger.js';
 import { readConfig } from '../config/loader.js';
 import { HindsightClient } from '@orionomega/hindsight';
+import { isExternalAction } from '../memory/query-classifier.js';
 
 const log = createLogger('executor');
 
@@ -1173,6 +1174,11 @@ export class GraphExecutor {
   }
 
   private async recallContext(task: string): Promise<string | undefined> {
+    if (isExternalAction(task)) {
+      log.debug('Skipping Hindsight recall for external action task');
+      return undefined;
+    }
+
     try {
       const config = readConfig();
       const hindsightUrl = config.hindsight?.url;

@@ -245,6 +245,12 @@ export class ContextAssembler {
           ? getRecallStrategy(classification)
           : undefined;
 
+        if (queryType === 'external_action') {
+          this.onMemoryEvent?.('recall', `Skipping recall for external action query`, undefined, { queryType, recallTokens: 0 });
+        }
+
+        if (queryType !== 'external_action') {
+
         this.onMemoryEvent?.('recall', `Assembling context (${queryType}, budget: ${recallTokens} tokens)`, undefined, { queryType, recallTokens });
 
         const isShort = this.isShortReply(currentQuery);
@@ -291,6 +297,7 @@ export class ContextAssembler {
               break;
             }
           }
+        }
         }
       } catch (err) {
         log.warn('Hindsight recall failed, continuing with hot window only', {

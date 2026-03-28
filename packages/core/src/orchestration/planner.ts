@@ -11,6 +11,7 @@ import { buildGraph } from './graph.js';
 import { AnthropicClient } from '../anthropic/client.js';
 import { readConfig } from '../config/loader.js';
 import { createLogger } from '../logging/logger.js';
+import { isExternalAction } from '../memory/query-classifier.js';
 import { discoverModels, buildModelGuide, pickModelByTier, type DiscoveredModel } from '../models/model-discovery.js';
 
 const log = createLogger('planner');
@@ -79,7 +80,7 @@ export class Planner {
       : appConfig.models.default;
 
     let infraContext: string | undefined = preRecalledContext;
-    if (!infraContext) {
+    if (!infraContext && !isExternalAction(task)) {
       try {
         const hindsightUrl = appConfig.hindsight?.url;
         if (hindsightUrl) {

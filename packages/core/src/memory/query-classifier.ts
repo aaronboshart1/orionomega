@@ -6,7 +6,8 @@ export type QueryType =
   | 'task_continuation'
   | 'historical_reference'
   | 'decision_lookup'
-  | 'meta_system';
+  | 'meta_system'
+  | 'external_action';
 
 export interface QueryClassification {
   type: QueryType;
@@ -44,11 +45,44 @@ const META_PATTERNS = [
   /\b(help|capabilities|features|settings|config)\b/i,
 ];
 
+const EXTERNAL_ACTION_STRONG = [
+  /^search (the )?(web|internet|online)\b/i,
+  /\bsearch (the )?(web|internet|online) for\b/i,
+  /\bweb search\b/i,
+  /\blook ?up .{1,60} (on |via )(google|the web|the internet|stack ?overflow)\b/i,
+  /\bsearch (for|about) .{1,60} (online|on the web|on google)\b/i,
+  /^(curl|wget) /i,
+  /^(fetch|open|visit|browse|go to|navigate to) https?:\/\//i,
+  /\bfetch (the |this |that )?(url|link|page|site)\b/i,
+  /^(npm|yarn|pnpm|pip|apt|brew|cargo) (install|uninstall|add|remove|run)\b/i,
+  /^(install|uninstall) /i,
+  /^(run|execute) (the |this |that )?(command|script|shell|bash)\b/i,
+  /^(run|execute) ["`']/i,
+];
+
 const CONTINUATION_PATTERNS = [
   /^(yes|no|ok|sure|do it|go ahead|that one|fix|skip|all|fix all|do all|continue|next)\b/i,
   /(?:^|\s)(#\d+|number \d+|\b(first|second|third|fourth|fifth|last|that|those|this|these) (one|option|item|change|suggestion)\b)/i,
   /\b(now|next|then|also|and|plus|add|update|change|modify|remove|delete|rename)\b/i,
 ];
+
+function hasMemoryCues(text: string): boolean {
+  return scorePatterns(text, HISTORICAL_PATTERNS) > 0 ||
+    scorePatterns(text, DECISION_PATTERNS) > 0;
+}
+
+function hasStrongExternalIntent(text: string): boolean {
+  for (const p of EXTERNAL_ACTION_STRONG) {
+    if (p.test(text)) return true;
+  }
+  return false;
+}
+
+export function isExternalAction(text: string): boolean {
+  const trimmed = text.trim();
+  if (hasMemoryCues(trimmed)) return false;
+  return hasStrongExternalIntent(trimmed);
+}
 
 function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
@@ -70,6 +104,15 @@ export function classifyQuery(query: string): QueryClassification {
   const decisionScore = scorePatterns(trimmed, DECISION_PATTERNS);
   const metaScore = scorePatterns(trimmed, META_PATTERNS);
   const continuationScore = scorePatterns(trimmed, CONTINUATION_PATTERNS);
+
+  if (historicalScore === 0 && decisionScore === 0 && hasStrongExternalIntent(trimmed)) {
+    const conf = 0.85;
+    log.debug('Query classified as external_action', {
+      confidence: conf.toFixed(2),
+      tokenEstimate: tokens,
+    });
+    return { type: 'external_action', confidence: conf };
+  }
 
   if (tokens < 8) {
     return { type: 'task_continuation', confidence: 0.9 };
@@ -139,6 +182,16 @@ export function getRecallStrategy(classification: QueryClassification): RecallSt
         minRelevance: 0.3,
         recallBudget: 'mid',
         preferredContextCategories: ['project_update', 'session_summary'],
+        temporalBias: 'recent',
+      };
+
+    case 'external_action':
+      return {
+        convBudgetRatio: 0.0,
+        temporalDiversityRatio: 0.0,
+        minRelevance: 1.0,
+        recallBudget: 'low',
+        preferredContextCategories: [],
         temporalBias: 'recent',
       };
   }

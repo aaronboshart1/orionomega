@@ -13,6 +13,7 @@ import { AnthropicClient } from '../anthropic/client.js';
 import { EventBus } from '../orchestration/event-bus.js';
 import { RetentionEngine } from '../memory/retention-engine.js';
 import { CompactionFlush } from '../memory/compaction-flush.js';
+import { isExternalAction } from '../memory/query-classifier.js';
 import { SessionSummarizer } from '../memory/session-summary.js';
 import type { OrionOmegaConfig } from '../config/types.js';
 import type { MemoryEvent } from './main-agent.js';
@@ -202,6 +203,12 @@ export class MemoryBridge {
    */
   async recallForPlanning(task: string): Promise<string[]> {
     if (!this.hindsightClient) return [];
+
+    if (isExternalAction(task)) {
+      log.debug('Skipping Hindsight recall for external action task');
+      return [];
+    }
+
     const memories: string[] = [];
 
     try {
