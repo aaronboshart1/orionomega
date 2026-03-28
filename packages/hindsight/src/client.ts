@@ -219,14 +219,22 @@ export class HindsightClient {
       budget: tier,
       tierCap,
     });
+    const body: Record<string, unknown> = {
+      query,
+      max_tokens: effectiveMaxTokens,
+      budget: tier,
+    };
+    if (opts?.maxCandidates) {
+      body.max_candidates = opts.maxCandidates;
+    }
+    if (opts?.before) {
+      body.before = opts.before;
+    }
+
     const raw = await this.request<{ results: Array<Record<string, unknown>> }>(
       'POST',
       `${this.bankPath(bankId)}/memories/recall`,
-      {
-        query,
-        max_tokens: effectiveMaxTokens,
-        budget: tier,
-      },
+      body,
     );
 
     const minRelevance = opts?.minRelevance ?? 0.3;
@@ -265,6 +273,109 @@ export class HindsightClient {
       droppedByRelevance: allResults.length - filtered.length,
     });
     return result;
+  }
+
+  async recallWithTemporalDiversity(
+    bankId: string,
+    query: string,
+    opts?: RecallOptions & { temporalDiversityRatio?: number },
+  ): Promise<RecallResult & { lowConfidence: boolean }> {
+    const ratio = Math.max(0, Math.min(1, opts?.temporalDiversityRatio ?? 0.15));
+    const tier = opts?.budget ?? 'mid';
+    const tierCap = BUDGET_TIER_MAX_TOKENS[tier] ?? 4096;
+    const totalTokens = Math.min(opts?.maxTokens ?? tierCap, tierCap);
+
+    const primaryTokens = Math.floor(totalTokens * (1 - ratio));
+    const temporalTokens = totalTokens - primaryTokens;
+
+    const maxCandidates = opts?.maxCandidates ?? this.defaultMaxCandidates(totalTokens);
+
+    const primaryOpts: RecallOptions = {
+      ...opts,
+      maxTokens: primaryTokens,
+      maxCandidates,
+      deduplicate: false,
+    };
+
+    const primaryPromise = this.recall(bankId, query, primaryOpts);
+
+    const temporalPromises: Promise<RecallResult>[] = [];
+    if (temporalTokens >= 200) {
+      const buckets = [
+        { label: 'mid-range', daysBack: 14 },
+        { label: 'older', daysBack: 90 },
+        { label: 'archive', daysBack: 365 },
+      ];
+      const perBucketTokens = Math.floor(temporalTokens / buckets.length);
+      const perBucketCandidates = Math.max(5, Math.floor((maxCandidates * ratio) / buckets.length));
+
+      for (const bucket of buckets) {
+        if (perBucketTokens < 100) continue;
+        const cutoff = new Date();
+        cutoff.setDate(cutoff.getDate() - bucket.daysBack);
+        const temporalOpts: RecallOptions = {
+          ...opts,
+          maxTokens: perBucketTokens,
+          maxCandidates: perBucketCandidates,
+          before: cutoff.toISOString(),
+          minRelevance: Math.max((opts?.minRelevance ?? 0.3) - 0.1, 0.1),
+          deduplicate: false,
+        };
+        temporalPromises.push(
+          this.recall(bankId, query, temporalOpts).catch((err) => {
+            log.verbose(`Temporal diversity query (${bucket.label}) failed`, {
+              bankId,
+              error: err instanceof Error ? err.message : String(err),
+            });
+            return { results: [], tokens_used: 0 };
+          }),
+        );
+      }
+    }
+
+    const [primary, ...temporalResults] = await Promise.all([
+      primaryPromise,
+      ...temporalPromises,
+    ]);
+
+    const merged = [...primary.results];
+    const seenContents = new Set(merged.map((r) => r.content));
+    for (const temporal of temporalResults) {
+      for (const r of temporal.results) {
+        if (!seenContents.has(r.content)) {
+          seenContents.add(r.content);
+          merged.push(r);
+        }
+      }
+    }
+
+    let totalTemporalTokens = 0;
+    for (const t of temporalResults) {
+      totalTemporalTokens += t.tokens_used;
+    }
+
+    const shouldDedup = opts?.deduplicate !== false;
+    const dedupThreshold = opts?.deduplicationThreshold ?? 0.85;
+    let final = merged;
+    if (shouldDedup && final.length > 1) {
+      final.sort((a, b) => b.relevance - a.relevance);
+      final = deduplicateByContent(final, dedupThreshold);
+    }
+
+    const LOW_CONFIDENCE_THRESHOLD = 0.5;
+    const lowConfidence = final.length === 0 || final.every((r) => r.relevance < LOW_CONFIDENCE_THRESHOLD);
+
+    return {
+      results: final,
+      tokens_used: primary.tokens_used + totalTemporalTokens,
+      lowConfidence,
+    };
+  }
+
+  private defaultMaxCandidates(tokenBudget: number): number {
+    if (tokenBudget <= 1024) return 50;
+    if (tokenBudget <= 4096) return 100;
+    return 150;
   }
 
   // ── Mental Models ──────────────────────────────────────────────────

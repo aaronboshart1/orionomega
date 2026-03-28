@@ -63,6 +63,9 @@ The gateway reads from `~/.orionomega/config.yaml`. Defaults:
 - **Fast-path expansion**: Extended conversational regex patterns and lowered word-count thresholds to avoid unnecessary LLM classification calls.
 - **Token budget guardrails**: `streamConversation` accepts `maxInputTokens` (default 100K for main agent) and trims oldest messages when exceeded.
 - **Planner deduplication**: `plan()` accepts `preRecalledContext` to skip redundant Hindsight queries when the caller already has context.
+- **Temporal diversity recall**: `recallWithTemporalDiversity` splits per-bank budgets (configurable ratio, default 15%) into a primary relevance query and multi-bucket temporal queries (14d/90d/365d cutoffs), merging and deduplicating results to break recency bias.
+- **Client-side candidate pre-filtering**: `maxCandidates` parameter caps server-side cross-encoder rerank set, with budget-aware defaults (50/100/150 by token tier).
+- **Relevance score propagation**: Recall results include inline `[relevance: X.XX]` markers in formatted context; a low-confidence warning is prepended when all results score below 0.5.
 
 ## Custom File-Based Slash Commands
 

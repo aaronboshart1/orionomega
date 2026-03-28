@@ -48,6 +48,10 @@ export interface RecallOptions {
   deduplicate?: boolean;
   /** Similarity threshold for retrieval-time deduplication. Default: 0.85. */
   deduplicationThreshold?: number;
+  /** Maximum candidate results to request from the server. Limits cross-encoder reranking cost. */
+  maxCandidates?: number;
+  /** ISO 8601 timestamp — only return memories created before this date (for temporal diversity). */
+  before?: string;
 }
 
 /** A single recalled memory with relevance score. */

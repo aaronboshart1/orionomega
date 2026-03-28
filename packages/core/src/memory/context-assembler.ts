@@ -57,6 +57,8 @@ export interface ContextAssemblerConfig {
   minRelevance?: number;
   /** Similarity threshold for storage-time deduplication. Default: 0.85. */
   storageDeduplicationThreshold?: number;
+  /** Fraction of per-bank recall budget reserved for temporal diversity sampling (0–1). Default: 0.15. */
+  temporalDiversityRatio?: number;
 }
 
 const DEFAULT_HOT_WINDOW = 20;
@@ -94,6 +96,7 @@ export class ContextAssembler {
   private readonly federateBanks: boolean;
   private readonly minRelevance: number;
   private readonly storageDeduplicationThreshold: number;
+  private readonly temporalDiversityRatio: number;
 
   /** Track total messages seen (for logging). */
   private totalMessageCount = 0;
@@ -112,6 +115,7 @@ export class ContextAssembler {
     this.federateBanks = config.federateBanks !== false;
     this.minRelevance = config.minRelevance ?? 0.3;
     this.storageDeduplicationThreshold = config.storageDeduplicationThreshold ?? 0.85;
+    this.temporalDiversityRatio = config.temporalDiversityRatio ?? 0.15;
 
     // Restore hot window from disk if available
     if (this.persistPath) {
@@ -407,16 +411,18 @@ export class ContextAssembler {
       const budget = bank === this.conversationBank ? convShare : otherShare;
       if (budget < 200) return Promise.resolve(null);
 
-      return this.hs!.recall(bank, query, {
+      return this.hs!.recallWithTemporalDiversity(bank, query, {
         maxTokens: budget,
         budget: this.recallBudget,
         minRelevance: this.minRelevance,
+        temporalDiversityRatio: this.temporalDiversityRatio,
       })
         .then((response) => {
           if (!response.results || response.results.length === 0) return null;
           const items = response.results.map((r) => ({
             content: r.content,
             timestamp: r.timestamp || '',
+            relevance: r.relevance,
           }));
           items.sort((a, b) => {
             if (!a.timestamp && !b.timestamp) return 0;
@@ -426,7 +432,8 @@ export class ContextAssembler {
           });
           return {
             bank,
-            items: items.map((i) => i.content),
+            items,
+            lowConfidence: response.lowConfidence,
           };
         })
         .catch((err) => {
@@ -439,7 +446,7 @@ export class ContextAssembler {
     });
 
     const results = (await Promise.all(recallPromises)).filter(Boolean) as
-      Array<{ bank: string; items: string[] }>;
+      Array<{ bank: string; items: Array<{ content: string; timestamp: string; relevance: number }>; lowConfidence: boolean }>;
 
     if (results.length === 0) return null;
 
@@ -449,14 +456,26 @@ export class ContextAssembler {
       return aIsConv - bIsConv;
     });
 
+    const allLowConfidence = results.every((r) => r.lowConfidence);
+
     const sections = results.map((r) => {
       const header = r.bank === this.conversationBank
         ? '## Earlier in this conversation'
         : `## Context from ${r.bank}`;
-      return `${header}\n${r.items.join('\n\n')}`;
+      const formattedItems = r.items.map((i) => {
+        const score = i.relevance.toFixed(2);
+        return `[relevance: ${score}] ${i.content}`;
+      });
+      return `${header}\n${formattedItems.join('\n\n')}`;
     });
 
-    return `[PRIOR CONTEXT — recalled from memory]\n\n${sections.join('\n\n---\n\n')}`;
+    let output = `[PRIOR CONTEXT — recalled from memory]\n\n${sections.join('\n\n---\n\n')}`;
+
+    if (allLowConfidence) {
+      output = `⚠ Low-confidence recall — results below confidence threshold; treat with caution.\n\n${output}`;
+    }
+
+    return output;
   }
 
   // ── Disk Persistence ─────────────────────────────────────────
