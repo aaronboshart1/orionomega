@@ -51,7 +51,7 @@ pnpm --filter @orionomega/gateway start
 The gateway reads from `~/.orionomega/config.yaml`. Defaults:
 - Gateway port: 8000, bind: 0.0.0.0
 - Auth mode: none
-- CORS: http://localhost:*
+- CORS: http://localhost:*, http://*:*, https://*
 - `models.cheap`: `claude-haiku-4-5-20251001` — lightweight model for intent classification, loop judges, and output compression
 
 ## Hindsight Intelligence Layer (Phase 3)
@@ -112,7 +112,7 @@ Shared readline/CLI helpers (colors, `ask`, `choose`, `confirm`, `askSecret`, `m
 - Gateway bind address changed from `127.0.0.1` → `0.0.0.0` in fallback config
 - Frontend WebSocket proxied through Next.js custom server (`server.mjs`) at `/api/gateway/ws` — Replit's proxy doesn't allow direct port access from the browser, so the Next.js server proxies WebSocket upgrades to `localhost:8000`
 - TUI gateway fallback port updated to 8000 (was 7800)
-- `allowedDevOrigins: ['*']` added to `next.config.ts` for Replit's proxied preview
+- `devIndicators: false` added to `next.config.ts` to suppress the Next.js dev toolbar
 - Stale pre-compiled `.js` files removed from `src/app/` and `src/lib/`
 - Legacy `workflow-tracker.ts` component removed (replaced by `workflow-panel.ts`)
 
@@ -122,7 +122,8 @@ Both the chat and orchestration Zustand stores use `persist` middleware with loc
 
 - **Chat store** (`orionomega-chat`): persists `messages` (including tool-call messages with full `ToolCallData`)
 - **Orchestration store** (`orionomega-orchestration`): persists `inlineDAGs`, `workflows` (graphState + events per workflow), `activeWorkflowId`, `orchPaneOpen`, `activeOrchTab`, `graphState`, `events`
-- Ephemeral state (`activePlan`, `selectedWorker`, `pendingConfirmation`, `isStreaming`, `memoryEvents`) is NOT persisted — it resets on refresh
+- Ephemeral state (`pendingConfirmation`, `isStreaming`, `memoryFilter`, `scrollToDagId`, `activitySectionCollapsed`) is NOT persisted — it resets on refresh
+- `activePlan`, `selectedWorker`, and `memoryEvents` ARE persisted via `partialize`
 - **Hydration guards**: `useChatHydrated()` and `useOrchHydrated()` hooks prevent flash of empty state during localStorage rehydration; `ChatPane` and `page.tsx` gate rendering on hydration completion
 - Gateway session ID stored in `orionomega_session_id` localStorage key for reconnection
 
@@ -134,18 +135,17 @@ The orchestration pane now opens by default with a "Memory" tab as the first tab
 - **MemoryBridge**: emits events via `onMemoryEvent` callback for key operations (init, recall, flush, summarize, anchor)
 - **Gateway**: broadcasts `memory_event` WebSocket messages to all clients
 - **Frontend**: `MemoryFeed` component in `packages/web/src/components/orchestration/MemoryFeed.tsx` renders events with color-coded icons per operation type
-- **OrchestrationPane**: tabs for "Memory" (default) and "Activity" (DAG/workflow detail)
-- **page.tsx**: orchestration pane toggle is always visible (no longer gated on `hasWorkflows`)
+- **OrchestrationPane**: single-row tablist with a "Memory" tab (default) and per-workflow tabs rendered inline (no separate WorkflowTabs component)
+- **page.tsx**: orchestration pane toggle is always visible (not gated on workflow existence); uses `orchPaneOpen` from store
 - Memory events are ephemeral (not persisted to localStorage), capped at 200
 
 ## Multi-Workflow Tabs
 
-The orchestration sidebar supports multiple concurrent workflows via per-workflow tabs:
+The orchestration sidebar supports multiple concurrent workflows via per-workflow tabs rendered inline in OrchestrationPane's single-row tablist:
 
-- `packages/web/src/stores/orchestration.ts` — the Zustand store scopes `graphState` and `events` per workflow ID in a `workflows` record, with `activeWorkflowId` controlling which workflow's data is surfaced as top-level `graphState`/`events` for existing consumers
-- `packages/web/src/components/orchestration/WorkflowTabs.tsx` — horizontal tab bar rendered at the top of the orchestration pane when multiple workflows exist; each tab shows workflow name, status dot (with pulse animation for running), and a close button for terminal workflows
-- `packages/web/src/components/orchestration/OrchestrationPane.tsx` — integrates `WorkflowTabs` above the existing DAG/activity/summary layout
-- `packages/web/src/app/page.tsx` — toggle logic uses `Object.keys(workflows).length > 0` instead of `!!graphState` so the pane shows whenever any workflow exists
+- `packages/web/src/stores/orchestration.ts` — the Zustand store scopes `graphState` and `events` per workflow ID in a `workflows` record, with `activeWorkflowId` controlling which workflow's data is surfaced as top-level `graphState`/`events` for existing consumers; `activeOrchTab` is `'memory' | 'workflow'`
+- `packages/web/src/components/orchestration/OrchestrationPane.tsx` — renders a single `role="tablist"` row containing the Memory tab followed by per-workflow tabs (each with status dot, label, pause/resume/stop controls, and close button for terminal workflows). There is no separate `WorkflowTabs.tsx` component.
+- `packages/web/src/app/page.tsx` — the orchestration pane toggle is always visible; rendering is gated on `orchPaneOpen` from the store
 - New workflows auto-select when they start; completed workflows remain as tabs until dismissed
 
 ## Tool Call Visualization

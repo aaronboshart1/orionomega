@@ -1,6 +1,6 @@
 # OrionOmega Skills SDK
 
-> Version 0.1.0 — Reference documentation for skill authors and AI coding agents.
+> Version 0.2.0 — Reference documentation for skill authors and AI coding agents.
 
 ## Table of Contents
 

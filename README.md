@@ -313,13 +313,13 @@ models:
     analysis: claude-haiku-4-20250514
 
 gateway:
-  port: 7800
-  bind: '127.0.0.1'        # local-only by default
+  port: 8000                # default: 8000
+  bind: '127.0.0.1'        # default: 0.0.0.0 (recommended: restrict to localhost)
   auth:
-    mode: api-key
+    mode: api-key           # default: none (recommended: api-key for production)
     keyHash: <hashed key>
   cors:
-    origins: ['http://localhost:*']
+    origins: ['http://localhost:*']  # default includes http://*:* and https://*
 
 hindsight:
   url: http://localhost:8888
