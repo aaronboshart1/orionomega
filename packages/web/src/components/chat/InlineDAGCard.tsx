@@ -130,7 +130,7 @@ export function InlineDAGCard({ dag }: InlineDAGCardProps) {
         </div>
       )}
 
-      {isError && dag.error && (
+      {(isError || isStopped) && dag.error && (
         <p className="mt-2 text-xs text-red-400">{dag.error}</p>
       )}
     </div>

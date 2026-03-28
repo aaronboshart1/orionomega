@@ -135,6 +135,7 @@ interface OrchestrationStore {
   setPendingConfirmation: (c: DAGConfirmation | null) => void;
   setOrchPaneOpen: (open: boolean) => void;
   openOrchPane: (dagId: string) => void;
+  markAllInterrupted: () => void;
   reset: () => void;
 }
 
@@ -316,6 +317,59 @@ export const useOrchestrationStore = create<OrchestrationStore>()(
       selectedWorker: null,
       ...deriveActive(s.workflows, dagId),
     })),
+
+  markAllInterrupted: () =>
+    set((s) => {
+      const activeStatuses = new Set<InlineDAGStatus>(['dispatched', 'running']);
+
+      const updatedDAGs = { ...s.inlineDAGs };
+      let changed = false;
+      for (const [id, dag] of Object.entries(updatedDAGs)) {
+        if (activeStatuses.has(dag.status)) {
+          changed = true;
+          updatedDAGs[id] = {
+            ...dag,
+            status: 'stopped',
+            error: 'Gateway disconnected — run interrupted',
+            nodes: dag.nodes.map((n) =>
+              n.status === 'running'
+                ? { ...n, status: 'error' as const }
+                : n,
+            ),
+          };
+        }
+      }
+
+      const updatedWorkflows = { ...s.workflows };
+      for (const [id, wf] of Object.entries(updatedWorkflows)) {
+        if (wf.graphState && wf.graphState.status !== 'complete' && wf.graphState.status !== 'error' && wf.graphState.status !== 'stopped') {
+          changed = true;
+          const updatedNodes = { ...wf.graphState.nodes };
+          for (const [nid, node] of Object.entries(updatedNodes)) {
+            if (node.status === 'running') {
+              updatedNodes[nid] = { ...node, status: 'error' };
+            }
+          }
+          updatedWorkflows[id] = {
+            ...wf,
+            graphState: {
+              ...wf.graphState,
+              status: 'stopped',
+              nodes: updatedNodes,
+            },
+          };
+        }
+      }
+
+      if (!changed) return s;
+
+      return {
+        inlineDAGs: updatedDAGs,
+        workflows: updatedWorkflows,
+        pendingConfirmation: null,
+        ...deriveActive(updatedWorkflows, s.activeWorkflowId),
+      };
+    }),
 
   reset: () =>
     set({

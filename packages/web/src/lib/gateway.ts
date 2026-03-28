@@ -341,6 +341,9 @@ function bindListeners(ws: ReconnectingWebSocket): void {
     const connStore = useConnectionStore.getState();
     connStore.setGatewayConnected(false);
     connStore.setHindsightStatus(false, false);
+
+    useChatStore.getState().markLastInterrupted();
+    useOrchestrationStore.getState().markAllInterrupted();
   };
 
   ws.onerror = () => {
