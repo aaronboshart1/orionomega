@@ -5,7 +5,6 @@ import {
   ReactFlow,
   Background,
   Controls,
-  MiniMap,
   type Node,
   type Edge,
   useNodesState,
@@ -125,17 +124,6 @@ export function DAGVisualization() {
       <Controls
         showInteractive={false}
         className="!bg-zinc-800 !border-zinc-700 !shadow-lg [&>button]:!bg-zinc-800 [&>button]:!border-zinc-700 [&>button]:!text-zinc-400 [&>button:hover]:!bg-zinc-700"
-      />
-      <MiniMap
-        nodeColor={(node) => {
-          const status = (node.data as Record<string, unknown>)?.status;
-          if (status === 'running') return '#3b82f6';
-          if (status === 'done') return '#22c55e';
-          if (status === 'error') return '#ef4444';
-          return '#3f3f46';
-        }}
-        maskColor="rgba(0,0,0,0.7)"
-        className="!bg-zinc-900 !border-zinc-700"
       />
     </ReactFlow>
   );
