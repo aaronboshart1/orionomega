@@ -225,6 +225,7 @@ export class GraphExecutor {
       this.status = 'complete';
       const emptyResult = this.buildResult('complete', startTime);
       this.writeRunSummaryArtifacts(emptyResult);
+      this.checkpointMgr.remove(this.graph.id);
       return emptyResult;
     }
 
@@ -363,11 +364,7 @@ export class GraphExecutor {
 
       this.writeRunSummaryArtifacts(result);
 
-      if (this.status === 'complete') {
-        this.checkpointMgr.remove(this.graph.id);
-      } else {
-        this.saveCheckpoint();
-      }
+      this.checkpointMgr.remove(this.graph.id);
 
       return result;
     } catch (err) {
