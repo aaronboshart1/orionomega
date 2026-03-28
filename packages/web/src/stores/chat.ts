@@ -13,6 +13,13 @@ export interface ToolCallData {
   nodeLabel?: string;
 }
 
+export interface ReplyToData {
+  messageId: string;
+  content: string;
+  role: 'user' | 'assistant' | 'system';
+  dagId?: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
@@ -32,6 +39,7 @@ export interface ChatMessage {
   dagId?: string;
   toolCall?: ToolCallData;
   interrupted?: boolean;
+  replyTo?: ReplyToData;
 }
 
 interface ChatStore {
@@ -39,6 +47,7 @@ interface ChatStore {
   isStreaming: boolean;
   thinkingContent: string;
   streamingStatus: string;
+  replyTarget: ReplyToData | null;
   addMessage: (msg: ChatMessage) => void;
   setMessages: (msgs: ChatMessage[]) => void;
   appendToLast: (content: string) => void;
@@ -50,6 +59,7 @@ interface ChatStore {
   markLastInterrupted: () => void;
   updateMessage: (id: string, updates: Partial<ChatMessage>) => void;
   clearMessages: () => void;
+  setReplyTarget: (target: ReplyToData | null) => void;
 }
 
 export const useChatStore = create<ChatStore>()(
@@ -59,6 +69,7 @@ export const useChatStore = create<ChatStore>()(
       isStreaming: false,
       thinkingContent: '',
       streamingStatus: '',
+      replyTarget: null,
       addMessage: (msg) => set((s) => ({ messages: [...s.messages, msg] })),
       setMessages: (messages) => set({ messages }),
       appendToLast: (content) =>
@@ -109,6 +120,7 @@ export const useChatStore = create<ChatStore>()(
           messages: s.messages.map((m) => (m.id === id ? { ...m, ...updates } : m)),
         })),
       clearMessages: () => set({ messages: [] }),
+      setReplyTarget: (replyTarget) => set({ replyTarget }),
     }),
     {
       name: 'orionomega-chat',

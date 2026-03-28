@@ -35,6 +35,7 @@ export interface Message {
   timestamp: string;
   type?: 'text' | 'plan' | 'orchestration-update' | 'command-result' | 'event' | 'dag-update' | 'workflow-result';
   metadata?: Record<string, unknown>;
+  replyToId?: string;
 }
 
 /** Serializable session shape (written to disk). */

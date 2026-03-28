@@ -348,17 +348,27 @@ export function useGateway() {
   }, []);
 
   const sendChat = useCallback(
-    (content: string) => {
+    (content: string, replyToId?: string) => {
       const chat = useChatStore.getState();
+      const replyTarget = chat.replyTarget;
+      const msgId = crypto.randomUUID();
       chat.addMessage({
-        id: crypto.randomUUID(),
+        id: msgId,
         role: 'user',
         content,
         timestamp: new Date().toISOString(),
+        replyTo: replyTarget ?? undefined,
       });
       chat.setStreaming(true);
       chat.setStreamingStatus('Thinking…');
-      send({ id: crypto.randomUUID(), type: 'chat', content });
+      const payload: Record<string, unknown> = { id: msgId, type: 'chat', content };
+      if (replyToId && replyTarget) {
+        payload.replyToId = replyToId;
+        payload.replyToContent = replyTarget.content;
+        payload.replyToRole = replyTarget.role;
+        if (replyTarget.dagId) payload.replyToDagId = replyTarget.dagId;
+      }
+      send(payload);
     },
     [send],
   );

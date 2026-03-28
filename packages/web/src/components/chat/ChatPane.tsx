@@ -88,13 +88,22 @@ export function ChatPane() {
 
   const renderItems = useMemo(() => buildRenderItems(messages), [messages]);
 
-  const handleSend = (text: string) => {
+  const handleSend = (text: string, replyToId?: string) => {
     if (text.startsWith('/')) {
       sendCommand(text.slice(1));
     } else {
-      sendChat(text);
+      sendChat(text, replyToId);
     }
   };
+
+  const scrollToMessage = useCallback((messageId: string) => {
+    const idx = renderItems.findIndex(
+      (item) => item.kind === 'message' && item.message.id === messageId,
+    );
+    if (idx >= 0) {
+      virtuosoRef.current?.scrollToIndex({ index: idx, behavior: 'smooth', align: 'center' });
+    }
+  }, [renderItems]);
 
   const scrollToBottom = useCallback(() => {
     virtuosoRef.current?.scrollToIndex({
@@ -128,7 +137,7 @@ export function ChatPane() {
       }
       return (
         <div className="px-6">
-          <MessageBubble key={item.message.id} message={item.message} />
+          <MessageBubble key={item.message.id} message={item.message} onScrollToMessage={scrollToMessage} />
           {item.message.interrupted && (
             <div className="mb-2 ml-1 flex items-center gap-1.5 text-xs text-amber-400/80">
               <AlertOctagon size={12} />
@@ -138,7 +147,7 @@ export function ChatPane() {
         </div>
       );
     },
-    [renderItems],
+    [renderItems, scrollToMessage],
   );
 
   const Footer = useCallback(() => {

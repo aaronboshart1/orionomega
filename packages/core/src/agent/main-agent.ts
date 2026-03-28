@@ -298,7 +298,10 @@ export class MainAgent {
    * Fast-path check for ORCHESTRATE still dispatches to full planner DAG.
    * handleMessage() returns quickly in all cases.
    */
-  async handleMessage(content: string): Promise<void> {
+  async handleMessage(
+    content: string,
+    replyContext?: { messageId: string; content: string; role: string; dagId?: string; workflowId?: string },
+  ): Promise<void> {
     // Ensure init() has completed before processing any message
     if (this.initPromise) {
       await this.initPromise;
@@ -314,8 +317,16 @@ export class MainAgent {
       contentLength: trimmed.length,
       contentPreview: trimmed.slice(0, 200),
       historyLength: this.context.getHistory().length,
+      hasReplyContext: !!replyContext,
+      replyToDagId: replyContext?.dagId,
+      replyToWorkflowId: replyContext?.workflowId,
     });
-    this.pushHistory({ role: 'user', content: trimmed });
+
+    const replyDagId = replyContext?.dagId || replyContext?.workflowId;
+    const userContent = replyContext
+      ? `[Replying to ${replyContext.role} message${replyDagId ? ` (workflow: ${replyDagId})` : ''}: "${replyContext.content.slice(0, 200)}"]\n\n${trimmed}`
+      : trimmed;
+    this.pushHistory({ role: 'user', content: userContent });
 
     this.activeAbort?.abort();
     this.activeAbort = new AbortController();
@@ -380,6 +391,13 @@ export class MainAgent {
           this.callbacks.onText('Interrupted workflows discarded.', false, true);
           return;
         }
+      }
+
+      // 0d. Reply scoped to an active workflow — route follow-up through orchestration
+      if (replyDagId && this.orchestration.isWorkflowActive(replyDagId)) {
+        log.verbose('Route: reply scoped to active workflow', { dagId: replyDagId });
+        await this.respondConversationally(userContent, signal);
+        return;
       }
 
       // 1. Slash command

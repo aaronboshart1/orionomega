@@ -1,11 +1,11 @@
 'use client';
 
 import { useState, useCallback, useRef, useEffect, type KeyboardEvent } from 'react';
-import { Send, Command, X } from 'lucide-react';
+import { Send, Command, X, Reply } from 'lucide-react';
 import { useChatStore } from '@/stores/chat';
 
 interface ChatInputProps {
-  onSend: (text: string) => void;
+  onSend: (text: string, replyToId?: string) => void;
   disabled?: boolean;
 }
 
@@ -42,16 +42,19 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
   const [showPalette, setShowPalette] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const messages = useChatStore((s) => s.messages);
+  const replyTarget = useChatStore((s) => s.replyTarget);
+  const setReplyTarget = useChatStore((s) => s.setReplyTarget);
   const fileCommands = useFileCommands();
   const SLASH_COMMANDS = [...BUILTIN_COMMANDS, ...fileCommands];
 
   const handleSend = useCallback(() => {
     const trimmed = input.trim();
     if (!trimmed || disabled) return;
-    onSend(trimmed);
+    onSend(trimmed, replyTarget?.messageId);
     setInput('');
     setShowPalette(false);
-  }, [input, disabled, onSend]);
+    setReplyTarget(null);
+  }, [input, disabled, onSend, replyTarget, setReplyTarget]);
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -99,6 +102,24 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
 
   return (
     <div className="relative border-t border-zinc-800 px-6 py-4">
+      {replyTarget && (
+        <div className="mb-2 flex items-center gap-2 rounded-lg border border-zinc-700 bg-zinc-800/80 px-3 py-2">
+          <Reply size={14} className="shrink-0 text-blue-400" />
+          <div className="min-w-0 flex-1 text-xs text-zinc-300">
+            <span className="font-medium text-zinc-400">
+              Replying to {replyTarget.role === 'user' ? 'yourself' : 'Assistant'}
+            </span>
+            <p className="mt-0.5 truncate text-zinc-500">{replyTarget.content.replace(/\n/g, ' ').slice(0, 120)}</p>
+          </div>
+          <button
+            onClick={() => setReplyTarget(null)}
+            className="shrink-0 text-zinc-500 hover:text-zinc-300"
+          >
+            <X size={14} />
+          </button>
+        </div>
+      )}
+
       {showPalette && (
         <div className="absolute bottom-full left-6 right-6 mb-2 overflow-hidden rounded-xl border border-zinc-700 bg-zinc-900 shadow-xl">
           <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-2">

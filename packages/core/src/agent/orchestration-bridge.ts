@@ -129,6 +129,9 @@ export class OrchestrationBridge {
   /** Number of currently running workflows. */
   get workflowCount(): number { return this.activeWorkflows.size; }
 
+  /** Check if a specific workflow is currently active. */
+  isWorkflowActive(workflowId: string): boolean { return this.activeWorkflows.has(workflowId); }
+
   /** Whether there are any human gate requests awaiting approval. */
   get hasPendingGates(): boolean { return this.pendingGates.size > 0; }
 

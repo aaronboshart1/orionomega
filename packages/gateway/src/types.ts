@@ -33,6 +33,14 @@ export interface ClientMessage {
   workflowId?: string;
   /** DAG confirmation response fields. */
   dagAction?: 'approve' | 'reject';
+  /** ID of the message being replied to (reply-to-message feature). */
+  replyToId?: string;
+  /** Content of the referenced message (sent by client for reliable context). */
+  replyToContent?: string;
+  /** Role of the referenced message sender. */
+  replyToRole?: string;
+  /** DAG/workflow ID associated with the referenced message. */
+  replyToDagId?: string;
 }
 
 /** Gateway → Client message envelope. */

@@ -269,6 +269,7 @@ export class WebSocketHandler {
       messageId: msg.id,
       contentLength: content.length,
       contentPreview: content.slice(0, 200),
+      replyToId: msg.replyToId,
     });
 
     this.sessionManager.addMessage(conn.sessionId, {
@@ -277,6 +278,7 @@ export class WebSocketHandler {
       content,
       timestamp: new Date().toISOString(),
       type: 'text',
+      replyToId: msg.replyToId,
     });
 
     // Acknowledge receipt
@@ -286,10 +288,33 @@ export class WebSocketHandler {
       content: msg.id,
     });
 
+    let replyContext: { messageId: string; content: string; role: string; dagId?: string; workflowId?: string } | undefined;
+    if (msg.replyToId) {
+      const sessionMessages = session.messages ?? [];
+      const referencedMsg = sessionMessages.find((m: { id: string }) => m.id === msg.replyToId);
+      if (referencedMsg) {
+        replyContext = {
+          messageId: referencedMsg.id,
+          content: referencedMsg.content,
+          role: referencedMsg.role,
+          dagId: referencedMsg.metadata?.dagId as string | undefined,
+          workflowId: referencedMsg.metadata?.workflowId as string | undefined,
+        };
+      } else if (msg.replyToContent) {
+        replyContext = {
+          messageId: msg.replyToId,
+          content: msg.replyToContent,
+          role: msg.replyToRole || 'assistant',
+          dagId: msg.replyToDagId,
+          workflowId: msg.replyToDagId,
+        };
+      }
+    }
+
     // Route to MainAgent if available
     if (this.mainAgent) {
-      log.verbose('Routing to MainAgent');
-      this.mainAgent.handleMessage(content).catch((err) => {
+      log.verbose('Routing to MainAgent', { hasReplyContext: !!replyContext });
+      this.mainAgent.handleMessage(content, replyContext).catch((err) => {
         log.error('MainAgent.handleMessage error', { error: err instanceof Error ? err.message : String(err) });
         this.send(conn.ws, {
           id: randomBytes(8).toString('hex'),

@@ -9,9 +9,11 @@ import { DAGConfirmationCard } from './DAGConfirmationCard';
 import { ToolCallCard } from './ToolCallCard';
 import { MarkdownContent } from './MarkdownContent';
 import { useGateway } from '@/lib/gateway';
+import { Reply } from 'lucide-react';
 
 interface MessageBubbleProps {
   message: ChatMessage;
+  onScrollToMessage?: (messageId: string) => void;
 }
 
 function formatPlainText(content: string) {
@@ -24,13 +26,40 @@ function formatPlainText(content: string) {
   return parts;
 }
 
-export function MessageBubble({ message }: MessageBubbleProps) {
-  const { role, content, type, dagId } = message;
+function truncateContent(text: string, maxLen = 80): string {
+  const single = text.replace(/\n/g, ' ').trim();
+  return single.length > maxLen ? single.slice(0, maxLen) + '…' : single;
+}
+
+function ReplyButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className="absolute -top-1 right-0 flex h-6 w-6 items-center justify-center rounded-full bg-zinc-700 text-zinc-400 opacity-0 shadow transition-opacity hover:bg-zinc-600 hover:text-zinc-200 group-hover:opacity-100"
+      title="Reply"
+    >
+      <Reply size={12} />
+    </button>
+  );
+}
+
+export function MessageBubble({ message, onScrollToMessage }: MessageBubbleProps) {
+  const { role, content, type, dagId, replyTo } = message;
   const isStreaming = useChatStore((s) => s.isStreaming);
   const messages = useChatStore((s) => s.messages);
+  const setReplyTarget = useChatStore((s) => s.setReplyTarget);
   const inlineDAGs = useOrchestrationStore((s) => s.inlineDAGs);
   const pendingConfirmation = useOrchestrationStore((s) => s.pendingConfirmation);
   const { respondToConfirmation } = useGateway();
+
+  const handleReply = () => {
+    setReplyTarget({
+      messageId: message.id,
+      content: message.content,
+      role: message.role,
+      dagId: message.dagId,
+    });
+  };
 
   const isLastMessage = messages.length > 0 && messages[messages.length - 1].id === message.id;
   const isActivelyStreaming = isStreaming && isLastMessage && role === 'assistant';
@@ -38,8 +67,8 @@ export function MessageBubble({ message }: MessageBubbleProps) {
   if (type === 'dag-dispatched' && dagId) {
     const dag = inlineDAGs[dagId];
     return (
-      <div className="my-3 flex justify-start">
-        <div className="max-w-[85%]">
+      <div className="group my-3 flex justify-start">
+        <div className="relative max-w-[85%]">
           {dag ? (
             <InlineDAGCard dag={dag} />
           ) : (
@@ -47,6 +76,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
               <MarkdownContent content={content} />
             </div>
           )}
+          <ReplyButton onClick={handleReply} />
         </div>
       </div>
     );
@@ -68,8 +98,8 @@ export function MessageBubble({ message }: MessageBubbleProps) {
   if (type === 'dag-complete' && dagId) {
     const dag = inlineDAGs[dagId];
     return (
-      <div className="my-3 flex justify-start">
-        <div className="max-w-[85%]">
+      <div className="group my-3 flex justify-start">
+        <div className="relative max-w-[85%]">
           {dag ? (
             <RunSummaryCard dag={dag} />
           ) : (
@@ -77,6 +107,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
               <MarkdownContent content={content} />
             </div>
           )}
+          <ReplyButton onClick={handleReply} />
         </div>
       </div>
     );
@@ -94,10 +125,11 @@ export function MessageBubble({ message }: MessageBubbleProps) {
 
   if (role === 'system') {
     return (
-      <div className="my-3 flex justify-center">
-        <div className="max-w-md rounded-lg bg-zinc-800/50 px-4 py-2 text-center text-xs text-zinc-400">
+      <div className="group my-3 flex justify-center">
+        <div className="relative max-w-md rounded-lg bg-zinc-800/50 px-4 py-2 text-center text-xs text-zinc-400">
           {type === 'command-result' && '\u26A1 '}
           <MarkdownContent content={content} />
+          <ReplyButton onClick={handleReply} />
         </div>
       </div>
     );
@@ -105,16 +137,36 @@ export function MessageBubble({ message }: MessageBubbleProps) {
 
   const isUser = role === 'user';
 
+  const replyQuote = replyTo ? (
+    <button
+      onClick={() => onScrollToMessage?.(replyTo.messageId)}
+      className="mb-1.5 flex w-full cursor-pointer items-start gap-1.5 rounded-lg border-l-2 border-zinc-500 bg-zinc-700/40 px-2.5 py-1.5 text-left text-xs text-zinc-400 transition-colors hover:bg-zinc-700/60"
+    >
+      <Reply size={12} className="mt-0.5 shrink-0 rotate-180" />
+      <span className="min-w-0 truncate">
+        <span className="font-medium text-zinc-300">
+          {replyTo.role === 'user' ? 'You' : 'Assistant'}
+        </span>
+        {' · '}
+        {truncateContent(replyTo.content)}
+      </span>
+    </button>
+  ) : null;
+
   return (
-    <div className={`my-3 flex ${isUser ? 'justify-end' : 'justify-start'}`}>
-      <div
-        className={`max-w-[80%] rounded-2xl px-4 py-3 text-sm leading-relaxed ${
-          isUser
-            ? 'bg-blue-600 text-white'
-            : 'bg-zinc-800 text-zinc-100'
-        }`}
-      >
-        {isUser ? formatPlainText(content) : <MarkdownContent content={content} isStreaming={isActivelyStreaming} />}
+    <div className={`group my-3 flex ${isUser ? 'justify-end' : 'justify-start'}`}>
+      <div className="relative max-w-[80%]">
+        {replyQuote}
+        <div
+          className={`rounded-2xl px-4 py-3 text-sm leading-relaxed ${
+            isUser
+              ? 'bg-blue-600 text-white'
+              : 'bg-zinc-800 text-zinc-100'
+          }`}
+        >
+          {isUser ? formatPlainText(content) : <MarkdownContent content={content} isStreaming={isActivelyStreaming} />}
+        </div>
+        <ReplyButton onClick={handleReply} />
       </div>
     </div>
   );
