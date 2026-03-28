@@ -22,8 +22,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" className="dark overflow-hidden">
-      <body className={`${inter.className} h-dvh bg-[var(--background)] text-[var(--foreground)] antialiased overflow-hidden`}>
+    <html lang="en" className="dark">
+      <body className={`${inter.className} bg-[var(--background)] text-[var(--foreground)] antialiased overflow-hidden`}>
         {children}
         <ToastContainer />
       </body>
