@@ -133,18 +133,54 @@ async function initMainAgent(): Promise<void> {
     autoResume: fullConfig?.orchestration?.autoResume ?? true,
   };
 
-  // Stable IDs for streaming — each new response starts a fresh ID,
-  // but all chunks within the same stream share it so the TUI can
-  // assemble them into a single message bubble.
   let currentTextId = randomBytes(8).toString('hex');
   let currentThinkingId = randomBytes(8).toString('hex');
-
-  // Accumulate streamed text so we can persist the FULL response,
-  // not just the empty "done" signal.
   let streamBuffer = '';
+
+  const bgStreamState = new Map<string, { textId: string; buffer: string }>();
 
   const callbacks: MainAgentCallbacks = {
     onText(text, streaming, done, workflowId) {
+      if (workflowId) {
+        let state = bgStreamState.get(workflowId);
+        if (!state) {
+          state = { textId: randomBytes(8).toString('hex'), buffer: '' };
+          bgStreamState.set(workflowId, state);
+        }
+
+        wsHandler.broadcast({
+          id: state.textId,
+          type: 'text',
+          content: text,
+          streaming,
+          done,
+          workflowId,
+        });
+
+        if (streaming && !done) {
+          state.buffer += text;
+        }
+
+        if (done || !streaming) {
+          const fullContent = streaming ? (state.buffer + (text || '')) : text;
+          if (fullContent) {
+            const sid = sessionManager.listSessions()[0]?.id;
+            if (sid) {
+              sessionManager.addMessage(sid, {
+                id: state.textId,
+                role: 'assistant',
+                content: fullContent,
+                timestamp: new Date().toISOString(),
+                type: 'text',
+                metadata: { workflowId, background: true },
+              });
+            }
+          }
+          bgStreamState.delete(workflowId);
+        }
+        return;
+      }
+
       wsHandler.broadcast({
         id: currentTextId,
         type: 'text',
@@ -154,16 +190,12 @@ async function initMainAgent(): Promise<void> {
         workflowId,
       });
 
-      // Accumulate streamed chunks
       if (streaming && !done) {
         streamBuffer += text;
       }
 
-      // Store the full accumulated response when the stream completes
       if (done || !streaming) {
-        // For non-streaming messages, use the text directly.
-        // For streaming, use the accumulated buffer.
-        const fullContent = streaming ? streamBuffer : text;
+        const fullContent = streaming ? (streamBuffer + (text || '')) : text;
 
         if (fullContent) {
           const sid = sessionManager.listSessions()[0]?.id;
@@ -178,28 +210,29 @@ async function initMainAgent(): Promise<void> {
           }
         }
 
-        // Reset buffer and rotate ID for the next response
         streamBuffer = '';
         currentTextId = randomBytes(8).toString('hex');
       }
     },
-    onThinking(text, streaming, done) {
+    onThinking(text, streaming, done, workflowId) {
       wsHandler.broadcast({
         id: currentThinkingId,
         type: 'thinking',
         thinking: text,
         streaming,
         done,
+        workflowId,
       });
       if (done || !streaming) {
         currentThinkingId = randomBytes(8).toString('hex');
       }
     },
-    onThinkingStep(step: { id: string; name: string; status: 'pending' | 'active' | 'done'; startedAt?: number; completedAt?: number; elapsedMs?: number; detail?: string }) {
+    onThinkingStep(step: { id: string; name: string; status: 'pending' | 'active' | 'done'; startedAt?: number; completedAt?: number; elapsedMs?: number; detail?: string }, workflowId?: string) {
       wsHandler.broadcast({
         id: randomBytes(8).toString('hex'),
         type: 'thinking_step',
         step,
+        workflowId,
       });
     },
     onPlan(plan) {

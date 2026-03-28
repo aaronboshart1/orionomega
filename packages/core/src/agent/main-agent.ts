@@ -76,8 +76,8 @@ export interface ThinkingStep {
 
 export interface MainAgentCallbacks {
   onText: (text: string, streaming: boolean, done: boolean, workflowId?: string) => void;
-  onThinking: (text: string, streaming: boolean, done: boolean) => void;
-  onThinkingStep?: (step: ThinkingStep) => void;
+  onThinking: (text: string, streaming: boolean, done: boolean, workflowId?: string) => void;
+  onThinkingStep?: (step: ThinkingStep, workflowId?: string) => void;
   /** @deprecated Use onDAGConfirm for guarded plans. Kept for backward compat during migration. */
   onPlan: (plan: PlannerOutput) => void;
   onEvent: (event: WorkerEvent) => void;
@@ -144,6 +144,15 @@ export class MainAgent {
   private availableSkills: string[] = [];
   private interruptedWorkflows: WorkflowCheckpoint[] = [];
   private activeAbort: AbortController | null = null;
+  private foregroundRunId: string | null = null;
+  private foregroundUserMessage: string = '';
+  private isActiveConversation: boolean = false;
+  private readonly backgroundConversations = new Map<string, {
+    id: string;
+    abortController: AbortController;
+    startedAt: number;
+    userMessage: string;
+  }>();
   private commandFileLoader: CommandFileLoader | null = null;
 
   constructor(config: MainAgentConfig, callbacks: MainAgentCallbacks) {
@@ -406,11 +415,33 @@ export class MainAgent {
 
     this.pushHistory({ role: 'user', content: userContent });
 
-    this.activeAbort?.abort();
+    if (trimmed.startsWith('/')) {
+      log.verbose('Route: slash command (pre-detach)', { command: trimmed.slice(0, 80) });
+      await this.handleCommand(trimmed);
+      return;
+    }
+
+    if (this.foregroundRunId && this.activeAbort && !this.activeAbort.signal.aborted && this.isActiveConversation) {
+      const detachedId = this.foregroundRunId;
+
+      this.callbacks.onText('', true, true);
+
+      this.backgroundConversations.set(detachedId, {
+        id: detachedId,
+        abortController: this.activeAbort,
+        startedAt: Date.now(),
+        userMessage: this.foregroundUserMessage,
+      });
+      log.info('Detached foreground conversation to background', { runId: detachedId });
+      this.callbacks.onText(`[Background: previous conversation continues as ${detachedId.slice(0, 12)}]`, false, true);
+    }
+
+    const runId = `conv-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    this.foregroundRunId = runId;
+    this.foregroundUserMessage = userContent;
     this.activeAbort = new AbortController();
     const signal = this.activeAbort.signal;
 
-    // Evaluate for preference patterns (fire-and-forget)
     if (this.memory.retention) {
       this.memory.retention.evaluateUserMessage(trimmed, this.memory.projectBank ?? undefined).catch((err) => {
         log.debug('User message evaluation failed', { error: err instanceof Error ? err.message : String(err) });
@@ -418,7 +449,6 @@ export class MainAgent {
     }
 
     try {
-      // 0a. Human gate / DAG confirmation resolution
       if (this.orchestration.hasPendingGates && /^(allow|approve|yes|y|deny|reject|no|n)$/i.test(trimmed)) {
         const gates = this.orchestration.listPendingGates();
         if (gates.length > 0) {
@@ -428,7 +458,6 @@ export class MainAgent {
         }
       }
 
-      // 0a'. DAG confirmation resolution (guarded operations)
       if (this.orchestration.hasPendingConfirmations) {
         const confirmed = /^(allow|approve|yes|y|go|do\s*it|lgtm)$/i.test(trimmed);
         const rejected = /^(deny|reject|no|n|cancel|stop)$/i.test(trimmed);
@@ -438,7 +467,6 @@ export class MainAgent {
         }
       }
 
-      // 0b. Pending plan + "do it" (backward compat for old plan approval flow)
       if (this.orchestration.hasPendingPlans && this.orchestration.latestPendingPlanId && isImmediateExecution(trimmed)) {
         log.verbose('Route: approve pending plan (legacy)', { planId: this.orchestration.latestPendingPlanId });
         await this.orchestration.handlePlanResponse(
@@ -448,7 +476,6 @@ export class MainAgent {
         return;
       }
 
-      // 0c. Checkpoint resume / discard
       if (this.interruptedWorkflows.length > 0) {
         const lower = trimmed.toLowerCase().trim();
         if (/^resume( all)?$/.test(lower)) {
@@ -471,17 +498,9 @@ export class MainAgent {
         }
       }
 
-      // 0d. Reply scoped to an active workflow — route follow-up through orchestration
       if (replyDagId && this.orchestration.isWorkflowActive(replyDagId)) {
         log.verbose('Route: reply scoped to active workflow', { dagId: replyDagId });
-        await this.respondConversationally(userContent, signal);
-        return;
-      }
-
-      // 1. Slash command
-      if (trimmed.startsWith('/')) {
-        log.verbose('Route: slash command', { command: trimmed.slice(0, 80) });
-        await this.handleCommand(trimmed);
+        await this.respondConversationally(userContent, signal, runId);
         return;
       }
 
@@ -501,7 +520,7 @@ export class MainAgent {
         log.verbose('Route: CHAT fast-path');
         this.emitStep('route', 'Routing request', 'done', 'Chat fast-path');
         this.callbacks.onThinking('Thinking…', true, false);
-        await this.respondConversationally(userContent, signal);
+        await this.respondConversationally(userContent, signal, runId);
         return;
       }
 
@@ -528,7 +547,7 @@ export class MainAgent {
 
       switch (intent) {
         case 'CHAT':
-          await this.respondConversationally(userContent, signal);
+          await this.respondConversationally(userContent, signal, runId);
           break;
         case 'ORCHESTRATE':
         default:
@@ -545,6 +564,9 @@ export class MainAgent {
       log.error('handleMessage error', { error: msg });
       this.callbacks.onText(`Something went wrong: ${msg}`, false, true);
     } finally {
+      if (this.foregroundRunId === runId) {
+        this.foregroundRunId = null;
+      }
       if (this.activeAbort?.signal === signal) {
         this.activeAbort = null;
       }
@@ -592,7 +614,10 @@ export class MainAgent {
     try {
       // Normalize: commands may arrive with or without the leading slash
       const raw = command.trim().toLowerCase();
-      const cmd = raw.startsWith('/') ? raw : `/${raw}`;
+      const spaceIdx = raw.indexOf(' ');
+      const cmdWord = spaceIdx > 0 ? raw.slice(0, spaceIdx) : raw;
+      const args = spaceIdx > 0 ? raw.slice(spaceIdx + 1) : '';
+      const cmd = cmdWord.startsWith('/') ? cmdWord : `/${cmdWord}`;
 
       // Client-side commands that should never reach the server
       if (cmd === '/exit' || cmd === '/quit' || cmd === '/q') {
@@ -610,7 +635,9 @@ export class MainAgent {
             'Available commands:',
             '  /workflows — List all active workflows',
             '  /status    — Session and system status',
-            '  /stop      — Stop the active workflow',
+            '  /stop      — Stop the active conversation or workflow',
+            '  /stop all  — Stop all conversations and workflows',
+            '  /stop <id> — Stop a specific background conversation',
             '  /pause     — Pause before next layer',
             '  /resume    — Resume a paused workflow',
             '  /plan      — Show the current execution plan',
@@ -693,8 +720,8 @@ export class MainAgent {
         }
       }
 
-      if (cmd === "/skills" || cmd.startsWith("/skills ")) {
-        await this.handleSkillsCommand(cmd);
+      if (cmd === "/skills") {
+        await this.handleSkillsCommand(args ? `${cmd} ${args}` : cmd);
         return;
       }
 
@@ -732,20 +759,79 @@ export class MainAgent {
       }
 
       if (cmd === '/stop') {
+        const stopArg = args.trim();
+        if (stopArg === 'all') {
+          let stoppedCount = 0;
+          if (this.activeAbort && !this.activeAbort.signal.aborted) {
+            this.activeAbort.abort();
+            stoppedCount++;
+          }
+          for (const [id, bg] of this.backgroundConversations) {
+            bg.abortController.abort();
+            this.backgroundConversations.delete(id);
+            stoppedCount++;
+          }
+          this.orchestration.stopAll();
+          this.callbacks.onCommandResult({
+            command: '/stop all', success: true,
+            message: stoppedCount > 0 ? `Stopped ${stoppedCount} conversation(s) and all workflows.` : 'Stopped all workflows.',
+          });
+          return;
+        }
         if (workflowId && this.orchestration?.commands) {
           const orchResult = await this.orchestration.commands.handle(`/stop ${workflowId}`);
           this.callbacks.onCommandResult({ command: '/stop', success: orchResult.success, message: orchResult.message });
+        } else if (stopArg) {
+          const matches = Array.from(this.backgroundConversations.entries())
+            .filter(([id]) => id === stopArg || id.startsWith(stopArg));
+          if (matches.length === 1) {
+            const [id, bg] = matches[0];
+            bg.abortController.abort();
+            this.backgroundConversations.delete(id);
+            this.callbacks.onCommandResult({
+              command: '/stop', success: true,
+              message: `Stopped background conversation ${id.slice(0, 12)}.`,
+            });
+          } else if (matches.length > 1) {
+            const list = matches.map(([id]) => `  - ${id}`).join('\n');
+            this.callbacks.onCommandResult({
+              command: '/stop', success: false,
+              message: `Ambiguous ID "${stopArg}" matches ${matches.length} conversations:\n${list}`,
+            });
+          } else if (this.orchestration?.commands) {
+            const orchResult = await this.orchestration.commands.handle(`/stop ${stopArg}`);
+            this.callbacks.onCommandResult({ command: '/stop', success: orchResult.success, message: orchResult.message });
+          } else {
+            this.callbacks.onCommandResult({
+              command: '/stop', success: false,
+              message: `No conversation or workflow matching "${stopArg}".`,
+            });
+          }
         } else {
           let stopped = false;
           if (this.activeAbort && !this.activeAbort.signal.aborted) {
             this.activeAbort.abort();
             stopped = true;
           }
-          this.orchestration.stopAll();
-          this.callbacks.onCommandResult({
-            command: '/stop', success: true,
-            message: stopped ? 'Stopped.' : 'Nothing running to stop.',
-          });
+          if (stopped) {
+            this.callbacks.onCommandResult({
+              command: '/stop', success: true,
+              message: 'Stopped.',
+            });
+          } else if (this.backgroundConversations.size > 0) {
+            const bgList = Array.from(this.backgroundConversations.values())
+              .map((bg) => `  - ${bg.id} (running for ${Math.round((Date.now() - bg.startedAt) / 1000)}s)`)
+              .join('\n');
+            this.callbacks.onCommandResult({
+              command: '/stop', success: true,
+              message: `No foreground conversation to stop. Background conversations:\n${bgList}\nUse /stop <id> or /stop all.`,
+            });
+          } else {
+            this.callbacks.onCommandResult({
+              command: '/stop', success: true,
+              message: 'Nothing running to stop.',
+            });
+          }
         }
         return;
       }
@@ -758,7 +844,7 @@ export class MainAgent {
         return;
       }
 
-      const orchCmd = workflowId ? `${cmd} ${workflowId}` : cmd;
+      const orchCmd = workflowId ? `${cmd} ${workflowId}` : (args ? `${cmd} ${args}` : cmd);
       const orchResult = await this.orchestration.commands.handle(orchCmd);
       if (orchResult.success || !orchResult.message.startsWith('Unknown command')) {
         this.callbacks.onCommandResult({ command: cmd, success: orchResult.success, message: orchResult.message });
@@ -966,20 +1052,52 @@ export class MainAgent {
     this.callbacks.onThinkingStep?.(step);
   }
 
-  private async respondConversationally(userMessage: string, abortSignal?: AbortSignal): Promise<void> {
-    this.emitStep('context', 'Assembling context', 'active');
-    this.callbacks.onThinking('Assembling context…', true, false);
+  private async respondConversationally(userMessage: string, abortSignal?: AbortSignal, runId?: string): Promise<void> {
+    const effectiveRunId = runId || `conv-${Date.now().toString(36)}`;
+    let wasDetached = this.backgroundConversations.has(effectiveRunId);
+    if (!wasDetached) {
+      this.isActiveConversation = true;
+    }
 
-    // Assemble context: hot window + Hindsight recall (parallel with prompt build)
+    const checkDetached = () => {
+      if (!wasDetached && this.backgroundConversations.has(effectiveRunId)) {
+        wasDetached = true;
+      }
+      return wasDetached;
+    };
+
+    const wrappedOnText = (text: string, streaming: boolean, done: boolean) => {
+      checkDetached();
+      this.callbacks.onText(text, streaming, done, wasDetached ? effectiveRunId : undefined);
+    };
+
+    const wrappedOnThinking = (text: string, streaming: boolean, done: boolean) => {
+      checkDetached();
+      this.callbacks.onThinking(text, streaming, done, wasDetached ? effectiveRunId : undefined);
+    };
+
+    const wrappedOnThinkingStep = this.callbacks.onThinkingStep
+      ? (step: ThinkingStep) => {
+          checkDetached();
+          this.callbacks.onThinkingStep!(step, wasDetached ? effectiveRunId : undefined);
+        }
+      : undefined;
+
+    if (!wasDetached) {
+      this.emitStep('context', 'Assembling context', 'active');
+    }
+    wrappedOnThinking('Assembling context…', true, false);
+
     const [systemPrompt, assembled] = await Promise.all([
       this.getSystemPrompt(),
       this.context.assemble(userMessage),
     ]);
 
     const msgCount = assembled.hotMessages.length + (assembled.priorContext ? 2 : 0);
-    this.emitStep('context', 'Assembling context', 'done', `${msgCount} messages assembled`);
+    if (!checkDetached()) {
+      this.emitStep('context', 'Assembling context', 'done', `${msgCount} messages assembled`);
+    }
 
-    // Build messages: prior context (if any) + hot window
     const messages: AnthropicMessage[] = [];
     if (assembled.priorContext) {
       messages.push({ role: 'user', content: `[PRIOR CONTEXT]\n${assembled.priorContext}` });
@@ -992,8 +1110,10 @@ export class MainAgent {
       })),
     );
 
-    this.emitStep('llm', 'Generating response', 'active', `Model: ${this.config.model}`);
-    this.callbacks.onThinking('Generating response…', true, false);
+    if (!checkDetached()) {
+      this.emitStep('llm', 'Generating response', 'active', `Model: ${this.config.model}`);
+    }
+    wrappedOnThinking('Generating response…', true, false);
 
     try {
       const result = await streamConversation({
@@ -1002,13 +1122,15 @@ export class MainAgent {
         systemPrompt,
         messages,
         workspaceDir: this.config.workspaceDir,
-        onText: this.callbacks.onText,
-        onThinking: this.callbacks.onThinking,
-        onThinkingStep: this.callbacks.onThinkingStep ? (step) => this.callbacks.onThinkingStep!(step as ThinkingStep) : undefined,
+        onText: wrappedOnText,
+        onThinking: wrappedOnThinking,
+        onThinkingStep: wrappedOnThinkingStep ? (step) => wrappedOnThinkingStep(step as ThinkingStep) : undefined,
         maxInputTokens: 100_000,
         abortSignal,
       });
-      this.emitStep('llm', 'Generating response', 'done');
+      if (!checkDetached()) {
+        this.emitStep('llm', 'Generating response', 'done');
+      }
       this.cumulativeInputTokens += result.inputTokens;
       this.cumulativeOutputTokens += result.outputTokens;
       this.cumulativeCacheCreationTokens += result.cacheCreationTokens;
@@ -1017,14 +1139,28 @@ export class MainAgent {
         result.inputTokens, result.outputTokens,
         result.cacheCreationTokens, result.cacheReadTokens,
       );
-      this.pushHistory({ role: "assistant", content: result.text });
+      if (!wasDetached) {
+        this.pushHistory({ role: "assistant", content: result.text });
+      } else {
+        log.info('Background conversation completed, appending to history', { runId: effectiveRunId, textLength: result.text.length });
+        this.pushHistory({ role: "assistant", content: `[Background ${effectiveRunId.slice(0, 12)}]: ${result.text}` });
+      }
       this.emitSessionStatus();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      log.error('Conversational response error', { error: msg });
+      log.error('Conversational response error', { error: msg, runId: effectiveRunId, isBackground: wasDetached });
       const fallback = 'I seem to be having trouble reaching my language centre. Give me a moment.';
-      this.callbacks.onText(fallback, false, true);
-      this.pushHistory({ role: 'assistant', content: fallback });
+      wrappedOnText(fallback, false, true);
+      if (!wasDetached) {
+        this.pushHistory({ role: 'assistant', content: fallback });
+      }
+    } finally {
+      if (runId) {
+        this.backgroundConversations.delete(runId);
+      }
+      if (this.foregroundRunId === effectiveRunId) {
+        this.isActiveConversation = false;
+      }
     }
   }
 

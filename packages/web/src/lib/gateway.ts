@@ -61,20 +61,38 @@ function bindListeners(ws: ReconnectingWebSocket): void {
 
     switch (msg.type) {
       case 'text':
-        if (msg.streaming) {
-          chat.appendToLast(msg.content || '');
-        } else if (msg.content) {
-          chat.addMessage({
-            id: crypto.randomUUID(),
-            role: 'assistant',
-            content: msg.content,
-            timestamp: new Date().toISOString(),
-          });
-          chat.setStreaming(false);
+        if (msg.workflowId && msg.workflowId.startsWith('conv-')) {
+          if (msg.streaming && !msg.done && msg.content) {
+            chat.appendToBackground(msg.workflowId, msg.content);
+          } else if (!msg.streaming && msg.content) {
+            chat.addMessage({
+              id: crypto.randomUUID(),
+              role: 'assistant',
+              content: msg.content,
+              timestamp: new Date().toISOString(),
+              workflowId: msg.workflowId,
+              isBackground: true,
+            });
+          }
+        } else {
+          if (msg.streaming && !msg.done && msg.content) {
+            chat.appendToLast(msg.content);
+          } else if (!msg.streaming && msg.content) {
+            chat.addMessage({
+              id: crypto.randomUUID(),
+              role: 'assistant',
+              content: msg.content,
+              timestamp: new Date().toISOString(),
+            });
+            chat.setStreaming(false);
+          }
+          if (msg.done) chat.setStreaming(false);
         }
-        if (msg.done) chat.setStreaming(false);
         break;
       case 'thinking':
+        if (msg.workflowId && msg.workflowId.startsWith('conv-')) {
+          break;
+        }
         if (msg.streaming) chat.appendThinking(msg.thinking || '');
         if (msg.done) {
           chat.setThinking('');
@@ -82,6 +100,9 @@ function bindListeners(ws: ReconnectingWebSocket): void {
         }
         break;
       case 'thinking_step':
+        if (msg.workflowId && msg.workflowId.startsWith('conv-')) {
+          break;
+        }
         if (msg.step) chat.upsertThinkingStep(msg.step);
         break;
       case 'tool_call':
@@ -291,13 +312,15 @@ function bindListeners(ws: ReconnectingWebSocket): void {
         if (msg.history && Array.isArray(msg.history)) {
           const restored: ChatMessage[] = msg.history
             .filter((m: { role: string }) => m.role === 'user' || m.role === 'assistant')
-            .map((m: { id: string; role: string; content: string; timestamp: string; type?: string; dagId?: string }) => ({
+            .map((m: { id: string; role: string; content: string; timestamp: string; type?: string; dagId?: string; metadata?: { workflowId?: string; background?: boolean } }) => ({
               id: m.id,
               role: m.role as 'user' | 'assistant',
               content: m.content,
               timestamp: m.timestamp,
               type: m.type as ChatMessage['type'],
               dagId: m.dagId,
+              workflowId: m.metadata?.workflowId,
+              isBackground: m.metadata?.background,
             }));
           if (restored.length > 0) {
             const current = useChatStore.getState().messages;

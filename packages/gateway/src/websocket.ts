@@ -167,6 +167,7 @@ export class WebSocketHandler {
           content: m.content,
           timestamp: m.timestamp,
           type: m.type,
+          metadata: m.metadata,
         })),
       } as any);
     }

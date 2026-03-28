@@ -54,6 +54,8 @@ export interface ChatMessage {
     | 'tool-call'
     | 'error';
   dagId?: string;
+  workflowId?: string;
+  isBackground?: boolean;
   toolCall?: ToolCallData;
   interrupted?: boolean;
   replyTo?: ReplyToData;
@@ -70,6 +72,7 @@ interface ChatStore {
   addMessage: (msg: ChatMessage) => void;
   setMessages: (msgs: ChatMessage[]) => void;
   appendToLast: (content: string) => void;
+  appendToBackground: (workflowId: string, content: string) => void;
   setStreaming: (s: boolean) => void;
   setThinking: (t: string) => void;
   appendThinking: (t: string) => void;
@@ -97,10 +100,11 @@ export const useChatStore = create<ChatStore>()(
       appendToLast: (content) =>
         set((s) => {
           const msgs = [...s.messages];
-          if (msgs.length > 0 && msgs[msgs.length - 1].role === 'assistant') {
+          const last = msgs.length > 0 ? msgs[msgs.length - 1] : null;
+          if (last && last.role === 'assistant' && !last.isBackground) {
             msgs[msgs.length - 1] = {
-              ...msgs[msgs.length - 1],
-              content: msgs[msgs.length - 1].content + content,
+              ...last,
+              content: last.content + content,
             };
           } else {
             msgs.push({
@@ -108,6 +112,30 @@ export const useChatStore = create<ChatStore>()(
               role: 'assistant',
               content,
               timestamp: new Date().toISOString(),
+            });
+          }
+          return { messages: msgs };
+        }),
+      appendToBackground: (workflowId, content) =>
+        set((s) => {
+          const msgs = [...s.messages];
+          let idx = -1;
+          for (let i = msgs.length - 1; i >= 0; i--) {
+            if (msgs[i].role === 'assistant' && msgs[i].workflowId === workflowId) {
+              idx = i;
+              break;
+            }
+          }
+          if (idx >= 0) {
+            msgs[idx] = { ...msgs[idx], content: msgs[idx].content + content };
+          } else {
+            msgs.push({
+              id: crypto.randomUUID(),
+              role: 'assistant',
+              content,
+              timestamp: new Date().toISOString(),
+              workflowId,
+              isBackground: true,
             });
           }
           return { messages: msgs };

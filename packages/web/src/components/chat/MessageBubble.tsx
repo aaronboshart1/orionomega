@@ -200,11 +200,22 @@ export function MessageBubble({ message, onScrollToMessage }: MessageBubbleProps
     <div className={`group my-3 flex ${isUser ? 'justify-end' : 'justify-start'}`}>
       <div className="relative max-w-[92%] md:max-w-[80%]">
         {replyQuote}
+        {message.isBackground && (
+          <div className="mb-1 flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wider text-amber-500/70">
+            <span className="inline-block h-1.5 w-1.5 rounded-full bg-amber-500/60" />
+            Background
+            {message.workflowId && (
+              <span className="font-mono text-amber-500/50">{message.workflowId.slice(0, 12)}</span>
+            )}
+          </div>
+        )}
         <div
           className={`rounded-2xl px-4 py-3 text-sm leading-relaxed ${
             isUser
               ? 'bg-blue-600 text-white'
-              : 'bg-zinc-800 text-zinc-100'
+              : message.isBackground
+                ? 'border border-amber-500/20 bg-zinc-800/80 text-zinc-100'
+                : 'bg-zinc-800 text-zinc-100'
           }`}
         >
           {isUser ? formatPlainText(content) : <ErrorBoundary><MarkdownContent content={content} isStreaming={isActivelyStreaming} /></ErrorBoundary>}
