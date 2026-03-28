@@ -116,13 +116,13 @@ interface OrchestrationStore {
   orchPaneOpen: boolean;
   scrollToDagId: string | null;
   memoryEvents: MemoryEvent[];
-  activeOrchTab: 'memory' | 'activity';
+  activeOrchTab: 'memory' | 'workflow';
 
   graphState: GraphState | null;
   events: WorkerEvent[];
 
   addMemoryEvent: (e: MemoryEvent) => void;
-  setActiveOrchTab: (tab: 'memory' | 'activity') => void;
+  setActiveOrchTab: (tab: 'memory' | 'workflow') => void;
   setActiveWorkflowId: (id: string | null) => void;
   removeWorkflow: (id: string) => void;
   setGraphState: (s: GraphState) => void;
@@ -190,11 +190,13 @@ export const useOrchestrationStore = create<OrchestrationStore>()(
       const newActiveId = s.activeWorkflowId === id
         ? (Object.keys(rest)[0] ?? null)
         : s.activeWorkflowId;
+      const noWorkflowsLeft = Object.keys(rest).length === 0;
       return {
         workflows: rest,
         inlineDAGs: restDAGs,
         activeWorkflowId: newActiveId,
         selectedWorker: s.activeWorkflowId === id ? null : s.selectedWorker,
+        ...(noWorkflowsLeft ? { activeOrchTab: 'memory' as const } : {}),
         ...deriveActive(rest, newActiveId),
       };
     }),
@@ -457,6 +459,16 @@ export const useOrchestrationStore = create<OrchestrationStore>()(
     }),
     onRehydrateStorage: () => (state) => {
       if (state) {
+        const hasWorkflows = Object.keys(state.workflows).length > 0;
+        if ((state.activeOrchTab as string) === 'activity') {
+          state.activeOrchTab = hasWorkflows ? 'workflow' : 'memory';
+        }
+        if (state.activeOrchTab === 'workflow' && !hasWorkflows) {
+          state.activeOrchTab = 'memory';
+        }
+        if (hasWorkflows && !state.activeWorkflowId) {
+          state.activeWorkflowId = Object.keys(state.workflows)[0];
+        }
         const derived = deriveActive(state.workflows, state.activeWorkflowId);
         state.graphState = derived.graphState;
         state.events = derived.events;
