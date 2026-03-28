@@ -27,12 +27,7 @@ function getGitHash(): string {
   }
 }
 
-const devDomain = process.env.REPLIT_DEV_DOMAIN;
-
 const nextConfig: NextConfig = {
-  allowedDevOrigins: devDomain
-    ? [devDomain, `https://${devDomain}`, `http://${devDomain}`]
-    : ['*.replit.dev'],
   env: {
     NEXT_PUBLIC_APP_VERSION: getPackageVersion(),
     NEXT_PUBLIC_GIT_HASH: getGitHash(),

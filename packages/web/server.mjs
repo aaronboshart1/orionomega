@@ -33,7 +33,7 @@ const port = cliArgs.port || parseInt(process.env.PORT || '5000', 10);
 const gatewayHost = process.env.GATEWAY_HOST || 'localhost';
 const gatewayPort = parseInt(process.env.GATEWAY_PORT || '8000', 10);
 
-const app = next({ dev, port });
+const app = next({ dev, port, hostname: '0.0.0.0' });
 const handle = app.getRequestHandler();
 
 app.prepare().then(() => {
