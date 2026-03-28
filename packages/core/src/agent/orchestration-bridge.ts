@@ -721,6 +721,11 @@ export class OrchestrationBridge {
     };
     this.callbacks.onDAGComplete?.(completeInfo);
 
+    if (status === 'complete' || status === 'stopped' || status === 'error') {
+      const mgr = new CheckpointManager(this.config.checkpointDir);
+      mgr.remove(workflowId);
+    }
+
     if (wf) this.callbacks.onGraphState(wf.executor.getState());
   }
 

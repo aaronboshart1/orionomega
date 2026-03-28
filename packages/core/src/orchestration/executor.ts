@@ -249,6 +249,7 @@ export class GraphExecutor {
           log.info('Workflow stopped by user');
           const stoppedResult = this.buildResult('stopped', startTime);
           this.writeRunSummaryArtifacts(stoppedResult);
+          this.checkpointMgr.remove(this.graph.id);
           return stoppedResult;
         }
 
@@ -372,6 +373,7 @@ export class GraphExecutor {
       log.error(`Workflow execution failed: ${err instanceof Error ? err.message : String(err)}`);
       const errorResult = this.buildResult('error', startTime);
       this.writeRunSummaryArtifacts(errorResult);
+      this.checkpointMgr.remove(this.graph.id);
       return errorResult;
     }
   }

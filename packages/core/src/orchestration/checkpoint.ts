@@ -102,7 +102,7 @@ export class CheckpointManager {
         try {
           const raw = readFileSync(join(this.dir, file), 'utf-8');
           const checkpoint = JSON.parse(raw) as WorkflowCheckpoint;
-          if (checkpoint.status !== 'complete' && checkpoint.status !== 'stopped' && checkpoint.status !== 'error') {
+          if (checkpoint.status === 'running') {
             incomplete.push(checkpoint);
           }
         } catch {
