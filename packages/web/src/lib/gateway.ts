@@ -8,6 +8,7 @@ import { useConnectionStore } from '@/stores/connection';
 import { useToastStore } from '@/stores/toast';
 import type { ChatMessage } from '@/stores/chat';
 import type { FileAttachment } from '@/components/chat/ChatInput';
+import { uuid } from '@/lib/uuid';
 
 const SESSION_KEY = 'orionomega_session_id';
 
@@ -67,7 +68,7 @@ function bindListeners(ws: ReconnectingWebSocket): void {
             chat.appendToBackground(msg.workflowId, msg.content);
           } else if (!msg.streaming && msg.content) {
             chat.addMessage({
-              id: crypto.randomUUID(),
+              id: uuid(),
               role: 'assistant',
               content: msg.content,
               timestamp: new Date().toISOString(),
@@ -80,7 +81,7 @@ function bindListeners(ws: ReconnectingWebSocket): void {
             chat.appendToLast(msg.content);
           } else if (!msg.streaming && msg.content) {
             chat.addMessage({
-              id: crypto.randomUUID(),
+              id: uuid(),
               role: 'assistant',
               content: msg.content,
               timestamp: new Date().toISOString(),
@@ -130,7 +131,7 @@ function bindListeners(ws: ReconnectingWebSocket): void {
           elapsed: 0,
         });
         chat.addMessage({
-          id: crypto.randomUUID(),
+          id: uuid(),
           role: 'assistant',
           content: d.summary || 'Working on it...',
           timestamp: new Date().toISOString(),
@@ -176,7 +177,7 @@ function bindListeners(ws: ReconnectingWebSocket): void {
             }
           } else {
             chat.addMessage({
-              id: crypto.randomUUID(),
+              id: uuid(),
               role: 'assistant',
               content: p.tool.summary || `${p.tool.name}${p.tool.file ? `: ${p.tool.file}` : ''}`,
               timestamp: new Date().toISOString(),
@@ -215,7 +216,7 @@ function bindListeners(ws: ReconnectingWebSocket): void {
           },
         );
         chat.addMessage({
-          id: crypto.randomUUID(),
+          id: uuid(),
           role: 'assistant',
           content: c.status === 'error'
             ? `Something went wrong: ${c.summary}`
@@ -238,7 +239,7 @@ function bindListeners(ws: ReconnectingWebSocket): void {
           })),
         });
         chat.addMessage({
-          id: crypto.randomUUID(),
+          id: uuid(),
           role: 'assistant',
           content: cf.summary,
           timestamp: new Date().toISOString(),
@@ -258,7 +259,7 @@ function bindListeners(ws: ReconnectingWebSocket): void {
           } else if (evt.type === 'error') {
             chat.markLastInterrupted();
             chat.addMessage({
-              id: crypto.randomUUID(),
+              id: uuid(),
               role: 'system',
               content: evt.error || evt.message || 'Worker error',
               timestamp: new Date().toISOString(),
@@ -284,7 +285,7 @@ function bindListeners(ws: ReconnectingWebSocket): void {
           }
         }
         chat.addMessage({
-          id: crypto.randomUUID(),
+          id: uuid(),
           role: 'system',
           content: msg.commandResult?.message || msg.message || '',
           timestamp: new Date().toISOString(),
@@ -294,7 +295,7 @@ function bindListeners(ws: ReconnectingWebSocket): void {
       case 'error':
         chat.markLastInterrupted();
         chat.addMessage({
-          id: crypto.randomUUID(),
+          id: uuid(),
           role: 'system',
           content: msg.error || msg.message || 'Unknown error',
           timestamp: new Date().toISOString(),
@@ -395,7 +396,7 @@ export function useGateway() {
     async (content: string, replyToId?: string, attachments?: FileAttachment[]) => {
       const chat = useChatStore.getState();
       const replyTarget = chat.replyTarget;
-      const msgId = crypto.randomUUID();
+      const msgId = uuid();
 
       let messageAttachments: import('@/stores/chat').MessageAttachment[] | undefined;
       const payloadAttachments: { name: string; size: number; type: string; data?: string; textContent?: string }[] = [];
@@ -467,7 +468,7 @@ export function useGateway() {
       if (command === 'restart' || command === 'update') {
         pendingRestart = true;
       }
-      send({ id: crypto.randomUUID(), type: 'command', command });
+      send({ id: uuid(), type: 'command', command });
     },
     [send],
   );
@@ -481,14 +482,14 @@ export function useGateway() {
       } else if (command === 'resume') {
         useOrchestrationStore.getState().resumeDAG(workflowId);
       }
-      send({ id: crypto.randomUUID(), type: 'command', command: `/${command}`, workflowId });
+      send({ id: uuid(), type: 'command', command: `/${command}`, workflowId });
     },
     [send],
   );
 
   const respondToPlan = useCallback(
     (planId: string, action: string, modification?: string) => {
-      send({ id: crypto.randomUUID(), type: 'plan_response', planId, action, modification });
+      send({ id: uuid(), type: 'plan_response', planId, action, modification });
       useOrchestrationStore.getState().setActivePlan(null);
     },
     [send],
@@ -496,7 +497,7 @@ export function useGateway() {
 
   const respondToDAG = useCallback(
     (workflowId: string, action: 'approve' | 'reject') => {
-      send({ id: crypto.randomUUID(), type: 'dag_response', workflowId, dagAction: action });
+      send({ id: uuid(), type: 'dag_response', workflowId, dagAction: action });
       useOrchestrationStore.getState().setPendingConfirmation(null);
     },
     [send],

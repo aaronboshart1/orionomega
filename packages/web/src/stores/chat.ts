@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { useEffect, useState } from 'react';
+import { uuid } from '@/lib/uuid';
 
 export interface ThinkingStep {
   id: string;
@@ -108,7 +109,7 @@ export const useChatStore = create<ChatStore>()(
             };
           } else {
             msgs.push({
-              id: crypto.randomUUID(),
+              id: uuid(),
               role: 'assistant',
               content,
               timestamp: new Date().toISOString(),
@@ -130,7 +131,7 @@ export const useChatStore = create<ChatStore>()(
             msgs[idx] = { ...msgs[idx], content: msgs[idx].content + content };
           } else {
             msgs.push({
-              id: crypto.randomUUID(),
+              id: uuid(),
               role: 'assistant',
               content,
               timestamp: new Date().toISOString(),

@@ -6,6 +6,7 @@ import { useChatStore } from '@/stores/chat';
 import { formatBytes } from '@/utils/format';
 import { useToastStore } from '@/stores/toast';
 import { Z } from '@/lib/z-index';
+import { uuid } from '@/lib/uuid';
 
 export interface FileAttachment {
   id: string;
@@ -131,7 +132,7 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
       (f) => ACCEPTED_EXTENSIONS.test(f.name) || f.type.startsWith('image/') || f.type === 'application/pdf' || f.type.startsWith('text/'),
     );
     const newAttachments: FileAttachment[] = valid.map((file) => {
-      const id = crypto.randomUUID();
+      const id = uuid();
       const previewUrl = isImageType(file.type) ? URL.createObjectURL(file) : undefined;
       return { id, file, name: file.name, size: file.size, type: file.type, previewUrl };
     });
