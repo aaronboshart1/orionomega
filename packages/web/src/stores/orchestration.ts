@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { useEffect, useState } from 'react';
 
 export interface WorkerEvent {
   workerId: string;
@@ -309,6 +310,23 @@ export const useOrchestrationStore = create<OrchestrationStore>()(
   }),
   {
     name: 'orionomega-orchestration',
-    partialize: (state) => ({ inlineDAGs: state.inlineDAGs }),
+    partialize: (state) => ({
+      inlineDAGs: state.inlineDAGs,
+      workflows: state.workflows,
+      activeWorkflowId: state.activeWorkflowId,
+      orchPaneOpen: state.orchPaneOpen,
+      graphState: state.graphState,
+      events: state.events,
+    }),
   },
 ));
+
+export function useOrchHydrated(): boolean {
+  const [hydrated, setHydrated] = useState(false);
+  useEffect(() => {
+    const unsub = useOrchestrationStore.persist.onFinishHydration(() => setHydrated(true));
+    if (useOrchestrationStore.persist.hasHydrated()) setHydrated(true);
+    return unsub;
+  }, []);
+  return hydrated;
+}

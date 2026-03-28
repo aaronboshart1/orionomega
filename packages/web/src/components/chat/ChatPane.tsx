@@ -3,8 +3,8 @@
 import { useRef, useState, useCallback, useMemo } from 'react';
 import { Virtuoso, VirtuosoHandle } from 'react-virtuoso';
 import { Settings2, ArrowDown, AlertOctagon, Settings } from 'lucide-react';
-import { useChatStore } from '@/stores/chat';
-import { useOrchestrationStore } from '@/stores/orchestration';
+import { useChatStore, useChatHydrated } from '@/stores/chat';
+import { useOrchestrationStore, useOrchHydrated } from '@/stores/orchestration';
 import { useGateway } from '@/lib/gateway';
 import { MessageBubble } from './MessageBubble';
 import { ToolCallGroup } from './ToolCallCard';
@@ -66,6 +66,8 @@ function buildRenderItems(messages: ChatMessage[]): RenderItem[] {
 }
 
 export function ChatPane() {
+  const chatHydrated = useChatHydrated();
+  const orchHydrated = useOrchHydrated();
   const messages = useChatStore((s) => s.messages);
   const isStreaming = useChatStore((s) => s.isStreaming);
   const thinkingContent = useChatStore((s) => s.thinkingContent);
@@ -77,6 +79,7 @@ export function ChatPane() {
   const [showAdvancedPlan, setShowAdvancedPlan] = useState(false);
   const [atBottom, setAtBottom] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const hydrated = chatHydrated && orchHydrated;
 
   const hasActiveDAGs = Object.values(inlineDAGs).some(
     (d) => d.status === 'dispatched' || d.status === 'running',
@@ -194,7 +197,11 @@ export function ChatPane() {
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
 
       <div className="relative flex-1">
-        {messages.length === 0 ? (
+        {!hydrated ? (
+          <div className="flex h-full items-center justify-center">
+            <div className="h-5 w-5 animate-spin rounded-full border-2 border-zinc-600 border-t-zinc-300" />
+          </div>
+        ) : messages.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center text-zinc-600">
             <img src="/omegaclaw-logo.png" alt="OmegaClaw" className="mb-3 h-12 w-12" />
             <p className="text-sm">Send a message to begin</p>

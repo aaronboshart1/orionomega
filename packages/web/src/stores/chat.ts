@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { useEffect, useState } from 'react';
 
 export interface ToolCallData {
   toolName: string;
@@ -115,3 +116,13 @@ export const useChatStore = create<ChatStore>()(
     },
   ),
 );
+
+export function useChatHydrated(): boolean {
+  const [hydrated, setHydrated] = useState(false);
+  useEffect(() => {
+    const unsub = useChatStore.persist.onFinishHydration(() => setHydrated(true));
+    if (useChatStore.persist.hasHydrated()) setHydrated(true);
+    return unsub;
+  }, []);
+  return hydrated;
+}

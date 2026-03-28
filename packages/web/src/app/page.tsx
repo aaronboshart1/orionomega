@@ -3,16 +3,17 @@
 import { PanelRightOpen, PanelRightClose } from 'lucide-react';
 import { ChatPane } from '@/components/chat/ChatPane';
 import { OrchestrationPane } from '@/components/orchestration/OrchestrationPane';
-import { useOrchestrationStore } from '@/stores/orchestration';
+import { useOrchestrationStore, useOrchHydrated } from '@/stores/orchestration';
 
 export default function Home() {
+  const orchHydrated = useOrchHydrated();
   const hasWorkflows = useOrchestrationStore(
     (s) => Object.keys(s.workflows).length > 0,
   );
   const orchPaneOpen = useOrchestrationStore((s) => s.orchPaneOpen);
   const setOrchPaneOpen = useOrchestrationStore((s) => s.setOrchPaneOpen);
 
-  const showOrchPane = orchPaneOpen && hasWorkflows;
+  const showOrchPane = orchHydrated && orchPaneOpen && hasWorkflows;
 
   return (
     <div className="flex h-screen">

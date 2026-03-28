@@ -79,6 +79,16 @@ Shared readline/CLI helpers (colors, `ask`, `choose`, `confirm`, `askSecret`, `m
 - Stale pre-compiled `.js` files removed from `src/app/` and `src/lib/`
 - Legacy `workflow-tracker.ts` component removed (replaced by `workflow-panel.ts`)
 
+## Browser State Persistence
+
+Both the chat and orchestration Zustand stores use `persist` middleware with localStorage to survive page refreshes:
+
+- **Chat store** (`orionomega-chat`): persists `messages` (including tool-call messages with full `ToolCallData`)
+- **Orchestration store** (`orionomega-orchestration`): persists `inlineDAGs`, `workflows` (graphState + events per workflow), `activeWorkflowId`, `orchPaneOpen`, `graphState`, `events`
+- Ephemeral state (`activePlan`, `selectedWorker`, `pendingConfirmation`, `isStreaming`) is NOT persisted — it resets on refresh
+- **Hydration guards**: `useChatHydrated()` and `useOrchHydrated()` hooks prevent flash of empty state during localStorage rehydration; `ChatPane` and `page.tsx` gate rendering on hydration completion
+- Gateway session ID stored in `orionomega_session_id` localStorage key for reconnection
+
 ## Multi-Workflow Tabs
 
 The orchestration sidebar supports multiple concurrent workflows via per-workflow tabs:
