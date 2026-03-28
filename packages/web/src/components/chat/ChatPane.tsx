@@ -9,6 +9,7 @@ import { useGateway } from '@/lib/gateway';
 import { MessageBubble } from './MessageBubble';
 import { ToolCallGroup } from './ToolCallCard';
 import { ChatInput } from './ChatInput';
+import type { FileAttachment } from './ChatInput';
 import { ThinkingIndicator } from './ThinkingIndicator';
 import { ThinkingTimeline } from './ThinkingTimeline';
 import { ErrorMessage } from './ErrorMessage';
@@ -90,11 +91,11 @@ export function ChatPane() {
 
   const renderItems = useMemo(() => buildRenderItems(messages), [messages]);
 
-  const handleSend = (text: string, replyToId?: string) => {
+  const handleSend = (text: string, replyToId?: string, attachments?: FileAttachment[]) => {
     if (text.startsWith('/')) {
       sendCommand(text.slice(1));
     } else {
-      sendChat(text, replyToId);
+      sendChat(text, replyToId, attachments);
     }
   };
 

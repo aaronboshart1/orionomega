@@ -6,6 +6,7 @@ import { useOrchestrationStore } from '@/stores/orchestration';
 import { useChatStore } from '@/stores/chat';
 import { useConnectionStore } from '@/stores/connection';
 import type { ChatMessage } from '@/stores/chat';
+import type { FileAttachment } from '@/components/chat/ChatInput';
 
 const SESSION_KEY = 'orionomega_session_id';
 
@@ -354,7 +355,7 @@ export function useGateway() {
   }, []);
 
   const sendChat = useCallback(
-    (content: string, replyToId?: string) => {
+    (content: string, replyToId?: string, attachments?: FileAttachment[]) => {
       const chat = useChatStore.getState();
       const replyTarget = chat.replyTarget;
       const msgId = crypto.randomUUID();
@@ -373,6 +374,13 @@ export function useGateway() {
         payload.replyToContent = replyTarget.content;
         payload.replyToRole = replyTarget.role;
         if (replyTarget.dagId) payload.replyToDagId = replyTarget.dagId;
+      }
+      if (attachments && attachments.length > 0) {
+        payload.attachments = attachments.map((a) => ({
+          name: a.name,
+          size: a.size,
+          type: a.type,
+        }));
       }
       send(payload);
     },
