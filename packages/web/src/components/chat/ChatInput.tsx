@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useRef, useEffect, type KeyboardEvent, type DragEvent } from 'react';
+import { useState, useCallback, useRef, useEffect, useMemo, type KeyboardEvent, type DragEvent } from 'react';
 import { Send, Command, X, Reply, Paperclip, FileText, Image } from 'lucide-react';
 import { useChatStore } from '@/stores/chat';
 
@@ -87,7 +87,35 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
   const replyTarget = useChatStore((s) => s.replyTarget);
   const setReplyTarget = useChatStore((s) => s.setReplyTarget);
   const fileCommands = useFileCommands();
-  const SLASH_COMMANDS = [...BUILTIN_COMMANDS, ...fileCommands];
+  const SLASH_COMMANDS = useMemo(() => [...BUILTIN_COMMANDS, ...fileCommands], [fileCommands]);
+  const [acHighlight, setAcHighlight] = useState(0);
+  const [acDismissed, setAcDismissed] = useState(false);
+  const acListRef = useRef<HTMLDivElement>(null);
+  const acLastSelected = useRef<string | null>(null);
+
+  const autocompleteCommands = useMemo(() => {
+    if (!input.startsWith('/')) return [];
+    const partial = input.toLowerCase();
+    return SLASH_COMMANDS.filter((cmd) => cmd.command.toLowerCase().startsWith(partial));
+  }, [input, SLASH_COMMANDS]);
+
+  const showAutocomplete = autocompleteCommands.length > 0 && input.startsWith('/') && !acDismissed && !showPalette;
+
+  useEffect(() => {
+    setAcHighlight(0);
+    if (acLastSelected.current !== null && input === acLastSelected.current) {
+      acLastSelected.current = null;
+    } else {
+      setAcDismissed(false);
+    }
+  }, [input]);
+
+  useEffect(() => {
+    const list = acListRef.current;
+    if (!list) return;
+    const items = list.querySelectorAll('[role="option"]');
+    items[acHighlight]?.scrollIntoView({ block: 'nearest' });
+  }, [acHighlight]);
 
   // Clean up object URLs on unmount
   useEffect(() => {
@@ -133,6 +161,29 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
   }, [input, disabled, onSend, attachments, replyTarget, setReplyTarget]);
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (showAutocomplete) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setAcHighlight((prev) => (prev + 1) % autocompleteCommands.length);
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setAcHighlight((prev) => (prev - 1 + autocompleteCommands.length) % autocompleteCommands.length);
+        return;
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault();
+        selectAutocompleteCommand(autocompleteCommands[acHighlight].command);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setAcDismissed(true);
+        return;
+      }
+    }
+
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSend();
@@ -191,6 +242,13 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
     setShowPalette(false);
     textareaRef.current?.focus();
   };
+
+  const selectAutocompleteCommand = useCallback((cmd: string) => {
+    acLastSelected.current = cmd;
+    setInput(cmd);
+    setAcDismissed(true);
+    textareaRef.current?.focus();
+  }, []);
 
   // Drag-and-drop handlers
   const handleDragEnter = useCallback((e: DragEvent<HTMLDivElement>) => {
@@ -286,6 +344,33 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
           >
             <X size={14} />
           </button>
+        </div>
+      )}
+
+      {showAutocomplete && (
+        <div
+          ref={acListRef}
+          className="absolute bottom-full left-3 right-3 md:left-6 md:right-6 mb-2 overflow-hidden rounded-xl border border-zinc-700 bg-zinc-900 shadow-xl"
+          role="listbox"
+          aria-label="Command suggestions"
+        >
+          <div className="max-h-48 overflow-y-auto py-1">
+            {autocompleteCommands.map((cmd, idx) => (
+              <button
+                key={cmd.command}
+                role="option"
+                aria-selected={idx === acHighlight}
+                onClick={() => selectAutocompleteCommand(cmd.command)}
+                onMouseEnter={() => setAcHighlight(idx)}
+                className={`flex w-full items-center gap-3 px-4 py-3 md:py-2 text-left text-sm min-h-[44px] ${
+                  idx === acHighlight ? 'bg-zinc-800' : ''
+                }`}
+              >
+                <code className="text-xs text-blue-400">{cmd.command}</code>
+                <span className="text-xs text-zinc-500">{cmd.description}</span>
+              </button>
+            ))}
+          </div>
         </div>
       )}
 
