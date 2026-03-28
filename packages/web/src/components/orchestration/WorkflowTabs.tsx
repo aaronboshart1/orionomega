@@ -1,8 +1,9 @@
 'use client';
 
-import { X } from 'lucide-react';
+import { X, Play, Pause, Square } from 'lucide-react';
 import { useOrchestrationStore } from '@/stores/orchestration';
 import type { InlineDAGStatus } from '@/stores/orchestration';
+import { useGateway } from '@/lib/gateway';
 
 const statusColors: Record<string, string> = {
   dispatched: 'bg-yellow-500',
@@ -29,6 +30,7 @@ export function WorkflowTabs() {
   const activeWorkflowId = useOrchestrationStore((s) => s.activeWorkflowId);
   const setActiveWorkflowId = useOrchestrationStore((s) => s.setActiveWorkflowId);
   const removeWorkflow = useOrchestrationStore((s) => s.removeWorkflow);
+  const { sendWorkflowCommand } = useGateway();
 
   const workflowIds = Object.keys(workflows);
 
@@ -44,6 +46,16 @@ export function WorkflowTabs() {
         const isActive = wfId === activeWorkflowId;
         const isTerminal = status === 'complete' || status === 'error' || status === 'stopped';
         const dotColor = statusColors[status] || 'bg-zinc-500';
+
+        const isRunning = status === 'dispatched' || status === 'running';
+        const isPaused = status === 'paused';
+        const isInterrupted = status === 'interrupted';
+
+        const showPlayResume = isPaused || isInterrupted;
+        const showPause = isRunning;
+        const showStop = isRunning || isPaused;
+
+        const hoverOnly = isActive ? '' : 'opacity-0 group-hover:opacity-100';
 
         return (
           <div
@@ -65,6 +77,51 @@ export function WorkflowTabs() {
               }`}
             />
             <span className="max-w-[140px] truncate">{label}</span>
+            <div className="flex items-center gap-0.5">
+              {showPlayResume && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    sendWorkflowCommand('resume', wfId);
+                  }}
+                  className={`rounded p-0.5 transition-all ${hoverOnly} ${
+                    isInterrupted
+                      ? 'bg-amber-500/20 text-amber-400 hover:bg-amber-500/30'
+                      : 'text-green-400 hover:bg-green-500/20'
+                  }`}
+                  title={isInterrupted ? 'Resume interrupted workflow' : 'Resume'}
+                >
+                  <Play size={12} />
+                </button>
+              )}
+              {showPause && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    sendWorkflowCommand('pause', wfId);
+                  }}
+                  className={`rounded p-0.5 text-zinc-400 transition-all hover:bg-zinc-700 hover:text-amber-400 ${hoverOnly}`}
+                  title="Pause at next layer boundary"
+                >
+                  <Pause size={12} />
+                </button>
+              )}
+              {showStop && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    sendWorkflowCommand('stop', wfId);
+                  }}
+                  className={`rounded p-0.5 text-zinc-400 transition-all hover:bg-zinc-700 hover:text-red-400 ${hoverOnly}`}
+                  title="Stop workflow"
+                >
+                  <Square size={12} />
+                </button>
+              )}
+            </div>
             {isTerminal && (
               <button
                 type="button"
