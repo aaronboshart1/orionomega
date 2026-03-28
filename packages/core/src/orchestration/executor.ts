@@ -3,6 +3,8 @@
  * Graph executor — walks topological layers, running nodes concurrently within each layer.
  */
 
+import { writeFileSync, readdirSync, existsSync, mkdirSync, statSync } from 'node:fs';
+import { join, resolve as resolvePath } from 'node:path';
 import type {
   WorkflowGraph,
   WorkflowNode,
@@ -22,6 +24,50 @@ import { readConfig } from '../config/loader.js';
 import { HindsightClient } from '@orionomega/hindsight';
 
 const log = createLogger('executor');
+
+function saveTextOutputIfEmpty(outputDir: string, text: string, filename: string = 'output.md'): string | null {
+  try {
+    if (!existsSync(outputDir)) return null;
+    const files = readdirSync(outputDir);
+    if (files.length > 0) return null;
+    if (!text || !text.trim()) return null;
+    const filePath = join(outputDir, filename);
+    writeFileSync(filePath, text.trim(), 'utf-8');
+    return filePath;
+  } catch {
+    return null;
+  }
+}
+
+function scanForUntrackedFiles(outputDir: string, knownPaths: string[]): string[] {
+  try {
+    if (!existsSync(outputDir)) return [];
+    const knownSet = new Set(knownPaths.map(p => {
+      try { return resolvePath(p); } catch { return p; }
+    }));
+    const newPaths: string[] = [];
+    const walk = (dir: string) => {
+      const entries = readdirSync(dir);
+      for (const entry of entries) {
+        const fullPath = join(dir, entry);
+        try {
+          if (statSync(fullPath).isDirectory()) {
+            walk(fullPath);
+          } else {
+            const resolved = resolvePath(fullPath);
+            if (!knownSet.has(resolved) && !knownSet.has(fullPath)) {
+              newPaths.push(fullPath);
+            }
+          }
+        } catch { /* skip inaccessible entries */ }
+      }
+    };
+    walk(outputDir);
+    return newPaths;
+  } catch {
+    return [];
+  }
+}
 
 /** Configuration for the graph executor. */
 export interface ExecutorConfig {
@@ -106,10 +152,11 @@ export class GraphExecutor {
 
     log.info(`Starting workflow: ${this.graph.name} (${this.graph.id})`);
 
-    // Handle empty graph
     if (this.graph.layers.length === 0) {
       this.status = 'complete';
-      return this.buildResult('complete', startTime);
+      const emptyResult = this.buildResult('complete', startTime);
+      this.writeRunSummaryArtifacts(emptyResult);
+      return emptyResult;
     }
 
     try {
@@ -123,7 +170,9 @@ export class GraphExecutor {
             }
           }
           log.info('Workflow stopped by user');
-          return this.buildResult('stopped', startTime);
+          const stoppedResult = this.buildResult('stopped', startTime);
+          this.writeRunSummaryArtifacts(stoppedResult);
+          return stoppedResult;
         }
 
         // Check pause before each layer
@@ -191,6 +240,12 @@ export class GraphExecutor {
               this.nodeErrors.set(nodeId, errorMsg);
               this.errors.push({ worker: nodeId, message: errorMsg });
               log.warn(`Node '${nodeId}' failed: ${errorMsg}`);
+
+              const failedOutputDir = `${this.config.workspaceDir}/output/${this.graph.id}/${nodeId}`;
+              const failedArtifacts = scanForUntrackedFiles(failedOutputDir, []);
+              if (failedArtifacts.length > 0) {
+                this.outputPaths.push(...failedArtifacts);
+              }
             }
           }
         }
@@ -223,18 +278,21 @@ export class GraphExecutor {
       this.status = hasErrors ? 'error' : 'complete';
       const result = this.buildResult(hasErrors ? 'error' : 'complete', startTime);
 
-      // Clean up checkpoint on successful completion
+      this.writeRunSummaryArtifacts(result);
+
       if (this.status === 'complete') {
         this.checkpointMgr.remove(this.graph.id);
       } else {
-        this.saveCheckpoint(); // Preserve for resume
+        this.saveCheckpoint();
       }
 
       return result;
     } catch (err) {
       this.status = 'error';
       log.error(`Workflow execution failed: ${err instanceof Error ? err.message : String(err)}`);
-      return this.buildResult('error', startTime);
+      const errorResult = this.buildResult('error', startTime);
+      this.writeRunSummaryArtifacts(errorResult);
+      return errorResult;
     }
   }
 
@@ -466,7 +524,6 @@ export class GraphExecutor {
 
         // Each worker gets its own output directory to prevent file pollution
         const workerOutputDir = `${this.config.workspaceDir}/output/${this.graph.id}/${node.id}`;
-        const { mkdirSync } = await import('node:fs');
         try { mkdirSync(workerOutputDir, { recursive: true }); } catch { /* may exist */ }
 
         const worker = new WorkerProcess(node, this.eventBus, {
@@ -508,8 +565,7 @@ export class GraphExecutor {
 
         // Create output directory for the coding agent
         const codingOutputDir = `${this.config.workspaceDir}/output/${this.graph.id}/${node.id}`;
-        const { mkdirSync: mkdirCoding } = await import('node:fs');
-        try { mkdirCoding(codingOutputDir, { recursive: true }); } catch { /* may exist */ }
+        try { mkdirSync(codingOutputDir, { recursive: true }); } catch { /* may exist */ }
 
         // Override the task with context-enriched version
         const codingNode: WorkflowNode = {
@@ -574,6 +630,16 @@ export class GraphExecutor {
 
           const codingOutputPaths = codingResult.outputPaths ?? [];
 
+          if (typeof codingResult.output === 'string' && codingResult.output.trim()) {
+            const saved = saveTextOutputIfEmpty(codingOutputDir, codingResult.output, 'output.md');
+            if (saved) codingOutputPaths.push(saved);
+          }
+
+          const untrackedCoding = scanForUntrackedFiles(codingOutputDir, codingOutputPaths);
+          codingOutputPaths.push(...untrackedCoding);
+
+          const dedupedCodingPaths = [...new Set(codingOutputPaths)];
+
           this.eventBus.emit({
             workflowId: this.graph.id,
             workerId: node.id,
@@ -586,7 +652,7 @@ export class GraphExecutor {
               toolCalls: codingResult.toolCalls,
               nodeLabel: node.label,
               output: typeof codingResult.output === 'string' ? codingResult.output : undefined,
-              outputPaths: codingOutputPaths,
+              outputPaths: dedupedCodingPaths,
             },
           });
 
@@ -596,7 +662,7 @@ export class GraphExecutor {
             durationMs: Date.now() - startMs,
             toolCallCount: codingResult.toolCalls,
             findings: [],
-            outputPaths: codingOutputPaths,
+            outputPaths: dedupedCodingPaths,
           };
         } catch (err) {
           if (this.stopRequested) {
@@ -614,15 +680,22 @@ export class GraphExecutor {
       case 'ROUTER':
         return this.executeRouter(node);
 
-      case 'PARALLEL':
-        // Structural pass-through
+      case 'PARALLEL': {
+        const parallelOutputDir = `${this.config.workspaceDir}/output/${this.graph.id}/${node.id}`;
+        try { mkdirSync(parallelOutputDir, { recursive: true }); } catch { /* may exist */ }
+        const parallelArtifact = join(parallelOutputDir, 'output.json');
+        const parallelData = { type: 'PARALLEL', label: node.label, dependsOn: node.dependsOn };
+        const parallelPaths: string[] = [];
+        try { writeFileSync(parallelArtifact, JSON.stringify(parallelData, null, 2), 'utf-8'); parallelPaths.push(parallelArtifact); } catch { /* best effort */ }
+
         return {
           nodeId: node.id,
           output: null,
           durationMs: 0,
           toolCallCount: 0,
-          findings: [], outputPaths: [],
+          findings: [], outputPaths: parallelPaths,
         };
+      }
 
       case 'JOIN':
         return this.executeJoin(node);
@@ -726,13 +799,24 @@ export class GraphExecutor {
       this.decisions.push(`Loop '${node.label}' forced exit at max iterations (${maxIter})`);
     }
 
+    const loopOutputDir = `${this.config.workspaceDir}/output/${this.graph.id}/${node.id}`;
+    try { mkdirSync(loopOutputDir, { recursive: true }); } catch { /* may exist */ }
+    const loopOutputPaths: string[] = [];
+    const loopArtifact = join(loopOutputDir, 'output.json');
+    const loopData = { type: 'LOOP', label: node.label, iterations: iteration, maxIterations: maxIter };
+    try { writeFileSync(loopArtifact, JSON.stringify(loopData, null, 2), 'utf-8'); loopOutputPaths.push(loopArtifact); } catch { /* only push on success */ }
+    if (lastOutput && lastOutput.trim()) {
+      const loopMd = join(loopOutputDir, 'output.md');
+      try { writeFileSync(loopMd, lastOutput.trim(), 'utf-8'); loopOutputPaths.push(loopMd); } catch { /* only push on success */ }
+    }
+
     return {
       nodeId: node.id,
       output: lastOutput,
       durationMs: Date.now() - startMs,
       toolCallCount: totalToolCalls,
       findings: allFindings,
-      outputPaths: [],
+      outputPaths: loopOutputPaths,
     };
   }
 
@@ -844,12 +928,19 @@ export class GraphExecutor {
       `Router '${node.label}': selected route '${selectedRoute}' → ${targetNodeId ?? 'none'}`,
     );
 
+    const routerOutputDir = `${this.config.workspaceDir}/output/${this.graph.id}/${node.id}`;
+    try { mkdirSync(routerOutputDir, { recursive: true }); } catch { /* may exist */ }
+    const routerArtifact = join(routerOutputDir, 'output.json');
+    const routerData = { type: 'ROUTER', label: node.label, route: selectedRoute, target: targetNodeId };
+    const routerPaths: string[] = [];
+    try { writeFileSync(routerArtifact, JSON.stringify(routerData, null, 2), 'utf-8'); routerPaths.push(routerArtifact); } catch { /* best effort */ }
+
     return {
       nodeId: node.id,
       output: { route: selectedRoute, target: targetNodeId },
       durationMs: 0,
       toolCallCount: 0,
-      findings: [], outputPaths: [],
+      findings: [], outputPaths: routerPaths,
     };
   }
 
@@ -863,12 +954,19 @@ export class GraphExecutor {
       upstreamOutputs.push(output);
     }
 
+    const joinOutputDir = `${this.config.workspaceDir}/output/${this.graph.id}/${node.id}`;
+    try { mkdirSync(joinOutputDir, { recursive: true }); } catch { /* may exist */ }
+    const joinArtifact = join(joinOutputDir, 'output.json');
+    const joinData = { type: 'JOIN', label: node.label, upstreamCount: upstreamOutputs.length, upstreamNodes: node.dependsOn };
+    const joinPaths: string[] = [];
+    try { writeFileSync(joinArtifact, JSON.stringify(joinData, null, 2), 'utf-8'); joinPaths.push(joinArtifact); } catch { /* best effort */ }
+
     return {
       nodeId: node.id,
       output: upstreamOutputs,
       durationMs: 0,
       toolCallCount: 0,
-      findings: [], outputPaths: [],
+      findings: [], outputPaths: joinPaths,
     };
   }
 
@@ -1116,6 +1214,109 @@ export class GraphExecutor {
   }
 
   /** Builds the final ExecutionResult. */
+  private writeRunSummaryArtifacts(result: ExecutionResult): void {
+    const runDir = `${this.config.workspaceDir}/output/${this.graph.id}`;
+    try {
+      try { mkdirSync(runDir, { recursive: true }); } catch { /* may exist */ }
+
+      const jsonPath = join(runDir, 'run-summary.json');
+      const mdPath = join(runDir, 'run-summary.md');
+      result.outputPaths.push(jsonPath);
+      result.outputPaths.push(mdPath);
+
+      writeFileSync(jsonPath, JSON.stringify(result, null, 2), 'utf-8');
+
+      const mdParts: string[] = [];
+      mdParts.push(`# Run Summary: ${result.taskSummary}`);
+      mdParts.push('');
+      mdParts.push(`- **Status:** ${result.status}`);
+      mdParts.push(`- **Duration:** ${result.durationSec.toFixed(1)}s`);
+      mdParts.push(`- **Workers:** ${result.workerCount}`);
+      mdParts.push(`- **Tool Calls:** ${result.toolCallCount ?? 0}`);
+      if (result.totalCostUsd !== undefined) {
+        mdParts.push(`- **Total Cost:** $${result.totalCostUsd.toFixed(4)}`);
+      }
+      mdParts.push('');
+
+      if (result.modelUsage && result.modelUsage.length > 0) {
+        mdParts.push('## Model Usage');
+        mdParts.push('');
+        mdParts.push('| Model | Workers | Input Tokens | Output Tokens | Cache Read | Cache Write | Cost |');
+        mdParts.push('|-------|---------|-------------|--------------|------------|-------------|------|');
+        for (const m of result.modelUsage) {
+          mdParts.push(`| ${m.model} | ${m.workerCount} | ${m.inputTokens.toLocaleString()} | ${m.outputTokens.toLocaleString()} | ${m.cacheReadTokens.toLocaleString()} | ${m.cacheCreationTokens.toLocaleString()} | $${m.costUsd.toFixed(4)} |`);
+        }
+        mdParts.push('');
+      }
+
+      if (result.findings.length > 0) {
+        mdParts.push('## Findings');
+        mdParts.push('');
+        for (const f of result.findings) mdParts.push(`- ${f}`);
+        mdParts.push('');
+      }
+
+      if (result.decisions.length > 0) {
+        mdParts.push('## Decisions');
+        mdParts.push('');
+        for (const d of result.decisions) mdParts.push(`- ${d}`);
+        mdParts.push('');
+      }
+
+      if (result.errors.length > 0) {
+        mdParts.push('## Errors');
+        mdParts.push('');
+        for (const e of result.errors) {
+          mdParts.push(`- **${e.worker}:** ${e.message}${e.resolution ? ` (Resolution: ${e.resolution})` : ''}`);
+        }
+        mdParts.push('');
+      }
+
+      const allNodeIds = new Set([
+        ...Object.keys(result.nodeOutputs ?? {}),
+        ...[...this.nodeResults.keys()],
+      ]);
+      if (allNodeIds.size > 0) {
+        mdParts.push('## Node Outputs');
+        mdParts.push('');
+        for (const nodeId of allNodeIds) {
+          const node = this.graph.nodes.get(nodeId);
+          const label = node?.label ?? nodeId;
+          mdParts.push(`### ${label}`);
+          mdParts.push('');
+          const stringOutput = result.nodeOutputs?.[nodeId];
+          if (stringOutput) {
+            mdParts.push(stringOutput);
+          } else {
+            const nodeResult = this.nodeResults.get(nodeId);
+            if (nodeResult?.output !== null && nodeResult?.output !== undefined) {
+              mdParts.push('```json');
+              mdParts.push(JSON.stringify(nodeResult.output, null, 2));
+              mdParts.push('```');
+            }
+          }
+          mdParts.push('');
+        }
+      }
+
+      if (result.nodeOutputPaths && Object.keys(result.nodeOutputPaths).length > 0) {
+        mdParts.push('## Output Files');
+        mdParts.push('');
+        for (const [label, paths] of Object.entries(result.nodeOutputPaths)) {
+          mdParts.push(`### ${label}`);
+          for (const p of paths) mdParts.push(`- \`${p}\``);
+          mdParts.push('');
+        }
+      }
+
+      writeFileSync(mdPath, mdParts.join('\n'), 'utf-8');
+
+      log.info(`Run summary artifacts written to ${runDir}`);
+    } catch (err) {
+      log.warn(`Failed to write run summary artifacts: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   private buildResult(
     terminalStatus: 'complete' | 'error' | 'stopped',
     startTime: number,

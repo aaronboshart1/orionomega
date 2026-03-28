@@ -9,6 +9,8 @@
  */
 
 import { execFile } from 'node:child_process';
+import { writeFileSync, readdirSync, existsSync, statSync } from 'node:fs';
+import { join, resolve as resolvePath } from 'node:path';
 import type { WorkflowNode, WorkerEvent } from './types.js';
 import type { EventBus } from './event-bus.js';
 import { executeAgent } from './agent-sdk-bridge.js';
@@ -17,6 +19,50 @@ import { SkillLoader } from '@orionomega/skills-sdk';
 import { createLogger } from '../logging/logger.js';
 
 const log = createLogger('worker');
+
+function saveTextOutputIfEmpty(outputDir: string, text: string, filename: string = 'output.md'): string | null {
+  try {
+    if (!existsSync(outputDir)) return null;
+    const files = readdirSync(outputDir);
+    if (files.length > 0) return null;
+    if (!text || !text.trim()) return null;
+    const filePath = join(outputDir, filename);
+    writeFileSync(filePath, text.trim(), 'utf-8');
+    return filePath;
+  } catch {
+    return null;
+  }
+}
+
+function scanForUntrackedFiles(outputDir: string, knownPaths: string[]): string[] {
+  try {
+    if (!existsSync(outputDir)) return [];
+    const knownSet = new Set(knownPaths.map(p => {
+      try { return resolvePath(p); } catch { return p; }
+    }));
+    const newPaths: string[] = [];
+    const walk = (dir: string) => {
+      const entries = readdirSync(dir);
+      for (const entry of entries) {
+        const fullPath = join(dir, entry);
+        try {
+          if (statSync(fullPath).isDirectory()) {
+            walk(fullPath);
+          } else {
+            const resolved = resolvePath(fullPath);
+            if (!knownSet.has(resolved) && !knownSet.has(fullPath)) {
+              newPaths.push(fullPath);
+            }
+          }
+        } catch { /* skip inaccessible entries */ }
+      }
+    };
+    walk(outputDir);
+    return newPaths;
+  } catch {
+    return [];
+  }
+}
 
 /** The result returned when a worker completes execution. */
 export interface WorkerResult {
@@ -351,6 +397,23 @@ export class WorkerProcess {
       },
     }).finally(() => clearInterval(heartbeat));
 
+    log.info(
+      `Worker ${this.node.id} completed: ${result.toolCalls} tool calls, ${result.durationSec.toFixed(1)}s` +
+      (result.costUsd ? ` (cost: $${result.costUsd.toFixed(4)})` : ''),
+    );
+
+    const allOutputPaths = [...result.outputPaths];
+
+    if (typeof result.output === 'string' && result.output.trim()) {
+      const saved = saveTextOutputIfEmpty(this.workspaceDir, result.output, 'output.md');
+      if (saved) allOutputPaths.push(saved);
+    }
+
+    const untracked = scanForUntrackedFiles(this.workspaceDir, allOutputPaths);
+    allOutputPaths.push(...untracked);
+
+    const finalOutputPaths = [...new Set(allOutputPaths)];
+
     this.emitEvent({
       type: 'done',
       message: `Completed: ${this.node.label}`,
@@ -367,14 +430,9 @@ export class WorkerProcess {
         nodeLabel: this.node.label,
         output: typeof result.output === 'string' ? result.output : undefined,
         finalResult: result.finalResult,
-        outputPaths: result.outputPaths,
+        outputPaths: finalOutputPaths,
       },
     });
-
-    log.info(
-      `Worker ${this.node.id} completed: ${result.toolCalls} tool calls, ${result.durationSec.toFixed(1)}s` +
-      (result.costUsd ? ` (cost: $${result.costUsd.toFixed(4)})` : ''),
-    );
 
     return {
       nodeId: this.node.id,
@@ -382,7 +440,7 @@ export class WorkerProcess {
       durationMs: result.durationSec * 1000,
       toolCallCount: result.toolCalls,
       findings: [],
-      outputPaths: result.outputPaths,
+      outputPaths: finalOutputPaths,
       model,
       inputTokens: result.inputTokens ?? 0,
       outputTokens: result.outputTokens ?? 0,
@@ -481,69 +539,96 @@ Use absolute paths when referencing files outside the workspace.${skillDocs}`;
       progress: 0,
     });
 
-    const output = await new Promise<string>((resolve, reject) => {
-      // Build the command: if params look like they're meant for a shell command
-      // (e.g. contain spaces, pipes, or semicolons), run via shell instead of execFile
-      const params = toolConfig.params;
-      const paramValues = Object.values(params).map(String);
-      const hasShellSyntax = paramValues.some(v => /[|;&$`]/.test(v));
+    let output = '';
+    let stderr = '';
+    let toolError: Error | null = null;
 
-      if (hasShellSyntax || Object.keys(params).length === 1 && Object.keys(params)[0] === 'command') {
-        // Shell mode: run the command string directly
-        const cmd = params.command
-          ? String(params.command)
-          : `${toolConfig.name} ${paramValues.join(' ')}`;
+    try {
+      const result = await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+        const params = toolConfig.params;
+        const paramValues = Object.values(params).map(String);
+        const hasShellSyntax = paramValues.some(v => /[|;&$`]/.test(v));
 
-        const { exec: execShell } = require('node:child_process');
-        const child = execShell(
-          cmd,
-          {
-            cwd: this.workspaceDir,
-            timeout: this.timeout * 1000,
-            maxBuffer: 10 * 1024 * 1024,
-            env: { ...process.env, HOME: process.env.HOME || '/root' },
-          },
-          (error: Error | null, stdout: string, stderr: string) => {
-            if (error) {
-              reject(new Error(`Tool '${toolConfig.name}' failed: ${error.message}\n${stderr}`));
-            } else {
-              resolve(stdout);
-            }
-          },
-        );
+        if (hasShellSyntax || Object.keys(params).length === 1 && Object.keys(params)[0] === 'command') {
+          const cmd = params.command
+            ? String(params.command)
+            : `${toolConfig.name} ${paramValues.join(' ')}`;
 
-        const checkCancel = setInterval(() => {
-          if (this.cancelled) { child.kill('SIGTERM'); clearInterval(checkCancel); }
-        }, 500);
-        child.on('close', () => clearInterval(checkCancel));
-      } else {
-        // execFile mode: binary + --key=value args
-        const args = Object.entries(params).map(([k, v]) => `--${k}=${String(v)}`);
+          const { exec: execShell } = require('node:child_process');
+          const child = execShell(
+            cmd,
+            {
+              cwd: this.workspaceDir,
+              timeout: this.timeout * 1000,
+              maxBuffer: 10 * 1024 * 1024,
+              env: { ...process.env, HOME: process.env.HOME || '/root' },
+            },
+            (error: Error | null, stdout: string, stderrOut: string) => {
+              if (error) {
+                reject({ error, stdout, stderr: stderrOut });
+              } else {
+                resolve({ stdout, stderr: stderrOut });
+              }
+            },
+          );
 
-        const child = execFile(
-          toolConfig.name,
-          args,
-          {
-            cwd: this.workspaceDir,
-            timeout: this.timeout * 1000,
-            maxBuffer: 10 * 1024 * 1024,
-            env: { ...process.env, HOME: process.env.HOME || '/root' },
-          },
-          (error, stdout, stderr) => {
-            if (error) {
-              reject(new Error(`Tool '${toolConfig.name}' failed: ${error.message}\n${stderr}`));
-            } else {
-              resolve(stdout);
-            }
-          },
-        );
+          const checkCancel = setInterval(() => {
+            if (this.cancelled) { child.kill('SIGTERM'); clearInterval(checkCancel); }
+          }, 500);
+          child.on('close', () => clearInterval(checkCancel));
+        } else {
+          const args = Object.entries(params).map(([k, v]) => `--${k}=${String(v)}`);
 
-        const checkCancel = setInterval(() => {
-          if (this.cancelled) { child.kill('SIGTERM'); clearInterval(checkCancel); }
-        }, 500);
-        child.on('close', () => clearInterval(checkCancel));
+          const child = execFile(
+            toolConfig.name,
+            args,
+            {
+              cwd: this.workspaceDir,
+              timeout: this.timeout * 1000,
+              maxBuffer: 10 * 1024 * 1024,
+              env: { ...process.env, HOME: process.env.HOME || '/root' },
+            },
+            (error, stdout, stderrOut) => {
+              if (error) {
+                reject({ error, stdout, stderr: stderrOut });
+              } else {
+                resolve({ stdout, stderr: stderrOut });
+              }
+            },
+          );
+
+          const checkCancel = setInterval(() => {
+            if (this.cancelled) { child.kill('SIGTERM'); clearInterval(checkCancel); }
+          }, 500);
+          child.on('close', () => clearInterval(checkCancel));
+        }
+      });
+      output = result.stdout;
+      stderr = result.stderr;
+    } catch (rejection: unknown) {
+      const rej = rejection as { error?: Error; stdout?: string; stderr?: string };
+      output = rej.stdout ?? '';
+      stderr = rej.stderr ?? '';
+      toolError = rej.error ?? new Error(`Tool '${toolConfig.name}' failed`);
+    }
+
+    const toolOutputPaths: string[] = [];
+    try {
+      const stdoutPath = join(this.workspaceDir, 'stdout.txt');
+      writeFileSync(stdoutPath, output || '', 'utf-8');
+      toolOutputPaths.push(stdoutPath);
+      if (stderr && stderr.trim()) {
+        const stderrPath = join(this.workspaceDir, 'stderr.txt');
+        writeFileSync(stderrPath, stderr, 'utf-8');
+        toolOutputPaths.push(stderrPath);
       }
-    });
+    } catch (err) {
+      log.warn(`Failed to save tool output files: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    if (toolError) {
+      throw new Error(`Tool '${toolConfig.name}' failed: ${toolError.message}\n${stderr}`);
+    }
 
     this.emitEvent({
       type: 'done',
@@ -552,7 +637,7 @@ Use absolute paths when referencing files outside the workspace.${skillDocs}`;
       data: {
         nodeLabel: this.node.label,
         output: typeof output === 'string' ? output : undefined,
-        outputPaths: [] as string[],
+        outputPaths: toolOutputPaths,
       },
     });
 
@@ -562,7 +647,7 @@ Use absolute paths when referencing files outside the workspace.${skillDocs}`;
       durationMs: 0,
       toolCallCount: 1,
       findings: [],
-      outputPaths: [],
+      outputPaths: toolOutputPaths,
     };
   }
 
