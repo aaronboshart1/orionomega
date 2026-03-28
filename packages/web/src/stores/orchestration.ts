@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 export interface WorkerEvent {
   workerId: string;
@@ -94,6 +94,59 @@ export interface MemoryEvent {
   meta?: Record<string, unknown>;
 }
 
+/** Typed read-side accessors for retain meta — cast meta as RetainMeta for safe access */
+export interface RetainMeta {
+  context?: string;
+  score?: number;
+  signals?: string[];
+  contentPreview?: string;
+  contentLength?: number;
+  itemCount?: number;
+  items?: Array<{ content: string; context: string; timestamp: string }>;
+  durationMs?: number;
+  result?: { success: boolean; bankId?: string; itemsCount?: number };
+}
+
+/** Typed read-side accessors for recall meta */
+export interface RecallMeta {
+  query?: string;
+  resultCount?: number;
+  totalFromApi?: number;
+  droppedByRelevance?: number;
+  topScore?: number;
+  durationMs?: number;
+  clientScored?: boolean;
+  tokensUsed?: number;
+  budget?: string;
+  maxTokens?: number;
+  minRelevance?: number;
+  results?: Array<{ content: string; context: string; timestamp: string; relevance: number }>;
+}
+
+/** Typed read-side accessors for quality rejection meta */
+export interface QualityMeta {
+  score?: number;
+  threshold?: number;
+  context?: string;
+  signals?: string[];
+  contentPreview?: string;
+  wordCount?: number;
+}
+
+/** Typed read-side accessors for dedup meta */
+export interface DedupMeta {
+  context?: string;
+  contentPreview?: string;
+  bankId?: string;
+  similarityThreshold?: number;
+}
+
+export interface MemoryFilterState {
+  ops: Set<MemoryEvent['op']> | null;
+  bank: string | null;
+  searchText: string;
+}
+
 export interface DAGConfirmation {
   dagId: string;
   summary: string;
@@ -120,7 +173,9 @@ interface OrchestrationStore {
   graphState: GraphState | null;
   events: WorkerEvent[];
 
+  memoryFilter: MemoryFilterState;
   addMemoryEvent: (e: MemoryEvent) => void;
+  setMemoryFilter: (filter: Partial<MemoryFilterState>) => void;
   setActiveOrchTab: (tab: 'memory' | 'activity') => void;
   setActiveWorkflowId: (id: string | null) => void;
   removeWorkflow: (id: string) => void;
@@ -161,6 +216,7 @@ export const useOrchestrationStore = create<OrchestrationStore>()(
   pendingConfirmation: null,
   orchPaneOpen: true,
   memoryEvents: [],
+  memoryFilter: { ops: null, bank: null, searchText: '' },
   activeOrchTab: 'memory',
   graphState: null,
   events: [],
@@ -168,6 +224,11 @@ export const useOrchestrationStore = create<OrchestrationStore>()(
   addMemoryEvent: (e) =>
     set((s) => ({
       memoryEvents: [...s.memoryEvents.slice(-199), e],
+    })),
+
+  setMemoryFilter: (filter) =>
+    set((s) => ({
+      memoryFilter: { ...s.memoryFilter, ...filter },
     })),
 
   setActiveOrchTab: (tab) => set({ activeOrchTab: tab }),
@@ -432,6 +493,7 @@ export const useOrchestrationStore = create<OrchestrationStore>()(
       pendingConfirmation: null,
       orchPaneOpen: true,
       memoryEvents: [],
+      memoryFilter: { ops: null, bank: null, searchText: '' },
       activeOrchTab: 'memory',
     }),
   }),
@@ -458,6 +520,25 @@ export const useOrchestrationStore = create<OrchestrationStore>()(
     },
   },
 ));
+
+export function useFilteredMemoryEvents(): MemoryEvent[] {
+  const events = useOrchestrationStore((s) => s.memoryEvents);
+  const filter = useOrchestrationStore((s) => s.memoryFilter);
+  return useMemo(() => {
+    let filtered = events;
+    if (filter.ops) filtered = filtered.filter(e => filter.ops!.has(e.op));
+    if (filter.bank) filtered = filtered.filter(e => e.bank === filter.bank);
+    if (filter.searchText) {
+      const q = filter.searchText.toLowerCase();
+      filtered = filtered.filter(e =>
+        e.detail.toLowerCase().includes(q) ||
+        (e.bank?.toLowerCase().includes(q) ?? false) ||
+        JSON.stringify(e.meta ?? {}).toLowerCase().includes(q),
+      );
+    }
+    return filtered;
+  }, [events, filter]);
+}
 
 export function useOrchHydrated(): boolean {
   const [hydrated, setHydrated] = useState(false);
