@@ -34,7 +34,6 @@ export interface AssembledContext {
 
 /** Configuration for the ContextAssembler. */
 export interface ContextAssemblerConfig {
-  /** Maximum messages in the hot window. Default: 20. */
   hotWindowSize?: number;
   /** Max tokens to request from Hindsight recall. Default: 30000. */
   recallBudgetTokens?: number;
@@ -54,7 +53,7 @@ export interface ContextAssemblerConfig {
   persistPath?: string;
 }
 
-const DEFAULT_HOT_WINDOW = 6;
+const DEFAULT_HOT_WINDOW = 20;
 const DEFAULT_RECALL_BUDGET = 30_000;
 const DEFAULT_MAX_TURN_TOKENS = 60_000;
 const DEFAULT_SYSTEM_PROMPT_TOKENS = 4_000;
@@ -156,7 +155,6 @@ export class ContextAssembler {
       (sum, m) => sum + estimateTokens(m.content), 0,
     );
 
-    // Calculate available budget for Hindsight recall
     const availableForRecall = Math.max(
       0,
       this.maxTurnTokens - this.systemPromptTokens - this.outputReserve - hotTokens,
@@ -166,10 +164,13 @@ export class ContextAssembler {
     let priorContext: string | null = null;
     let recalledTokens = 0;
 
-    // Query Hindsight for relevant prior context
     if (this.hs && recallTokens > 500) {
       try {
-        const recalled = await this.recallFromBanks(currentQuery, recallTokens);
+        const isShort = this.isShortReply(currentQuery);
+        const recallQuery = isShort
+          ? this.augmentQueryWithRecentContext(currentQuery)
+          : currentQuery;
+        const recalled = await this.recallFromBanks(recallQuery, recallTokens, currentQuery);
         if (recalled) {
           priorContext = recalled;
           recalledTokens = estimateTokens(recalled);
@@ -270,10 +271,60 @@ export class ContextAssembler {
   }
 
   /**
+   * Detect whether a user message is a short conversational reply
+   * (e.g. "fix all but #7", "yes", "do the second one").
+   * Short replies should bias heavily toward the conversation bank.
+   */
+  private isShortReply(rawQuery: string): boolean {
+    const trimmed = rawQuery.trim();
+    const tokenEstimate = estimateTokens(trimmed);
+
+    const crossSessionPattern = /\b(last (week|month|time|session)|earlier|previous(ly)?|we (decided|discussed|agreed|talked)|yesterday|ago|history|before)\b/i;
+    if (crossSessionPattern.test(trimmed)) return false;
+
+    const directRefPattern = /(?:^|\s)(#\d+|number \d+|\b(first|second|third|fourth|fifth|last|that|those|this|these) (one|option|item|change|suggestion)\b)/i;
+    const shortReplyPattern = /^(yes|no|ok|sure|do it|go ahead|that one|fix|skip|all|fix all|do all|do \w+ but)/i;
+
+    if (tokenEstimate < 15 && (directRefPattern.test(trimmed) || shortReplyPattern.test(trimmed))) return true;
+    if (tokenEstimate < 8) return true;
+    if (tokenEstimate < 50 && (directRefPattern.test(trimmed) || shortReplyPattern.test(trimmed))) return true;
+    return false;
+  }
+
+  /**
+   * Augment the raw user query with context from the most recent
+   * assistant message in the hot window. This gives semantic search
+   * enough signal to match the right conversation memories.
+   */
+  private augmentQueryWithRecentContext(rawQuery: string): string {
+    const MAX_CONTEXT_CHARS = 500;
+
+    const lastAssistant = [...this.hotWindow]
+      .reverse()
+      .find((m) => m.role === 'assistant');
+
+    if (!lastAssistant) return rawQuery;
+
+    const snippet = lastAssistant.content.length > MAX_CONTEXT_CHARS
+      ? '…' + lastAssistant.content.slice(-MAX_CONTEXT_CHARS)
+      : lastAssistant.content;
+
+    return `${rawQuery}\n\n[Recent assistant context]: ${snippet}`;
+  }
+
+  /**
    * Recall relevant context from conversation bank + additional banks.
    * Results are merged and formatted as a single context block.
+   *
+   * Applies recency-first bias: conversation bank results appear before
+   * additional banks, and within each bank results are sorted newest-first.
+   * Short/conversational messages shift budget heavily toward conversation bank.
    */
-  private async recallFromBanks(query: string, maxTokens: number): Promise<string | null> {
+  private async recallFromBanks(
+    query: string,
+    maxTokens: number,
+    rawQuery: string,
+  ): Promise<string | null> {
     if (!this.hs) return null;
 
     const banks = [
@@ -283,12 +334,21 @@ export class ContextAssembler {
 
     if (banks.length === 0) return null;
 
-    // Split token budget across banks (conversation gets 60%, others split the rest)
+    const shortReply = this.isShortReply(rawQuery);
+    const convShareRatio = shortReply ? 0.85 : 0.6;
+
+    log.debug('Recall budget allocation', {
+      shortReply,
+      convShareRatio,
+      rawQueryLength: rawQuery.length,
+    });
+
+    const otherBankCount = banks.length - (this.conversationBank ? 1 : 0);
     const convShare = this.conversationBank
-      ? Math.floor(maxTokens * 0.6)
+      ? (otherBankCount > 0 ? Math.floor(maxTokens * convShareRatio) : maxTokens)
       : 0;
-    const otherShare = banks.length > (this.conversationBank ? 1 : 0)
-      ? Math.floor((maxTokens - convShare) / (banks.length - (this.conversationBank ? 1 : 0)))
+    const otherShare = otherBankCount > 0
+      ? Math.floor((maxTokens - convShare) / otherBankCount)
       : 0;
 
     const recallPromises = banks.map((bank) => {
@@ -298,9 +358,19 @@ export class ContextAssembler {
       return this.hs!.recall(bank, query, { maxTokens: budget, budget: this.recallBudget })
         .then((response) => {
           if (!response.results || response.results.length === 0) return null;
+          const items = response.results.map((r) => ({
+            content: r.content,
+            timestamp: r.timestamp || '',
+          }));
+          items.sort((a, b) => {
+            if (!a.timestamp && !b.timestamp) return 0;
+            if (!a.timestamp) return 1;
+            if (!b.timestamp) return -1;
+            return b.timestamp.localeCompare(a.timestamp);
+          });
           return {
             bank,
-            items: response.results.map((r) => r.content),
+            items: items.map((i) => i.content),
           };
         })
         .catch((err) => {
@@ -317,7 +387,12 @@ export class ContextAssembler {
 
     if (results.length === 0) return null;
 
-    // Format as a structured context block
+    results.sort((a, b) => {
+      const aIsConv = a.bank === this.conversationBank ? 0 : 1;
+      const bIsConv = b.bank === this.conversationBank ? 0 : 1;
+      return aIsConv - bIsConv;
+    });
+
     const sections = results.map((r) => {
       const header = r.bank === this.conversationBank
         ? '## Earlier in this conversation'

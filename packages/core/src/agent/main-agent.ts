@@ -143,7 +143,7 @@ export class MainAgent {
       : `${process.env.HOME || '/root'}/.orionomega`;
 
     this.context = new ContextAssembler(hsClient, {
-      hotWindowSize: 6,
+      hotWindowSize: 20,
       recallBudgetTokens: 30_000,
       maxTurnTokens: 60_000,
       conversationBank: config.hindsight?.url
