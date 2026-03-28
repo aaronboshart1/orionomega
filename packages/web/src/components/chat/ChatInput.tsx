@@ -1,11 +1,20 @@
 'use client';
 
-import { useState, useCallback, useRef, useEffect, type KeyboardEvent } from 'react';
-import { Send, Command, X } from 'lucide-react';
+import { useState, useCallback, useRef, useEffect, type KeyboardEvent, type DragEvent } from 'react';
+import { Send, Command, X, Paperclip, FileText, Image } from 'lucide-react';
 import { useChatStore } from '@/stores/chat';
 
+export interface FileAttachment {
+  id: string;
+  file: File;
+  name: string;
+  size: number;
+  type: string;
+  previewUrl?: string; // for images
+}
+
 interface ChatInputProps {
-  onSend: (text: string) => void;
+  onSend: (text: string, attachments?: FileAttachment[]) => void;
   disabled?: boolean;
 }
 
@@ -17,19 +26,81 @@ const SLASH_COMMANDS = [
   { command: '/help', description: 'Show available commands' },
 ];
 
+const ACCEPTED_FILE_TYPES = [
+  'image/jpeg',
+  'image/png',
+  'image/gif',
+  'image/webp',
+  'application/pdf',
+  'text/plain',
+  'text/markdown',
+  'text/javascript',
+  'text/typescript',
+  'text/x-python',
+  'text/x-go',
+  'text/x-rust',
+].join(',');
+
+const ACCEPTED_EXTENSIONS = /\.(jpg|jpeg|png|gif|webp|pdf|txt|md|js|ts|jsx|tsx|py|go|rs|css|html|json|yaml|yml|sh|bash|zsh|rb|java|cpp|c|cs|php|swift|kt|scala)$/i;
+
+function isImageType(type: string): boolean {
+  return type.startsWith('image/');
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 export function ChatInput({ onSend, disabled }: ChatInputProps) {
   const [input, setInput] = useState('');
   const [showPalette, setShowPalette] = useState(false);
+  const [attachments, setAttachments] = useState<FileAttachment[]>([]);
+  const [isDraggingOver, setIsDraggingOver] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const dragCounterRef = useRef(0);
   const messages = useChatStore((s) => s.messages);
+
+  // Clean up object URLs on unmount
+  useEffect(() => {
+    return () => {
+      attachments.forEach((a) => {
+        if (a.previewUrl) URL.revokeObjectURL(a.previewUrl);
+      });
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const addFiles = useCallback((files: FileList | File[]) => {
+    const fileArray = Array.from(files);
+    const valid = fileArray.filter(
+      (f) => ACCEPTED_EXTENSIONS.test(f.name) || f.type.startsWith('image/') || f.type === 'application/pdf' || f.type.startsWith('text/'),
+    );
+    const newAttachments: FileAttachment[] = valid.map((file) => {
+      const id = crypto.randomUUID();
+      const previewUrl = isImageType(file.type) ? URL.createObjectURL(file) : undefined;
+      return { id, file, name: file.name, size: file.size, type: file.type, previewUrl };
+    });
+    setAttachments((prev) => [...prev, ...newAttachments]);
+  }, []);
+
+  const removeAttachment = useCallback((id: string) => {
+    setAttachments((prev) => {
+      const target = prev.find((a) => a.id === id);
+      if (target?.previewUrl) URL.revokeObjectURL(target.previewUrl);
+      return prev.filter((a) => a.id !== id);
+    });
+  }, []);
 
   const handleSend = useCallback(() => {
     const trimmed = input.trim();
-    if (!trimmed || disabled) return;
-    onSend(trimmed);
+    if ((!trimmed && attachments.length === 0) || disabled) return;
+    onSend(trimmed, attachments.length > 0 ? attachments : undefined);
     setInput('');
+    setAttachments([]);
     setShowPalette(false);
-  }, [input, disabled, onSend]);
+  }, [input, disabled, onSend, attachments]);
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -50,7 +121,6 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
       }
       return;
     }
-
   };
 
   useEffect(() => {
@@ -75,8 +145,75 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
     textareaRef.current?.focus();
   };
 
+  // Drag-and-drop handlers
+  const handleDragEnter = useCallback((e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current += 1;
+    if (e.dataTransfer.types.includes('Files')) {
+      setIsDraggingOver(true);
+    }
+  }, []);
+
+  const handleDragLeave = useCallback((e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current -= 1;
+    if (dragCounterRef.current === 0) {
+      setIsDraggingOver(false);
+    }
+  }, []);
+
+  const handleDragOver = useCallback((e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+  }, []);
+
+  const handleDrop = useCallback(
+    (e: DragEvent<HTMLDivElement>) => {
+      e.preventDefault();
+      e.stopPropagation();
+      dragCounterRef.current = 0;
+      setIsDraggingOver(false);
+      if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+        addFiles(e.dataTransfer.files);
+      }
+    },
+    [addFiles],
+  );
+
+  const handleFileInputChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      if (e.target.files && e.target.files.length > 0) {
+        addFiles(e.target.files);
+        // Reset input so the same file can be re-selected
+        e.target.value = '';
+      }
+    },
+    [addFiles],
+  );
+
+  const canSend = (input.trim().length > 0 || attachments.length > 0) && !disabled;
+
   return (
-    <div className="relative border-t border-zinc-800 px-6 py-4">
+    <div
+      className={`relative border-t px-6 py-4 transition-colors ${
+        isDraggingOver ? 'border-blue-500 bg-blue-950/20' : 'border-zinc-800'
+      }`}
+      onDragEnter={handleDragEnter}
+      onDragLeave={handleDragLeave}
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
+      aria-label="Chat input area — drop files here to attach"
+    >
+      {/* Drag overlay */}
+      {isDraggingOver && (
+        <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-lg border-2 border-dashed border-blue-500 bg-blue-950/30">
+          <p className="text-sm font-medium text-blue-400">Drop files to attach</p>
+        </div>
+      )}
+
+      {/* Command palette */}
       {showPalette && (
         <div className="absolute bottom-full left-6 right-6 mb-2 overflow-hidden rounded-xl border border-zinc-700 bg-zinc-900 shadow-xl">
           <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-2">
@@ -84,6 +221,7 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
             <button
               onClick={() => setShowPalette(false)}
               className="text-zinc-500 hover:text-zinc-300"
+              aria-label="Close command palette"
             >
               <X size={14} />
             </button>
@@ -103,7 +241,80 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
         </div>
       )}
 
+      {/* File attachment previews */}
+      {attachments.length > 0 && (
+        <div
+          className="mb-3 flex flex-wrap gap-2"
+          role="list"
+          aria-label="Attached files"
+        >
+          {attachments.map((attachment) => (
+            <div
+              key={attachment.id}
+              role="listitem"
+              className="group relative flex items-center gap-2 rounded-lg border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-xs text-zinc-300"
+            >
+              {isImageType(attachment.type) && attachment.previewUrl ? (
+                <>
+                  <img
+                    src={attachment.previewUrl}
+                    alt={attachment.name}
+                    className="h-8 w-8 rounded object-cover"
+                  />
+                  <span className="max-w-[120px] truncate" title={attachment.name}>
+                    {attachment.name}
+                  </span>
+                </>
+              ) : (
+                <>
+                  {attachment.type === 'application/pdf' ? (
+                    <FileText size={14} className="shrink-0 text-red-400" aria-hidden="true" />
+                  ) : (
+                    <FileText size={14} className="shrink-0 text-zinc-400" aria-hidden="true" />
+                  )}
+                  <span className="max-w-[120px] truncate" title={attachment.name}>
+                    {attachment.name}
+                  </span>
+                  <span className="text-zinc-500">{formatBytes(attachment.size)}</span>
+                </>
+              )}
+              <button
+                onClick={() => removeAttachment(attachment.id)}
+                className="ml-1 rounded text-zinc-500 hover:text-zinc-200 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                aria-label={`Remove ${attachment.name}`}
+              >
+                <X size={12} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Hidden file input */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        accept={ACCEPTED_FILE_TYPES}
+        onChange={handleFileInputChange}
+        className="sr-only"
+        aria-hidden="true"
+        tabIndex={-1}
+      />
+
       <div className="flex items-end gap-3 rounded-xl border border-zinc-700 bg-zinc-900 px-4 py-3 focus-within:border-blue-600">
+        {/* Paperclip / attach button */}
+        <button
+          type="button"
+          onClick={() => fileInputRef.current?.click()}
+          disabled={disabled}
+          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-30 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1 focus:ring-offset-zinc-900"
+          aria-label="Attach files"
+          title="Attach files"
+        >
+          <Paperclip size={16} />
+        </button>
+
         <textarea
           ref={textareaRef}
           value={input}
@@ -113,21 +324,26 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
           disabled={disabled}
           rows={1}
           className="max-h-32 flex-1 resize-none bg-transparent text-sm text-zinc-100 placeholder-zinc-500 outline-none disabled:opacity-50"
+          aria-label="Message input"
+          aria-multiline="true"
         />
+
         <button
           onClick={handleSend}
-          disabled={disabled || !input.trim()}
-          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-600 text-white transition-colors hover:bg-blue-500 disabled:opacity-30 disabled:hover:bg-blue-600"
+          disabled={!canSend}
+          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-600 text-white transition-colors hover:bg-blue-500 disabled:opacity-30 disabled:hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-offset-1 focus:ring-offset-zinc-900"
+          aria-label="Send message"
         >
           <Send size={16} />
         </button>
       </div>
+
       <p className="mt-2 text-center text-xs text-zinc-600">
         Enter to send · Shift+Enter for new line · Esc to stop ·{' '}
         <span className="inline-flex items-center gap-0.5">
           <Command size={10} className="inline" />/
         </span>{' '}
-        commands
+        commands · <Paperclip size={10} className="inline" /> to attach files
       </p>
     </div>
   );
