@@ -76,6 +76,9 @@ export function getDefaultConfig(): OrionOmegaConfig {
       directory: join(homedir(), '.orionomega', 'skills'),
       autoLoad: true,
     },
+    commands: {
+      directory: join(homedir(), 'orionomega', 'commands'),
+    },
     autonomous: {
       enabled: false,
       maxBudgetUsd: 50,

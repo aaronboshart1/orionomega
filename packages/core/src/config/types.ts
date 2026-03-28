@@ -111,6 +111,10 @@ export interface OrionOmegaConfig {
     autoAdvance: boolean;
   };
 
+  commands: {
+    directory: string;
+  };
+
   agentSdk: {
     /** Whether the Claude Agent SDK is enabled. */
     enabled: boolean;

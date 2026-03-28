@@ -1,0 +1,1 @@
+Please provide a concise summary of our conversation so far. Include the key topics discussed, any decisions made, and outstanding action items. Format the summary with clear headings and bullet points.

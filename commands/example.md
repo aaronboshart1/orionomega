@@ -1,0 +1,1 @@
+You are a helpful assistant. Please greet the user and explain that this is an example custom command. Custom commands can be created by placing `.md` files in the `~/orionomega/commands/` directory. Each file becomes a slash command named after the file (e.g., `research.md` becomes `/research`).

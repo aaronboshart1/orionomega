@@ -8,7 +8,7 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { randomBytes } from 'node:crypto';
-import { readConfig, normalizeBindAddresses, MainAgent, createLogger, setGlobalLogLevel, enableFileLogging, discoverModels, clearModelCache } from '@orionomega/core';
+import { readConfig, normalizeBindAddresses, MainAgent, CommandFileLoader, createLogger, setGlobalLogLevel, enableFileLogging, discoverModels, clearModelCache } from '@orionomega/core';
 import type { MainAgentConfig, MainAgentCallbacks, LogLevel } from '@orionomega/core';
 import { setLogLevel as setHindsightLogLevel } from '@orionomega/hindsight';
 import type { GatewayConfig, ServerMessage } from './types.js';
@@ -94,6 +94,17 @@ try {
   // already handled above — fullConfig stays undefined
 }
 
+if (fullConfig?.commands?.directory) {
+  try {
+    const cmdFileLoader = new CommandFileLoader(fullConfig.commands.directory);
+    commandHandler.setCommandFileLoader(cmdFileLoader);
+  } catch (err) {
+    log.warn('Failed to initialise file command loader for gateway', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
 /**
  * Wire the MainAgent into the gateway.
  * Callbacks broadcast ServerMessages to all connected WebSocket clients.
@@ -117,6 +128,7 @@ async function initMainAgent(): Promise<void> {
     workerTimeout: fullConfig?.orchestration?.workerTimeout ?? 300,
     maxRetries: fullConfig?.orchestration?.maxRetries ?? 2,
     skillsDir: fullConfig?.skills?.directory,
+    commandsDir: fullConfig?.commands?.directory,
     hindsight: fullConfig?.hindsight,
   };
 
@@ -474,6 +486,16 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Internal server error' }));
     });
+    return;
+  }
+
+  // --- File commands ---
+  if (pathname === '/api/commands' && method === 'GET') {
+    const fileCmds = commandHandler.getFileCommands();
+    const agentCmds = mainAgent?.getFileCommands() ?? [];
+    const combined = agentCmds.length > 0 ? agentCmds : fileCmds;
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ commands: combined }));
     return;
   }
 

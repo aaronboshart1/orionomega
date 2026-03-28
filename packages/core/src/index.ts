@@ -61,6 +61,10 @@ export { RecoveryManager } from './orchestration/index.js';
 export type { OrchestratorCommandResult } from './orchestration/index.js';
 export { OrchestratorCommands } from './orchestration/index.js';
 
+// File-based commands
+export { CommandFileLoader } from './commands/index.js';
+export type { FileCommand } from './commands/index.js';
+
 // Logging
 export type { Logger, LogLevel } from './logging/index.js';
 export { createLogger, setGlobalLogLevel, getGlobalLogLevel, enableFileLogging, setConsoleLogging } from './logging/index.js';

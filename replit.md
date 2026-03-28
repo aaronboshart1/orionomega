@@ -64,6 +64,16 @@ The gateway reads from `~/.orionomega/config.yaml`. Defaults:
 - **Token budget guardrails**: `streamConversation` accepts `maxInputTokens` (default 100K for main agent) and trims oldest messages when exceeded.
 - **Planner deduplication**: `plan()` accepts `preRecalledContext` to skip redundant Hindsight queries when the caller already has context.
 
+## Custom File-Based Slash Commands
+
+Users can place `.md` files in `~/orionomega/commands/` to create custom slash commands. For example, `research.md` becomes `/research`. When invoked, the file content is sent to the agent as a user message.
+
+- Config: `commands.directory` in `config.yaml` (default: `~/orionomega/commands/`)
+- `CommandFileLoader` in `packages/core/src/commands/` scans for `.md` files and provides lookup
+- Built-in commands take priority over file commands with the same name (warning logged)
+- File commands appear in `/help` output, WebUI autocomplete (via `GET /api/commands`), and TUI autocomplete
+- Example commands ship in `commands/` at repo root and are copied during install
+
 ## CLI Shared Utilities
 
 Shared readline/CLI helpers (colors, `ask`, `choose`, `confirm`, `askSecret`, `maskSecret`, etc.) live in `packages/core/src/commands/cli-utils.ts`. Both `setup.ts` and `setup-skills.ts` import from this module instead of duplicating.

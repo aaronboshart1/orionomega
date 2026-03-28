@@ -18,6 +18,7 @@ import { buildSystemPrompt, type PromptContext } from './prompt-builder.js';
 import { createLogger } from '../logging/logger.js';
 import { SkillLoader, readSkillConfig, writeSkillConfig } from '@orionomega/skills-sdk';
 import type { OrionOmegaConfig } from '../config/types.js';
+import { CommandFileLoader } from '../commands/command-file-loader.js';
 
 import type {
   PlannerOutput, WorkerEvent, GraphState, WorkflowCheckpoint,
@@ -53,6 +54,7 @@ export interface MainAgentConfig {
   workerTimeout: number;
   maxRetries: number;
   skillsDir?: string;
+  commandsDir?: string;
   hindsight?: OrionOmegaConfig['hindsight'];
 }
 
@@ -116,6 +118,7 @@ export class MainAgent {
   private availableSkills: string[] = [];
   private interruptedWorkflows: WorkflowCheckpoint[] = [];
   private activeAbort: AbortController | null = null;
+  private commandFileLoader: CommandFileLoader | null = null;
 
   constructor(config: MainAgentConfig, callbacks: MainAgentCallbacks) {
     this.config = config;
@@ -217,6 +220,30 @@ export class MainAgent {
         log.info('Skills discovered', { count: manifests.length });
       } catch (err) {
         log.warn('Skills discovery failed', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    // 2b. Initialise file-based command loader
+    if (this.config.commandsDir) {
+      try {
+        this.commandFileLoader = new CommandFileLoader(this.config.commandsDir);
+        const names = this.commandFileLoader.listNames();
+        if (names.length > 0) {
+          const builtins = [
+            'help', 'exit', 'quit', 'q', 'restart', 'update', 'skills',
+            'gates', 'reset', 'stop', 'workflows', 'status', 'pause',
+            'resume', 'plan', 'workers', 'focus', 'hindsight',
+          ];
+          for (const n of names) {
+            if (builtins.includes(n)) {
+              log.warn(`File command "/${n}" conflicts with built-in command — built-in takes priority`);
+            }
+          }
+        }
+      } catch (err) {
+        log.warn('File command loader init failed', {
           error: err instanceof Error ? err.message : String(err),
         });
       }
@@ -506,6 +533,7 @@ export class MainAgent {
             '  /focus     — Focus a workflow by ID',
             '  /hindsight — Memory system status',
             '  /exit      — Exit the TUI (/quit, /q)',
+            ...this.getFileCommandHelpLines(),
           ].join('\n'),
         });
         return;
@@ -602,12 +630,50 @@ export class MainAgent {
         });
         return;
       }
-      const result = await this.orchestration.commands.handle(cmd);
-      this.callbacks.onCommandResult({ command: cmd, success: result.success, message: result.message });
+
+      const orchResult = await this.orchestration.commands.handle(cmd);
+      if (orchResult.success || !orchResult.message.startsWith('Unknown command')) {
+        this.callbacks.onCommandResult({ command: cmd, success: orchResult.success, message: orchResult.message });
+        return;
+      }
+
+      if (this.commandFileLoader) {
+        const fileCmd = this.commandFileLoader.lookup(cmd);
+        if (fileCmd) {
+          log.info(`Executing file command: /${fileCmd.name}`, { file: fileCmd.filePath });
+          this.callbacks.onCommandResult({
+            command: cmd, success: true,
+            message: `Running custom command /${fileCmd.name}…`,
+          });
+          await this.handleMessage(fileCmd.content);
+          return;
+        }
+      }
+
+      this.callbacks.onCommandResult({ command: cmd, success: orchResult.success, message: orchResult.message });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.callbacks.onCommandResult({ command, success: false, message: `Command failed: ${msg}` });
     }
+  }
+
+  private getFileCommandHelpLines(): string[] {
+    if (!this.commandFileLoader) return [];
+    const cmds = this.commandFileLoader.list();
+    if (cmds.length === 0) return [];
+    const lines = ['', 'Custom commands:'];
+    for (const c of cmds) {
+      lines.push(`  /${c.name}    — ${c.filePath}`);
+    }
+    return lines;
+  }
+
+  getFileCommands(): Array<{ name: string; description: string }> {
+    if (!this.commandFileLoader) return [];
+    return this.commandFileLoader.list().map((c) => ({
+      name: c.name,
+      description: `Custom command (${c.filePath})`,
+    }));
   }
 
   /** Flush memory before compaction. */

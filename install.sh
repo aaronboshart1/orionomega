@@ -122,6 +122,18 @@ fi
 export PATH="$BIN_DIR:$PATH"
 info "orionomega command ready"
 
+# ── 6b. Set up custom commands directory ──────────────────────────────
+COMMANDS_DIR="$HOME/orionomega/commands"
+if [ ! -d "$COMMANDS_DIR" ]; then
+  mkdir -p "$COMMANDS_DIR"
+  if [ -d "$INSTALL_DIR/commands" ]; then
+    cp "$INSTALL_DIR/commands/"*.md "$COMMANDS_DIR/" 2>/dev/null || true
+  fi
+  info "Custom commands directory created at $COMMANDS_DIR"
+else
+  info "Custom commands directory already exists at $COMMANDS_DIR"
+fi
+
 # ── 7. Pre-pull Hindsight Docker image ─────────────────────────────
 
 step "Hindsight (Memory System)..."

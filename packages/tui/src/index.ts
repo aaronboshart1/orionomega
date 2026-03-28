@@ -16,7 +16,7 @@ import {
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { readConfig } from '@orionomega/core';
+import { readConfig, CommandFileLoader } from '@orionomega/core';
 import type { PlannerOutput, GraphState } from '@orionomega/core';
 import chalk from 'chalk';
 
@@ -47,6 +47,20 @@ const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/exit', description: 'Exit the TUI' },
   { name: '/quit', description: 'Exit the TUI' },
 ];
+
+try {
+  const cfg = readConfig();
+  if (cfg.commands?.directory) {
+    const loader = new CommandFileLoader(cfg.commands.directory);
+    const fileCmds = loader.list();
+    for (const fc of fileCmds) {
+      const exists = SLASH_COMMANDS.some((sc) => sc.name === `/${fc.name}`);
+      if (!exists) {
+        SLASH_COMMANDS.push({ name: `/${fc.name}`, description: `Custom command (${fc.filePath})` });
+      }
+    }
+  }
+} catch {}
 
 /** Client-side commands that don't go to the gateway. */
 const CLIENT_COMMANDS = new Set(['/exit', '/quit', '/q', '/focus', '/hindsight']);

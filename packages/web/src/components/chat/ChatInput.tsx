@@ -9,7 +9,7 @@ interface ChatInputProps {
   disabled?: boolean;
 }
 
-const SLASH_COMMANDS = [
+const BUILTIN_COMMANDS = [
   { command: '/stop', description: 'Stop current streaming' },
   { command: '/clear', description: 'Clear conversation' },
   { command: '/status', description: 'Show system status' },
@@ -17,11 +17,33 @@ const SLASH_COMMANDS = [
   { command: '/help', description: 'Show available commands' },
 ];
 
+function useFileCommands() {
+  const [fileCommands, setFileCommands] = useState<Array<{ command: string; description: string }>>([]);
+
+  useEffect(() => {
+    fetch('/api/gateway/api/commands')
+      .then((res) => (res.ok ? res.json() : { commands: [] }))
+      .then((data: { commands: Array<{ name: string; description: string }> }) => {
+        setFileCommands(
+          data.commands.map((c) => ({
+            command: `/${c.name}`,
+            description: c.description,
+          })),
+        );
+      })
+      .catch(() => {});
+  }, []);
+
+  return fileCommands;
+}
+
 export function ChatInput({ onSend, disabled }: ChatInputProps) {
   const [input, setInput] = useState('');
   const [showPalette, setShowPalette] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const messages = useChatStore((s) => s.messages);
+  const fileCommands = useFileCommands();
+  const SLASH_COMMANDS = [...BUILTIN_COMMANDS, ...fileCommands];
 
   const handleSend = useCallback(() => {
     const trimmed = input.trim();
