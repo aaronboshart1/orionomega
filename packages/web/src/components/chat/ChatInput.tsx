@@ -46,6 +46,8 @@ function useFileCommands() {
   return fileCommands;
 }
 
+const TEXTAREA_MAX_HEIGHT_PX = 256; // matches Tailwind max-h-64
+
 const ACCEPTED_FILE_TYPES = [
   'image/jpeg',
   'image/png',
@@ -125,6 +127,9 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
     setAttachments([]);
     setShowPalette(false);
     setReplyTarget(null);
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto';
+    }
   }, [input, disabled, onSend, attachments, replyTarget, setReplyTarget]);
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -217,6 +222,17 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
     },
     [addFiles],
   );
+
+  const adjustTextareaHeight = useCallback(() => {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    ta.style.height = 'auto';
+    ta.style.height = `${Math.min(ta.scrollHeight, TEXTAREA_MAX_HEIGHT_PX)}px`;
+  }, []);
+
+  useEffect(() => {
+    adjustTextareaHeight();
+  }, [input, adjustTextareaHeight]);
 
   const canSend = (input.trim().length > 0 || attachments.length > 0) && !disabled;
 
@@ -363,8 +379,8 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
           onKeyDown={handleKeyDown}
           placeholder="Message OmegaClaw..."
           disabled={disabled}
-          rows={2}
-          className="max-h-64 flex-1 resize-none bg-transparent text-sm text-zinc-100 placeholder-zinc-500 outline-none disabled:opacity-50"
+          rows={4}
+          className="min-h-[5.5rem] max-h-64 flex-1 resize-none bg-transparent text-sm leading-relaxed text-zinc-100 placeholder-zinc-500 outline-none transition-[height] duration-150 ease-out disabled:opacity-50"
           aria-label="Message input"
           aria-multiline="true"
         />
