@@ -15,7 +15,7 @@ else
   REPO_URL="https://github.com/aaronboshart1/orionomega.git"
 fi
 NODE_MIN=22
-GATEWAY_PORT=7800
+GATEWAY_PORT=8000
 
 # ── Colours ──────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'
