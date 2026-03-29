@@ -1,12 +1,9 @@
 import type { Metadata, Viewport } from 'next';
-import localFont from 'next/font/local';
+import { Inter } from 'next/font/google';
 import { ToastContainer } from '@/components/ToastContainer';
 import './globals.css';
 
-const inter = localFont({
-  src: './fonts/InterVariable.woff2',
-  display: 'swap',
-});
+const inter = Inter({ subsets: ['latin'] });
 
 export const viewport: Viewport = {
   width: 'device-width',
