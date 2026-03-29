@@ -8,6 +8,7 @@
 
 import { WebSocketServer, WebSocket } from 'ws';
 import type { IncomingMessage } from 'node:http';
+import { auditAuthEvent } from '@orionomega/core';
 import type { Server as HTTPServer } from 'node:http';
 import { randomBytes } from 'node:crypto';
 import { URL } from 'node:url';
@@ -125,8 +126,10 @@ export class WebSocketHandler {
       if (!result.valid) {
         ws.close(4001, 'Authentication failed');
         log.warn('WebSocket auth failed', { from: req.socket.remoteAddress ?? 'unknown' });
+        auditAuthEvent('ws_auth_failed', 'Invalid token', req.socket.remoteAddress ?? 'unknown');
         return;
       }
+      auditAuthEvent('ws_auth_success', undefined, req.socket.remoteAddress ?? undefined);
     }
 
     // Always join the default session — single-user system shares one persistent session

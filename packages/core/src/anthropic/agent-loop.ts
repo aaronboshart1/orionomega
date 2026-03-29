@@ -22,6 +22,7 @@ import type {
 } from './client.js';
 import { maxOutputTokensForModel } from './client.js';
 import type { BuiltInTool, ToolContext } from './tools.js';
+import { auditToolInvocation } from '../logging/audit.js';
 
 /** Options for running the agent loop. */
 export interface AgentLoopOptions {
@@ -234,6 +235,7 @@ export async function runAgentLoop(
 
       totalToolCalls++;
       onToolCall?.(toolName, toolInput);
+      auditToolInvocation(toolName, toolInput);
 
       const tool = toolMap.get(toolName);
       let result: string;

@@ -8,7 +8,7 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { randomBytes } from 'node:crypto';
-import { readConfig, normalizeBindAddresses, MainAgent, CommandFileLoader, createLogger, setGlobalLogLevel, enableFileLogging, discoverModels, clearModelCache } from '@orionomega/core';
+import { readConfig, normalizeBindAddresses, MainAgent, CommandFileLoader, createLogger, setGlobalLogLevel, enableFileLogging, discoverModels, clearModelCache, auditApiRequest } from '@orionomega/core';
 import type { MainAgentConfig, MainAgentCallbacks, LogLevel } from '@orionomega/core';
 import { setLogLevel as setHindsightLogLevel } from '@orionomega/hindsight';
 import type { GatewayConfig, ServerMessage } from './types.js';
@@ -48,11 +48,14 @@ try {
   config = fullConfig.gateway;
   hindsightUrl = fullConfig.hindsight.url;
 
-  // Apply logging config from config.yaml — sets level for ALL packages
-  const logLevel = fullConfig.logging?.level ?? 'info';
+  const VALID_LOG_LEVELS: ReadonlySet<string> = new Set(['error', 'warn', 'info', 'verbose', 'debug']);
+  const rawLogLevel = fullConfig.logging?.level ?? 'info';
+  const logLevel = VALID_LOG_LEVELS.has(rawLogLevel) ? rawLogLevel : 'info';
+  if (rawLogLevel !== logLevel) {
+    console.warn(`[gateway] Invalid log level "${rawLogLevel}", falling back to "info"`);
+  }
   setGlobalLogLevel(logLevel as LogLevel);
   setHindsightLogLevel(logLevel as LogLevel);
-  // Propagate to child processes (skill executor reads this)
   process.env.ORIONOMEGA_LOG_LEVEL = logLevel;
   if (fullConfig.logging?.file) {
     enableFileLogging(fullConfig.logging.file);
@@ -544,6 +547,10 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
   const rawUrl = req.url ?? '/';
   const method = req.method ?? 'GET';
   const pathname = rawUrl.split('?')[0]!.replace(/\/+$/, '') || '/';
+
+  if (pathname !== '/api/health') {
+    auditApiRequest(method, pathname, undefined, req.socket.remoteAddress);
+  }
 
   // --- Health ---
   if (pathname === '/api/health' && method === 'GET') {

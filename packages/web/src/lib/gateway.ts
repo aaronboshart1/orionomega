@@ -238,7 +238,14 @@ function bindListeners(ws: ReconnectingWebSocket): void {
   const orchStore = useOrchestrationStore.getState;
 
   ws.onmessage = (raw) => {
-    const msg = JSON.parse(raw.data as string);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let msg: any;
+    try {
+      msg = JSON.parse(raw.data as string);
+    } catch {
+      console.warn('[gateway] Received non-JSON WebSocket message, ignoring');
+      return;
+    }
     const chat = chatStore();
     const orch = orchStore();
 

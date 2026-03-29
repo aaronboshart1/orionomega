@@ -11,3 +11,12 @@ export {
   enableFileLogging,
   setConsoleLogging,
 } from './logger.js';
+
+export type { AuditCategory, AuditEntry } from './audit.js';
+export {
+  emitAuditEvent,
+  auditToolInvocation,
+  auditApiRequest,
+  auditAuthEvent,
+  auditConfigChange,
+} from './audit.js';

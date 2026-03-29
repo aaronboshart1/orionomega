@@ -25,6 +25,7 @@ import { z } from 'zod/v4';
 import { readConfig } from '../config/loader.js';
 import type { WorkflowNode } from './types.js';
 import { createLogger } from '../logging/logger.js';
+import { auditToolInvocation } from '../logging/audit.js';
 import { SkillLoader, SkillExecutor, readSkillConfig } from '@orionomega/skills-sdk';
 import type { SkillTool } from '@orionomega/skills-sdk';
 import path from 'node:path';
@@ -483,6 +484,7 @@ export async function executeAgent(
               progressEstimate = Math.min(progressEstimate + 5, 90);
               const toolName = block.name;
               const toolInput = block.input as Record<string, unknown> | undefined ?? {};
+              auditToolInvocation(toolName, toolInput);
 
               // Build a concise summary
               let summary = toolName;
@@ -721,6 +723,7 @@ export async function executeCodingAgent(
               const pct = Math.min(90, Math.round((toolCalls / maxTurns) * 100));
               const toolInput = block.input as Record<string, unknown> | undefined;
               const toolName = block.name;
+              auditToolInvocation(toolName, toolInput ?? {});
               const filePath = toolInput && typeof toolInput === 'object' && 'file_path' in toolInput
                 ? ` → ${toolInput.file_path}`
                 : '';

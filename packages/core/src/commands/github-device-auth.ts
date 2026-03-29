@@ -8,9 +8,7 @@
 
 import { execSync } from 'node:child_process';
 
-// The gh CLI's public OAuth App client ID (from the open-source gh CLI repository).
-// This is not a secret — it identifies the OAuth App, not the user.
-const GH_CLIENT_ID = '178c6fc778ccc68e1d6a';
+const GH_CLIENT_ID = process.env.GH_OAUTH_CLIENT_ID || '178c6fc778ccc68e1d6a';
 const DEFAULT_SCOPES = 'repo,read:org,workflow';
 
 const BOLD = '\x1b[1m';

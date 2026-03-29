@@ -33,6 +33,7 @@ const BUDGET_TIER_MAX_TOKENS: Record<string, number> = {
 export class HindsightClient {
   private readonly baseUrl: string;
   private readonly namespace: string;
+  private readonly apiKey?: string;
   private _activeOps = 0;
   private _connected = false;
 
@@ -56,11 +57,12 @@ export class HindsightClient {
    * Create a new Hindsight client.
    * @param baseUrl - Base URL of the Hindsight API (e.g. `http://localhost:8888`).
    * @param namespace - Namespace for bank isolation (default: `'default'`).
+   * @param apiKey - Optional API key for authenticating with the Hindsight server.
    */
-  constructor(baseUrl: string, namespace: string = 'default') {
-    // Strip trailing slash for consistent URL building
+  constructor(baseUrl: string, namespace: string = 'default', apiKey?: string) {
     this.baseUrl = baseUrl.replace(/\/+$/, '');
     this.namespace = namespace;
+    this.apiKey = apiKey || process.env.HINDSIGHT_API_KEY;
   }
 
   // ── Health ──────────────────────────────────────────────────────────
@@ -523,9 +525,13 @@ export class HindsightClient {
     body?: unknown,
   ): Promise<T> {
     const url = `${this.baseUrl}${path}`;
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (this.apiKey) {
+      headers['Authorization'] = `Bearer ${this.apiKey}`;
+    }
     const init: RequestInit = {
       method,
-      headers: { 'Content-Type': 'application/json' },
+      headers,
     };
 
     if (body !== undefined) {

@@ -66,8 +66,8 @@ export { CommandFileLoader } from './commands/index.js';
 export type { FileCommand } from './commands/index.js';
 
 // Logging
-export type { Logger, LogLevel } from './logging/index.js';
-export { createLogger, setGlobalLogLevel, getGlobalLogLevel, enableFileLogging, setConsoleLogging } from './logging/index.js';
+export type { Logger, LogLevel, AuditCategory, AuditEntry } from './logging/index.js';
+export { createLogger, setGlobalLogLevel, getGlobalLogLevel, enableFileLogging, setConsoleLogging, emitAuditEvent, auditToolInvocation, auditApiRequest, auditAuthEvent, auditConfigChange } from './logging/index.js';
 
 // Anthropic API integration
 export { AnthropicClient, getBuiltInTools, runAgentLoop } from './anthropic/index.js';

@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { readConfig, writeConfig } from '@orionomega/core';
+import { readConfig, writeConfig, auditConfigChange, auditAuthEvent } from '@orionomega/core';
 import type { OrionOmegaConfig } from '@orionomega/core';
 import { validateToken } from '../auth.js';
 import type { GatewayConfig } from '../types.js';
@@ -226,6 +226,7 @@ function validateConfig(config: Record<string, unknown>): string[] {
 }
 
 function checkAuth(req: IncomingMessage, res: ServerResponse, gatewayConfig: GatewayConfig): boolean {
+  const actor = req.socket.remoteAddress ?? undefined;
   if (gatewayConfig.auth.mode !== 'api-key' || !gatewayConfig.auth.keyHash) {
     return true;
   }
@@ -236,6 +237,7 @@ function checkAuth(req: IncomingMessage, res: ServerResponse, gatewayConfig: Gat
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
   if (!token) {
     recordAuthFailure(req);
+    auditAuthEvent('rest_auth_failed', 'Missing token', actor);
     res.writeHead(401, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'Authentication required' }));
     return false;
@@ -243,11 +245,13 @@ function checkAuth(req: IncomingMessage, res: ServerResponse, gatewayConfig: Gat
   const result = validateToken(token, gatewayConfig.auth.keyHash);
   if (!result.valid) {
     recordAuthFailure(req);
+    auditAuthEvent('rest_auth_failed', 'Invalid token', actor);
     res.writeHead(401, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'Authentication failed' }));
     return false;
   }
   resetAuthFailures(req);
+  auditAuthEvent('rest_auth_success', undefined, actor);
   return true;
 }
 
@@ -306,6 +310,7 @@ export async function handlePutConfig(
     }
 
     writeConfig(merged as unknown as OrionOmegaConfig);
+    auditConfigChange('config_update', `Updated keys: ${Object.keys(partial).join(', ')}`, req.socket.remoteAddress ?? undefined);
 
     const freshConfig = readConfig();
     const masked = maskConfig(freshConfig);

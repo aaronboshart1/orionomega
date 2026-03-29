@@ -8,6 +8,7 @@ import {
   resolveSettings,
   maskSecrets,
 } from '@orionomega/skills-sdk';
+import { auditAuthEvent } from '@orionomega/core';
 import type { SkillConfig, SkillSettingSchema } from '@orionomega/skills-sdk';
 import { SkillSettingType } from '@orionomega/skills-sdk';
 import { readConfig } from '@orionomega/core';
@@ -37,6 +38,7 @@ function readBody(req: IncomingMessage, maxBytes: number = DEFAULT_MAX_BODY_BYTE
 }
 
 function checkAuth(req: IncomingMessage, res: ServerResponse, gatewayConfig: GatewayConfig): boolean {
+  const actor = req.socket.remoteAddress ?? undefined;
   if (gatewayConfig.auth.mode !== 'api-key' || !gatewayConfig.auth.keyHash) {
     return true;
   }
@@ -47,6 +49,7 @@ function checkAuth(req: IncomingMessage, res: ServerResponse, gatewayConfig: Gat
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
   if (!token) {
     recordAuthFailure(req);
+    auditAuthEvent('rest_auth_failed', 'Missing token', actor);
     res.writeHead(401, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'Authentication required' }));
     return false;
@@ -54,11 +57,13 @@ function checkAuth(req: IncomingMessage, res: ServerResponse, gatewayConfig: Gat
   const result = validateToken(token, gatewayConfig.auth.keyHash);
   if (!result.valid) {
     recordAuthFailure(req);
+    auditAuthEvent('rest_auth_failed', 'Invalid token', actor);
     res.writeHead(401, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'Authentication failed' }));
     return false;
   }
   resetAuthFailures(req);
+  auditAuthEvent('rest_auth_success', undefined, actor);
   return true;
 }
 
