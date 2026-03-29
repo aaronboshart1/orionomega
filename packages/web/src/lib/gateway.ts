@@ -514,6 +514,21 @@ function bindListeners(ws: ReconnectingWebSocket): void {
         }
         break;
       }
+      case 'memory_history': {
+        if (msg.memoryEvents && Array.isArray(msg.memoryEvents)) {
+          waitForHydration().then(() => {
+            const store = useOrchestrationStore.getState();
+            const existingIds = new Set(store.memoryEvents.map((e: { id: string }) => e.id));
+            const newEvents = msg.memoryEvents!.filter((e: { id: string }) => !existingIds.has(e.id));
+            if (newEvents.length > 0) {
+              for (const e of newEvents) {
+                store.addMemoryEvent(e);
+              }
+            }
+          });
+        }
+        break;
+      }
       default:
         console.debug('[gateway] unhandled message type:', msg.type, msg);
     }

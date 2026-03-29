@@ -18,6 +18,9 @@ const log = createLogger('sessions');
 /** Directory where session files are persisted. */
 const SESSIONS_DIR = join(homedir(), '.orionomega', 'sessions');
 
+/** The fixed ID for the single persistent default session. */
+export const DEFAULT_SESSION_ID = 'default';
+
 /** Maximum messages per session before oldest are pruned. */
 const MAX_MESSAGES_PER_SESSION = 500;
 
@@ -38,6 +41,16 @@ export interface Message {
   replyToId?: string;
 }
 
+/** A memory event stored in the session. */
+export interface MemoryEventData {
+  id: string;
+  timestamp: string;
+  op: string;
+  detail: string;
+  bank?: string;
+  meta?: Record<string, unknown>;
+}
+
 /** Serializable session shape (written to disk). */
 interface SessionData {
   id: string;
@@ -46,7 +59,11 @@ interface SessionData {
   messages: Message[];
   activeWorkflows: string[];
   hindsightBank?: string;
+  memoryEvents?: MemoryEventData[];
 }
+
+/** Maximum memory events to persist per session. */
+const MAX_MEMORY_EVENTS = 200;
 
 /** A gateway session grouping one or more client connections. */
 export interface Session {
@@ -57,6 +74,7 @@ export interface Session {
   /** IDs of all currently active workflows for this session. */
   activeWorkflows: Set<string>;
   hindsightBank?: string;
+  memoryEvents: MemoryEventData[];
   clients: Set<string>;
 }
 
@@ -73,30 +91,27 @@ export class SessionManager {
   constructor() {
     this.ensureSessionsDir();
     this.loadAllFromDisk();
+    this.ensureDefaultSession();
     this.startCleanupLoop();
   }
 
   // ─── Session CRUD ───────────────────────────────────────────
 
   /**
+   * Return the persistent default session.
+   * All clients share this single session.
+   */
+  getDefaultSession(): Session {
+    return this.sessions.get(DEFAULT_SESSION_ID)!;
+  }
+
+  /**
    * Create a new session and return it.
-   * @returns The newly created session.
+   * In single-user mode this always returns the default session.
+   * @returns The default session.
    */
   createSession(): Session {
-    const id = randomBytes(12).toString('hex');
-    const now = new Date().toISOString();
-    const session: Session = {
-      id,
-      createdAt: now,
-      updatedAt: now,
-      messages: [],
-      activeWorkflows: new Set(),
-      clients: new Set(),
-    };
-    this.sessions.set(id, session);
-    this.schedulePersist(id);
-    log.info(`Session created: ${id}`);
-    return session;
+    return this.getDefaultSession();
   }
 
   /**
@@ -132,6 +147,26 @@ export class SessionManager {
     if (session.messages.length > MAX_MESSAGES_PER_SESSION) {
       const excess = session.messages.length - MAX_MESSAGES_PER_SESSION;
       session.messages.splice(0, excess);
+    }
+
+    this.schedulePersist(sessionId);
+  }
+
+  /**
+   * Append a memory event to a session's event log.
+   * Automatically prunes oldest events if the cap is exceeded.
+   * @param sessionId - Target session ID.
+   * @param event - The memory event to add.
+   */
+  addMemoryEvent(sessionId: string, event: MemoryEventData): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    session.memoryEvents.push(event);
+    session.updatedAt = new Date().toISOString();
+
+    if (session.memoryEvents.length > MAX_MEMORY_EVENTS) {
+      const excess = session.memoryEvents.length - MAX_MEMORY_EVENTS;
+      session.memoryEvents.splice(0, excess);
     }
 
     this.schedulePersist(sessionId);
@@ -188,10 +223,31 @@ export class SessionManager {
   }
 
   /**
+   * Reset a session: clear messages, memory events, and active workflows,
+   * then persist the cleared state to disk.
+   * @param sessionId - Target session ID.
+   */
+  resetSession(sessionId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    session.messages.length = 0;
+    session.memoryEvents.length = 0;
+    session.activeWorkflows.clear();
+    session.updatedAt = new Date().toISOString();
+    this.schedulePersist(sessionId);
+    log.info(`Session reset: ${sessionId}`);
+  }
+
+  /**
    * Delete a session entirely (from memory and disk).
+   * The default session cannot be deleted — use /reset to clear it instead.
    * @param id - Session identifier.
    */
   deleteSession(id: string): void {
+    if (id === DEFAULT_SESSION_ID) {
+      log.warn('Cannot delete the default session — use /reset to clear it');
+      return;
+    }
     this.sessions.delete(id);
     this.deleteFromDisk(id);
     log.info(`Session deleted: ${id}`);
@@ -210,6 +266,7 @@ export class SessionManager {
       messages: session.messages,
       activeWorkflows: [...session.activeWorkflows],
       hindsightBank: session.hindsightBank ?? null,
+      memoryEvents: session.memoryEvents,
       clientCount: session.clients.size,
     };
   }
@@ -279,6 +336,7 @@ export class SessionManager {
       messages: session.messages,
       activeWorkflows: [...session.activeWorkflows],
       hindsightBank: session.hindsightBank,
+      memoryEvents: session.memoryEvents,
     };
 
     try {
@@ -307,6 +365,7 @@ export class SessionManager {
             messages: data.messages ?? [],
             activeWorkflows: new Set(data.activeWorkflows ?? []),
             hindsightBank: data.hindsightBank,
+            memoryEvents: data.memoryEvents ?? [],
             clients: new Set(), // No clients on startup — they reconnect
           };
 
@@ -342,12 +401,15 @@ export class SessionManager {
   /**
    * Archive (delete) sessions that are older than SESSION_MAX_AGE_MS
    * and have no active clients connected.
+   * The default session is always exempt from cleanup.
    */
   private cleanupStaleSessions(): void {
     const now = Date.now();
     let cleaned = 0;
 
     for (const [id, session] of this.sessions) {
+      if (id === DEFAULT_SESSION_ID) continue;
+
       const age = now - new Date(session.updatedAt).getTime();
       const hasClients = session.clients.size > 0;
 
@@ -360,5 +422,30 @@ export class SessionManager {
     if (cleaned > 0) {
       log.info(`Cleaned up ${cleaned} stale session(s)`);
     }
+  }
+
+  /**
+   * Ensure the default session exists.
+   * If it was loaded from disk, keep it; otherwise create it fresh.
+   */
+  private ensureDefaultSession(): void {
+    if (this.sessions.has(DEFAULT_SESSION_ID)) {
+      log.info(`Default session loaded from disk (${this.sessions.get(DEFAULT_SESSION_ID)!.messages.length} messages)`);
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const session: Session = {
+      id: DEFAULT_SESSION_ID,
+      createdAt: now,
+      updatedAt: now,
+      messages: [],
+      activeWorkflows: new Set(),
+      memoryEvents: [],
+      clients: new Set(),
+    };
+    this.sessions.set(DEFAULT_SESSION_ID, session);
+    this.schedulePersist(DEFAULT_SESSION_ID);
+    log.info('Default session created');
   }
 }

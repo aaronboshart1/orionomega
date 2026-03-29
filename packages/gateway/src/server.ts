@@ -12,7 +12,7 @@ import { readConfig, normalizeBindAddresses, MainAgent, CommandFileLoader, creat
 import type { MainAgentConfig, MainAgentCallbacks, LogLevel } from '@orionomega/core';
 import { setLogLevel as setHindsightLogLevel } from '@orionomega/hindsight';
 import type { GatewayConfig, ServerMessage } from './types.js';
-import { SessionManager } from './sessions.js';
+import { SessionManager, DEFAULT_SESSION_ID } from './sessions.js';
 import { CommandHandler } from './commands.js';
 import { EventStreamer } from './events.js';
 import { WebSocketHandler } from './websocket.js';
@@ -165,7 +165,7 @@ async function initMainAgent(): Promise<void> {
         if (done || !streaming) {
           const fullContent = streaming ? (state.buffer + (text || '')) : text;
           if (fullContent) {
-            const sid = sessionManager.listSessions()[0]?.id;
+            const sid = DEFAULT_SESSION_ID;
             if (sid) {
               sessionManager.addMessage(sid, {
                 id: state.textId,
@@ -199,7 +199,7 @@ async function initMainAgent(): Promise<void> {
         const fullContent = streaming ? (streamBuffer + (text || '')) : text;
 
         if (fullContent) {
-          const sid = sessionManager.listSessions()[0]?.id;
+          const sid = DEFAULT_SESSION_ID;
           if (sid) {
             sessionManager.addMessage(sid, {
               id: currentTextId,
@@ -249,7 +249,7 @@ async function initMainAgent(): Promise<void> {
       ));
 
       // Store plan in session history
-      const sessionId = sessionManager.listSessions()[0]?.id;
+      const sessionId = DEFAULT_SESSION_ID;
       if (sessionId) {
         sessionManager.addMessage(sessionId, {
           id: planId,
@@ -286,11 +286,11 @@ async function initMainAgent(): Promise<void> {
       });
     },
     onWorkflowStart(workflowId, _workflowName) {
-      const sessionId = sessionManager.listSessions()[0]?.id;
+      const sessionId = DEFAULT_SESSION_ID;
       if (sessionId) sessionManager.addActiveWorkflow(sessionId, workflowId);
     },
     onWorkflowEnd(workflowId) {
-      const sessionId = sessionManager.listSessions()[0]?.id;
+      const sessionId = DEFAULT_SESSION_ID;
       if (sessionId) sessionManager.removeActiveWorkflow(sessionId, workflowId);
     },
     onCommandResult(result) {
@@ -313,6 +313,7 @@ async function initMainAgent(): Promise<void> {
         type: 'memory_event',
         memoryEvent: event,
       });
+      sessionManager.addMemoryEvent(DEFAULT_SESSION_ID, event);
     },
 
     // DAG lifecycle callbacks — route through EventStreamer for subscription filtering
@@ -324,7 +325,7 @@ async function initMainAgent(): Promise<void> {
         workflowId: dispatch.workflowId,
         dagDispatch: dispatch,
       });
-      const sid = sessionManager.listSessions()[0]?.id;
+      const sid = DEFAULT_SESSION_ID;
       if (sid) {
         sessionManager.addMessage(sid, {
           id: msgId,
@@ -360,7 +361,7 @@ async function initMainAgent(): Promise<void> {
         workflowId: result.workflowId,
         dagComplete: result,
       });
-      const sid = sessionManager.listSessions()[0]?.id;
+      const sid = DEFAULT_SESSION_ID;
       if (sid) {
         sessionManager.addMessage(sid, {
           id: msgId,
@@ -396,7 +397,7 @@ async function initMainAgent(): Promise<void> {
         workflowId: confirm.workflowId,
         dagConfirm: confirm,
       });
-      const sid = sessionManager.listSessions()[0]?.id;
+      const sid = DEFAULT_SESSION_ID;
       if (sid) {
         sessionManager.addMessage(sid, {
           id: msgId,
@@ -558,7 +559,7 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
   }
 
   // GET /api/sessions/:id
-  const sessionMatch = pathname.match(/^\/api\/sessions\/([a-f0-9]+)$/);
+  const sessionMatch = pathname.match(/^\/api\/sessions\/([a-z0-9]+)$/);
   if (sessionMatch && method === 'GET') {
     handleGetSession(req, res, sessionManager, sessionMatch[1]!);
     return;

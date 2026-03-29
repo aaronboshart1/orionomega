@@ -52,7 +52,7 @@ export interface ServerMessage {
     | 'text' | 'thinking' | 'thinking_step' | 'plan' | 'event' | 'status'
     | 'command_result' | 'session_status' | 'error' | 'ack' | 'history'
     | 'dag_dispatched' | 'dag_progress' | 'dag_complete' | 'dag_confirm'
-    | 'hindsight_status' | 'memory_event';
+    | 'hindsight_status' | 'memory_event' | 'memory_history';
   /** Identifies which workflow this message relates to (events, status updates, plans). */
   workflowId?: string;
   /** The user message ID this response is answering (set by handleChat). */
@@ -72,6 +72,7 @@ export interface ServerMessage {
   step?: { id: string; name: string; status: 'pending' | 'active' | 'done'; startedAt?: number; completedAt?: number; elapsedMs?: number; detail?: string };
   error?: string;
   history?: Array<{ id: string; role: string; content: string; timestamp: string; type?: string; metadata?: Record<string, unknown> }>;
+  memoryEvents?: Array<{ id: string; timestamp: string; op: string; detail: string; bank?: string; meta?: Record<string, unknown> }>;
 
   // New DAG lifecycle fields
   dagDispatch?: {

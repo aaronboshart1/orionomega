@@ -150,14 +150,12 @@ export class CommandHandler {
   }
 
   private handleReset(session: Session): CommandResult {
-    session.messages.length = 0;
-    session.activeWorkflows.clear();
-    session.updatedAt = new Date().toISOString();
+    this.sessionManager.resetSession(session.id);
 
     return {
       command: '/reset',
       success: true,
-      message: 'Session reset. Message history cleared and workflow detached.',
+      message: 'Session reset. Message history and memory events cleared, workflow detached.',
     };
   }
 }

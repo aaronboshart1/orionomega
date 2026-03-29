@@ -122,11 +122,8 @@ export class WebSocketHandler {
       }
     }
 
-    // Create or join session
-    let session = sessionId ? this.sessionManager.getSession(sessionId) : undefined;
-    if (!session) {
-      session = this.sessionManager.createSession();
-    }
+    // Always join the default session — single-user system shares one persistent session
+    const session = this.sessionManager.getDefaultSession();
 
     const clientId = randomBytes(12).toString('hex');
     const conn: ClientConnection = {
@@ -160,7 +157,7 @@ export class WebSocketHandler {
     if (session.messages.length > 0) {
       this.send(ws, {
         id: randomBytes(8).toString('hex'),
-        type: 'history' as any,
+        type: 'history',
         history: session.messages.map((m) => ({
           id: m.id,
           role: m.role,
@@ -169,7 +166,16 @@ export class WebSocketHandler {
           type: m.type,
           metadata: m.metadata,
         })),
-      } as any);
+      });
+    }
+
+    // Send persisted memory events so new browsers get full memory activity
+    if (session.memoryEvents.length > 0) {
+      this.send(ws, {
+        id: randomBytes(8).toString('hex'),
+        type: 'memory_history',
+        memoryEvents: session.memoryEvents,
+      });
     }
 
     if (this.getHindsightStatus) {
@@ -350,6 +356,9 @@ export class WebSocketHandler {
     if (this.mainAgent) {
       try {
         await this.mainAgent.handleCommand(command, msg.workflowId);
+        if (command.trim().toLowerCase() === '/reset') {
+          this.sessionManager.resetSession(conn.sessionId);
+        }
       } catch (err) {
         log.error('MainAgent.handleCommand error', { error: err instanceof Error ? err.message : String(err) });
         this.send(conn.ws, {

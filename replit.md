@@ -116,16 +116,28 @@ Shared readline/CLI helpers (colors, `ask`, `choose`, `confirm`, `askSecret`, `m
 - Stale pre-compiled `.js` files removed from `src/app/` and `src/lib/`
 - Legacy `workflow-tracker.ts` component removed (replaced by `workflow-panel.ts`)
 
+## Persistent Default Session
+
+OrionOmega uses a single persistent default session (ID: `"default"`) that all clients automatically join:
+
+- **All clients share one session**: Every browser, tab, or TUI client joins the same default session regardless of stored session IDs
+- **Server-side persistence**: Chat messages, memory events, and active workflows are persisted to `~/.orionomega/sessions/default.json`
+- **Cross-browser continuity**: Switching browsers or clearing localStorage preserves all conversation history and memory activity
+- **Memory event persistence**: Memory events (retain, recall, dedup, etc.) are stored server-side in the session and replayed via `memory_history` WebSocket message on reconnect
+- **Cleanup exemption**: The default session is never deleted by the 24-hour stale session cleanup sweep
+- **Reset**: The `/reset` command clears messages, memory events, and workflows from the default session (persisted immediately)
+- **Session ID**: `DEFAULT_SESSION_ID = 'default'` exported from `packages/gateway/src/sessions.ts`
+
 ## Browser State Persistence
 
-Both the chat and orchestration Zustand stores use `persist` middleware with localStorage to survive page refreshes:
+Both the chat and orchestration Zustand stores use `persist` middleware with localStorage as a client-side cache. The server is the source of truth and replays state on reconnect:
 
 - **Chat store** (`orionomega-chat`): persists `messages` (including tool-call messages with full `ToolCallData`)
 - **Orchestration store** (`orionomega-orchestration`): persists `inlineDAGs`, `workflows` (graphState + events per workflow), `activeWorkflowId`, `orchPaneOpen`, `activeOrchTab`, `graphState`, `events`
 - Ephemeral state (`pendingConfirmation`, `isStreaming`, `memoryFilter`, `scrollToDagId`, `activitySectionCollapsed`) is NOT persisted — it resets on refresh
 - `activePlan`, `selectedWorker`, and `memoryEvents` ARE persisted via `partialize`
 - **Hydration guards**: `useChatHydrated()` and `useOrchHydrated()` hooks prevent flash of empty state during localStorage rehydration; `ChatPane` and `page.tsx` gate rendering on hydration completion
-- Gateway session ID stored in `orionomega_session_id` localStorage key for reconnection
+- Gateway session ID stored in `orionomega_session_id` localStorage key for protocol compatibility
 
 ## Memory Feed (Orchestration Pane)
 
