@@ -436,7 +436,7 @@ function OmegaClawTab({
           value={(() => {
             const bind = getNestedValue(config, 'gateway.bind');
             if (Array.isArray(bind)) return bind.join(', ');
-            return String(bind ?? '0.0.0.0');
+            return String(bind ?? '127.0.0.1');
           })()}
           onChange={(v) => onChange('gateway.bind', v.split(',').map((s) => s.trim()).filter(Boolean))}
           placeholder="127.0.0.1, 10.0.0.13"
@@ -453,7 +453,7 @@ function OmegaClawTab({
         <TextInput
           value={((getNestedValue(config, 'gateway.cors.origins') as string[]) ?? []).join(', ')}
           onChange={(v) => onChange('gateway.cors.origins', v.split(',').map((s) => s.trim()).filter(Boolean))}
-          placeholder="http://localhost:*, https://*"
+          placeholder="http://localhost:*"
         />
       </FormField>
 
@@ -747,10 +747,10 @@ function WebUITab({
           value={(() => {
             const bind = getNestedValue(config, 'webui.bind');
             if (Array.isArray(bind)) return bind.join(', ');
-            return String(bind ?? '0.0.0.0');
+            return String(bind ?? '127.0.0.1');
           })()}
           onChange={(v) => onChange('webui.bind', v.split(',').map((s) => s.trim()).filter(Boolean))}
-          placeholder="0.0.0.0, 127.0.0.1"
+          placeholder="127.0.0.1"
         />
       </FormField>
       <div className="mt-4 rounded-md border border-zinc-800 bg-zinc-900/50 px-3 py-2 text-xs text-zinc-500 leading-relaxed">

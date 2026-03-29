@@ -13,7 +13,7 @@
  * - Ctrl+C handled gracefully
  */
 
-import { createHash } from 'node:crypto';
+import { scryptSync, randomBytes } from 'node:crypto';
 import { mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
@@ -495,7 +495,8 @@ async function stepGatewaySecurity(config: OrionOmegaConfig, stepIdx: number, to
       }
     }
 
-    const hash = createHash('sha256').update(password).digest('hex');
+    const salt = randomBytes(32).toString('hex');
+    const hash = salt + ':' + scryptSync(password, salt, 64).toString('hex');
     config.gateway.auth.keyHash = hash;
     println();
     println(`  ${BOLD}Your gateway API key:${RESET} ${password}`);
@@ -911,7 +912,7 @@ async function stepWebUI(config: OrionOmegaConfig, stepIdx: number, totalSteps: 
   });
   if (bindStr) {
     const addrs = bindStr.split(',').map((s: string) => s.trim()).filter(Boolean);
-    config.webui.bind = addrs.length > 0 ? addrs : ['0.0.0.0'];
+    config.webui.bind = addrs.length > 0 ? addrs : ['127.0.0.1'];
   }
 
   const finalBind = Array.isArray(config.webui.bind) ? config.webui.bind.join(', ') : config.webui.bind;

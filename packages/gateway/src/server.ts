@@ -60,9 +60,9 @@ try {
   // Fallback defaults if core config is unavailable
   config = {
     port: 8000,
-    bind: '0.0.0.0',
-    auth: { mode: 'none' },
-    cors: { origins: ['http://*:*', 'http://localhost:*', 'https://*'] },
+    bind: '127.0.0.1',
+    auth: { mode: 'api-key' },
+    cors: { origins: ['http://localhost:*'] },
   };
   hindsightUrl = 'http://localhost:8888';
   log.warn('Could not load config from @orionomega/core — using defaults');
@@ -494,7 +494,18 @@ const hindsightHealthTimer = setInterval(async () => {
 function originAllowed(origin: string): boolean {
   return config.cors.origins.some((pattern) => {
     if (pattern === '*') return true;
-    const regex = new RegExp('^' + pattern.replace(/\*/g, '.*') + '$');
+    let regexStr = '';
+    for (let i = 0; i < pattern.length; i++) {
+      const ch = pattern[i]!;
+      if (ch === '*') {
+        regexStr += '[a-zA-Z0-9._:-]*';
+      } else if ('.+?^${}()|[]\\'.includes(ch)) {
+        regexStr += '\\' + ch;
+      } else {
+        regexStr += ch;
+      }
+    }
+    const regex = new RegExp('^' + regexStr + '$');
     return regex.test(origin);
   });
 }

@@ -76,7 +76,7 @@ info "Source ready at $INSTALL_DIR"
 # ── 4. Install dependencies ─────────────────────────────────────
 
 step "Installing dependencies..."
-pnpm install --frozen-lockfile 2>/dev/null || pnpm install
+pnpm install --frozen-lockfile
 info "Dependencies installed"
 
 # ── 5. Build ─────────────────────────────────────────────────────
@@ -191,15 +191,26 @@ else
   if [ "$(uname -s)" = "Darwin" ]; then
     install_docker_macos && DOCKER_READY=true
   else
-    warn "Docker not found — installing..."
-    if curl -fsSL https://get.docker.com | sh 2>&1 | tail -3; then
+    warn "Docker not found — installing via package manager..."
+    if command -v apt-get &>/dev/null; then
+      sudo apt-get update -qq && sudo apt-get install -y -qq docker.io 2>&1 | tail -3
+    elif command -v dnf &>/dev/null; then
+      sudo dnf install -y docker 2>&1 | tail -3
+    elif command -v yum &>/dev/null; then
+      sudo yum install -y docker 2>&1 | tail -3
+    elif command -v pacman &>/dev/null; then
+      sudo pacman -S --noconfirm docker 2>&1 | tail -3
+    elif command -v zypper &>/dev/null; then
+      sudo zypper install -y docker 2>&1 | tail -3
+    else
+      warn "No supported package manager found. Install Docker manually using your distribution's package manager."
+    fi
+    if command -v docker &>/dev/null; then
       sudo systemctl enable --now docker 2>/dev/null || true
       if docker info &>/dev/null 2>&1; then
         info "Docker installed and running"
         DOCKER_READY=true
       fi
-    else
-      warn "Docker install failed. Install manually: curl -fsSL https://get.docker.com | sh"
     fi
   fi
 fi

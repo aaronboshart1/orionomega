@@ -3,7 +3,7 @@
  * Configuration loading, writing, and default generation for OrionOmega.
  */
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, chmodSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -27,12 +27,12 @@ export function getDefaultConfig(): OrionOmegaConfig {
   return {
     gateway: {
       port: 8000,
-      bind: ['0.0.0.0'],
+      bind: ['127.0.0.1'],
       auth: {
-        mode: 'none',
+        mode: 'api-key',
       },
       cors: {
-        origins: ['http://localhost:*', 'http://*:*', 'https://*'],
+        origins: ['http://localhost:*'],
       },
     },
     hindsight: {
@@ -79,7 +79,7 @@ export function getDefaultConfig(): OrionOmegaConfig {
     },
     webui: {
       port: 5000,
-      bind: ['0.0.0.0'],
+      bind: ['127.0.0.1'],
     },
     commands: {
       directory: join(homedir(), 'orionomega', 'commands'),
@@ -139,13 +139,37 @@ function deepMerge(
  * deduplicated array of trimmed, non-empty address strings.
  */
 export function normalizeBindAddresses(bind: string | string[] | undefined): string[] {
-  if (bind === undefined || bind === null) return ['0.0.0.0'];
+  if (bind === undefined || bind === null) return ['127.0.0.1'];
   if (Array.isArray(bind)) {
     const addrs = bind.flatMap((b) => String(b).split(',')).map((s) => s.trim()).filter(Boolean);
-    return [...new Set(addrs.length > 0 ? addrs : ['0.0.0.0'])];
+    return [...new Set(addrs.length > 0 ? addrs : ['127.0.0.1'])];
   }
   const addrs = String(bind).split(',').map((s) => s.trim()).filter(Boolean);
-  return [...new Set(addrs.length > 0 ? addrs : ['0.0.0.0'])];
+  return [...new Set(addrs.length > 0 ? addrs : ['127.0.0.1'])];
+}
+
+function interpolateEnvVars(obj: unknown): unknown {
+  if (typeof obj === 'string') {
+    return obj.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)}/g, (_match, name: string) => {
+      return process.env[name] ?? '';
+    });
+  }
+  if (Array.isArray(obj)) {
+    return obj.map(interpolateEnvVars);
+  }
+  if (obj !== null && typeof obj === 'object') {
+    const result: Record<string, unknown> = {};
+    for (const [key, val] of Object.entries(obj as Record<string, unknown>)) {
+      result[key] = interpolateEnvVars(val);
+    }
+    return result;
+  }
+  return obj;
+}
+
+function isNonLocalhostBind(addresses: string[]): boolean {
+  const localAddrs = new Set(['127.0.0.1', '::1', 'localhost']);
+  return addresses.some((addr) => !localAddrs.has(addr));
 }
 
 /**
@@ -180,13 +204,24 @@ export function readConfig(configPath?: string): OrionOmegaConfig {
     return defaults;
   }
 
+  const interpolated = interpolateEnvVars(parsed) as Record<string, unknown>;
+
   const merged = deepMerge(
     defaults as unknown as Record<string, unknown>,
-    parsed as Record<string, unknown>,
+    interpolated,
   ) as unknown as OrionOmegaConfig;
 
   merged.gateway.bind = normalizeBindAddresses(merged.gateway.bind);
   merged.webui.bind = normalizeBindAddresses(merged.webui.bind);
+
+  if (merged.gateway.auth.mode === 'none' && isNonLocalhostBind(merged.gateway.bind)) {
+    console.warn(
+      '[security] WARNING: auth mode is "none" but gateway is bound to a non-localhost address (' +
+      merged.gateway.bind.join(', ') +
+      '). This exposes the gateway without authentication. Set auth.mode to "api-key" or bind to 127.0.0.1.',
+    );
+  }
+
   return merged;
 }
 
@@ -225,5 +260,10 @@ export function writeConfig(
     mkdirSync(dir, { recursive: true });
   }
 
-  writeFileSync(filePath, content, 'utf-8');
+  writeFileSync(filePath, content, { encoding: 'utf-8', mode: 0o600 });
+  try {
+    chmodSync(filePath, 0o600);
+  } catch {
+    // chmod may fail on some filesystems; the mode flag on write is the primary protection
+  }
 }

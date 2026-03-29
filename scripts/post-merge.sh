@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
 
-pnpm install --frozen-lockfile 2>/dev/null || pnpm install
+pnpm install --frozen-lockfile
 rm -rf packages/web/.next
 pnpm build
