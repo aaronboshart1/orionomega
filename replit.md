@@ -105,6 +105,10 @@ The skills SDK (`@orionomega/skills-sdk`) was upgraded from v0.1.0 to v0.2.0 wit
 
 Shared readline/CLI helpers (colors, `ask`, `choose`, `confirm`, `askSecret`, `maskSecret`, etc.) live in `packages/core/src/commands/cli-utils.ts`. Both `setup.ts` and `setup-skills.ts` import from this module instead of duplicating.
 
+## Fonts
+
+- The Inter font is bundled locally at `packages/web/src/app/fonts/InterVariable.woff2` using `next/font/local` — no Google Fonts network request is needed at build time. This prevents ETIMEDOUT failures in offline or restricted-network environments.
+
 ## Replit-Specific Changes
 
 - Next.js dev/start scripts bind to `0.0.0.0` on port 5000 (Replit's required webview port)
