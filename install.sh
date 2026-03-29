@@ -278,7 +278,13 @@ printf "\n"
 printf "  Launching setup wizard...\n"
 printf "\n"
 
-# ── 9. Spawn a fresh login shell so PATH is live ─────────────────
-# exec replaces this process with a new shell that reads .zshrc/.bashrc,
-# so `orionomega` is immediately available — same pattern as rustup/claude.
-exec "${SHELL:-/bin/sh}" -l -c "'$BIN_DIR/orionomega' setup" </dev/tty
+# ── 9. Run setup wizard, then drop into a fresh login shell ──────
+# Run setup in a subshell with PATH set, then exec a fresh login shell
+# so the user lands in a shell where `orionomega` is immediately available.
+PATH="$BIN_DIR:$PATH" "$BIN_DIR/orionomega" setup </dev/tty
+
+printf "\n"
+printf "  ${BOLD}Opening a new shell so 'orionomega' is in your PATH...${NC}\n"
+printf "  ${DIM}(Type 'exit' to return to your previous shell)${NC}\n"
+printf "\n"
+exec "${SHELL:-/bin/sh}" -l </dev/tty
