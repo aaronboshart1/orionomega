@@ -28,6 +28,7 @@ function getGitHash(): string {
 }
 
 const nextConfig: NextConfig = {
+  allowedDevOrigins: ['*.replit.dev', '*.janeway.replit.dev'],
   devIndicators: false,
   env: {
     NEXT_PUBLIC_APP_VERSION: getPackageVersion(),
