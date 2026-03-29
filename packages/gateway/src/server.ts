@@ -21,14 +21,16 @@ import { handleListSessions, handleGetSession, handleCreateSession } from './rou
 import { handleStatus } from './routes/status.js';
 import { handleGetConfig, handlePutConfig } from './routes/config.js';
 import { handleGetSkills, handlePutSkillConfig } from './routes/skills.js';
+import { rateLimitRest } from './rate-limit.js';
+import { setSecurityHeaders } from './security-headers.js';
 
 process.on('uncaughtException', (err) => {
   console.error('[gateway] Uncaught exception:', err);
-  process.exit(1);
+  shutdown('uncaughtException').catch(() => process.exit(1));
 });
 process.on('unhandledRejection', (reason) => {
   console.error('[gateway] Unhandled rejection:', reason);
-  process.exit(1);
+  shutdown('unhandledRejection').catch(() => process.exit(1));
 });
 
 const startTime = Date.now();
@@ -484,33 +486,29 @@ const hindsightHealthTimer = setInterval(async () => {
 })();
 
 // ---------------------------------------------------------------------------
-// CORS Helpers
+// CORS Helpers — patterns pre-compiled at startup to prevent ReDoS
 // ---------------------------------------------------------------------------
 
-/**
- * Check if an origin matches the configured CORS patterns.
- * Supports wildcard `*` in patterns (e.g. `http://localhost:*`).
- */
-function originAllowed(origin: string): boolean {
-  return config.cors.origins.some((pattern) => {
-    if (pattern === '*') return true;
-    let regexStr = '';
-    for (let i = 0; i < pattern.length; i++) {
-      const ch = pattern[i]!;
-      if (ch === '*') {
-        regexStr += '[a-zA-Z0-9._:-]*';
-      } else if ('.+?^${}()|[]\\'.includes(ch)) {
-        regexStr += '\\' + ch;
-      } else {
-        regexStr += ch;
-      }
+const compiledCorsPatterns: RegExp[] = config.cors.origins.map((pattern) => {
+  if (pattern === '*') return /^.*$/;
+  let regexStr = '';
+  for (let i = 0; i < pattern.length; i++) {
+    const ch = pattern[i]!;
+    if (ch === '*') {
+      regexStr += '[a-zA-Z0-9._:-]*?';
+    } else if ('.+?^${}()|[]\\'.includes(ch)) {
+      regexStr += '\\' + ch;
+    } else {
+      regexStr += ch;
     }
-    const regex = new RegExp('^' + regexStr + '$');
-    return regex.test(origin);
-  });
+  }
+  return new RegExp('^' + regexStr + '$');
+});
+
+function originAllowed(origin: string): boolean {
+  return compiledCorsPatterns.some((regex) => regex.test(origin));
 }
 
-/** Set CORS headers on a response. */
 function setCorsHeaders(req: IncomingMessage, res: ServerResponse): void {
   const origin = req.headers.origin ?? '';
   if (originAllowed(origin)) {
@@ -529,12 +527,17 @@ function setCorsHeaders(req: IncomingMessage, res: ServerResponse): void {
  * Minimal pattern-matching router for REST endpoints.
  */
 function handleRequest(req: IncomingMessage, res: ServerResponse): void {
+  setSecurityHeaders(res);
   setCorsHeaders(req, res);
 
   // Preflight
   if (req.method === 'OPTIONS') {
     res.writeHead(204);
     res.end();
+    return;
+  }
+
+  if (!rateLimitRest(req, res)) {
     return;
   }
 

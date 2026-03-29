@@ -3,6 +3,7 @@ import { readConfig, writeConfig } from '@orionomega/core';
 import type { OrionOmegaConfig } from '@orionomega/core';
 import { validateToken } from '../auth.js';
 import type { GatewayConfig } from '../types.js';
+import { rateLimitAuth, recordAuthFailure, resetAuthFailures } from '../rate-limit.js';
 
 const VALID_TOP_LEVEL_KEYS = new Set([
   'gateway', 'hindsight', 'models', 'orchestration', 'workspace', 'logging', 'skills', 'autonomous', 'agentSdk', 'webui', 'commands',
@@ -228,19 +229,25 @@ function checkAuth(req: IncomingMessage, res: ServerResponse, gatewayConfig: Gat
   if (gatewayConfig.auth.mode !== 'api-key' || !gatewayConfig.auth.keyHash) {
     return true;
   }
+  if (!rateLimitAuth(req, res)) {
+    return false;
+  }
   const authHeader = req.headers.authorization ?? '';
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
   if (!token) {
+    recordAuthFailure(req);
     res.writeHead(401, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'Authentication required' }));
     return false;
   }
   const result = validateToken(token, gatewayConfig.auth.keyHash);
   if (!result.valid) {
+    recordAuthFailure(req);
     res.writeHead(401, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'Authentication failed' }));
     return false;
   }
+  resetAuthFailures(req);
   return true;
 }
 
@@ -256,8 +263,9 @@ export function handleGetConfig(
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(masked));
   } catch (err) {
+    console.error('[config] Failed to read config:', err instanceof Error ? err.message : String(err));
     res.writeHead(500, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: err instanceof Error ? err.message : 'Failed to read config' }));
+    res.end(JSON.stringify({ error: 'Internal server error' }));
   }
 }
 
@@ -305,8 +313,9 @@ export async function handlePutConfig(
     res.end(JSON.stringify(masked));
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Failed to update config';
+    console.error('[config] Failed to update config:', message);
     const status = message.includes('exceeds limit') ? 413 : 400;
     res.writeHead(status, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: message }));
+    res.end(JSON.stringify({ error: status === 413 ? 'Request body too large' : 'Failed to update configuration' }));
   }
 }

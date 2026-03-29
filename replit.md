@@ -185,6 +185,22 @@ A global toast notification system provides transient feedback for WebSocket eve
 - **Variants**: `info`, `success`, `error`, `warning` with distinct color schemes
 - **Integration points**: gateway connect/disconnect, WebSocket errors, settings save success/failure, slash command load failure
 
+## Security Hardening (Phase 3)
+
+The gateway includes medium-severity security controls:
+
+- **Rate limiting**: Per-IP token-bucket rate limiting on REST endpoints, WebSocket connections, and auth endpoints. Auth failures trigger cooldown after 5 failures (60s cooldown).
+- **Security headers**: CSP, X-Frame-Options, X-Content-Type-Options, HSTS, Referrer-Policy set on all HTTP responses.
+- **WebSocket validation**: All incoming WebSocket messages validated with Zod schemas before processing. `maxPayload` set to 10MB.
+- **Input sanitization**: Chat input sanitized for common prompt injection patterns. `replyToRole` validated against allowlist (user/assistant/system).
+- **Skill executor hardening**: Handler paths validated within skill directory, restricted to `.js`/`.mjs` extensions, `process.env` secrets filtered before spawning child processes.
+- **Generic error responses**: HTTP error responses return generic messages; detailed errors logged server-side only.
+- **Graceful shutdown**: Uncaught exceptions trigger graceful shutdown instead of `process.exit(1)`.
+- **CORS ReDoS prevention**: CORS patterns pre-compiled at startup with non-greedy regex matching.
+- **Request body limits**: HTTP request bodies capped at 1MB to prevent memory exhaustion.
+- **IP trust**: `X-Forwarded-For` only trusted when connection is from loopback address.
+- **Secret exclusion**: `.dockerignore` and `.gitignore` updated to exclude secrets, keys, and sensitive config files.
+
 ## Z-Index Scale
 
 Centralized z-index constants in `packages/web/src/lib/z-index.ts`:

@@ -19,6 +19,8 @@ import { validateToken } from './auth.js';
 import { SessionManager } from './sessions.js';
 import { CommandHandler } from './commands.js';
 import { EventStreamer } from './events.js';
+import { rateLimitWsConnection } from './rate-limit.js';
+import { validateClientMessage, sanitizeChatInput } from './ws-schemas.js';
 
 const log = createLogger('websocket');
 
@@ -41,7 +43,7 @@ export class WebSocketHandler {
     private commandHandler: CommandHandler,
     private eventStreamer: EventStreamer,
   ) {
-    this.wss = new WebSocketServer({ noServer: true });
+    this.wss = new WebSocketServer({ noServer: true, maxPayload: 10 * 1024 * 1024 });
   }
 
   setHindsightStatusProvider(fn: () => { connected: boolean; busy: boolean }): void {
@@ -64,9 +66,14 @@ export class WebSocketHandler {
    */
   attach(server: HTTPServer): void {
     server.on('upgrade', (req, socket, head) => {
-      // Only upgrade requests to /ws
       const pathname = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`).pathname;
       if (pathname !== '/ws') {
+        socket.destroy();
+        return;
+      }
+
+      if (!rateLimitWsConnection(req)) {
+        socket.write('HTTP/1.1 429 Too Many Requests\r\n\r\n');
         socket.destroy();
         return;
       }
@@ -211,10 +218,10 @@ export class WebSocketHandler {
     const conn = this.connections.get(clientId);
     if (!conn) return;
 
-    let msg: ClientMessage;
+    let parsed: unknown;
     try {
       const text = typeof raw === 'string' ? raw : raw instanceof Buffer ? raw.toString('utf-8') : String(raw);
-      msg = JSON.parse(text) as ClientMessage;
+      parsed = JSON.parse(text);
     } catch {
       this.send(conn.ws, {
         id: randomBytes(8).toString('hex'),
@@ -224,14 +231,17 @@ export class WebSocketHandler {
       return;
     }
 
-    if (!msg.id || !msg.type) {
+    const validation = validateClientMessage(parsed);
+    if (!validation.success) {
       this.send(conn.ws, {
         id: randomBytes(8).toString('hex'),
         type: 'error',
-        error: 'Missing required fields: id, type',
+        error: validation.error,
       });
       return;
     }
+
+    const msg = validation.data as ClientMessage;
 
     const session = this.sessionManager.getSession(conn.sessionId);
     if (!session) {
@@ -263,14 +273,14 @@ export class WebSocketHandler {
         this.send(conn.ws, {
           id: randomBytes(8).toString('hex'),
           type: 'error',
-          error: `Unknown message type: ${msg.type}`,
+          error: 'Unknown message type',
         });
     }
   }
 
   /** Handle a chat message — store it, acknowledge, and route to MainAgent. */
   private handleChat(conn: ClientConnection, session: ReturnType<SessionManager['getSession']> & object, msg: ClientMessage): void {
-    const content = msg.content ?? '';
+    const content = sanitizeChatInput(msg.content ?? '');
     log.verbose(`Chat message from ${conn.id}`, {
       sessionId: conn.sessionId,
       messageId: msg.id,

@@ -12,16 +12,26 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 
+export interface ExecuteOptions {
+  cwd: string;
+  timeout?: number;
+  env?: Record<string, string>;
+}
+
+const ALLOWED_EXTENSIONS = new Set(['.js', '.mjs']);
+
 const SENSITIVE_ENV_PATTERNS = [
-  /^ANTHROPIC_API_KEY$/i,
-  /^OPENAI_API_KEY$/i,
-  /^AWS_SECRET_ACCESS_KEY$/i,
-  /^AWS_SESSION_TOKEN$/i,
-  /^GITHUB_TOKEN$/i,
-  /^NPM_TOKEN$/i,
-  /SECRET/i,
-  /PASSWORD/i,
-  /PRIVATE_KEY/i,
+  /api[_-]?key/i,
+  /secret/i,
+  /password/i,
+  /token/i,
+  /credential/i,
+  /private[_-]?key/i,
+  /^AWS_/i,
+  /^ANTHROPIC_/i,
+  /^OPENAI_/i,
+  /^STRIPE_/i,
+  /^DATABASE_URL$/i,
 ];
 
 function filterSensitiveEnv(env: NodeJS.ProcessEnv): Record<string, string> {
@@ -34,12 +44,6 @@ function filterSensitiveEnv(env: NodeJS.ProcessEnv): Record<string, string> {
   return filtered;
 }
 
-export interface ExecuteOptions {
-  cwd: string;
-  timeout?: number;
-  env?: Record<string, string>;
-}
-
 export class SkillExecutor {
   executeHandler(
     handlerPath: string,
@@ -49,6 +53,21 @@ export class SkillExecutor {
     const resolvedHandler = path.isAbsolute(handlerPath)
       ? handlerPath
       : path.resolve(options.cwd, handlerPath);
+
+    const normalizedHandler = path.normalize(resolvedHandler);
+    const normalizedCwd = path.normalize(path.resolve(options.cwd));
+    if (!normalizedHandler.startsWith(normalizedCwd + path.sep) && normalizedHandler !== normalizedCwd) {
+      return Promise.reject(
+        new Error(`Handler path "${handlerPath}" resolves outside the skill directory`),
+      );
+    }
+
+    const ext = path.extname(normalizedHandler);
+    if (!ALLOWED_EXTENSIONS.has(ext)) {
+      return Promise.reject(
+        new Error(`Handler "${handlerPath}" has disallowed extension "${ext}". Only ${[...ALLOWED_EXTENSIONS].join(', ')} are permitted.`),
+      );
+    }
 
     const timeout = options.timeout ?? 30_000;
 
