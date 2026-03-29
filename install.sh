@@ -18,6 +18,17 @@ warn()    { printf "${YELLOW}⚠${NC} %s\n" "$1"; }
 fail()    { printf "${RED}✗${NC} %s\n" "$1"; exit 1; }
 step()    { printf "\n${BOLD}%s${NC}\n" "$1"; }
 
+confirm_sudo() {
+  local action="$1"
+  printf "${YELLOW}⚠${NC} The following operation requires sudo: %s\n" "$action"
+  printf "  Proceed? [y/N] "
+  read -r answer </dev/tty
+  case "$answer" in
+    [yY]|[yY][eE][sS]) return 0 ;;
+    *) warn "Skipped: $action"; return 1 ;;
+  esac
+}
+
 cat <<'BANNER'
 
   ╔══════════════════════════════════════╗
@@ -93,7 +104,11 @@ pnpm unlink -g @orionomega/core 2>/dev/null || true
 npm unlink -g @orionomega/core 2>/dev/null || true
 
 if [ -f /usr/local/bin/orionomega ]; then
-  sudo rm -f /usr/local/bin/orionomega 2>/dev/null || rm -f /usr/local/bin/orionomega 2>/dev/null || true
+  if confirm_sudo "Remove old /usr/local/bin/orionomega symlink"; then
+    sudo rm -f /usr/local/bin/orionomega 2>/dev/null || true
+  else
+    rm -f /usr/local/bin/orionomega 2>/dev/null || true
+  fi
 fi
 
 mkdir -p "$BIN_DIR"
@@ -192,21 +207,25 @@ else
     install_docker_macos && DOCKER_READY=true
   else
     warn "Docker not found — installing via package manager..."
-    if command -v apt-get &>/dev/null; then
-      sudo apt-get update -qq && sudo apt-get install -y -qq docker.io 2>&1 | tail -3
-    elif command -v dnf &>/dev/null; then
-      sudo dnf install -y docker 2>&1 | tail -3
-    elif command -v yum &>/dev/null; then
-      sudo yum install -y docker 2>&1 | tail -3
-    elif command -v pacman &>/dev/null; then
-      sudo pacman -S --noconfirm docker 2>&1 | tail -3
-    elif command -v zypper &>/dev/null; then
-      sudo zypper install -y docker 2>&1 | tail -3
-    else
-      warn "No supported package manager found. Install Docker manually using your distribution's package manager."
+    if confirm_sudo "Install Docker via system package manager"; then
+      if command -v apt-get &>/dev/null; then
+        sudo apt-get update -qq && sudo apt-get install -y -qq docker.io 2>&1 | tail -3
+      elif command -v dnf &>/dev/null; then
+        sudo dnf install -y docker 2>&1 | tail -3
+      elif command -v yum &>/dev/null; then
+        sudo yum install -y docker 2>&1 | tail -3
+      elif command -v pacman &>/dev/null; then
+        sudo pacman -S --noconfirm docker 2>&1 | tail -3
+      elif command -v zypper &>/dev/null; then
+        sudo zypper install -y docker 2>&1 | tail -3
+      else
+        warn "No supported package manager found. Install Docker manually using your distribution's package manager."
+      fi
     fi
     if command -v docker &>/dev/null; then
-      sudo systemctl enable --now docker 2>/dev/null || true
+      if confirm_sudo "Enable and start Docker service"; then
+        sudo systemctl enable --now docker 2>/dev/null || true
+      fi
       if docker info &>/dev/null 2>&1; then
         info "Docker installed and running"
         DOCKER_READY=true
@@ -247,7 +266,7 @@ if [ "$DOCKER_READY" = "true" ]; then
       if docker run -d \
         --name hindsight \
         --restart unless-stopped \
-        -p 8888:8888 -p 9999:9999 \
+        -p 8888:8888 \
         -e "HINDSIGHT_API_LLM_API_KEY=${API_KEY}" \
         -e "HINDSIGHT_API_LLM_PROVIDER=anthropic" \
         -e "HINDSIGHT_API_LLM_MODEL=claude-haiku-4-5-20251001" \

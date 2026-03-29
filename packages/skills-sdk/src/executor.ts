@@ -12,6 +12,28 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 
+const SENSITIVE_ENV_PATTERNS = [
+  /^ANTHROPIC_API_KEY$/i,
+  /^OPENAI_API_KEY$/i,
+  /^AWS_SECRET_ACCESS_KEY$/i,
+  /^AWS_SESSION_TOKEN$/i,
+  /^GITHUB_TOKEN$/i,
+  /^NPM_TOKEN$/i,
+  /SECRET/i,
+  /PASSWORD/i,
+  /PRIVATE_KEY/i,
+];
+
+function filterSensitiveEnv(env: NodeJS.ProcessEnv): Record<string, string> {
+  const filtered: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (value === undefined) continue;
+    if (SENSITIVE_ENV_PATTERNS.some((p) => p.test(key))) continue;
+    filtered[key] = value;
+  }
+  return filtered;
+}
+
 export interface ExecuteOptions {
   cwd: string;
   timeout?: number;
@@ -35,7 +57,7 @@ export class SkillExecutor {
 
       const child = spawn(resolvedHandler, [], {
         cwd: options.cwd,
-        env: { ...process.env, ...(options.env ?? {}) },
+        env: { ...filterSensitiveEnv(process.env), ...(options.env ?? {}) },
         stdio: ['pipe', 'pipe', 'pipe'],
       });
 

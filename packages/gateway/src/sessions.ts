@@ -301,8 +301,13 @@ export class SessionManager {
     }
   }
 
-  /** Get the file path for a session. */
+  private static readonly VALID_SESSION_ID = /^[a-z0-9_-]+$/;
+
+  /** Get the file path for a session. Validates the ID to prevent path traversal. */
   private sessionFilePath(id: string): string {
+    if (!SessionManager.VALID_SESSION_ID.test(id)) {
+      throw new Error(`Invalid session ID: must match [a-z0-9_-]+`);
+    }
     return join(SESSIONS_DIR, `${id}.json`);
   }
 

@@ -13,7 +13,12 @@ import { readFileSync, writeFileSync, mkdirSync, readdirSync, existsSync } from 
 import path from 'node:path';
 import type { SkillConfig, SkillManifest } from './types.js';
 
+const VALID_SKILL_NAME = /^[a-zA-Z0-9_-]+$/;
+
 function configPath(skillsDir: string, skillName: string): string {
+  if (!VALID_SKILL_NAME.test(skillName)) {
+    throw new Error(`Invalid skill name "${skillName}": must match [a-zA-Z0-9_-]+`);
+  }
   return path.join(path.resolve(skillsDir), skillName, 'config.json');
 }
 
@@ -63,6 +68,10 @@ export function writeSkillConfig(
   } else {
     configObj = skillNameOrConfig;
     skillName = configObj.name;
+  }
+
+  if (!VALID_SKILL_NAME.test(skillName)) {
+    throw new Error(`Invalid skill name "${skillName}": must match [a-zA-Z0-9_-]+`);
   }
 
   const dir = path.join(path.resolve(skillsDir), skillName);

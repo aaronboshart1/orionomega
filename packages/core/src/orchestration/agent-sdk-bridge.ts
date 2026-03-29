@@ -435,8 +435,12 @@ export async function executeAgent(
         systemPrompt,
         abortController,
         env: {
-          ...process.env,
           HOME: process.env.HOME || '/root',
+          PATH: process.env.PATH || '',
+          TERM: process.env.TERM || 'xterm-256color',
+          SHELL: process.env.SHELL || '/bin/sh',
+          USER: process.env.USER || '',
+          LANG: process.env.LANG || 'en_US.UTF-8',
           ANTHROPIC_API_KEY: apiKey,
           CLAUDE_AGENT_SDK_CLIENT_APP: 'orionomega-worker',
         },
@@ -677,10 +681,13 @@ export async function executeCodingAgent(
         // P2: AbortController for cooperative cancellation
         abortController,
         env: {
-          ...process.env,
           HOME: process.env.HOME || '/root',
+          PATH: process.env.PATH || '',
+          TERM: process.env.TERM || 'xterm-256color',
+          SHELL: process.env.SHELL || '/bin/sh',
+          USER: process.env.USER || '',
+          LANG: process.env.LANG || 'en_US.UTF-8',
           ANTHROPIC_API_KEY: apiKey,
-          // P3: Identify this client to the SDK
           CLAUDE_AGENT_SDK_CLIENT_APP: 'orionomega-orchestrator',
         },
         additionalDirectories: codingConfig.additionalDirectories ?? sdkConfig.additionalDirectories,

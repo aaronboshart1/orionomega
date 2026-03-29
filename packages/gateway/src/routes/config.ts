@@ -27,10 +27,20 @@ function maskConfig(config: OrionOmegaConfig): Record<string, unknown> {
   return masked;
 }
 
-function readBody(req: IncomingMessage): Promise<string> {
+const DEFAULT_MAX_BODY_BYTES = 1_048_576; // 1 MB
+
+function readBody(req: IncomingMessage, maxBytes: number = DEFAULT_MAX_BODY_BYTES): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    req.on('data', (chunk: Buffer) => chunks.push(chunk));
+    let received = 0;
+    req.on('data', (chunk: Buffer) => {
+      received += chunk.length;
+      if (received > maxBytes) {
+        req.destroy(new Error(`Request body exceeds limit of ${maxBytes} bytes`));
+        return;
+      }
+      chunks.push(chunk);
+    });
     req.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
     req.on('error', reject);
   });
@@ -294,7 +304,9 @@ export async function handlePutConfig(
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(masked));
   } catch (err) {
-    res.writeHead(400, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: err instanceof Error ? err.message : 'Failed to update config' }));
+    const message = err instanceof Error ? err.message : 'Failed to update config';
+    const status = message.includes('exceeds limit') ? 413 : 400;
+    res.writeHead(status, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: message }));
   }
 }
