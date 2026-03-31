@@ -28,6 +28,18 @@ function maskConfig(config: OrionOmegaConfig): Record<string, unknown> {
   return masked;
 }
 
+function validateBindAddress(bind: unknown, fieldName: string, errors: string[]): void {
+  if (bind !== undefined && typeof bind !== 'string') {
+    if (Array.isArray(bind)) {
+      if (!bind.every((b: unknown) => typeof b === 'string')) {
+        errors.push(`${fieldName} array entries must be strings`);
+      }
+    } else {
+      errors.push(`${fieldName} must be a string or array of strings`);
+    }
+  }
+}
+
 function validateConfig(config: Record<string, unknown>): string[] {
   const errors: string[] = [];
 
@@ -42,15 +54,7 @@ function validateConfig(config: Record<string, unknown>): string[] {
     if (gateway.port !== undefined && (typeof gateway.port !== 'number' || gateway.port < 1 || gateway.port > 65535)) {
       errors.push('gateway.port must be a number between 1 and 65535');
     }
-    if (gateway.bind !== undefined && typeof gateway.bind !== 'string') {
-      if (Array.isArray(gateway.bind)) {
-        if (!gateway.bind.every((b: unknown) => typeof b === 'string')) {
-          errors.push('gateway.bind array entries must be strings');
-        }
-      } else {
-        errors.push('gateway.bind must be a string or array of strings');
-      }
-    }
+    validateBindAddress(gateway.bind, 'gateway.bind', errors);
     const auth = gateway.auth as Record<string, unknown> | undefined;
     if (auth?.mode !== undefined && !VALID_AUTH_MODES.has(String(auth.mode))) {
       errors.push(`gateway.auth.mode must be one of: ${[...VALID_AUTH_MODES].join(', ')}`);
@@ -163,15 +167,7 @@ function validateConfig(config: Record<string, unknown>): string[] {
     if (webui.port !== undefined && (typeof webui.port !== 'number' || webui.port < 1 || webui.port > 65535)) {
       errors.push('webui.port must be a number between 1 and 65535');
     }
-    if (webui.bind !== undefined && typeof webui.bind !== 'string') {
-      if (Array.isArray(webui.bind)) {
-        if (!webui.bind.every((b: unknown) => typeof b === 'string')) {
-          errors.push('webui.bind array entries must be strings');
-        }
-      } else {
-        errors.push('webui.bind must be a string or array of strings');
-      }
-    }
+    validateBindAddress(webui.bind, 'webui.bind', errors);
   }
 
   return errors;
