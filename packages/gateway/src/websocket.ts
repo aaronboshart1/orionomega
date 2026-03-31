@@ -18,6 +18,7 @@ import type { MainAgent } from '@orionomega/core';
 import { createLogger } from '@orionomega/core';
 import { validateToken } from './auth.js';
 import { SessionManager } from './sessions.js';
+import type { Message } from './sessions.js';
 import { CommandHandler } from './commands.js';
 import { EventStreamer } from './events.js';
 import { rateLimitWsConnection } from './rate-limit.js';
@@ -59,6 +60,13 @@ export class WebSocketHandler {
    */
   setMainAgent(agent: MainAgent): void {
     this.mainAgent = agent;
+  }
+
+  private storeSessionMessage(sessionId: string, message: Omit<Message, 'timestamp'>): void {
+    this.sessionManager.addMessage(sessionId, {
+      ...message,
+      timestamp: new Date().toISOString(),
+    });
   }
 
   /**
@@ -292,11 +300,10 @@ export class WebSocketHandler {
       replyToId: msg.replyToId,
     });
 
-    this.sessionManager.addMessage(conn.sessionId, {
+    this.storeSessionMessage(conn.sessionId, {
       id: msg.id,
       role: 'user',
       content,
-      timestamp: new Date().toISOString(),
       type: 'text',
       replyToId: msg.replyToId,
     });
@@ -345,11 +352,10 @@ export class WebSocketHandler {
       });
     } else {
       const fallbackContent = 'Message received. Orchestration engine not yet connected.';
-      this.sessionManager.addMessage(conn.sessionId, {
+      this.storeSessionMessage(conn.sessionId, {
         id: randomBytes(8).toString('hex'),
         role: 'assistant',
         content: fallbackContent,
-        timestamp: new Date().toISOString(),
         type: 'text',
       });
       this.send(conn.ws, {
@@ -386,11 +392,10 @@ export class WebSocketHandler {
     // Fallback to gateway-level CommandHandler
     const result = await this.commandHandler.handle(command, session as any);
 
-    this.sessionManager.addMessage(conn.sessionId, {
+    this.storeSessionMessage(conn.sessionId, {
       id: randomBytes(8).toString('hex'),
       role: 'system',
       content: result.message,
-      timestamp: new Date().toISOString(),
       type: 'command-result',
       metadata: { command: result.command, success: result.success },
     });
