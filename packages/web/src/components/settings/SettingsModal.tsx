@@ -648,13 +648,21 @@ function OmegaClawTab({
 function MemoryTab({
   config,
   onChange,
+  showRestartWarning,
 }: {
   config: ConfigData;
   onChange: (path: string, value: unknown) => void;
+  showRestartWarning?: boolean;
 }) {
   return (
     <div className="space-y-2">
       <SectionTitle>Hindsight Settings</SectionTitle>
+      {showRestartWarning && (
+        <div className="flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-400">
+          <AlertCircle size={12} className="shrink-0" />
+          <span>Restart the gateway for these changes to take effect.</span>
+        </div>
+      )}
       <FormField label="Server URL">
         <TextInput
           value={String(getNestedValue(config, 'hindsight.url') ?? '')}
@@ -799,6 +807,8 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [saveStatus, setSaveStatus] = useState<'idle' | 'success' | 'error'>('idle');
   const [errorMsg, setErrorMsg] = useState('');
   const [gatewayHealth, setGatewayHealth] = useState<'healthy' | 'degraded' | 'unreachable' | null>(null);
+  const [needsRestart, setNeedsRestart] = useState(false);
+  const initialConfigRef = useRef<ConfigData | null>(null);
   const { models: anthropicModels, loading: modelsLoading, refetch: refetchModels } = useAnthropicModels(open);
 
   const fetchConfig = useCallback(async () => {
@@ -830,6 +840,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
         }
         const data = JSON.parse(text);
         setConfig(data as ConfigData);
+        initialConfigRef.current = data as ConfigData;
         setLoading(false);
         return;
       } catch (err) {
@@ -854,6 +865,8 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
       fetchConfig();
       setSaveStatus('idle');
       setErrorMsg('');
+      setNeedsRestart(false);
+      initialConfigRef.current = null;
     }
   }, [open, fetchConfig]);
 
@@ -908,6 +921,15 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
       setConfig(body as ConfigData);
       setSaveStatus('success');
       setTimeout(() => setSaveStatus('idle'), 3000);
+      const initial = initialConfigRef.current;
+      if (initial) {
+        const initialHindsight = JSON.stringify((initial as Record<string, unknown>).hindsight ?? {});
+        const savedHindsight = JSON.stringify((body as Record<string, unknown>).hindsight ?? {});
+        if (initialHindsight !== savedHindsight) {
+          setNeedsRestart(true);
+        }
+      }
+      initialConfigRef.current = body as ConfigData;
       (await import('@/stores/toast')).useToastStore.getState().addToast('Settings saved', 'success', 2500);
     } catch (err) {
       setSaveStatus('error');
@@ -1003,7 +1025,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           ) : (
             config && <>
               {activeTab === 'omegaclaw' && <OmegaClawTab config={config} onChange={handleChange} models={anthropicModels} modelsLoading={modelsLoading} onRefreshModels={refetchModels} />}
-              {activeTab === 'memory' && <MemoryTab config={config} onChange={handleChange} />}
+              {activeTab === 'memory' && <MemoryTab config={config} onChange={handleChange} showRestartWarning={needsRestart} />}
               {activeTab === 'skills' && <SkillsTab config={config} onChange={handleChange} />}
               {activeTab === 'webui' && <WebUITab config={config} onChange={handleChange} />}
             </>

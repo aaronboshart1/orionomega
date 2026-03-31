@@ -68,17 +68,11 @@ function StatCard({ icon: Icon, label, value, sub }: { icon: typeof Server; labe
   );
 }
 
-interface SavedConfig {
-  hindsight?: { url?: string };
-  gateway?: { port?: number; bind?: string | string[]; auth?: { mode?: string } };
-}
-
 export function GatewayTab() {
   const [status, setStatus] = useState<GatewayStatus | null>(null);
   const [reachable, setReachable] = useState<boolean | null>(null);
   const [actionState, setActionState] = useState<ActionState>('idle');
   const [error, setError] = useState<string | null>(null);
-  const [savedConfig, setSavedConfig] = useState<SavedConfig | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
@@ -101,37 +95,16 @@ export function GatewayTab() {
     }
   }, []);
 
-  const fetchSavedConfig = useCallback(async () => {
-    try {
-      const res = await fetch('/api/gateway/api/config', { signal: AbortSignal.timeout(5000) });
-      if (res.ok) {
-        const data = await res.json();
-        if (mountedRef.current) setSavedConfig(data as SavedConfig);
-      }
-    } catch {}
-  }, []);
-
-  const pendingChanges = (() => {
-    if (!status || !savedConfig) return [];
-    const changes: string[] = [];
-    const savedUrl = savedConfig.hindsight?.url;
-    if (savedUrl && savedUrl !== status.hindsight.url) {
-      changes.push(`Hindsight URL: ${status.hindsight.url} → ${savedUrl}`);
-    }
-    return changes;
-  })();
-
   useEffect(() => {
     mountedRef.current = true;
     fetchStatus();
-    fetchSavedConfig();
-    intervalRef.current = setInterval(() => { fetchStatus(); fetchSavedConfig(); }, 5000);
+    intervalRef.current = setInterval(fetchStatus, 5000);
     return () => {
       mountedRef.current = false;
       if (intervalRef.current) clearInterval(intervalRef.current);
       if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
     };
-  }, [fetchStatus, fetchSavedConfig]);
+  }, [fetchStatus]);
 
   const pollForReconnection = useCallback((attempts = 0) => {
     if (!mountedRef.current || attempts > 30) {
@@ -265,18 +238,6 @@ export function GatewayTab() {
         </div>
       )}
 
-      {pendingChanges.length > 0 && (
-        <div className="rounded-md border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-xs text-blue-400">
-          <div className="flex items-center gap-2 font-medium mb-1">
-            <AlertCircle size={12} />
-            <span>Config saved — restart gateway to apply:</span>
-          </div>
-          <ul className="ml-5 space-y-0.5 text-blue-300/80">
-            {pendingChanges.map((c, i) => <li key={i}>{c}</li>)}
-          </ul>
-        </div>
-      )}
-
       {reachable && status ? (
         <>
           <div className="grid grid-cols-2 gap-3">
@@ -299,9 +260,7 @@ export function GatewayTab() {
               icon={status.hindsight.connected ? Wifi : WifiOff}
               label="Hindsight"
               value={status.hindsight.connected ? 'Connected' : 'Disconnected'}
-              sub={pendingChanges.length > 0 && savedConfig?.hindsight?.url
-                ? `${status.hindsight.url} → ${savedConfig.hindsight.url}`
-                : status.hindsight.url}
+              sub={status.hindsight.url}
             />
             <StatCard
               icon={Server}
