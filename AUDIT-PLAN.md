@@ -13,15 +13,15 @@ Stack: TypeScript monorepo (pnpm, 6 packages), Node.js >=22, Next.js 15
 
 Safe removals that eliminate confusion without changing behavior.
 
-- [ ] **DC-01** `packages/core/src/agent/conversation.ts:169–173` — Remove deprecated `isFastTask()` wrapper; update all call sites to use `isOrchestrateRequest()` directly
-- [ ] **DC-07** `packages/hindsight/src/client.ts:551–554` — Remove unreachable `else` branch; call `emitActivity()` unconditionally after the `if`
-- [ ] **DC-09** `packages/web/src/components/chat/MessageBubble.tsx:21–29` — Inline `formatPlainText()` at its single call site (line 220)
-- [ ] **DC-14** `packages/web/src/components/chat/ChatInput.tsx` — Verify `<ChatInput />` is rendered in `ChatPane.tsx`; remove import if unused
-- [ ] **DC-03** `packages/core/src/anthropic/client.ts:1–10` — Audit all import sites for `@deprecated` client; delete file if no active call sites remain, otherwise remove `@deprecated` marker and document fallback paths
-- [ ] **DC-13** `packages/skills-sdk/src/settings.ts:39–98` — Search all skill manifests for `setup.fields`; if none exist, remove `shimFieldsToSettings()` and `shimField()` shim code
-- [ ] **DC-02** `packages/core/src/agent/conversation.ts:28–50` — Audit call sites of `isFastConversational`, `isOrchestrateRequest`; if LLM classifier handles all routing, remove `CONVERSATIONAL_FAST`, `ORCHESTRATE_FAST`, `GUARDED_PATTERNS` regex arrays
-- [ ] **DC-12** `packages/tui/src/` — Grep all TUI component files for inline formatting logic (cost, duration, truncation) that duplicates `packages/tui/src/utils/format.ts`; replace with imports from the consolidated utility file
-- [ ] **S-3** `packages/core/src/agent/` — Add deprecation notice to deprecated `agent-loop` module or delete if genuinely unused
+- [x] **DC-01** `packages/core/src/agent/conversation.ts:169–173` — Remove deprecated `isFastTask()` wrapper; update all call sites to use `isOrchestrateRequest()` directly
+- [x] **DC-07** `packages/hindsight/src/client.ts:551–554` — Remove unreachable `else` branch; call `emitActivity()` unconditionally after the `if`
+- [x] **DC-09** `packages/web/src/components/chat/MessageBubble.tsx:21–29` — Inline `formatPlainText()` at its single call site (line 220)
+- [x] **DC-14** `packages/web/src/components/chat/ChatInput.tsx` — Verified: `<ChatInput />` IS rendered in `ChatPane.tsx` (line 292); import is used. No change needed.
+- [x] **DC-03** `packages/core/src/anthropic/client.ts:1–10` — Audited: active call sites in executor.ts (lines 962, 1150). Removed misleading `@deprecated` module tag; retained explanatory comment.
+- [x] **DC-13** `packages/skills-sdk/src/settings.ts:39–98` — No manifests use `setup.fields`. Removed `shimFieldsToSettings()`, `shimField()`, the `setup.fields` branch in `getSettingsSchema()`, and unused imports.
+- [x] **DC-02** `packages/core/src/agent/conversation.ts:28–50` — Audited: `isFastConversational` and `isOrchestrateRequest` are still called in `main-agent.ts`. Regex arrays are live. No change needed.
+- [x] **DC-12** `packages/tui/src/` — Most components already import from `format.ts`. Replaced remaining inline `fmtDuration` in `chat-log.ts` with `formatDuration()`. Other inline formats (fmtTokens, fmtCost 4dp) differ intentionally from format.ts equivalents.
+- [x] **S-3** `packages/core/src/anthropic/agent-loop.ts` — Already has `@deprecated` JSDoc comment (added previously). No change needed.
 
 ### Pass 2: Consolidation & Deduplication
 
