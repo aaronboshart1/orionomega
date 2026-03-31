@@ -15,7 +15,16 @@ packages/*/src/**/*.d.ts.map
 # Environment & secrets
 .env
 .env.*
+.env.local
+.env.production
 config.yaml
+*.key
+*.pem
+*.p12
+*.pfx
+*.jks
+credentials.json
+service-account.json
 
 # Logs
 *.log
