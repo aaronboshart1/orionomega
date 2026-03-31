@@ -4,10 +4,9 @@
  *
  * Handles the full lifecycle of skill settings:
  * 1. Extracting the UI-renderable schema from a manifest
- * 2. Shimming legacy `setup.fields` arrays to the modern `settings` block
- * 3. Merging manifest defaults with user-saved configuration
- * 4. Validating user-supplied values against the schema
- * 5. Masking secret values in log output
+ * 2. Merging manifest defaults with user-saved configuration
+ * 3. Validating user-supplied values against the schema
+ * 4. Masking secret values in log output
  *
  * No external dependencies — pure TypeScript validation to keep the package lightweight.
  */
@@ -16,85 +15,14 @@ import type {
   SkillManifest,
   SkillSettingsBlock,
   SkillSettingSchema,
-  SkillSetup,
-  SkillSetupField,
   ValidationResult,
 } from './types.js';
-import { SkillSettingGroup, SkillSettingType } from './types.js';
+import { SkillSettingType } from './types.js';
 
 // ── Schema Extraction ──────────────────────────────────────────────────
 
 export function getSettingsSchema(manifest: SkillManifest): SkillSettingsBlock | null {
-  if (manifest.settings) {
-    return manifest.settings;
-  }
-
-  if (manifest.setup?.fields && manifest.setup.fields.length > 0) {
-    return shimFieldsToSettings(manifest.setup);
-  }
-
-  return null;
-}
-
-export function shimFieldsToSettings(setup: SkillSetup): SkillSettingsBlock {
-  const properties: Record<string, SkillSettingSchema> = {};
-  const required: string[] = [];
-
-  for (const method of setup.auth?.methods ?? []) {
-    if (method.envVar) {
-      properties[method.envVar] = {
-        type: SkillSettingType.Password,
-        label: method.label,
-        description: method.description,
-        required: false,
-        group: SkillSettingGroup.Auth,
-        widget: 'secret',
-      };
-    }
-  }
-
-  for (const field of setup.fields ?? []) {
-    properties[field.name] = shimField(field);
-    if (field.required) {
-      required.push(field.name);
-    }
-  }
-
-  return {
-    type: 'object',
-    properties,
-    required: required.length > 0 ? required : undefined,
-  };
-}
-
-function shimField(field: SkillSetupField): SkillSettingSchema {
-  let type: SkillSettingType;
-  switch (field.type) {
-    case 'boolean':
-      type = SkillSettingType.Boolean;
-      break;
-    case 'number':
-      type = SkillSettingType.Number;
-      break;
-    case 'select':
-      type = SkillSettingType.Select;
-      break;
-    default:
-      type = field.mask ? SkillSettingType.Password : SkillSettingType.String;
-  }
-
-  const schema: SkillSettingSchema = {
-    type,
-    label: field.label,
-    description: field.description,
-    required: field.required,
-    default: field.default,
-    group: field.mask ? SkillSettingGroup.Auth : SkillSettingGroup.Preferences,
-    widget: field.mask ? 'secret' : undefined,
-    options: field.options,
-  };
-
-  return schema;
+  return manifest.settings ?? null;
 }
 
 // ── Settings Resolution ────────────────────────────────────────────────
