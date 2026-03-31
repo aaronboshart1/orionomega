@@ -1,4 +1,8 @@
-# Mobile Optimization Plan - ChatGPT-Inspired Redesign
+# [DRAFT] Mobile Optimization Plan - ChatGPT-Inspired Redesign
+
+> **Status: DRAFT — internal planning document, not yet scheduled for implementation.**
+> This document describes a proposed set of mobile UX improvements for the web dashboard.
+> None of these changes have been applied to the codebase.
 
 ## Overview
 

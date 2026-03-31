@@ -18,6 +18,7 @@ packages/*/src/**/*.d.ts.map
 .env.*
 .env.local
 .env.production
+!.env.example
 config.yaml
 .orionomega/
 *.key
