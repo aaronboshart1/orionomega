@@ -18,6 +18,7 @@ packages/*/src/**/*.d.ts.map
 .env.local
 .env.production
 config.yaml
+.orionomega/
 *.key
 *.pem
 *.p12

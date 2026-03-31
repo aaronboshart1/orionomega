@@ -48,7 +48,9 @@ pnpm --filter @orionomega/gateway start
 
 ## Key Configuration
 
-The gateway reads from `~/.orionomega/config.yaml`. Defaults:
+The gateway reads from `config.yaml`. On Replit (detected via `REPL_ID`), config is stored at `.orionomega/config.yaml` inside the workspace for persistence across deployments. On standard installs, it defaults to `~/.orionomega/config.yaml`. The `CONFIG_PATH` env var overrides both. Legacy configs at the old home-directory path are auto-migrated on first read.
+
+Defaults:
 - Gateway port: 8000, bind: 0.0.0.0
 - Auth mode: none
 - CORS: http://localhost:*, http://*:*, https://*
@@ -176,15 +178,6 @@ The web UI renders inline tool-call cards in the chat stream when workers invoke
 - Chat message list uses `react-virtuoso` for list virtualization — only visible messages plus a buffer are rendered to the DOM, keeping performance smooth for long conversations (100+ messages)
 - Smart auto-scroll: `followOutput="smooth"` keeps the list pinned to the bottom during streaming; when the user scrolls up, a "New messages" pill appears to jump back down
 
-## Toast Notifications
-
-A global toast notification system provides transient feedback for WebSocket events, errors, and settings save operations:
-
-- **Store**: `packages/web/src/stores/toast.ts` — Zustand store with `addToast(message, variant, duration)` and auto-dismiss
-- **Component**: `packages/web/src/components/ToastContainer.tsx` — rendered in root layout, stacked at top-center with slide-in animation
-- **Variants**: `info`, `success`, `error`, `warning` with distinct color schemes
-- **Integration points**: gateway connect/disconnect, WebSocket errors, settings save success/failure, slash command load failure
-
 ## Security Hardening (Phase 3)
 
 The gateway includes medium-severity security controls:
@@ -211,7 +204,6 @@ Centralized z-index constants in `packages/web/src/lib/z-index.ts`:
 | `orchPaneToggle` | 20 | Orchestration pane toggle button |
 | `orchPaneMobile` | 30 | Mobile orchestration pane overlay |
 | `dropdown` / `modal` / `commandPalette` | 50 | Dropdowns, settings modal, command palettes |
-| `toast` | 60 | Toast notifications (topmost) |
 
 ## Markdown Rendering
 

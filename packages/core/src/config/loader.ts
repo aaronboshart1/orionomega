@@ -3,7 +3,7 @@
  * Configuration loading, writing, and default generation for OrionOmega.
  */
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync, chmodSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, chmodSync, copyFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -11,13 +11,20 @@ import type { OrionOmegaConfig } from './types.js';
 
 const require = createRequire(import.meta.url);
 
+function getDataDir(): string {
+  if (process.env.REPL_ID) {
+    return join(process.cwd(), '.orionomega');
+  }
+  return join(homedir(), '.orionomega');
+}
+
 /**
  * Returns the default configuration path: `~/.orionomega/config.yaml`.
+ * On Replit, uses the workspace directory for persistence across deployments.
  */
 export function getConfigPath(): string {
-  // Respect CONFIG_PATH env var (set by systemd services running as root)
   if (process.env.CONFIG_PATH) return process.env.CONFIG_PATH;
-  return join(homedir(), '.orionomega', 'config.yaml');
+  return join(getDataDir(), 'config.yaml');
 }
 
 /**
@@ -68,13 +75,13 @@ export function getDefaultConfig(): OrionOmegaConfig {
     },
     logging: {
       level: 'info',
-      file: join(homedir(), '.orionomega', 'logs', 'orionomega.log'),
+      file: join(getDataDir(), 'logs', 'orionomega.log'),
       maxSize: '50MB',
       maxFiles: 5,
       console: true,
     },
     skills: {
-      directory: join(homedir(), '.orionomega', 'skills'),
+      directory: join(getDataDir(), 'skills'),
       autoLoad: true,
     },
     webui: {
@@ -182,6 +189,15 @@ function isNonLocalhostBind(addresses: string[]): boolean {
 export function readConfig(configPath?: string): OrionOmegaConfig {
   const filePath = configPath ?? getConfigPath();
   const defaults = getDefaultConfig();
+
+  if (!existsSync(filePath) && process.env.REPL_ID) {
+    const legacyPath = join(homedir(), '.orionomega', 'config.yaml');
+    if (existsSync(legacyPath)) {
+      const dir = dirname(filePath);
+      if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+      copyFileSync(legacyPath, filePath);
+    }
+  }
 
   if (!existsSync(filePath)) {
     return defaults;
