@@ -140,15 +140,8 @@ export class SessionManager {
   addMessage(sessionId: string, message: Message): void {
     const session = this.sessions.get(sessionId);
     if (!session) return;
-    session.messages.push(message);
+    this.pushToArrayWithCap(session.messages, message, MAX_MESSAGES_PER_SESSION);
     session.updatedAt = new Date().toISOString();
-
-    // Prune oldest messages if over cap
-    if (session.messages.length > MAX_MESSAGES_PER_SESSION) {
-      const excess = session.messages.length - MAX_MESSAGES_PER_SESSION;
-      session.messages.splice(0, excess);
-    }
-
     this.schedulePersist(sessionId);
   }
 
@@ -161,15 +154,16 @@ export class SessionManager {
   addMemoryEvent(sessionId: string, event: MemoryEventData): void {
     const session = this.sessions.get(sessionId);
     if (!session) return;
-    session.memoryEvents.push(event);
+    this.pushToArrayWithCap(session.memoryEvents, event, MAX_MEMORY_EVENTS);
     session.updatedAt = new Date().toISOString();
-
-    if (session.memoryEvents.length > MAX_MEMORY_EVENTS) {
-      const excess = session.memoryEvents.length - MAX_MEMORY_EVENTS;
-      session.memoryEvents.splice(0, excess);
-    }
-
     this.schedulePersist(sessionId);
+  }
+
+  private pushToArrayWithCap<T>(arr: T[], item: T, cap: number): void {
+    arr.push(item);
+    if (arr.length > cap) {
+      arr.splice(0, arr.length - cap);
+    }
   }
 
   /**
