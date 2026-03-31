@@ -1,102 +1,160 @@
-# Linear Skill
+# Linear
 
-Full-featured Linear integration for OrionOmega via the GraphQL API. Manage issues, projects, teams, cycles, users, and raw GraphQL queries. Zero external dependencies — uses `fetch` directly.
+Full-featured Linear integration via the GraphQL API. Manage issues, projects, teams, cycles, users, and execute raw GraphQL queries. Zero external dependencies — uses native `fetch`.
 
-## Prerequisites
+## When to Use
 
-- Linear personal API key ([create one here](https://linear.app/settings/account/security))
-- No CLI tools required — communicates directly with the Linear GraphQL API
+- Managing Linear issues (create, update, close, assign, search, comment)
+- Viewing or managing Linear projects and their progress
+- Listing teams, workflow states, labels, and cycles
+- Looking up users or viewing assigned work
+- Running custom GraphQL queries against the Linear API
 
-## Setup
+## When NOT to Use
 
-```
-orionomega skill setup linear
-```
-
-Choose "Personal API Key", paste your key. The setup handler validates it against the API and returns your workspace info.
+- GitHub Issues or other issue trackers — use their respective skills
+- Jira, Asana, or other project management tools
+- Linear webhook configuration or OAuth app management — use the Linear admin UI
 
 ## Tools
 
-### linear_issue
-Manage issues: list, view, create, update, close, reopen, comment, assign, label, search, archive.
+All tools return `{ "result": "..." }` on success (human-readable formatted text) or `{ "error": "..." }` on failure.
 
-**Filtering (list action):** team, state, stateType, priority, assignee (@me supported), project, cycle, label.
+### `linear_issue`
 
-**Priority values:** 0=none, 1=urgent 🔴, 2=high 🟠, 3=medium 🟡, 4=low 🔵
+Manage Linear issues: list, view, create, update, close, reopen, comment, assign, label, search, archive.
 
-### linear_project
-Manage projects: list, view, create, update, archive. View progress, members, and issue breakdown.
+**Parameters:**
 
-**Project states:** planned, started, paused, completed, canceled.
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `action` | string | yes | One of: `list`, `view`, `create`, `update`, `close`, `reopen`, `comment`, `assign`, `label`, `search`, `archive` |
+| `id` | string | no | Issue identifier (e.g. `ENG-123` or UUID) |
+| `title` | string | no | Issue title (for `create`, `update`) |
+| `description` | string | no | Issue description in markdown (for `create`, `update`) |
+| `team` | string | no | Team key (e.g. `ENG`) — resolved to teamId automatically |
+| `teamId` | string | no | Team UUID (alternative to team key) |
+| `priority` | number | no | Priority: 0=none, 1=urgent, 2=high, 3=medium, 4=low |
+| `stateId` | string | no | Workflow state UUID |
+| `state` | string | no | Filter by state name (for `list`) |
+| `stateType` | string | no | Filter by state type: `triage`, `backlog`, `unstarted`, `started`, `completed`, `cancelled` |
+| `assigneeId` | string | no | User UUID to assign |
+| `assignee` | string | no | Special: `@me` for current user (for `list` filter) |
+| `projectId` | string | no | Project UUID |
+| `cycleId` | string | no | Cycle UUID |
+| `parentId` | string | no | Parent issue UUID (for sub-issues) |
+| `labelIds` | string[] | no | Label UUIDs to apply |
+| `label` | string | no | Filter by label name (for `list`) |
+| `estimate` | number | no | Point estimate |
+| `dueDate` | string | no | Due date (ISO 8601) |
+| `body` | string | no | Comment body in markdown (for `comment` action) |
+| `query` | string | no | Search query text (for `search` action) |
+| `limit` | number | no | Max results (default 25) |
 
-### linear_team
-View teams: list, view (full detail), members, workflow states, labels, cycles.
+**Returns:** `{ "result": "..." }` — for `view`, includes identifier, title, state, priority, assignee, team, labels, description, and URL. For `list`, includes a formatted list with identifier, title, state, priority, and assignee. For `create`, confirms the issue was created with identifier and URL.
 
-Teams are the organizational unit in Linear — issues belong to teams. Use `linear_team states` to discover workflow state IDs for issue creation/updates.
+**Examples:**
 
-### linear_user
-User operations: me (current user + assigned issues), list all users, view assigned issues.
+- `{ "action": "list", "team": "ENG", "priority": 1 }` — list urgent ENG issues
+- `{ "action": "create", "team": "ENG", "title": "Bug: ...", "priority": 2 }` — create a high-priority issue
+- `{ "action": "search", "query": "authentication timeout" }` — search issues
 
-### linear_graphql
-Raw GraphQL escape hatch. Execute any query or mutation against the Linear API.
+---
 
-## Usage Examples
+### `linear_project`
 
-```
-# View my assigned issues
-linear_user { "action": "me" }
+Manage Linear projects: list, view, create, update, archive. View progress, members, and issue breakdown.
 
-# List urgent issues in the ENG team
-linear_issue { "action": "list", "team": "ENG", "priority": 1 }
+**Parameters:**
 
-# Create a bug report
-linear_issue { "action": "create", "team": "ENG", "title": "Login page crashes on Safari", "priority": 2, "description": "## Steps to reproduce\n1. Open login page in Safari 17\n2. Click 'Sign in'\n3. Page crashes" }
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `action` | string | yes | One of: `list`, `view`, `create`, `update`, `archive` |
+| `id` | string | no | Project UUID |
+| `name` | string | no | Project name (for `create`, `update`) |
+| `description` | string | no | Project description in markdown |
+| `state` | string | no | Project state: `planned`, `started`, `paused`, `completed`, `canceled` |
+| `teamIds` | string[] | no | Team UUIDs (for `create`) |
+| `leadId` | string | no | Lead user UUID |
+| `startDate` | string | no | Start date (YYYY-MM-DD) |
+| `targetDate` | string | no | Target completion date (YYYY-MM-DD) |
+| `color` | string | no | Project color (hex) |
+| `limit` | number | no | Max results (default 20) |
 
-# Search issues
-linear_issue { "action": "search", "query": "authentication timeout" }
+**Returns:** `{ "result": "..." }` — for `view`, includes name, state, progress percentage, lead, dates, and issue breakdown. For `list`, includes a formatted list with name, state, and progress.
 
-# View a specific issue
-linear_issue { "action": "view", "id": "ENG-123" }
+**Examples:**
 
-# Close an issue
-linear_issue { "action": "close", "id": "ENG-123" }
+- `{ "action": "list", "state": "started" }` — list active projects
+- `{ "action": "view", "id": "uuid" }` — view project details and progress
 
-# Comment on an issue
-linear_issue { "action": "comment", "id": "ENG-123", "body": "Fixed in PR #42" }
+---
 
-# List active projects
-linear_project { "action": "list", "state": "started" }
+### `linear_team`
 
-# View team workflow states (needed for stateId in create/update)
-linear_team { "action": "states", "id": "ENG" }
+View Linear teams, members, workflow states, labels, and cycles.
 
-# View current cycle
-linear_team { "action": "cycles", "id": "ENG", "limit": 1 }
+**Parameters:**
 
-# Raw GraphQL query
-linear_graphql { "query": "{ organization { name urlKey subscription { type } } }" }
-```
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `action` | string | yes | One of: `list`, `view`, `members`, `states`, `labels`, `cycles` |
+| `id` | string | no | Team key (e.g. `ENG`) or UUID |
+| `limit` | number | no | Max results for cycles (default 5) |
 
-## Architecture
+**Returns:** `{ "result": "..." }` — for `states`, includes workflow state names, types, and IDs. For `members`, includes user names and roles. For `cycles`, includes cycle name, number, start/end dates, and progress.
 
-- **Zero dependencies**: Handlers use native `fetch` (Node.js 18+) to call `https://api.linear.app/graphql`
-- **API key from skill config**: Reads from `~/.orionomega/skills/linear/config.json` field `LINEAR_API_KEY`, falls back to `LINEAR_API_KEY` env var
-- **Smart resolution**: Team keys (e.g. "ENG") auto-resolve to UUIDs. Close/reopen auto-discover the correct workflow state. `@me` filter resolves to current user.
-- **Structured output**: Every response is formatted for readability AND downstream orchestration consumption
+**Examples:**
 
-## Orchestration Patterns
+- `{ "action": "list" }` — list all teams
+- `{ "action": "states", "id": "ENG" }` — get workflow states for a team
+- `{ "action": "cycles", "id": "ENG", "limit": 1 }` — view the current cycle
 
-**Sprint planning workflow:**
-1. `linear_team { "action": "cycles", "id": "ENG" }` → get current cycle
-2. `linear_issue { "action": "list", "stateType": "backlog" }` → find backlog items
-3. For each: `linear_issue { "action": "update", "id": "...", "cycleId": "..." }` → add to cycle
+---
 
-**Bug triage workflow:**
-1. `linear_issue { "action": "list", "stateType": "triage" }` → find triage items
-2. For each: classify priority, then `linear_issue { "action": "update", "priority": N, "stateId": "..." }`
-3. Assign: `linear_issue { "action": "assign", "id": "...", "assigneeId": "..." }`
+### `linear_user`
 
-**Project status report:**
-1. `linear_project { "action": "view", "id": "..." }` → get progress + issue breakdown
-2. `linear_issue { "action": "list", "projectId": "...", "stateType": "started" }` → in-progress items
-3. Synthesize into report
+View Linear users: current user, list all users, view assigned issues.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `action` | string | yes | One of: `me`, `list`, `assigned` |
+| `userId` | string | no | User UUID (for `assigned`; omit for current user) |
+| `limit` | number | no | Max results (default 20) |
+
+**Returns:** `{ "result": "..." }` — for `me`, includes user name, email, and assigned issues. For `list`, includes all workspace users. For `assigned`, includes issues assigned to the specified user.
+
+**Examples:**
+
+- `{ "action": "me" }` — view current user and assigned issues
+- `{ "action": "list" }` — list all workspace users
+
+---
+
+### `linear_graphql`
+
+Execute raw GraphQL queries and mutations against the Linear API. Use for anything not covered by other tools.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `query` | string | yes | GraphQL query or mutation string |
+| `variables` | object | no | GraphQL variables |
+
+**Returns:** `{ "result": "..." }` — the raw GraphQL response data as formatted JSON text.
+
+**Examples:**
+
+- `{ "query": "{ viewer { name email } }" }` — get current user info
+- `{ "query": "{ organization { name urlKey } }" }` — get workspace info
+
+## Notes
+
+- Requires a Linear personal API key (create at linear.app/settings → Security & access)
+- Team keys (e.g. `ENG`) are automatically resolved to UUIDs
+- Close/reopen actions auto-discover the correct workflow state
+- The `@me` assignee filter resolves to the current authenticated user
+- All tools return `{ "result": "..." }` with human-readable formatted text or `{ "error": "..." }` on failure

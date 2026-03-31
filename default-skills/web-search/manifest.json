@@ -75,7 +75,6 @@
     }
   },
   "workerProfile": {
-    "tier": "lightweight",
     "tools": ["web_search"],
     "maxTimeout": 60000
   }

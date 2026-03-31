@@ -1,4 +1,5 @@
 {
+  "$schema": "https://orionomega.dev/schemas/skill-manifest.v1.json",
   "name": "web-fetch",
   "version": "0.1.0",
   "description": "Fetch the content of any URL and return it as readable text. HTML tags are stripped for clarity.",
@@ -42,7 +43,6 @@
     }
   ],
   "workerProfile": {
-    "tier": "lightweight",
     "tools": ["web_fetch"],
     "maxTimeout": 60000
   }

@@ -44,15 +44,6 @@
         }
       ]
     },
-    "fields": [
-      {
-        "name": "default_owner",
-        "type": "string",
-        "label": "Default repository owner",
-        "description": "Your GitHub username or org — used when --repo is omitted",
-        "required": false
-      }
-    ],
     "handler": "hooks/setup.js"
   },
   "triggers": {
@@ -400,7 +391,6 @@
     }
   ],
   "workerProfile": {
-    "tier": "lightweight",
     "tools": ["gh_repo", "gh_issue", "gh_pr", "gh_workflow", "gh_release", "gh_api"],
     "maxTimeout": 120000
   },

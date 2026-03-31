@@ -1,4 +1,5 @@
 {
+  "$schema": "https://orionomega.dev/schemas/skill-manifest.v1.json",
   "name": "linear",
   "version": "1.0.0",
   "description": "Full-featured Linear integration via the GraphQL API. Manage issues, projects, teams, cycles, and users. Designed for autonomous orchestration workflows.",
@@ -34,15 +35,6 @@
         }
       ]
     },
-    "fields": [
-      {
-        "name": "default_team",
-        "type": "string",
-        "label": "Default team key",
-        "description": "Team key used when team is omitted (e.g. 'ENG')",
-        "required": false
-      }
-    ],
     "handler": "hooks/setup.js"
   },
   "triggers": {
@@ -293,7 +285,6 @@
     }
   ],
   "workerProfile": {
-    "tier": "lightweight",
     "tools": ["linear_issue", "linear_project", "linear_team", "linear_user", "linear_graphql"],
     "maxTimeout": 120000
   },
