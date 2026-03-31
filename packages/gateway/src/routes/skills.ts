@@ -36,38 +36,34 @@ function getConfiguredSkillsDir(): string {
   return join(getDefaultSkillsDir(), '..', '.orionomega', 'skills');
 }
 
+async function loadFromDir(
+  dir: string,
+  seen: Set<string>,
+  manifests: SkillManifest[],
+  allowOverride: boolean,
+): Promise<void> {
+  if (!existsSync(dir)) return;
+  try {
+    const loader = new SkillLoader(dir);
+    for (const m of await loader.discoverAll()) {
+      if (!seen.has(m.name)) {
+        seen.add(m.name);
+        manifests.push(m);
+      } else if (allowOverride) {
+        const idx = manifests.findIndex((existing) => existing.name === m.name);
+        if (idx !== -1) manifests[idx] = m;
+      }
+    }
+  } catch {}
+}
+
 async function discoverAllSkills(): Promise<{ manifests: SkillManifest[]; configDir: string }> {
   const seen = new Set<string>();
   const manifests: SkillManifest[] = [];
   const configDir = getConfiguredSkillsDir();
 
-  const defaultDir = getDefaultSkillsDir();
-  if (existsSync(defaultDir)) {
-    try {
-      const loader = new SkillLoader(defaultDir);
-      for (const m of await loader.discoverAll()) {
-        if (!seen.has(m.name)) {
-          seen.add(m.name);
-          manifests.push(m);
-        }
-      }
-    } catch {}
-  }
-
-  if (existsSync(configDir)) {
-    try {
-      const loader = new SkillLoader(configDir);
-      for (const m of await loader.discoverAll()) {
-        if (!seen.has(m.name)) {
-          seen.add(m.name);
-          manifests.push(m);
-        } else {
-          const idx = manifests.findIndex((existing) => existing.name === m.name);
-          if (idx !== -1) manifests[idx] = m;
-        }
-      }
-    } catch {}
-  }
+  await loadFromDir(getDefaultSkillsDir(), seen, manifests, false);
+  await loadFromDir(configDir, seen, manifests, true);
 
   return { manifests, configDir };
 }
