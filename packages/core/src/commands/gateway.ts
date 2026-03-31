@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { readConfig } from '../config/index.js';
+import { safeChildEnv } from './process-utils.js';
 
 const GREEN = '\x1b[32m';
 const RED = '\x1b[31m';
@@ -19,7 +20,6 @@ const RESET = '\x1b[0m';
 
 const PID_FILE = join(homedir(), '.orionomega', 'gateway.pid');
 
-/** Check whether systemd is available AND the orionomega unit is installed. */
 function hasSystemd(): boolean {
   try {
     execSync('systemctl cat orionomega 2>/dev/null', { stdio: 'ignore' });
@@ -29,7 +29,6 @@ function hasSystemd(): boolean {
   }
 }
 
-/** Check whether a process with given PID is alive. */
 function isAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -39,7 +38,6 @@ function isAlive(pid: number): boolean {
   }
 }
 
-/** Read PID from file, return null if missing or stale. */
 function readPid(): number | null {
   if (!existsSync(PID_FILE)) return null;
   const raw = readFileSync(PID_FILE, 'utf-8').trim();
@@ -48,7 +46,6 @@ function readPid(): number | null {
   return isAlive(pid) ? pid : null;
 }
 
-/** Find the gateway server entry point. */
 function findServerPath(): string {
   const __dirname = fileURLToPath(new URL('.', import.meta.url));
   const monorepoRoot = join(__dirname, '..', '..', '..', '..');
@@ -88,10 +85,13 @@ function startDev(force = false): void {
   }
 
   const config = readConfig();
+  const childEnv = safeChildEnv();
+  childEnv.PORT = String(config.gateway.port);
+
   const child = spawn('node', [serverPath], {
     detached: true,
     stdio: 'ignore',
-    env: { ...process.env, PORT: String(config.gateway.port) },
+    env: childEnv,
   });
 
   child.unref();
@@ -131,9 +131,6 @@ function statusDev(): void {
   }
 }
 
-/**
- * Handle gateway subcommands: start, stop, restart, status.
- */
 export async function runGateway(args: string[]): Promise<void> {
   const sub = args[0];
 
@@ -143,7 +140,6 @@ export async function runGateway(args: string[]): Promise<void> {
   }
 
   if (hasSystemd()) {
-    // Use systemd
     try {
       if (sub === 'status') {
         try {
@@ -160,19 +156,15 @@ export async function runGateway(args: string[]): Promise<void> {
         }
         return;
       } else {
-        // Use sudo for service management — avoids polkit auth prompts.
-        // A passwordless sudoers rule should be in /etc/sudoers.d/orionomega.
         execSync(`sudo systemctl ${sub} orionomega`, { stdio: 'inherit' });
         process.stdout.write(`${GREEN}✓${RESET} Gateway ${sub}ed via systemd\n`);
       }
     } catch (err: unknown) {
-      // systemd unit might not exist — fall through to dev mode
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes('not found') || msg.includes('could not be found') || msg.includes('No such file')) {
         process.stdout.write(`${DIM}systemd unit not installed, using dev mode${RESET}\n`);
         runDevMode(sub);
       } else {
-        // For status, non-zero exit is normal when service is stopped
         if (sub === 'status') {
           process.stdout.write(`${DIM}systemd unit not active, checking dev mode...${RESET}\n`);
           statusDev();

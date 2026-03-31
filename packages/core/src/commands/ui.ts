@@ -11,6 +11,7 @@ import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { readConfig } from '../config/loader.js';
 import { normalizeBindAddresses } from '../config/loader.js';
+import { safeChildEnv, killPortHolder, sleepSync } from './process-utils.js';
 
 const GREEN = '\x1b[32m';
 const RED = '\x1b[31m';
@@ -26,10 +27,6 @@ const SYSTEMD_UNIT = 'orionomega-ui';
 
 function ensureDir(): void {
   mkdirSync(ORIONOMEGA_DIR, { recursive: true });
-}
-
-function sleepSync(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
 function waitForExit(pid: number, timeoutMs = 2000): boolean {
@@ -75,28 +72,6 @@ function isPortInUse(port: number, host = '127.0.0.1'): Promise<boolean> {
     sock.once('error', () => { sock.destroy(); resolve(false); });
     sock.setTimeout(500, () => { sock.destroy(); resolve(false); });
   });
-}
-
-function killPortHolder(port: number): boolean {
-  try {
-    const out = execSync(`lsof -ti tcp:${port} 2>/dev/null || fuser ${port}/tcp 2>/dev/null`, { encoding: 'utf-8' }).trim();
-    if (!out) return false;
-    const pids = out.split(/\s+/).map((p) => parseInt(p, 10)).filter((p) => !isNaN(p) && p > 0);
-    for (const pid of pids) {
-      try { process.kill(pid, 'SIGTERM'); } catch {}
-    }
-    if (pids.length > 0) {
-      sleepSync(1000);
-      for (const pid of pids) {
-        if (isAlive(pid)) {
-          try { process.kill(pid, 'SIGKILL'); } catch {}
-        }
-      }
-    }
-    return pids.length > 0;
-  } catch {
-    return false;
-  }
 }
 
 function readPid(): number | null {
@@ -215,11 +190,15 @@ async function startDev(args: string[], force = false): Promise<void> {
   ensureDir();
   const logFd = openSync(LOG_FILE, 'a');
 
+  const childEnv = safeChildEnv();
+  childEnv.HOST = host;
+  childEnv.PORT = port;
+
   const child = spawn('node', [serverPath], {
     cwd: webDir,
     detached: true,
     stdio: ['ignore', logFd, logFd],
-    env: { ...process.env, HOST: host, PORT: port },
+    env: childEnv,
   });
 
   child.unref();
@@ -311,11 +290,15 @@ export async function restartWebUI(): Promise<{ stopped: number | null; started:
   ensureDir();
   const logFd = openSync(LOG_FILE, 'a');
 
+  const childEnv = safeChildEnv();
+  childEnv.HOST = host;
+  childEnv.PORT = port;
+
   const child = spawn('node', [serverPath], {
     cwd: webDir,
     detached: true,
     stdio: ['ignore', logFd, logFd],
-    env: { ...process.env, HOST: host, PORT: port },
+    env: childEnv,
   });
   child.unref();
 

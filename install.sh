@@ -18,8 +18,19 @@ warn()    { printf "${YELLOW}⚠${NC} %s\n" "$1"; }
 fail()    { printf "${RED}✗${NC} %s\n" "$1"; exit 1; }
 step()    { printf "\n${BOLD}%s${NC}\n" "$1"; }
 
+is_interactive() {
+  [ -t 0 ] && [ -t 1 ]
+}
+
+SKIPPED_STEPS=""
+
 confirm_sudo() {
   local action="$1"
+  if ! is_interactive; then
+    SKIPPED_STEPS="${SKIPPED_STEPS:+$SKIPPED_STEPS, }$action"
+    warn "Non-interactive mode: skipping confirmation for: $action"
+    return 1
+  fi
   printf "${YELLOW}⚠${NC} The following operation requires sudo: %s\n" "$action"
   printf "  Proceed? [y/N] "
   read -r answer </dev/tty
@@ -49,6 +60,9 @@ if ! command -v node &>/dev/null; then
 fi
 
 NODE_VERSION=$(node -v | sed 's/v//' | cut -d. -f1)
+if ! printf '%s' "$NODE_VERSION" | grep -qE '^[0-9]+$'; then
+  fail "Could not determine Node.js version (got: $(node -v)). Please reinstall Node.js."
+fi
 if [ "$NODE_VERSION" -lt "$MIN_NODE" ]; then
   fail "Node.js $MIN_NODE+ required (found v$(node -v | sed 's/v//')). Please upgrade."
 fi
@@ -58,8 +72,15 @@ info "Node.js $(node -v)"
 
 if ! command -v pnpm &>/dev/null; then
   step "Installing pnpm..."
-  npm install -g pnpm
-  info "pnpm installed"
+  if command -v corepack &>/dev/null; then
+    corepack enable pnpm 2>/dev/null && info "pnpm installed via corepack" || {
+      npm install -g pnpm || fail "Could not install pnpm. Install it manually: npm install -g pnpm"
+      info "pnpm installed via npm"
+    }
+  else
+    npm install -g pnpm || fail "Could not install pnpm. Install it manually: npm install -g pnpm"
+    info "pnpm installed via npm"
+  fi
 else
   info "pnpm $(pnpm -v)"
 fi
@@ -71,15 +92,23 @@ step "Getting OrionOmega source..."
 if [ -d "$INSTALL_DIR/.git" ]; then
   printf "  Updating existing installation... "
   cd "$INSTALL_DIR"
-  git fetch origin main 2>/dev/null
-  git reset --hard origin/main 2>/dev/null || git pull origin main
+  git fetch origin main 2>/dev/null || true
+  if ! git pull --ff-only origin main 2>/dev/null; then
+    warn "Fast-forward pull failed. You may have local changes."
+    printf "    To force update: cd %s && git reset --hard origin/main\n" "$INSTALL_DIR"
+    printf "    Continuing with existing code.\n"
+  fi
   printf "done\n"
 else
   printf "  Cloning into %s... " "$INSTALL_DIR"
   mkdir -p "$(dirname "$INSTALL_DIR")"
-  git clone "$REPO" "$INSTALL_DIR"
+  git clone "$REPO" "$INSTALL_DIR" || fail "Failed to clone repository. Check your network connection."
   printf "done\n"
   cd "$INSTALL_DIR"
+fi
+
+if [ ! -f "$INSTALL_DIR/packages/core/package.json" ]; then
+  fail "Repository clone appears incomplete (packages/core/package.json not found). Remove $INSTALL_DIR and try again."
 fi
 
 info "Source ready at $INSTALL_DIR"
@@ -87,13 +116,16 @@ info "Source ready at $INSTALL_DIR"
 # ── 4. Install dependencies ─────────────────────────────────────
 
 step "Installing dependencies..."
-pnpm install --frozen-lockfile
+if ! pnpm install --frozen-lockfile 2>/dev/null; then
+  warn "Frozen lockfile install failed — falling back to regular install (lockfile may be stale)"
+  pnpm install || fail "Dependency installation failed."
+fi
 info "Dependencies installed"
 
 # ── 5. Build ─────────────────────────────────────────────────────
 
 step "Building OrionOmega..."
-pnpm build
+pnpm build || fail "Build failed. Run 'pnpm build' manually to see errors."
 info "Build complete"
 
 # ── 6. Link CLI globally ─────────────────────────────────────────
@@ -119,19 +151,68 @@ exec node "$INSTALL_DIR/packages/core/dist/cli.js" "\$@"
 WRAPPER
 chmod +x "$BIN_DIR/orionomega"
 
-SHELL_RC=""
-if [ -n "${ZSH_VERSION:-}" ] || [ "${SHELL:-}" = "/bin/zsh" ]; then
-  SHELL_RC="$HOME/.zshrc"
-elif [ -n "${BASH_VERSION:-}" ] || [ "${SHELL:-}" = "/bin/bash" ]; then
-  SHELL_RC="$HOME/.bashrc"
-fi
+detect_shell_rc() {
+  local user_shell="${SHELL:-}"
+  case "$user_shell" in
+    */zsh)
+      if [ "$(uname -s)" = "Darwin" ]; then
+        if [ -f "$HOME/.zprofile" ]; then
+          printf '%s' "$HOME/.zprofile"
+        else
+          printf '%s' "$HOME/.zshrc"
+        fi
+      else
+        printf '%s' "$HOME/.zshrc"
+      fi
+      ;;
+    */bash)
+      if [ "$(uname -s)" = "Darwin" ]; then
+        if [ -f "$HOME/.bash_profile" ]; then
+          printf '%s' "$HOME/.bash_profile"
+        elif [ -f "$HOME/.profile" ]; then
+          printf '%s' "$HOME/.profile"
+        else
+          printf '%s' "$HOME/.bashrc"
+        fi
+      else
+        printf '%s' "$HOME/.bashrc"
+      fi
+      ;;
+    */fish)
+      printf '%s' "$HOME/.config/fish/config.fish"
+      ;;
+    *)
+      if [ -f "$HOME/.profile" ]; then
+        printf '%s' "$HOME/.profile"
+      elif [ -f "$HOME/.bashrc" ]; then
+        printf '%s' "$HOME/.bashrc"
+      fi
+      ;;
+  esac
+}
+
+SHELL_RC="$(detect_shell_rc)"
 
 if [ -n "$SHELL_RC" ]; then
-  touch "$SHELL_RC"
-  if ! grep -q 'orionomega/bin' "$SHELL_RC" 2>/dev/null; then
-    printf '\n# OrionOmega\nexport PATH="$HOME/.orionomega/bin:$PATH"\n' >> "$SHELL_RC"
-    info "Added to PATH in $SHELL_RC"
+  if [ ! -f "$SHELL_RC" ]; then
+    mkdir -p "$(dirname "$SHELL_RC")"
   fi
+  touch "$SHELL_RC"
+
+  case "$SHELL_RC" in
+    *.fish)
+      if ! grep -q 'orionomega/bin' "$SHELL_RC" 2>/dev/null; then
+        printf '\n# OrionOmega\nset -gx PATH $HOME/.orionomega/bin $PATH\n' >> "$SHELL_RC"
+        info "Added to PATH in $SHELL_RC"
+      fi
+      ;;
+    *)
+      if ! grep -q 'orionomega/bin' "$SHELL_RC" 2>/dev/null; then
+        printf '\n# OrionOmega\nexport PATH="$HOME/.orionomega/bin:$PATH"\n' >> "$SHELL_RC"
+        info "Added to PATH in $SHELL_RC"
+      fi
+      ;;
+  esac
 fi
 
 export PATH="$BIN_DIR:$PATH"
@@ -256,7 +337,7 @@ if [ "$DOCKER_READY" = "true" ]; then
     CONFIG_FILE="$HOME/.orionomega/config.yaml"
     API_KEY=""
     if [ -f "$CONFIG_FILE" ]; then
-      API_KEY=$(grep -E '^\s*apiKey:' "$CONFIG_FILE" | head -1 | sed 's/.*apiKey:\s*//' | sed 's/^["'"'"']//' | sed 's/["'"'"']$//' | tr -d '[:space:]')
+      API_KEY=$(grep -E '^\s*apiKey:' "$CONFIG_FILE" | head -1 | sed 's/.*apiKey:\s*//' | sed 's/^["'"'"']//' | sed 's/["'"'"']$//' | tr -d '[:space:]') || true
     fi
 
     if [ -n "$API_KEY" ] && [ "$API_KEY" != "not" ]; then
@@ -308,13 +389,21 @@ printf "\n"
 printf "  Launching setup wizard...\n"
 printf "\n"
 
-# ── 9. Run setup wizard, then drop into a fresh login shell ──────
-# Run setup in a subshell with PATH set, then exec a fresh login shell
-# so the user lands in a shell where `orionomega` is immediately available.
-PATH="$BIN_DIR:$PATH" "$BIN_DIR/orionomega" setup </dev/tty
+# ── 9. Run setup wizard ──────────────────────────────────────────
+if is_interactive; then
+  PATH="$BIN_DIR:$PATH" "$BIN_DIR/orionomega" setup </dev/tty
+else
+  PATH="$BIN_DIR:$PATH" "$BIN_DIR/orionomega" setup || true
+fi
+
+if [ -n "$SKIPPED_STEPS" ]; then
+  printf "\n"
+  printf "  ${YELLOW}⚠${NC} ${BOLD}The following steps were skipped (non-interactive mode):${NC}\n"
+  printf "    %s\n" "$SKIPPED_STEPS"
+  printf "    Re-run the installer interactively to complete these steps.\n"
+fi
 
 printf "\n"
-printf "  ${BOLD}Opening a new shell so 'orionomega' is in your PATH...${NC}\n"
-printf "  ${DIM}(Type 'exit' to return to your previous shell)${NC}\n"
+printf "  ${BOLD}Restart your terminal or run the following to add orionomega to your PATH:${NC}\n"
+printf "    export PATH=\"\$HOME/.orionomega/bin:\$PATH\"\n"
 printf "\n"
-exec "${SHELL:-/bin/sh}" -l </dev/tty

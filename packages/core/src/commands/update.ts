@@ -10,6 +10,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, symlinkSync, unlink
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { findPidOnPort, safeChildEnv, sleepSync } from './process-utils.js';
 
 const GREEN = '\x1b[32m';
 const RED = '\x1b[31m';
@@ -27,31 +28,6 @@ function readPid(): number | null {
   try {
     process.kill(pid, 0);
     return pid;
-  } catch {
-    return null;
-  }
-}
-
-function findPidOnPort(port: number): number | null {
-  try {
-    const result = execSync(
-      `lsof -nP -iTCP:${port} -sTCP:LISTEN -t 2>/dev/null || true`,
-      { timeout: 5000, shell: '/bin/sh' as any },
-    ).toString().trim();
-    if (!result) return null;
-    const pids = result.split('\n').map((s) => parseInt(s.trim(), 10)).filter((n) => !isNaN(n));
-    for (const pid of pids) {
-      try {
-        const cmdline = execSync(`ps -p ${pid} -o args= 2>/dev/null || true`, {
-          timeout: 3000,
-          shell: '/bin/sh' as any,
-        }).toString().trim();
-        if (cmdline.includes('server.js') || cmdline.includes('gateway')) {
-          return pid;
-        }
-      } catch { /* skip */ }
-    }
-    return pids[0] ?? null;
   } catch {
     return null;
   }
@@ -80,7 +56,7 @@ export interface UpdateStep {
 }
 
 export const UPDATE_STEPS: UpdateStep[] = [
-  { label: 'Pulling latest changes', cmd: 'git pull', timeout: 30_000 },
+  { label: 'Pulling latest changes', cmd: 'git pull --ff-only || { echo "Fast-forward failed. You may have local changes." >&2; exit 1; }', timeout: 30_000 },
   { label: 'Installing dependencies', cmd: 'pnpm install --frozen-lockfile || pnpm install', timeout: 120_000 },
   { label: 'Building all packages', cmd: 'pnpm build', timeout: 120_000 },
 ];
@@ -95,7 +71,7 @@ export function runUpdateSteps(installDir: string, callbacks: UpdateCallbacks): 
   for (const s of UPDATE_STEPS) {
     callbacks.onStep(s.label);
     try {
-      execSync(s.cmd, { cwd: installDir, stdio: 'pipe', timeout: s.timeout, shell: '/bin/sh' as any });
+      execSync(s.cmd, { cwd: installDir, stdio: 'pipe', timeout: s.timeout, shell: '/bin/sh' });
       callbacks.onStepDone(s.label);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -117,7 +93,7 @@ export function stopGateway(port = 8000): number | null {
     let waited = 0;
     while (waited < 5000) {
       try { process.kill(gatewayPid, 0); } catch { break; }
-      execSync('sleep 0.5');
+      sleepSync(500);
       waited += 500;
     }
     try { process.kill(gatewayPid, 0); process.kill(gatewayPid, 'SIGKILL'); } catch { /* done */ }
@@ -151,7 +127,7 @@ export function startGateway(installDir: string): number | null {
   const child = spawn(process.execPath, [gatewayEntry], {
     stdio: 'ignore',
     detached: true,
-    env: { ...process.env },
+    env: safeChildEnv(),
   });
   child.unref();
   if (child.pid) {
