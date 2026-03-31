@@ -145,9 +145,27 @@ function processHistoryWhenHydrated(history: HistoryMessage[]): void {
             .filter((m) => m.type && dagTypes.has(m.type) && m.dagId)
             .map((m) => `${m.type}:${m.dagId}`),
         );
+        const contentDedupTypes = new Set([undefined, 'text']);
+        const localContentKeys = new Set(
+          local
+            .filter((m) => contentDedupTypes.has(m.type))
+            .flatMap((m) => {
+              const ts = Math.floor(new Date(m.timestamp).getTime() / 3000);
+              return [
+                `${m.role}:${m.content}:${ts}`,
+                `${m.role}:${m.content}:${ts - 1}`,
+                `${m.role}:${m.content}:${ts + 1}`,
+              ];
+            }),
+        );
         const missing = serverMessages.filter((m) => {
           if (localIds.has(m.id)) return false;
           if (m.type && dagTypes.has(m.type) && m.dagId && localDagKeys.has(`${m.type}:${m.dagId}`)) return false;
+          if (contentDedupTypes.has(m.type)) {
+            const ts = Math.floor(new Date(m.timestamp).getTime() / 3000);
+            const contentKey = `${m.role}:${m.content}:${ts}`;
+            if (localContentKeys.has(contentKey)) return false;
+          }
           return true;
         });
         if (missing.length > 0) {
@@ -252,10 +270,10 @@ function bindListeners(ws: ReconnectingWebSocket): void {
       case 'text':
         if (msg.workflowId && msg.workflowId.startsWith('conv-')) {
           if (msg.streaming && !msg.done && msg.content) {
-            chat.appendToBackground(msg.workflowId, msg.content);
+            chat.appendToBackground(msg.workflowId, msg.content, msg.id);
           } else if (!msg.streaming && msg.content) {
             chat.addMessage({
-              id: uuid(),
+              id: msg.id || uuid(),
               role: 'assistant',
               content: msg.content,
               timestamp: new Date().toISOString(),
@@ -265,10 +283,10 @@ function bindListeners(ws: ReconnectingWebSocket): void {
           }
         } else {
           if (msg.streaming && !msg.done && msg.content) {
-            chat.appendToLast(msg.content);
+            chat.appendToLast(msg.content, msg.id);
           } else if (!msg.streaming && msg.content) {
             chat.addMessage({
-              id: uuid(),
+              id: msg.id || uuid(),
               role: 'assistant',
               content: msg.content,
               timestamp: new Date().toISOString(),
@@ -446,7 +464,7 @@ function bindListeners(ws: ReconnectingWebSocket): void {
           } else if (evt.type === 'error') {
             chat.markLastInterrupted();
             chat.addMessage({
-              id: uuid(),
+              id: msg.id || uuid(),
               role: 'system',
               content: evt.error || evt.message || 'Worker error',
               timestamp: new Date().toISOString(),
@@ -472,7 +490,7 @@ function bindListeners(ws: ReconnectingWebSocket): void {
           }
         }
         chat.addMessage({
-          id: uuid(),
+          id: msg.id || uuid(),
           role: 'system',
           content: msg.commandResult?.message || msg.message || '',
           timestamp: new Date().toISOString(),
@@ -482,7 +500,7 @@ function bindListeners(ws: ReconnectingWebSocket): void {
       case 'error':
         chat.markLastInterrupted();
         chat.addMessage({
-          id: uuid(),
+          id: msg.id || uuid(),
           role: 'system',
           content: msg.error || msg.message || 'Unknown error',
           timestamp: new Date().toISOString(),

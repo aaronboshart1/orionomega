@@ -72,8 +72,8 @@ interface ChatStore {
   replyTarget: ReplyToData | null;
   addMessage: (msg: ChatMessage) => void;
   setMessages: (msgs: ChatMessage[]) => void;
-  appendToLast: (content: string) => void;
-  appendToBackground: (workflowId: string, content: string) => void;
+  appendToLast: (content: string, messageId?: string) => void;
+  appendToBackground: (workflowId: string, content: string, messageId?: string) => void;
   setStreaming: (s: boolean) => void;
   setThinking: (t: string) => void;
   appendThinking: (t: string) => void;
@@ -98,7 +98,7 @@ export const useChatStore = create<ChatStore>()(
       replyTarget: null,
       addMessage: (msg) => set((s) => ({ messages: [...s.messages, msg] })),
       setMessages: (messages) => set({ messages }),
-      appendToLast: (content) =>
+      appendToLast: (content, messageId) =>
         set((s) => {
           const msgs = [...s.messages];
           const last = msgs.length > 0 ? msgs[msgs.length - 1] : null;
@@ -109,7 +109,7 @@ export const useChatStore = create<ChatStore>()(
             };
           } else {
             msgs.push({
-              id: uuid(),
+              id: messageId || uuid(),
               role: 'assistant',
               content,
               timestamp: new Date().toISOString(),
@@ -117,7 +117,7 @@ export const useChatStore = create<ChatStore>()(
           }
           return { messages: msgs };
         }),
-      appendToBackground: (workflowId, content) =>
+      appendToBackground: (workflowId, content, messageId) =>
         set((s) => {
           const msgs = [...s.messages];
           let idx = -1;
@@ -131,7 +131,7 @@ export const useChatStore = create<ChatStore>()(
             msgs[idx] = { ...msgs[idx], content: msgs[idx].content + content };
           } else {
             msgs.push({
-              id: uuid(),
+              id: messageId || uuid(),
               role: 'assistant',
               content,
               timestamp: new Date().toISOString(),
