@@ -8,7 +8,7 @@ import { Container, Markdown, Spacer, Text } from '@mariozechner/pi-tui';
 import type { Component } from '@mariozechner/pi-tui';
 import type { DisplayMessage } from '../gateway-client.js';
 import { markdownTheme, theme, spacing, palette, box, icons } from '../theme.js';
-import { truncate } from '../utils/format.js';
+import { truncate, formatDuration } from '../utils/format.js';
 import { omegaSpinner } from './omega-spinner.js';
 import chalk from 'chalk';
 
@@ -116,9 +116,7 @@ export class ChatLog extends Container {
       ? success('COMPLETE')
       : info.status === 'error' ? error('ERROR') : dim('STOPPED');
 
-    const fmtDuration = info.durationSec < 60
-      ? `${Math.round(info.durationSec)}s`
-      : `${Math.floor(info.durationSec / 60)}m ${Math.round(info.durationSec % 60)}s`;
+    const fmtDuration = formatDuration(info.durationSec);
 
     const fmtCost = `$${info.totalCostUsd.toFixed(4)}`;
 
