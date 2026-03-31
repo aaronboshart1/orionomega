@@ -309,10 +309,7 @@ export class HindsightClient {
       usedClientRelevance: allZeroRelevance,
     });
 
-    if (shouldDedup && filtered.length > 1) {
-      filtered.sort((a, b) => b.relevance - a.relevance);
-      filtered = deduplicateByContent(filtered, dedupThreshold);
-    }
+    filtered = this.applyDeduplication(filtered, shouldDedup, dedupThreshold);
 
     const result: RecallResult = {
       results: filtered,
@@ -326,49 +323,9 @@ export class HindsightClient {
       droppedByRelevance: allResults.length - filtered.length,
     });
 
-    if (result.results.length > 0) {
-      const topScore = Math.max(...result.results.map(r => r.relevance));
-      this.onIO?.({
-        op: 'recall',
-        bank: bankId,
-        detail: `Retrieved ${result.results.length} memories (top relevance: ${topScore.toFixed(2)}${allZeroRelevance ? ', client-scored' : ''})`,
-        meta: {
-          query,
-          resultCount: result.results.length,
-          totalFromApi: allResults.length,
-          droppedByRelevance: allResults.length - filtered.length,
-          topScore,
-          durationMs,
-          clientScored: allZeroRelevance,
-          tokensUsed: result.tokens_used,
-          budget: tier,
-          maxTokens: effectiveMaxTokens,
-          minRelevance,
-          results: result.results.map(r => ({
-            content: r.content,
-            context: r.context,
-            timestamp: r.timestamp,
-            relevance: r.relevance,
-          })),
-        },
-      });
-    } else {
-      this.onIO?.({
-        op: 'recall',
-        bank: bankId,
-        detail: 'No matching memories found',
-        meta: {
-          query,
-          resultCount: 0,
-          totalFromApi: allResults.length,
-          droppedByRelevance: allResults.length,
-          durationMs,
-          budget: tier,
-          maxTokens: effectiveMaxTokens,
-          minRelevance,
-        },
-      });
-    }
+    this.emitRecallIO(bankId, query, result.results, allResults.length, allResults.length - filtered.length, durationMs, {
+      tier, effectiveMaxTokens, minRelevance, allZeroRelevance, tokensUsed: result.tokens_used,
+    });
     return result;
   }
 
@@ -452,11 +409,7 @@ export class HindsightClient {
 
     const shouldDedup = opts?.deduplicate !== false;
     const dedupThreshold = opts?.deduplicationThreshold ?? 0.85;
-    let final = merged;
-    if (shouldDedup && final.length > 1) {
-      final.sort((a, b) => b.relevance - a.relevance);
-      final = deduplicateByContent(final, dedupThreshold);
-    }
+    const final = this.applyDeduplication(merged, shouldDedup, dedupThreshold);
 
     const LOW_CONFIDENCE_THRESHOLD = 0.5;
     const lowConfidence = final.length === 0 || final.every((r) => r.relevance < LOW_CONFIDENCE_THRESHOLD);
@@ -466,6 +419,70 @@ export class HindsightClient {
       tokens_used: primary.tokens_used + totalTemporalTokens,
       lowConfidence,
     };
+  }
+
+  private applyDeduplication<T extends { content: string; relevance: number }>(
+    items: T[],
+    shouldDedup: boolean,
+    threshold: number,
+  ): T[] {
+    if (!shouldDedup || items.length <= 1) return items;
+    items.sort((a, b) => b.relevance - a.relevance);
+    return deduplicateByContent(items, threshold);
+  }
+
+  private emitRecallIO(
+    bankId: string,
+    query: string,
+    results: Array<{ content: string; context: string; timestamp: string; relevance: number }>,
+    totalFromApi: number,
+    droppedByRelevance: number,
+    durationMs: number,
+    params: { tier: string; effectiveMaxTokens: number; minRelevance: number; allZeroRelevance: boolean; tokensUsed: number },
+  ): void {
+    if (results.length > 0) {
+      const topScore = Math.max(...results.map(r => r.relevance));
+      this.onIO?.({
+        op: 'recall',
+        bank: bankId,
+        detail: `Retrieved ${results.length} memories (top relevance: ${topScore.toFixed(2)}${params.allZeroRelevance ? ', client-scored' : ''})`,
+        meta: {
+          query,
+          resultCount: results.length,
+          totalFromApi,
+          droppedByRelevance,
+          topScore,
+          durationMs,
+          clientScored: params.allZeroRelevance,
+          tokensUsed: params.tokensUsed,
+          budget: params.tier,
+          maxTokens: params.effectiveMaxTokens,
+          minRelevance: params.minRelevance,
+          results: results.map(r => ({
+            content: r.content,
+            context: r.context,
+            timestamp: r.timestamp,
+            relevance: r.relevance,
+          })),
+        },
+      });
+    } else {
+      this.onIO?.({
+        op: 'recall',
+        bank: bankId,
+        detail: 'No matching memories found',
+        meta: {
+          query,
+          resultCount: 0,
+          totalFromApi,
+          droppedByRelevance,
+          durationMs,
+          budget: params.tier,
+          maxTokens: params.effectiveMaxTokens,
+          minRelevance: params.minRelevance,
+        },
+      });
+    }
   }
 
   private defaultMaxCandidates(tokenBudget: number): number {
