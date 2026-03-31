@@ -74,7 +74,11 @@ export class CommandHandler {
         if (this.commandFileLoader && cmd) {
           const fileCmd = this.commandFileLoader.lookup(cmd);
           if (fileCmd) {
-            return notConnected(cmd);
+            return {
+              command: cmd,
+              success: false,
+              message: `Custom command /${fileCmd.name} requires MainAgent. Waiting for connection…`,
+            };
           }
         }
         return {

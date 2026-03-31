@@ -836,21 +836,6 @@ export class MainAgent {
         return;
       }
 
-      if (!this.orchestration?.commands) {
-        this.callbacks.onCommandResult({
-          command: cmd, success: false,
-          message: 'Agent not fully initialised. Try again in a moment.',
-        });
-        return;
-      }
-
-      const orchCmd = workflowId ? `${cmd} ${workflowId}` : (args ? `${cmd} ${args}` : cmd);
-      const orchResult = await this.orchestration.commands.handle(orchCmd);
-      if (orchResult.success || !orchResult.message.startsWith('Unknown command')) {
-        this.callbacks.onCommandResult({ command: cmd, success: orchResult.success, message: orchResult.message });
-        return;
-      }
-
       if (this.commandFileLoader) {
         const fileCmd = this.commandFileLoader.lookup(cmd);
         if (fileCmd) {
@@ -864,6 +849,16 @@ export class MainAgent {
         }
       }
 
+      if (!this.orchestration?.commands) {
+        this.callbacks.onCommandResult({
+          command: cmd, success: false,
+          message: 'Agent not fully initialised. Try again in a moment.',
+        });
+        return;
+      }
+
+      const orchCmd = workflowId ? `${cmd} ${workflowId}` : (args ? `${cmd} ${args}` : cmd);
+      const orchResult = await this.orchestration.commands.handle(orchCmd);
       this.callbacks.onCommandResult({ command: cmd, success: orchResult.success, message: orchResult.message });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
