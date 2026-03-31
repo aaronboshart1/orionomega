@@ -143,7 +143,7 @@ async function initMainAgent(): Promise<void> {
   }
 
   const agentConfig: MainAgentConfig = {
-    model: freshConfig.models?.default ?? 'claude-sonnet-4-20250514',
+    model: freshConfig.models?.default || 'claude-sonnet-4-20250514',
     cheapModel: freshConfig.models?.cheap || 'claude-haiku-4-5-20251001',
     apiKey,
     systemPrompt: '',
