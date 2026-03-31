@@ -47,6 +47,25 @@ function truncate(text: string, max: number = MAX_OUTPUT_CHARS): string {
   return text.slice(0, max) + `\n\n... [truncated, ${text.length - max} chars omitted]`;
 }
 
+/** Combines stdout and stderr into a single output string and truncates it. */
+function assembleToolOutput(stdout: string, stderr: string, max: number = MAX_OUTPUT_CHARS): string {
+  return truncate(stdout + (stderr ? '\nstderr:\n' + stderr : ''), max);
+}
+
+type ExecError = { code?: number; stdout?: string; stderr?: string; message?: string };
+
+/** Formats an exec error into a readable diagnostic string and truncates it. */
+function formatToolError(e: ExecError, originalErr: unknown, max: number = MAX_OUTPUT_CHARS): string {
+  const output = [
+    e.stdout ? `stdout:\n${e.stdout}` : '',
+    e.stderr ? `stderr:\n${e.stderr}` : '',
+    `exit code: ${e.code ?? 'unknown'}`,
+  ]
+    .filter(Boolean)
+    .join('\n');
+  return truncate(`Command failed:\n${output || e.message || String(originalErr)}`, max);
+}
+
 /**
  * Returns the set of built-in tools available to all worker agents.
  *
@@ -95,24 +114,9 @@ export function getBuiltInTools(): BuiltInTool[] {
             maxBuffer: 10 * 1024 * 1024,
             shell: '/bin/bash',
           });
-          return truncate(stdout + (stderr ? '\nstderr:\n' + stderr : ''));
+          return assembleToolOutput(stdout, stderr);
         } catch (err: unknown) {
-          const e = err as {
-            code?: number;
-            stdout?: string;
-            stderr?: string;
-            message?: string;
-          };
-          const output = [
-            e.stdout ? `stdout:\n${e.stdout}` : '',
-            e.stderr ? `stderr:\n${e.stderr}` : '',
-            `exit code: ${e.code ?? 'unknown'}`,
-          ]
-            .filter(Boolean)
-            .join('\n');
-          return truncate(
-            `Command failed:\n${output || e.message || String(err)}`,
-          );
+          return formatToolError(err as ExecError, err);
         }
       },
     },
