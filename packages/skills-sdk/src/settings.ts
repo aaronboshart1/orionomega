@@ -128,6 +128,45 @@ function matchesType(value: unknown, type: SkillSettingType): boolean {
   }
 }
 
+type ValidationRules = NonNullable<SkillSettingSchema['validation']>;
+
+function checkStringConstraints(key: string, value: string, v: ValidationRules): string[] {
+  const errors: string[] = [];
+  if (v.min !== undefined && value.length < v.min) {
+    errors.push(`Setting "${key}" must be at least ${v.min} characters long.`);
+  }
+  if (v.max !== undefined && value.length > v.max) {
+    errors.push(`Setting "${key}" must be at most ${v.max} characters long.`);
+  }
+  if (v.pattern) {
+    try {
+      if (!new RegExp(v.pattern).test(value)) {
+        errors.push(`Setting "${key}" does not match the required pattern.`);
+      }
+    } catch {
+      // Silently ignore invalid patterns
+    }
+  }
+  if (v.enum && !v.enum.includes(value)) {
+    errors.push(`Setting "${key}" must be one of: ${v.enum.map(String).join(', ')}.`);
+  }
+  return errors;
+}
+
+function checkNumberConstraints(key: string, value: number, v: ValidationRules): string[] {
+  const errors: string[] = [];
+  if (v.min !== undefined && value < v.min) {
+    errors.push(`Setting "${key}" must be at least ${v.min}.`);
+  }
+  if (v.max !== undefined && value > v.max) {
+    errors.push(`Setting "${key}" must be at most ${v.max}.`);
+  }
+  if (v.enum && !v.enum.includes(value)) {
+    errors.push(`Setting "${key}" must be one of: ${v.enum.map(String).join(', ')}.`);
+  }
+  return errors;
+}
+
 function checkConstraints(
   key: string,
   value: unknown,
@@ -136,41 +175,12 @@ function checkConstraints(
   const errors: string[] = [];
   const v = prop.validation;
 
-  if (typeof value === 'string') {
-    if (v?.min !== undefined && value.length < v.min) {
-      errors.push(`Setting "${key}" must be at least ${v.min} characters long.`);
-    }
-    if (v?.max !== undefined && value.length > v.max) {
-      errors.push(`Setting "${key}" must be at most ${v.max} characters long.`);
-    }
-    if (v?.pattern) {
-      try {
-        if (!new RegExp(v.pattern).test(value)) {
-          errors.push(`Setting "${key}" does not match the required pattern.`);
-        }
-      } catch {
-        // Silently ignore invalid patterns
-      }
-    }
-    if (v?.enum && !v.enum.includes(value)) {
-      errors.push(
-        `Setting "${key}" must be one of: ${v.enum.map(String).join(', ')}.`,
-      );
-    }
+  if (typeof value === 'string' && v) {
+    errors.push(...checkStringConstraints(key, value, v));
   }
 
-  if (typeof value === 'number') {
-    if (v?.min !== undefined && value < v.min) {
-      errors.push(`Setting "${key}" must be at least ${v.min}.`);
-    }
-    if (v?.max !== undefined && value > v.max) {
-      errors.push(`Setting "${key}" must be at most ${v.max}.`);
-    }
-    if (v?.enum && !v.enum.includes(value)) {
-      errors.push(
-        `Setting "${key}" must be one of: ${v.enum.map(String).join(', ')}.`,
-      );
-    }
+  if (typeof value === 'number' && v) {
+    errors.push(...checkNumberConstraints(key, value, v));
   }
 
   const types = Array.isArray(prop.type) ? prop.type : [prop.type];
