@@ -277,8 +277,8 @@ export async function handlePutConfig(
   req: IncomingMessage,
   res: ServerResponse,
   gatewayConfig: GatewayConfig,
-): Promise<void> {
-  if (!checkAuth(req, res, gatewayConfig)) return;
+): Promise<boolean> {
+  if (!checkAuth(req, res, gatewayConfig)) return false;
   try {
     const body = await readBody(req);
     const partial = JSON.parse(body) as Record<string, unknown>;
@@ -287,7 +287,7 @@ export async function handlePutConfig(
     if (validationErrors.length > 0) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Validation failed', details: validationErrors }));
-      return;
+      return false;
     }
 
     const current = readConfig();
@@ -306,7 +306,7 @@ export async function handlePutConfig(
     if (mergedValidationErrors.length > 0) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Merged config validation failed', details: mergedValidationErrors }));
-      return;
+      return false;
     }
 
     writeConfig(merged as unknown as OrionOmegaConfig);
@@ -316,11 +316,13 @@ export async function handlePutConfig(
     const masked = maskConfig(freshConfig);
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(masked));
+    return true;
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Failed to update config';
     console.error('[config] Failed to update config:', message);
     const status = message.includes('exceeds limit') ? 413 : 400;
     res.writeHead(status, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: status === 413 ? 'Request body too large' : 'Failed to update configuration' }));
+    return false;
   }
 }

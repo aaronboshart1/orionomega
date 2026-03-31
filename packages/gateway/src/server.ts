@@ -115,29 +115,43 @@ if (fullConfig?.commands?.directory) {
 /**
  * Wire the MainAgent into the gateway.
  * Callbacks broadcast ServerMessages to all connected WebSocket clients.
+ * Re-reads config fresh so it picks up API keys saved after startup.
  */
 async function initMainAgent(): Promise<void> {
-  const apiKey = fullConfig?.models?.apiKey ?? process.env.ANTHROPIC_API_KEY ?? '';
+  let freshConfig: ReturnType<typeof readConfig>;
+  try {
+    freshConfig = readConfig();
+  } catch {
+    log.warn('Cannot read config — MainAgent will not be available');
+    return;
+  }
+
+  const apiKey = freshConfig.models?.apiKey ?? process.env.ANTHROPIC_API_KEY ?? '';
   if (!apiKey) {
     log.warn(' No Anthropic API key — MainAgent will not be available');
     return;
   }
 
+  if (mainAgent) {
+    log.info('MainAgent already initialised — skipping re-init');
+    return;
+  }
+
   const agentConfig: MainAgentConfig = {
-    model: fullConfig?.models?.default ?? 'claude-sonnet-4-20250514',
-    cheapModel: fullConfig?.models?.cheap || 'claude-haiku-4-5-20251001',
+    model: freshConfig.models?.default ?? 'claude-sonnet-4-20250514',
+    cheapModel: freshConfig.models?.cheap || 'claude-haiku-4-5-20251001',
     apiKey,
     systemPrompt: '',
-    workspaceDir: fullConfig?.workspace?.path ?? '',
-    checkpointDir: fullConfig?.workspace?.path
-      ? fullConfig.workspace.path + '/checkpoints'
+    workspaceDir: freshConfig.workspace?.path ?? '',
+    checkpointDir: freshConfig.workspace?.path
+      ? freshConfig.workspace.path + '/checkpoints'
       : '/tmp/orionomega-checkpoints',
-    workerTimeout: fullConfig?.orchestration?.workerTimeout ?? 300,
-    maxRetries: fullConfig?.orchestration?.maxRetries ?? 2,
-    skillsDir: fullConfig?.skills?.directory,
-    commandsDir: fullConfig?.commands?.directory,
-    hindsight: fullConfig?.hindsight,
-    autoResume: fullConfig?.orchestration?.autoResume ?? false,
+    workerTimeout: freshConfig.orchestration?.workerTimeout ?? 300,
+    maxRetries: freshConfig.orchestration?.maxRetries ?? 2,
+    skillsDir: freshConfig.skills?.directory,
+    commandsDir: freshConfig.commands?.directory,
+    hindsight: freshConfig.hindsight,
+    autoResume: freshConfig.orchestration?.autoResume ?? false,
   };
 
   let currentTextId = randomBytes(8).toString('hex');
@@ -621,7 +635,13 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
   }
 
   if (pathname === '/api/config' && method === 'PUT') {
-    handlePutConfig(req, res, config).catch((err) => {
+    handlePutConfig(req, res, config).then((saved) => {
+      if (saved && !mainAgent) {
+        initMainAgent().catch((err) => {
+          log.error('Failed to init MainAgent after config update', { error: err instanceof Error ? err.message : String(err) });
+        });
+      }
+    }).catch((err) => {
       log.error('Config route error', { error: err instanceof Error ? err.message : String(err) });
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Internal server error' }));
