@@ -51,9 +51,10 @@ attached_assets/
 output/
 *.research.md
 
-# Test reports (generated, not source)
+# Test reports and coverage (generated, not source)
 test/*.log
 test/*_REPORT.md
+coverage/
 
 # Replit
 .local/

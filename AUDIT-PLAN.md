@@ -65,10 +65,10 @@ Extract shared utilities and eliminate copy-paste duplication. Ordered by number
 
 Verify repo hygiene and ensure no build artifacts are tracked.
 
-- [ ] **S-1** Verify `.gitignore` properly excludes `packages/web/.next/`; if tracked, remove from git index with `git rm -r --cached`
-- [ ] **S-2** Verify `node_modules/` is excluded at all package levels in `.gitignore`; clean index if tracked
-- [ ] **DX-L3** Add `coverage/` to `.gitignore` (preparation for test framework)
-- [ ] Ensure `packages/core/src/utils/` directory exists for new shared utilities created in Pass 2
+- [x] **S-1** Verify `.gitignore` properly excludes `packages/web/.next/`; if tracked, remove from git index with `git rm -r --cached` — already excluded at root; confirmed not tracked
+- [x] **S-2** Verify `node_modules/` is excluded at all package levels in `.gitignore`; clean index if tracked — already excluded at root; confirmed not tracked
+- [x] **DX-L3** Add `coverage/` to `.gitignore` (preparation for test framework) — added under "Test reports and coverage" section
+- [x] Ensure `packages/core/src/utils/` directory exists for new shared utilities created in Pass 2 — exists (`deep-merge.ts` present)
 
 ### Pass 4: Pattern Standardization
 
