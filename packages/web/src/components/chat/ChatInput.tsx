@@ -27,6 +27,7 @@ const BUILTIN_COMMANDS = [
   { command: '/clear', description: 'Clear conversation' },
   { command: '/status', description: 'Show system status' },
   { command: '/update', description: 'Pull latest, rebuild, and restart' },
+  { command: '/restart', description: 'Restart gateway and web UI' },
   { command: '/help', description: 'Show available commands' },
 ];
 
