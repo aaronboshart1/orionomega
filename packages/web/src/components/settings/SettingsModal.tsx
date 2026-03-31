@@ -5,9 +5,10 @@ import FocusTrap from 'focus-trap-react';
 import { X, Eye, EyeOff, Save, Loader2, CheckCircle, AlertCircle, ChevronDown, RefreshCw } from 'lucide-react';
 import { TabGroup, type TabDef } from '../shared/TabGroup';
 import { SkillsTab as SkillsSettingsTab } from './SkillsSettings';
+import { GatewayTab } from './GatewayTab';
 import { Z } from '@/lib/z-index';
 
-type TabId = 'omegaclaw' | 'memory' | 'skills' | 'webui';
+type TabId = 'omegaclaw' | 'memory' | 'skills' | 'webui' | 'gateway';
 
 interface SettingsModalProps {
   open: boolean;
@@ -762,7 +763,7 @@ function WebUITab({
 }
 
 function getTabValidity(config: ConfigData | null): Record<TabId, boolean> {
-  if (!config) return { omegaclaw: false, memory: false, skills: false, webui: false };
+  if (!config) return { omegaclaw: false, memory: false, skills: false, webui: false, gateway: true };
 
   const apiKey = String(getNestedValue(config, 'models.apiKey') ?? '');
   const defaultModel = String(getNestedValue(config, 'models.default') ?? '');
@@ -779,7 +780,7 @@ function getTabValidity(config: ConfigData | null): Record<TabId, boolean> {
   const webuiPort = Number(getNestedValue(config, 'webui.port') ?? 0);
   const webuiValid = webuiPort > 0 && webuiPort <= 65535;
 
-  return { omegaclaw: omegaclawValid, memory: memoryValid, skills: skillsValid, webui: webuiValid };
+  return { omegaclaw: omegaclawValid, memory: memoryValid, skills: skillsValid, webui: webuiValid, gateway: true };
 }
 
 const TABS: { id: TabId; label: string }[] = [
@@ -787,6 +788,7 @@ const TABS: { id: TabId; label: string }[] = [
   { id: 'memory', label: 'Memory' },
   { id: 'skills', label: 'Skills' },
   { id: 'webui', label: 'WebUI' },
+  { id: 'gateway', label: 'Gateway' },
 ];
 
 export function SettingsModal({ open, onClose }: SettingsModalProps) {
@@ -796,6 +798,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [saving, setSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'success' | 'error'>('idle');
   const [errorMsg, setErrorMsg] = useState('');
+  const [gatewayHealth, setGatewayHealth] = useState<'healthy' | 'degraded' | 'unreachable' | null>(null);
   const { models: anthropicModels, loading: modelsLoading, refetch: refetchModels } = useAnthropicModels(open);
 
   const fetchConfig = useCallback(async () => {
@@ -853,6 +856,29 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
       setErrorMsg('');
     }
   }, [open, fetchConfig]);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    const checkHealth = async () => {
+      try {
+        const res = await fetch('/api/gateway/api/status', { signal: AbortSignal.timeout(3000) });
+        if (!cancelled) {
+          if (res.ok) {
+            const data = await res.json();
+            setGatewayHealth(data.systemHealth === 'ok' ? 'healthy' : 'degraded');
+          } else {
+            setGatewayHealth('unreachable');
+          }
+        }
+      } catch {
+        if (!cancelled) setGatewayHealth('unreachable');
+      }
+    };
+    checkHealth();
+    const timer = setInterval(checkHealth, 5000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [open]);
 
   const handleChange = useCallback((path: string, value: unknown) => {
     setConfig((prev) => setNestedValue(prev ?? {}, path, value));
@@ -920,14 +946,24 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
             tabs={TABS.map((tab) => {
               const validity = getTabValidity(config);
               const isValid = validity[tab.id];
-              return {
-                key: tab.id,
-                label: tab.label,
-                icon: config
+              let icon: React.ReactNode | undefined;
+              if (tab.id === 'gateway') {
+                icon = gatewayHealth === null
+                  ? undefined
+                  : gatewayHealth === 'healthy'
+                    ? <CheckCircle size={12} className="text-green-400" />
+                    : <AlertCircle size={12} className="text-amber-400" />;
+              } else {
+                icon = config
                   ? isValid
                     ? <CheckCircle size={12} className="text-green-400" />
                     : <AlertCircle size={12} className="text-amber-400" />
-                  : undefined,
+                  : undefined;
+              }
+              return {
+                key: tab.id,
+                label: tab.label,
+                icon,
               } as TabDef<TabId>;
             })}
             active={activeTab}
@@ -937,7 +973,9 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
         </div>
 
         <div className="flex-1 overflow-y-auto px-4 md:px-6 py-4">
-          {loading ? (
+          {activeTab === 'gateway' ? (
+            <GatewayTab />
+          ) : loading ? (
             <div className="flex h-full items-center justify-center">
               <Loader2 size={20} className="animate-spin text-zinc-500" />
               <span className="ml-2 text-xs text-zinc-500">Loading configuration...</span>

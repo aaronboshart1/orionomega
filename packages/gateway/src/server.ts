@@ -7,6 +7,7 @@
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { spawn as spawnProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { readConfig, normalizeBindAddresses, MainAgent, CommandFileLoader, createLogger, setGlobalLogLevel, enableFileLogging, discoverModels, clearModelCache, auditApiRequest } from '@orionomega/core';
 import type { MainAgentConfig, MainAgentCallbacks, LogLevel } from '@orionomega/core';
@@ -651,6 +652,51 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
     const combined = agentCmds.length > 0 ? agentCmds : fileCmds;
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ commands: combined }));
+    return;
+  }
+
+  // --- Shutdown ---
+  if (pathname === '/api/shutdown' && method === 'POST') {
+    const remote = req.socket.remoteAddress ?? '';
+    const isLocal = remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1';
+    if (!isLocal) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Lifecycle endpoints are restricted to localhost' }));
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ message: 'Shutting down…' }));
+    setTimeout(() => shutdown('API_SHUTDOWN'), 500);
+    return;
+  }
+
+  // --- Restart ---
+  if (pathname === '/api/restart' && method === 'POST') {
+    const remote = req.socket.remoteAddress ?? '';
+    const isLocal = remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1';
+    if (!isLocal) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Lifecycle endpoints are restricted to localhost' }));
+      return;
+    }
+    const serverPath = process.argv[1];
+    if (!serverPath) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Cannot determine server entry point for restart' }));
+      return;
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ message: 'Restarting…' }));
+
+    const childEnv = { ...process.env, ORIONOMEGA_RESTART_DELAY: '1000' };
+    const child = spawnProcess(process.execPath, [serverPath], {
+      detached: true,
+      stdio: 'ignore',
+      env: childEnv,
+    });
+    child.unref();
+    setTimeout(() => shutdown('API_RESTART'), 500);
     return;
   }
 
