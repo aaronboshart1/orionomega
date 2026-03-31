@@ -297,6 +297,28 @@
     "tools": ["linear_issue", "linear_project", "linear_team", "linear_user", "linear_graphql"],
     "maxTimeout": 120000
   },
+  "settings": {
+    "type": "object",
+    "properties": {
+      "LINEAR_API_KEY": {
+        "type": "password",
+        "label": "Linear API Key",
+        "description": "Personal API key from linear.app/settings → Security & access → Personal API keys",
+        "placeholder": "lin_api_xxxxxxxxxxxx",
+        "required": true,
+        "group": "auth",
+        "widget": "secret"
+      },
+      "default_team": {
+        "type": "string",
+        "label": "Default Team Key",
+        "description": "Team key used when team is omitted (e.g. 'ENG')",
+        "placeholder": "ENG",
+        "required": false,
+        "group": "preferences"
+      }
+    }
+  },
   "hooks": {
     "healthCheck": "hooks/health.js",
     "postInstall": "hooks/setup.js"

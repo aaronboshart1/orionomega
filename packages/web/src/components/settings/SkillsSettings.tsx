@@ -132,19 +132,29 @@ function SkillField({
 function SkillCard({
   skill,
   onSave,
+  onToggle,
 }: {
   skill: SkillInfo;
   onSave: (name: string, settings: Record<string, unknown>, enabled: boolean) => Promise<void>;
+  onToggle: (name: string, enabled: boolean) => Promise<void>;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [localSettings, setLocalSettings] = useState<Record<string, unknown>>(skill.settings);
   const [localEnabled, setLocalEnabled] = useState(skill.enabled);
   const [saving, setSaving] = useState(false);
+  const [toggling, setToggling] = useState(false);
   const [saveResult, setSaveResult] = useState<'idle' | 'success' | 'error'>('idle');
 
+  useEffect(() => {
+    setLocalSettings(skill.settings);
+  }, [skill.settings]);
+
+  useEffect(() => {
+    setLocalEnabled(skill.enabled);
+  }, [skill.enabled]);
+
   const hasSchema = skill.schema && Object.keys(skill.schema.properties).length > 0;
-  const dirty =
-    localEnabled !== skill.enabled ||
+  const settingsDirty =
     JSON.stringify(localSettings) !== JSON.stringify(skill.settings);
 
   const handleFieldChange = useCallback((name: string, value: unknown) => {
@@ -224,14 +234,27 @@ function SkillCard({
           )}
           <button
             type="button"
+            disabled={toggling}
             onClick={(e) => {
               e.stopPropagation();
-              setLocalEnabled(!localEnabled);
+              const newEnabled = !localEnabled;
+              setLocalEnabled(newEnabled);
               setSaveResult('idle');
+              setToggling(true);
+              onToggle(skill.name, newEnabled)
+                .then(() => {
+                  setSaveResult('success');
+                  setTimeout(() => setSaveResult('idle'), 2000);
+                })
+                .catch(() => {
+                  setLocalEnabled(!newEnabled);
+                  setSaveResult('error');
+                })
+                .finally(() => setToggling(false));
             }}
             className={`relative inline-flex h-4 w-7 items-center rounded-full transition-colors ${
               localEnabled ? 'bg-blue-600' : 'bg-zinc-700'
-            }`}
+            } ${toggling ? 'opacity-50' : ''}`}
           >
             <span
               className={`inline-block h-2.5 w-2.5 transform rounded-full bg-white transition-transform ${
@@ -272,7 +295,7 @@ function SkillCard({
             <p className="text-[11px] text-zinc-500">No configurable settings for this skill.</p>
           )}
 
-          {(hasSchema || dirty) && (
+          {(hasSchema || settingsDirty) && (
             <div className="flex items-center justify-end gap-2 pt-1">
               {saveResult === 'success' && (
                 <span className="text-[11px] text-green-400">Saved</span>
@@ -282,7 +305,7 @@ function SkillCard({
               )}
               <button
                 onClick={handleSave}
-                disabled={saving || !dirty}
+                disabled={saving || !settingsDirty}
                 className="rounded bg-blue-600 px-3 py-1 text-[11px] font-medium text-white transition-colors hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 {saving ? 'Saving...' : 'Save'}
@@ -321,6 +344,19 @@ export function SkillsTab() {
   useEffect(() => {
     fetchSkills();
   }, [fetchSkills]);
+
+  const handleToggle = async (name: string, enabled: boolean) => {
+    const res = await fetch(`/api/gateway/api/skills/${encodeURIComponent(name)}/config`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({ error: 'Toggle failed' }));
+      throw new Error((body as { error?: string }).error ?? 'Toggle failed');
+    }
+    await fetchSkills();
+  };
 
   const handleSave = async (name: string, settings: Record<string, unknown>, enabled: boolean) => {
     const res = await fetch(`/api/gateway/api/skills/${encodeURIComponent(name)}/config`, {
@@ -380,7 +416,7 @@ export function SkillsTab() {
       ) : (
         <div className="space-y-1.5">
           {skills.map((skill) => (
-            <SkillCard key={skill.name} skill={skill} onSave={handleSave} />
+            <SkillCard key={skill.name} skill={skill} onSave={handleSave} onToggle={handleToggle} />
           ))}
         </div>
       )}
