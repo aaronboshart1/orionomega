@@ -5,6 +5,16 @@ Branch: `audit/cleanup-2026-03-31`
 Baseline LOC: 38,451
 Stack: TypeScript monorepo (pnpm, 6 packages), Node.js >=22, Next.js 15
 
+## Results
+
+- Lines of code before: 38,451
+- Lines of code after: 38,381
+- Lines removed: 70
+- Files removed: 1
+- Files moved/renamed: 0
+- Commits made: 35
+- Deferred items: 58 (see AUDIT-DEFERRED.md)
+
 ---
 
 ## Changes to Apply (in execution order)
