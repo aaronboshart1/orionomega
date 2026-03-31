@@ -166,11 +166,6 @@ export function isGuardedRequest(content: string): boolean {
   return GUARDED_PATTERNS.some((p) => p.test(content.trim()));
 }
 
-/** @deprecated Use isOrchestrateRequest instead. */
-export function isFastTask(content: string): boolean {
-  return isOrchestrateRequest(content);
-}
-
 /** Intent type returned by the 2-tier classifier. */
 export type IntentType = 'CHAT' | 'ORCHESTRATE';
 
