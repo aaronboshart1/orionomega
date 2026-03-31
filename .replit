@@ -63,4 +63,6 @@ path = "scripts/post-merge.sh"
 timeoutMs = 180000
 
 [deployment]
-deploymentTarget = "cloudrun"
+deploymentTarget = "autoscale"
+run = ["bash", "-c", "pnpm --filter @orionomega/gateway start & pnpm --filter @orionomega/web start"]
+build = ["bash", "-c", "pnpm --filter @orionomega/hindsight build && pnpm --filter @orionomega/skills-sdk build && pnpm --filter @orionomega/core build && pnpm --filter @orionomega/gateway build && pnpm --filter @orionomega/web build"]
