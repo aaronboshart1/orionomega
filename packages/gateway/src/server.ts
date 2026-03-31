@@ -112,6 +112,11 @@ if (fullConfig?.commands?.directory) {
   }
 }
 
+/** Assemble the final streamed text from a buffer and latest chunk. */
+function getFullContent(buffer: string, text: string, streaming: boolean): string {
+  return streaming ? (buffer + (text || '')) : text;
+}
+
 /**
  * Wire the MainAgent into the gateway.
  * Callbacks broadcast ServerMessages to all connected WebSocket clients.
@@ -183,7 +188,7 @@ async function initMainAgent(): Promise<void> {
         }
 
         if (done || !streaming) {
-          const fullContent = streaming ? (state.buffer + (text || '')) : text;
+          const fullContent = getFullContent(state.buffer, text, streaming);
           if (fullContent) {
             const sid = DEFAULT_SESSION_ID;
             if (sid) {
@@ -216,7 +221,7 @@ async function initMainAgent(): Promise<void> {
       }
 
       if (done || !streaming) {
-        const fullContent = streaming ? (streamBuffer + (text || '')) : text;
+        const fullContent = getFullContent(streamBuffer, text, streaming);
 
         if (fullContent) {
           const sid = DEFAULT_SESSION_ID;
@@ -459,19 +464,22 @@ initMainAgent().catch((err) => {
 
 let lastHindsightConnected: boolean | null = null;
 
-/** Poll hindsight health every 15 seconds and broadcast changes. */
-const hindsightHealthTimer = setInterval(async () => {
-  let connected = false;
+/** Probe hindsight health with a 2-second timeout. */
+async function checkHindsightHealth(): Promise<boolean> {
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 2000);
     const resp = await fetch(`${hindsightUrl}/health`, { signal: controller.signal });
     clearTimeout(timeout);
-    connected = resp.ok;
+    return resp.ok;
   } catch {
-    connected = false;
+    return false;
   }
+}
 
+/** Poll hindsight health every 15 seconds and broadcast changes. */
+const hindsightHealthTimer = setInterval(async () => {
+  const connected = await checkHindsightHealth();
   // Only broadcast on state change (or first check)
   if (connected !== lastHindsightConnected) {
     lastHindsightConnected = connected;
@@ -485,16 +493,7 @@ const hindsightHealthTimer = setInterval(async () => {
 
 // Run an initial check immediately
 (async () => {
-  let connected = false;
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 2000);
-    const resp = await fetch(`${hindsightUrl}/health`, { signal: controller.signal });
-    clearTimeout(timeout);
-    connected = resp.ok;
-  } catch {
-    connected = false;
-  }
+  const connected = await checkHindsightHealth();
   lastHindsightConnected = connected;
   wsHandler.broadcast({
     id: randomBytes(8).toString('hex'),
