@@ -30,6 +30,30 @@ export interface MemoryConfig {
   cheapModel?: string;
 }
 
+/** Thresholds and seed content for self-knowledge bootstrap. */
+export interface MemoryBootstrapConfig {
+  apiEndpoint: string;
+  deduplicationThreshold: number;
+  relevanceFloor: number;
+  qualityThreshold: number;
+  budgetTiers: { low: number; mid: number; high: number };
+  architecturalDecisions: string[];
+}
+
+const DEFAULT_BOOTSTRAP: Omit<MemoryBootstrapConfig, 'apiEndpoint'> = {
+  deduplicationThreshold: 0.85,
+  relevanceFloor: 0.3,
+  qualityThreshold: 0.3,
+  budgetTiers: { low: 1024, mid: 4096, high: 8192 },
+  architecturalDecisions: [
+    'Hindsight stores memories in isolated banks with namespace separation',
+    'Mental models are pre-synthesized context documents refreshed on retention triggers',
+    'Session anchors capture continuity state at session boundaries',
+    'Memory quality scoring filters low-signal content before storage',
+    'Causal chain retrieval formats decision → action → outcome narratives in recall',
+  ],
+};
+
 /**
  * Manages the full Hindsight memory lifecycle for the main agent.
  *
@@ -153,17 +177,7 @@ export class MemoryBridge {
 
       this.selfKnowledge.bootstrap({
         apiEndpoint: hsCfg.url,
-        deduplicationThreshold: 0.85,
-        relevanceFloor: 0.3,
-        qualityThreshold: 0.3,
-        budgetTiers: { low: 1024, mid: 4096, high: 8192 },
-        architecturalDecisions: [
-          'Hindsight stores memories in isolated banks with namespace separation',
-          'Mental models are pre-synthesized context documents refreshed on retention triggers',
-          'Session anchors capture continuity state at session boundaries',
-          'Memory quality scoring filters low-signal content before storage',
-          'Causal chain retrieval formats decision → action → outcome narratives in recall',
-        ],
+        ...DEFAULT_BOOTSTRAP,
       }).catch((err) => {
         log.warn('Self-knowledge bootstrap failed', {
           error: err instanceof Error ? err.message : String(err),
