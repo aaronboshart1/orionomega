@@ -136,7 +136,7 @@ async function initMainAgent(): Promise<void> {
     skillsDir: fullConfig?.skills?.directory,
     commandsDir: fullConfig?.commands?.directory,
     hindsight: fullConfig?.hindsight,
-    autoResume: fullConfig?.orchestration?.autoResume ?? true,
+    autoResume: fullConfig?.orchestration?.autoResume ?? false,
   };
 
   let currentTextId = randomBytes(8).toString('hex');

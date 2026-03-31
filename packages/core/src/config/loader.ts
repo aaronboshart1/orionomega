@@ -55,7 +55,7 @@ export function getDefaultConfig(): OrionOmegaConfig {
       maxRetries: 2,
       planFirst: true,
       checkpointInterval: 30,
-      autoResume: true,
+      autoResume: false,
       eventBatching: {
         tuiIntervalMs: 250,
         webIntervalMs: 1000,

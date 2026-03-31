@@ -320,7 +320,7 @@ export class MainAgent {
     // 4. Check for interrupted workflows and auto-resume them (or list for manual resume)
     const interrupted = this.orchestration.checkForInterruptedWorkflows();
     if (interrupted.length > 0) {
-      const autoResume = this.config.autoResume !== false;
+      const autoResume = this.config.autoResume === true;
       const list = interrupted
         .map((c, i) =>
           `  ${i + 1}. ${c.task} (layer ${c.currentLayer}/${c.graph.layers.length}, ${Object.values(c.nodeOutputs).length} nodes done)`,

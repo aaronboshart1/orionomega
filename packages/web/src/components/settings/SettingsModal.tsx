@@ -504,7 +504,7 @@ function OmegaClawTab({
       </FormField>
       <FormField label="Auto Resume">
         <Toggle
-          checked={Boolean(getNestedValue(config, 'orchestration.autoResume') ?? true)}
+          checked={Boolean(getNestedValue(config, 'orchestration.autoResume') ?? false)}
           onChange={(v) => onChange('orchestration.autoResume', v)}
         />
       </FormField>
