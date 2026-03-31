@@ -1,4 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   SkillLoader,
   readSkillConfig,
@@ -8,6 +11,7 @@ import {
   resolveSettings,
   maskSecrets,
 } from '@orionomega/skills-sdk';
+import type { SkillManifest } from '@orionomega/skills-sdk';
 import { auditAuthEvent } from '@orionomega/core';
 import type { SkillConfig, SkillSettingSchema } from '@orionomega/skills-sdk';
 import { SkillSettingType } from '@orionomega/skills-sdk';
@@ -67,13 +71,55 @@ function checkAuth(req: IncomingMessage, res: ServerResponse, gatewayConfig: Gat
   return true;
 }
 
-function getSkillsDir(): string {
+function getDefaultSkillsDir(): string {
+  const thisFile = fileURLToPath(import.meta.url);
+  const repoRoot = join(thisFile, '..', '..', '..', '..', '..');
+  return join(repoRoot, 'default-skills');
+}
+
+function getConfiguredSkillsDir(): string {
   try {
     const cfg = readConfig();
-    return cfg.skills?.directory ?? 'default-skills';
-  } catch {
-    return 'default-skills';
+    const dir = cfg.skills?.directory;
+    if (dir) return dir;
+  } catch {}
+  return join(getDefaultSkillsDir(), '..', '.orionomega', 'skills');
+}
+
+async function discoverAllSkills(): Promise<{ manifests: SkillManifest[]; configDir: string }> {
+  const seen = new Set<string>();
+  const manifests: SkillManifest[] = [];
+  const configDir = getConfiguredSkillsDir();
+
+  const defaultDir = getDefaultSkillsDir();
+  if (existsSync(defaultDir)) {
+    try {
+      const loader = new SkillLoader(defaultDir);
+      for (const m of await loader.discoverAll()) {
+        if (!seen.has(m.name)) {
+          seen.add(m.name);
+          manifests.push(m);
+        }
+      }
+    } catch {}
   }
+
+  if (existsSync(configDir)) {
+    try {
+      const loader = new SkillLoader(configDir);
+      for (const m of await loader.discoverAll()) {
+        if (!seen.has(m.name)) {
+          seen.add(m.name);
+          manifests.push(m);
+        } else {
+          const idx = manifests.findIndex((existing) => existing.name === m.name);
+          if (idx !== -1) manifests[idx] = m;
+        }
+      }
+    } catch {}
+  }
+
+  return { manifests, configDir };
 }
 
 function isSecretField(prop: SkillSettingSchema): boolean {
@@ -88,42 +134,33 @@ export function handleGetSkills(
 ): void {
   if (!checkAuth(req, res, gatewayConfig)) return;
 
-  try {
-    const skillsDir = getSkillsDir();
-    const loader = new SkillLoader(skillsDir);
+  discoverAllSkills().then(({ manifests, configDir }) => {
+    const results = manifests.map((manifest) => {
+      const config = readSkillConfig(configDir, manifest.name);
+      const schema = getSettingsSchema(manifest);
+      const resolved = resolveSettings(manifest, config.fields);
+      const masked = maskSecrets(resolved, manifest);
 
-    loader.discoverAll().then((manifests) => {
-      const results = manifests.map((manifest) => {
-        const config = readSkillConfig(skillsDir, manifest.name);
-        const schema = getSettingsSchema(manifest);
-        const resolved = resolveSettings(manifest, config.fields);
-        const masked = maskSecrets(resolved, manifest);
-
-        return {
-          name: manifest.name,
-          version: manifest.version,
-          description: manifest.description,
-          author: manifest.author,
-          icon: manifest.icon,
-          enabled: config.enabled,
-          configured: config.configured,
-          schema: schema ?? undefined,
-          settings: masked,
-        };
-      });
-
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ skills: results }));
-    }).catch((err: unknown) => {
-      console.error('[skills] Failed to list skills:', err instanceof Error ? err.message : String(err));
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Internal server error' }));
+      return {
+        name: manifest.name,
+        version: manifest.version,
+        description: manifest.description,
+        author: manifest.author,
+        icon: manifest.icon,
+        enabled: config.enabled,
+        configured: config.configured,
+        schema: schema ?? undefined,
+        settings: masked,
+      };
     });
-  } catch (err) {
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ skills: results }));
+  }).catch((err: unknown) => {
     console.error('[skills] Failed to list skills:', err instanceof Error ? err.message : String(err));
     res.writeHead(500, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'Internal server error' }));
-  }
+  });
 }
 
 export async function handlePutSkillConfig(
@@ -138,17 +175,16 @@ export async function handlePutSkillConfig(
     const body = await readBody(req);
     const payload = JSON.parse(body) as Partial<SkillConfig> & { settings?: Record<string, unknown> };
 
-    const skillsDir = getSkillsDir();
-    const existing = readSkillConfig(skillsDir, skillName);
+    const configDir = getConfiguredSkillsDir();
+    const existing = readSkillConfig(configDir, skillName);
 
     if (payload.enabled !== undefined) {
       existing.enabled = payload.enabled;
     }
 
     if (payload.settings) {
-      const loader = new SkillLoader(skillsDir);
-      const manifests = await loader.discoverAll();
-      const manifest = manifests.find((m) => m.name === skillName);
+      const discovered = await discoverAllSkills();
+      const manifest = discovered.manifests.find((m) => m.name === skillName);
 
       const schema = manifest ? getSettingsSchema(manifest) : null;
 
@@ -196,7 +232,7 @@ export async function handlePutSkillConfig(
     }
 
     existing.configuredAt = new Date().toISOString();
-    writeSkillConfig(skillsDir, skillName, existing);
+    writeSkillConfig(configDir, skillName, existing);
 
     const safeConfig = {
       name: existing.name,
