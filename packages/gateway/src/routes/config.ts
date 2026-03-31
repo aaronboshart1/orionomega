@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { readConfig, writeConfig, auditConfigChange, auditAuthEvent } from '@orionomega/core';
+import { readConfig, writeConfig, auditConfigChange, auditAuthEvent, deepMerge } from '@orionomega/core';
 import type { OrionOmegaConfig } from '@orionomega/core';
 import { validateToken } from '../auth.js';
 import type { GatewayConfig } from '../types.js';
@@ -45,35 +45,6 @@ function readBody(req: IncomingMessage, maxBytes: number = DEFAULT_MAX_BODY_BYTE
     req.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
     req.on('error', reject);
   });
-}
-
-function deepMerge(
-  target: Record<string, unknown>,
-  source: Record<string, unknown>,
-): Record<string, unknown> {
-  const result: Record<string, unknown> = { ...target };
-  for (const key of Object.keys(source)) {
-    const val = source[key];
-    const existing = target[key];
-    if (
-      val !== null &&
-      val !== undefined &&
-      typeof val === 'object' &&
-      !Array.isArray(val) &&
-      existing !== null &&
-      existing !== undefined &&
-      typeof existing === 'object' &&
-      !Array.isArray(existing)
-    ) {
-      result[key] = deepMerge(
-        existing as Record<string, unknown>,
-        val as Record<string, unknown>,
-      );
-    } else if (val !== undefined) {
-      result[key] = val;
-    }
-  }
-  return result;
 }
 
 function validateConfig(config: Record<string, unknown>): string[] {

@@ -104,3 +104,6 @@ export {
 
 export { discoverModels, buildModelGuide, pickModelByTier, clearModelCache } from "./models/model-discovery.js";
 export type { DiscoveredModel } from "./models/model-discovery.js";
+
+// Utilities
+export { deepMerge } from './utils/deep-merge.js';
