@@ -66,7 +66,7 @@ try {
   config = {
     port: 8000,
     bind: '127.0.0.1',
-    auth: { mode: 'api-key' },
+    auth: { mode: 'none' },
     cors: { origins: ['http://localhost:*'] },
   };
   hindsightUrl = 'http://localhost:8888';

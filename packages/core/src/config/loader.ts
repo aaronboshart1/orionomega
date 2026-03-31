@@ -29,7 +29,7 @@ export function getDefaultConfig(): OrionOmegaConfig {
       port: 8000,
       bind: ['127.0.0.1'],
       auth: {
-        mode: 'api-key',
+        mode: 'none',
       },
       cors: {
         origins: ['http://localhost:*'],
