@@ -4,7 +4,6 @@ import { useState, useCallback, useRef, useEffect, useMemo, type KeyboardEvent, 
 import { Send, X, Reply, Paperclip, FileText, Image } from 'lucide-react';
 import { useChatStore } from '@/stores/chat';
 import { formatBytes } from '@/utils/format';
-import { useToastStore } from '@/stores/toast';
 import { Z } from '@/lib/z-index';
 import { uuid } from '@/lib/uuid';
 
@@ -46,7 +45,6 @@ function useFileCommands() {
         );
       })
       .catch(() => {
-        useToastStore.getState().addToast('Failed to load slash commands', 'warning', 3000);
       });
   }, []);
 

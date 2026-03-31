@@ -930,12 +930,10 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
         }
       }
       initialConfigRef.current = body as ConfigData;
-      (await import('@/stores/toast')).useToastStore.getState().addToast('Settings saved', 'success', 2500);
     } catch (err) {
       setSaveStatus('error');
       const errMsg = err instanceof Error ? err.message : 'Failed to save config';
       setErrorMsg(errMsg);
-      (await import('@/stores/toast')).useToastStore.getState().addToast(errMsg, 'error');
     } finally {
       setSaving(false);
     }
