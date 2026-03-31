@@ -1,9 +1,9 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { readConfig, writeConfig, auditConfigChange, auditAuthEvent, deepMerge } from '@orionomega/core';
+import { readConfig, writeConfig, auditConfigChange, deepMerge } from '@orionomega/core';
 import type { OrionOmegaConfig } from '@orionomega/core';
-import { validateToken } from '../auth.js';
 import type { GatewayConfig } from '../types.js';
-import { rateLimitAuth, recordAuthFailure, resetAuthFailures } from '../rate-limit.js';
+import { readBody } from './utils.js';
+import { checkAuth } from './auth-utils.js';
 
 const VALID_TOP_LEVEL_KEYS = new Set([
   'gateway', 'hindsight', 'models', 'orchestration', 'workspace', 'logging', 'skills', 'autonomous', 'agentSdk', 'webui', 'commands',
@@ -26,25 +26,6 @@ function maskConfig(config: OrionOmegaConfig): Record<string, unknown> {
     models.apiKey = maskApiKey(models.apiKey);
   }
   return masked;
-}
-
-const DEFAULT_MAX_BODY_BYTES = 1_048_576; // 1 MB
-
-function readBody(req: IncomingMessage, maxBytes: number = DEFAULT_MAX_BODY_BYTES): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    let received = 0;
-    req.on('data', (chunk: Buffer) => {
-      received += chunk.length;
-      if (received > maxBytes) {
-        req.destroy(new Error(`Request body exceeds limit of ${maxBytes} bytes`));
-        return;
-      }
-      chunks.push(chunk);
-    });
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
-    req.on('error', reject);
-  });
 }
 
 function validateConfig(config: Record<string, unknown>): string[] {
@@ -196,35 +177,6 @@ function validateConfig(config: Record<string, unknown>): string[] {
   return errors;
 }
 
-function checkAuth(req: IncomingMessage, res: ServerResponse, gatewayConfig: GatewayConfig): boolean {
-  const actor = req.socket.remoteAddress ?? undefined;
-  if (gatewayConfig.auth.mode !== 'api-key' || !gatewayConfig.auth.keyHash) {
-    return true;
-  }
-  if (!rateLimitAuth(req, res)) {
-    return false;
-  }
-  const authHeader = req.headers.authorization ?? '';
-  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
-  if (!token) {
-    recordAuthFailure(req);
-    auditAuthEvent('rest_auth_failed', 'Missing token', actor);
-    res.writeHead(401, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Authentication required' }));
-    return false;
-  }
-  const result = validateToken(token, gatewayConfig.auth.keyHash);
-  if (!result.valid) {
-    recordAuthFailure(req);
-    auditAuthEvent('rest_auth_failed', 'Invalid token', actor);
-    res.writeHead(401, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Authentication failed' }));
-    return false;
-  }
-  resetAuthFailures(req);
-  auditAuthEvent('rest_auth_success', undefined, actor);
-  return true;
-}
 
 export function handleGetConfig(
   _req: IncomingMessage,
