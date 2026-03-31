@@ -548,10 +548,8 @@ export class HindsightClient {
       res = await fetch(url, init);
     } catch (err) {
       this._activeOps--;
-      const wasConnected = this._connected;
       this._connected = false;
-      if (wasConnected) this.emitActivity();
-      else this.emitActivity();
+      this.emitActivity();
       const msg = err instanceof Error ? err.message : 'Network error';
       log.error(`Hindsight request failed: ${method} ${path}`, { error: msg });
       throw new HindsightError(msg, 0, `${method} ${path}`);
