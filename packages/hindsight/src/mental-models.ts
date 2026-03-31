@@ -77,29 +77,34 @@ export class MentalModelManager {
    * @param bankId - The bank the memory was retained to.
    * @param context - The context category of the retained memory.
    */
+  private shouldRefresh(key: string, now: number): boolean {
+    const lastRefresh = this.lastRefreshAt.get(key) ?? 0;
+    return now - lastRefresh >= REFRESH_DEBOUNCE_MS;
+  }
+
+  private async refreshModelSafely(model: ModelDefinition, key: string): Promise<void> {
+    try {
+      await this.hs.refreshMentalModel(model.bank, model.id);
+      log.info('Mental model refreshed', { key });
+    } catch (err) {
+      log.warn('Failed to refresh mental model', {
+        key,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   async onRetain(bankId: string, context: string): Promise<void> {
     for (const model of SYSTEM_MODELS) {
       if (model.refreshTrigger === context) {
         const key = `${model.bank}/${model.id}`;
         const now = Date.now();
-        const lastRefresh = this.lastRefreshAt.get(key) ?? 0;
-
-        if (now - lastRefresh < REFRESH_DEBOUNCE_MS) {
+        if (!this.shouldRefresh(key, now)) {
           log.debug('Skipping refresh — debounced', { key });
           continue;
         }
-
         this.lastRefreshAt.set(key, now);
-
-        try {
-          await this.hs.refreshMentalModel(model.bank, model.id);
-          log.info('Mental model refreshed', { key });
-        } catch (err) {
-          log.warn('Failed to refresh mental model', {
-            key,
-            error: err instanceof Error ? err.message : String(err),
-          });
-        }
+        await this.refreshModelSafely(model, key);
       }
     }
   }
