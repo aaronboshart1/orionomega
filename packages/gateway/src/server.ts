@@ -10,7 +10,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { spawn as spawnProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { readConfig, normalizeBindAddresses, MainAgent, CommandFileLoader, createLogger, setGlobalLogLevel, enableFileLogging, discoverModels, clearModelCache, auditApiRequest } from '@orionomega/core';
-import type { MainAgentConfig, MainAgentCallbacks, LogLevel } from '@orionomega/core';
+import type { MainAgentConfig, MainAgentCallbacks, LogLevel, PlannerOutput } from '@orionomega/core';
 import { setLogLevel as setHindsightLogLevel } from '@orionomega/hindsight';
 import type { GatewayConfig, ServerMessage } from './types.js';
 import { SessionManager, DEFAULT_SESSION_ID } from './sessions.js';
@@ -264,7 +264,7 @@ async function initMainAgent(): Promise<void> {
     onPlan(plan) {
       // Use graph.id as the message ID so the TUI can send it back
       // in plan_response and the MainAgent can match it to pendingPlanId.
-      const graph = (plan as any)?.graph;
+      const graph = (plan as PlannerOutput).graph;
       const planId = graph?.id ?? randomBytes(8).toString('hex');
 
       // Clone plan for transport — MUST NOT mutate the original.
@@ -818,9 +818,9 @@ async function shutdown(signal: string): Promise<void> {
 
   wsHandler.broadcast({
     id: randomBytes(8).toString('hex'),
-    type: 'command_result' as any,
-    commandResult: { command: 'restart', message: 'Gateway restarting…' },
-  } as any);
+    type: 'command_result',
+    commandResult: { command: 'restart', success: true, message: 'Gateway restarting…' },
+  });
 
   if (mainAgent) {
     try {
