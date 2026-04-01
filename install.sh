@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="https://github.com/aaronboshart1/orionomega.git"
+# Support GITHUB_TOKEN for private repo access
+if [ -n "${GITHUB_TOKEN:-}" ]; then
+  REPO="https://${GITHUB_TOKEN}@github.com/aaronboshart1/orionomega.git"
+else
+  REPO="https://github.com/aaronboshart1/orionomega.git"
+fi
 INSTALL_DIR="${ORIONOMEGA_DIR:-$HOME/.orionomega/src}"
 BIN_DIR="$HOME/.orionomega/bin"
 MIN_NODE=22
@@ -219,7 +224,7 @@ export PATH="$BIN_DIR:$PATH"
 info "orionomega command ready"
 
 # ── 6b. Set up custom commands directory ──────────────────────────────
-COMMANDS_DIR="$HOME/orionomega/commands"
+COMMANDS_DIR="$HOME/.orionomega/commands"
 if [ ! -d "$COMMANDS_DIR" ]; then
   mkdir -p "$COMMANDS_DIR"
   if [ -d "$INSTALL_DIR/commands" ]; then
@@ -337,17 +342,18 @@ if [ "$DOCKER_READY" = "true" ]; then
     CONFIG_FILE="$HOME/.orionomega/config.yaml"
     API_KEY=""
     if [ -f "$CONFIG_FILE" ]; then
-      API_KEY=$(grep -E '^\s*apiKey:' "$CONFIG_FILE" | head -1 | sed 's/.*apiKey:\s*//' | sed 's/^["'"'"']//' | sed 's/["'"'"']$//' | tr -d '[:space:]') || true
+      # Extract the apiKey under the models: section (skip commented lines)
+      API_KEY=$(sed -n '/^models:/,/^[^ ]/{ /^\s*apiKey:/{ s/.*apiKey:\s*//; s/^["'"'"']//; s/["'"'"']$//; s/^[[:space:]]*//; s/[[:space:]]*$//; p; q; } }' "$CONFIG_FILE") || true
     fi
 
-    if [ -n "$API_KEY" ] && [ "$API_KEY" != "not" ]; then
+    if [ -n "$API_KEY" ] && [ "$API_KEY" != "''" ] && [ "$API_KEY" != '""' ] && [ ${#API_KEY} -gt 8 ]; then
       docker stop hindsight 2>/dev/null || true
       docker rm hindsight 2>/dev/null || true
       printf "  Starting Hindsight container... "
       if docker run -d \
         --name hindsight \
         --restart unless-stopped \
-        -p 8888:8888 \
+        -p 8888:8888 -p 9999:9999 \
         -e "HINDSIGHT_API_LLM_API_KEY=${API_KEY}" \
         -e "HINDSIGHT_API_LLM_PROVIDER=anthropic" \
         -e "HINDSIGHT_API_LLM_MODEL=claude-haiku-4-5-20251001" \
