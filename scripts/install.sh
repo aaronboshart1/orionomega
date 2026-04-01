@@ -46,4 +46,10 @@ if [ ! -s "$TMPFILE" ]; then
   exit 1
 fi
 
-GITHUB_TOKEN="${GITHUB_TOKEN:-}" bash "$TMPFILE"
+# Pass /dev/tty as stdin so the installer gets interactive input
+# even when this wrapper was piped (curl | bash).
+if [ -e /dev/tty ]; then
+  GITHUB_TOKEN="${GITHUB_TOKEN:-}" bash "$TMPFILE" </dev/tty
+else
+  GITHUB_TOKEN="${GITHUB_TOKEN:-}" bash "$TMPFILE"
+fi

@@ -1,12 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# When piped (curl | bash), stdin is the pipe, not the terminal.
-# Reclaim /dev/tty so interactive prompts and the setup wizard work.
-if [ ! -t 0 ] && [ -e /dev/tty ]; then
-  exec </dev/tty
-fi
-
 REPO="https://github.com/aaronboshart1/orionomega.git"
 INSTALL_DIR="${ORIONOMEGA_DIR:-$HOME/.orionomega/src}"
 BIN_DIR="$HOME/.orionomega/bin"
