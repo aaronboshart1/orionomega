@@ -70,7 +70,9 @@ function startDev(force = false): void {
         process.kill(existing, 'SIGTERM');
         unlinkSync(PID_FILE);
         process.stdout.write(`${GREEN}✓${RESET} Stopped existing gateway (PID ${existing})\n`);
-      } catch {}
+      } catch (err) {
+        process.stderr.write(`${YELLOW}⚠${RESET} Failed to stop existing gateway (PID ${existing}): ${err instanceof Error ? err.message : String(err)}\n`);
+      }
     } else {
       process.stdout.write(`${YELLOW}⚠${RESET} Gateway already running (PID ${existing})\n`);
       return;

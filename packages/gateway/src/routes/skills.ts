@@ -32,7 +32,9 @@ function getConfiguredSkillsDir(): string {
     const cfg = readConfig();
     const dir = cfg.skills?.directory;
     if (dir) return dir;
-  } catch {}
+  } catch (err) {
+    console.warn('[skills] Failed to read skills directory from config:', err instanceof Error ? err.message : String(err));
+  }
   return join(getDefaultSkillsDir(), '..', '.orionomega', 'skills');
 }
 
@@ -54,7 +56,9 @@ async function loadFromDir(
         if (idx !== -1) manifests[idx] = m;
       }
     }
-  } catch {}
+  } catch (err) {
+    console.warn('[skills] Failed to load skills from directory:', err instanceof Error ? err.message : String(err));
+  }
 }
 
 async function discoverAllSkills(): Promise<{ manifests: SkillManifest[]; configDir: string }> {

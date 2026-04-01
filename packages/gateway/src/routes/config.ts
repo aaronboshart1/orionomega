@@ -200,7 +200,14 @@ export async function handlePutConfig(
   if (!checkAuth(req, res, gatewayConfig)) return false;
   try {
     const body = await readBody(req);
-    const partial = JSON.parse(body) as Record<string, unknown>;
+    let partial: Record<string, unknown>;
+    try {
+      partial = JSON.parse(body) as Record<string, unknown>;
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      return false;
+    }
 
     const validationErrors = validateConfig(partial);
     if (validationErrors.length > 0) {

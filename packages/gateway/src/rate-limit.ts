@@ -134,7 +134,6 @@ export function recordAuthFailure(req: IncomingMessage): void {
   tracker.failures++;
   if (tracker.failures >= AUTH_FAILURE_THRESHOLD) {
     tracker.cooldownUntil = Date.now() + AUTH_COOLDOWN_MS;
-    tracker.failures = 0;
     log.warn('Auth cooldown triggered', { ip, cooldownMs: AUTH_COOLDOWN_MS });
   }
 }

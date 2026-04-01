@@ -8,7 +8,7 @@
  * async tool execution.
  */
 
-import { execFile } from 'node:child_process';
+import { execFile, exec } from 'node:child_process';
 import { writeFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import { join, resolve as resolvePath } from 'node:path';
 import type { WorkflowNode, WorkerEvent } from './types.js';
@@ -554,8 +554,7 @@ Use absolute paths when referencing files outside the workspace.${skillDocs}`;
             ? String(params.command)
             : `${toolConfig.name} ${paramValues.join(' ')}`;
 
-          const { exec: execShell } = require('node:child_process');
-          const child = execShell(
+          const child = exec(
             cmd,
             {
               cwd: this.workspaceDir,
