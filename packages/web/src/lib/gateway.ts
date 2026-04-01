@@ -575,7 +575,7 @@ function bindListeners(ws: ReconnectingWebSocket): void {
             .setHindsightStatus(!!data.hindsight.connected, !!data.hindsight.busy);
         }
       })
-      .catch(() => {});
+      .catch((err) => { console.warn('[gateway] status fetch error', err); });
   };
 
   ws.onclose = () => {

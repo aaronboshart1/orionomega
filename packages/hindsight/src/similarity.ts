@@ -48,40 +48,40 @@ export function trigramSimilarity(a: string, b: string): number {
  * @param content - The memory content to score.
  * @returns A relevance score between 0 and 1.
  */
+/**
+ * Keyword overlap score: fraction of meaningful query words (>3 chars)
+ * that appear in the content. Weighted 0.6 in the final composite score
+ * because keyword overlap is the strongest semantic signal.
+ */
+function computeKeywordScore(nQuery: string, nContent: string): number {
+  const queryWords = new Set(nQuery.split(' ').filter((w) => w.length > 3));
+  if (queryWords.size === 0) return 0;
+  const contentWords = nContent.split(' ').filter((w) => w.length > 3);
+  let hits = 0;
+  for (const w of contentWords) {
+    if (queryWords.has(w)) hits++;
+  }
+  return Math.min(1, hits / queryWords.size);
+}
+
 export function computeClientRelevance(query: string, content: string): number {
   const nq = normalize(query);
   const nc = normalize(content);
 
   if (nq.length === 0 || nc.length === 0) return 0;
 
-  // Component 1: Trigram similarity (0-1), capped contribution
+  // Component 1: Trigram similarity (structural overlap)
   const trigramScore = trigramSimilarity(query, content);
 
-  // Component 2: Keyword overlap — extract meaningful words (>3 chars)
-  const queryWords = new Set(
-    nq.split(' ').filter((w) => w.length > 3),
-  );
-  const contentWords = nc.split(' ').filter((w) => w.length > 3);
-
-  let keywordHits = 0;
-  if (queryWords.size > 0 && contentWords.length > 0) {
-    for (const w of contentWords) {
-      if (queryWords.has(w)) keywordHits++;
-    }
-  }
-  // Normalize: what fraction of query keywords appear in content?
-  const keywordScore = queryWords.size > 0
-    ? Math.min(1, keywordHits / queryWords.size)
-    : 0;
+  // Component 2: Keyword overlap (semantic signal)
+  const keywordScore = computeKeywordScore(nq, nc);
 
   // Component 3: Length signal — very short content (<20 chars) is likely low-value
   const lengthPenalty = nc.length < 20 ? 0.8 : 1.0;
 
-  // Weighted combination: keywords matter most for semantic relevance,
-  // trigrams catch structural similarity
+  // Weighted combination: keywords 0.6, trigrams 0.4, then apply length penalty
   const raw = (keywordScore * 0.6 + trigramScore * 0.4) * lengthPenalty;
 
-  // Clamp to [0, 1]
   return Math.max(0, Math.min(1, raw));
 }
 

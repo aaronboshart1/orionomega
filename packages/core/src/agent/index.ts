@@ -11,7 +11,6 @@ export {
   classifyIntent,
   isImmediateExecution,
   isFastConversational,
-  isFastTask,
   isOrchestrateRequest,
   isGuardedRequest,
   streamConversation,

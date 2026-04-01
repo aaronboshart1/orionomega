@@ -18,16 +18,6 @@ interface MessageBubbleProps {
   onScrollToMessage?: (messageId: string) => void;
 }
 
-function formatPlainText(content: string) {
-  const parts: (string | JSX.Element)[] = [];
-  const lines = content.split('\n');
-  lines.forEach((line, i) => {
-    if (i > 0) parts.push(<br key={`br-${i}`} />);
-    parts.push(line);
-  });
-  return parts;
-}
-
 function truncateContent(text: string, maxLen = 80): string {
   const single = text.replace(/\n/g, ' ').trim();
   return single.length > maxLen ? single.slice(0, maxLen) + '…' : single;
@@ -217,7 +207,7 @@ export function MessageBubble({ message, onScrollToMessage }: MessageBubbleProps
                 : 'bg-zinc-800 text-zinc-100'
           }`}
         >
-          {isUser ? formatPlainText(content) : <ErrorBoundary><MarkdownContent content={content} isStreaming={isActivelyStreaming} /></ErrorBoundary>}
+          {isUser ? content.split('\n').flatMap((line, i) => i > 0 ? [<br key={`br-${i}`} />, line] : [line]) : <ErrorBoundary><MarkdownContent content={content} isStreaming={isActivelyStreaming} /></ErrorBoundary>}
           {isUser && attachments && attachments.length > 0 && (
             <AttachmentDisplay attachments={attachments} />
           )}

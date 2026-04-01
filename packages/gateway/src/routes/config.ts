@@ -1,9 +1,9 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { readConfig, writeConfig, auditConfigChange, auditAuthEvent } from '@orionomega/core';
+import { readConfig, writeConfig, auditConfigChange, deepMerge } from '@orionomega/core';
 import type { OrionOmegaConfig } from '@orionomega/core';
-import { validateToken } from '../auth.js';
 import type { GatewayConfig } from '../types.js';
-import { rateLimitAuth, recordAuthFailure, resetAuthFailures } from '../rate-limit.js';
+import { readBody } from './utils.js';
+import { checkAuth } from './auth-utils.js';
 
 const VALID_TOP_LEVEL_KEYS = new Set([
   'gateway', 'hindsight', 'models', 'orchestration', 'workspace', 'logging', 'skills', 'autonomous', 'agentSdk', 'webui', 'commands',
@@ -28,52 +28,16 @@ function maskConfig(config: OrionOmegaConfig): Record<string, unknown> {
   return masked;
 }
 
-const DEFAULT_MAX_BODY_BYTES = 1_048_576; // 1 MB
-
-function readBody(req: IncomingMessage, maxBytes: number = DEFAULT_MAX_BODY_BYTES): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    let received = 0;
-    req.on('data', (chunk: Buffer) => {
-      received += chunk.length;
-      if (received > maxBytes) {
-        req.destroy(new Error(`Request body exceeds limit of ${maxBytes} bytes`));
-        return;
+function validateBindAddress(bind: unknown, fieldName: string, errors: string[]): void {
+  if (bind !== undefined && typeof bind !== 'string') {
+    if (Array.isArray(bind)) {
+      if (!bind.every((b: unknown) => typeof b === 'string')) {
+        errors.push(`${fieldName} array entries must be strings`);
       }
-      chunks.push(chunk);
-    });
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
-    req.on('error', reject);
-  });
-}
-
-function deepMerge(
-  target: Record<string, unknown>,
-  source: Record<string, unknown>,
-): Record<string, unknown> {
-  const result: Record<string, unknown> = { ...target };
-  for (const key of Object.keys(source)) {
-    const val = source[key];
-    const existing = target[key];
-    if (
-      val !== null &&
-      val !== undefined &&
-      typeof val === 'object' &&
-      !Array.isArray(val) &&
-      existing !== null &&
-      existing !== undefined &&
-      typeof existing === 'object' &&
-      !Array.isArray(existing)
-    ) {
-      result[key] = deepMerge(
-        existing as Record<string, unknown>,
-        val as Record<string, unknown>,
-      );
-    } else if (val !== undefined) {
-      result[key] = val;
+    } else {
+      errors.push(`${fieldName} must be a string or array of strings`);
     }
   }
-  return result;
 }
 
 function validateConfig(config: Record<string, unknown>): string[] {
@@ -90,15 +54,7 @@ function validateConfig(config: Record<string, unknown>): string[] {
     if (gateway.port !== undefined && (typeof gateway.port !== 'number' || gateway.port < 1 || gateway.port > 65535)) {
       errors.push('gateway.port must be a number between 1 and 65535');
     }
-    if (gateway.bind !== undefined && typeof gateway.bind !== 'string') {
-      if (Array.isArray(gateway.bind)) {
-        if (!gateway.bind.every((b: unknown) => typeof b === 'string')) {
-          errors.push('gateway.bind array entries must be strings');
-        }
-      } else {
-        errors.push('gateway.bind must be a string or array of strings');
-      }
-    }
+    validateBindAddress(gateway.bind, 'gateway.bind', errors);
     const auth = gateway.auth as Record<string, unknown> | undefined;
     if (auth?.mode !== undefined && !VALID_AUTH_MODES.has(String(auth.mode))) {
       errors.push(`gateway.auth.mode must be one of: ${[...VALID_AUTH_MODES].join(', ')}`);
@@ -211,49 +167,12 @@ function validateConfig(config: Record<string, unknown>): string[] {
     if (webui.port !== undefined && (typeof webui.port !== 'number' || webui.port < 1 || webui.port > 65535)) {
       errors.push('webui.port must be a number between 1 and 65535');
     }
-    if (webui.bind !== undefined && typeof webui.bind !== 'string') {
-      if (Array.isArray(webui.bind)) {
-        if (!webui.bind.every((b: unknown) => typeof b === 'string')) {
-          errors.push('webui.bind array entries must be strings');
-        }
-      } else {
-        errors.push('webui.bind must be a string or array of strings');
-      }
-    }
+    validateBindAddress(webui.bind, 'webui.bind', errors);
   }
 
   return errors;
 }
 
-function checkAuth(req: IncomingMessage, res: ServerResponse, gatewayConfig: GatewayConfig): boolean {
-  const actor = req.socket.remoteAddress ?? undefined;
-  if (gatewayConfig.auth.mode !== 'api-key' || !gatewayConfig.auth.keyHash) {
-    return true;
-  }
-  if (!rateLimitAuth(req, res)) {
-    return false;
-  }
-  const authHeader = req.headers.authorization ?? '';
-  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
-  if (!token) {
-    recordAuthFailure(req);
-    auditAuthEvent('rest_auth_failed', 'Missing token', actor);
-    res.writeHead(401, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Authentication required' }));
-    return false;
-  }
-  const result = validateToken(token, gatewayConfig.auth.keyHash);
-  if (!result.valid) {
-    recordAuthFailure(req);
-    auditAuthEvent('rest_auth_failed', 'Invalid token', actor);
-    res.writeHead(401, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Authentication failed' }));
-    return false;
-  }
-  resetAuthFailures(req);
-  auditAuthEvent('rest_auth_success', undefined, actor);
-  return true;
-}
 
 export function handleGetConfig(
   _req: IncomingMessage,

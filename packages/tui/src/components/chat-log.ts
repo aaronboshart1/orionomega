@@ -8,7 +8,7 @@ import { Container, Markdown, Spacer, Text } from '@mariozechner/pi-tui';
 import type { Component } from '@mariozechner/pi-tui';
 import type { DisplayMessage } from '../gateway-client.js';
 import { markdownTheme, theme, spacing, palette, box, icons } from '../theme.js';
-import { truncate } from '../utils/format.js';
+import { truncate, formatDuration } from '../utils/format.js';
 import { omegaSpinner } from './omega-spinner.js';
 import chalk from 'chalk';
 
@@ -86,6 +86,77 @@ export class ChatLog extends Container {
     this.addEntry('system', [new Spacer(1)], [text]);
   }
 
+  private static fmtTokens(n: number): string {
+    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+    if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+    return String(n);
+  }
+
+  private renderStatusLine(
+    status: 'complete' | 'error' | 'stopped',
+    durationSec: number,
+    workerCount: number,
+    toolCallCount: number | undefined,
+  ): string {
+    const dim = chalk.hex(palette.dim);
+    const bright = chalk.hex(palette.textBright);
+    const success = chalk.hex(palette.success);
+    const error = chalk.hex(palette.error);
+    const statusLabel = status === 'complete' ? success('COMPLETE') : status === 'error' ? error('ERROR') : dim('STOPPED');
+    const toolCallPart = toolCallCount != null
+      ? `  ${dim('|')}  Tool Calls: ${bright(String(toolCallCount))}`
+      : '';
+    return `  Status: ${statusLabel}  ${dim('|')}  Duration: ${bright(formatDuration(durationSec))}  ${dim('|')}  Workers: ${bright(String(workerCount))}${toolCallPart}`;
+  }
+
+  private renderModelUsageTable(
+    modelUsage: Array<{ model: string; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreationTokens: number; workerCount: number; costUsd: number }>,
+    totalCostUsd: number,
+  ): string[] {
+    const dim = chalk.hex(palette.dim);
+    const accent = chalk.hex(palette.accent);
+    const bright = chalk.hex(palette.textBright);
+    const success = chalk.hex(palette.success);
+    const info_ = chalk.hex(palette.info);
+    const border = chalk.hex(palette.border);
+    const purple = chalk.hex(palette.purple);
+    const fmtCost = `$${totalCostUsd.toFixed(4)}`;
+    const lines: string[] = [];
+    lines.push(`  ${dim('Model'.padEnd(35))} ${dim('Input'.padStart(8))} ${dim('Output'.padStart(8))} ${dim('Cache R'.padStart(8))} ${dim('Cache W'.padStart(8))} ${dim('Cost'.padStart(9))}`);
+    lines.push(`  ${border(box.horizontal.repeat(77))}`);
+    let totalInput = 0, totalOutput = 0, totalCacheR = 0, totalCacheW = 0;
+    for (const m of modelUsage) {
+      totalInput += m.inputTokens;
+      totalOutput += m.outputTokens;
+      totalCacheR += m.cacheReadTokens;
+      totalCacheW += m.cacheCreationTokens;
+      const shortModel = m.model.length > 33 ? m.model.slice(0, 30) + '...' : m.model;
+      lines.push(`  ${purple(shortModel.padEnd(35))} ${info_(ChatLog.fmtTokens(m.inputTokens).padStart(8))} ${info_(ChatLog.fmtTokens(m.outputTokens).padStart(8))} ${dim(ChatLog.fmtTokens(m.cacheReadTokens).padStart(8))} ${dim(ChatLog.fmtTokens(m.cacheCreationTokens).padStart(8))} ${bright(('$' + m.costUsd.toFixed(4)).padStart(9))}`);
+    }
+    lines.push(`  ${border(box.horizontal.repeat(77))}`);
+    lines.push(`  ${accent('Total'.padEnd(35))} ${info_(ChatLog.fmtTokens(totalInput).padStart(8))} ${info_(ChatLog.fmtTokens(totalOutput).padStart(8))} ${dim(ChatLog.fmtTokens(totalCacheR).padStart(8))} ${dim(ChatLog.fmtTokens(totalCacheW).padStart(8))} ${success.bold(fmtCost.padStart(9))}`);
+    return lines;
+  }
+
+  private renderArtifacts(nodeOutputPaths: Record<string, string[]>): string[] {
+    const dim = chalk.hex(palette.dim);
+    const accent = chalk.hex(palette.accent);
+    const bright = chalk.hex(palette.textBright);
+    const info_ = chalk.hex(palette.info);
+    const border = chalk.hex(palette.border);
+    const lines: string[] = [];
+    lines.push('');
+    lines.push(accent.bold('  Artifacts'));
+    lines.push(`  ${border(box.horizontal.repeat(77))}`);
+    for (const [nodeLabel, paths] of Object.entries(nodeOutputPaths)) {
+      lines.push(`  ${bright(nodeLabel)}`);
+      for (const p of paths) {
+        lines.push(`    ${dim('\u2192')} ${info_(p)}`);
+      }
+    }
+    return lines;
+  }
+
   addRunStats(info: {
     status: 'complete' | 'error' | 'stopped';
     durationSec: number;
@@ -103,78 +174,26 @@ export class ChatLog extends Container {
     }>;
     nodeOutputPaths?: Record<string, string[]>;
   }): void {
-    const dim = chalk.hex(palette.dim);
     const accent = chalk.hex(palette.accent);
-    const bright = chalk.hex(palette.textBright);
     const success = chalk.hex(palette.success);
-    const error = chalk.hex(palette.error);
-    const info_ = chalk.hex(palette.info);
     const border = chalk.hex(palette.border);
-    const purple = chalk.hex(palette.purple);
-
-    const statusLabel = info.status === 'complete'
-      ? success('COMPLETE')
-      : info.status === 'error' ? error('ERROR') : dim('STOPPED');
-
-    const fmtDuration = info.durationSec < 60
-      ? `${Math.round(info.durationSec)}s`
-      : `${Math.floor(info.durationSec / 60)}m ${Math.round(info.durationSec % 60)}s`;
-
     const fmtCost = `$${info.totalCostUsd.toFixed(4)}`;
-
-    const fmtTokens = (n: number): string => {
-      if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-      if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
-      return String(n);
-    };
+    const rule = border(box.horizontal.repeat(50));
 
     const lines: string[] = [];
-    const rule = border(box.horizontal.repeat(50));
     lines.push(rule);
     lines.push(accent.bold('  Run Summary'));
-    const toolCallPart = info.toolCallCount != null
-      ? `  ${dim('|')}  Tool Calls: ${bright(String(info.toolCallCount))}`
-      : '';
-    lines.push(`  Status: ${statusLabel}  ${dim('|')}  Duration: ${bright(fmtDuration)}  ${dim('|')}  Workers: ${bright(String(info.workerCount))}${toolCallPart}`);
+    lines.push(this.renderStatusLine(info.status, info.durationSec, info.workerCount, info.toolCallCount));
     lines.push('');
 
     if (info.modelUsage && info.modelUsage.length > 0) {
-      const headerLine = `  ${dim('Model'.padEnd(35))} ${dim('Input'.padStart(8))} ${dim('Output'.padStart(8))} ${dim('Cache R'.padStart(8))} ${dim('Cache W'.padStart(8))} ${dim('Cost'.padStart(9))}`;
-      lines.push(headerLine);
-      lines.push(`  ${border(box.horizontal.repeat(77))}`);
-
-      let totalInput = 0, totalOutput = 0, totalCacheR = 0, totalCacheW = 0;
-
-      for (const m of info.modelUsage) {
-        totalInput += m.inputTokens;
-        totalOutput += m.outputTokens;
-        totalCacheR += m.cacheReadTokens;
-        totalCacheW += m.cacheCreationTokens;
-
-        const shortModel = m.model.length > 33 ? m.model.slice(0, 30) + '...' : m.model;
-        lines.push(
-          `  ${purple(shortModel.padEnd(35))} ${info_(fmtTokens(m.inputTokens).padStart(8))} ${info_(fmtTokens(m.outputTokens).padStart(8))} ${dim(fmtTokens(m.cacheReadTokens).padStart(8))} ${dim(fmtTokens(m.cacheCreationTokens).padStart(8))} ${bright(('$' + m.costUsd.toFixed(4)).padStart(9))}`
-        );
-      }
-
-      lines.push(`  ${border(box.horizontal.repeat(77))}`);
-      lines.push(
-        `  ${accent('Total'.padEnd(35))} ${info_(fmtTokens(totalInput).padStart(8))} ${info_(fmtTokens(totalOutput).padStart(8))} ${dim(fmtTokens(totalCacheR).padStart(8))} ${dim(fmtTokens(totalCacheW).padStart(8))} ${success.bold(fmtCost.padStart(9))}`
-      );
+      lines.push(...this.renderModelUsageTable(info.modelUsage, info.totalCostUsd));
     } else {
       lines.push(`  Total Cost: ${success.bold(fmtCost)}`);
     }
 
     if (info.nodeOutputPaths && Object.keys(info.nodeOutputPaths).length > 0) {
-      lines.push('');
-      lines.push(accent.bold('  Artifacts'));
-      lines.push(`  ${border(box.horizontal.repeat(77))}`);
-      for (const [nodeLabel, paths] of Object.entries(info.nodeOutputPaths)) {
-        lines.push(`  ${bright(nodeLabel)}`);
-        for (const p of paths) {
-          lines.push(`    ${dim('\u2192')} ${info_(p)}`);
-        }
-      }
+      lines.push(...this.renderArtifacts(info.nodeOutputPaths));
     }
 
     lines.push(rule);

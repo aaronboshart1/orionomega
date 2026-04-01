@@ -138,91 +138,99 @@ export class SessionBootstrap {
     }
   }
 
+  private async safeRecall<T>(
+    fn: () => Promise<T>,
+    fallback: T,
+    warnMessage: string,
+    meta?: Record<string, unknown>,
+  ): Promise<T> {
+    try {
+      return await fn();
+    } catch (err) {
+      log.warn(warnMessage, { ...meta, error: err instanceof Error ? err.message : String(err) });
+      return fallback;
+    }
+  }
+
   /**
    * Safely retrieves a mental model's content.
    * Returns empty string on any failure (404, network error, etc.).
    */
-  private async getMentalModel(bankId: string, modelId: string): Promise<string> {
-    try {
-      const model = await this.hs.getMentalModel(bankId, modelId);
-      return model.content ?? '';
-    } catch (err) {
-      log.warn('Mental model not available', {
-        bankId,
-        modelId,
-        error: err instanceof Error ? err.message : String(err),
-      });
-      return '';
-    }
+  private getMentalModel(bankId: string, modelId: string): Promise<string> {
+    return this.safeRecall(
+      async () => (await this.hs.getMentalModel(bankId, modelId)).content ?? '',
+      '',
+      'Mental model not available',
+      { bankId, modelId },
+    );
   }
 
   /**
    * Recalls recent session summaries from the core bank as a fallback
    * when the session-context mental model is not yet available.
    */
-  private async recallCoreMemories(): Promise<string> {
-    try {
-      const result = await this.hs.recall(
-        'core',
-        'recent session summaries, what was accomplished, key decisions',
-        { maxTokens: 2048, budget: 'mid' },
-      );
-      return result.results
-        .map((m) => `[${m.context}] ${m.content}`)
-        .join('\n');
-    } catch (err) {
-      log.warn('Core bank recall not available', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-      return '';
-    }
+  private recallCoreMemories(): Promise<string> {
+    return this.safeRecall(
+      async () => {
+        const result = await this.hs.recall(
+          'core',
+          'recent session summaries, what was accomplished, key decisions',
+          { maxTokens: 2048, budget: 'mid' },
+        );
+        return result.results.map((m) => `[${m.context}] ${m.content}`).join('\n');
+      },
+      '',
+      'Core bank recall not available',
+    );
   }
 
   /**
    * Recalls project-specific memories using a broad context query.
    */
-  private async recallProjectMemories(bankId: string): Promise<string> {
-    try {
-      const result = await this.hs.recall(
-        bankId,
-        'recent context, active work, key decisions',
-        { maxTokens: 4096, budget: 'mid' },
-      );
-      return result.results
-        .map((m) => `[${m.context}] ${m.content}`)
-        .join('\n');
-    } catch (err) {
-      log.warn('Project memories not available', {
-        bankId,
-        error: err instanceof Error ? err.message : String(err),
-      });
-      return '';
-    }
+  private recallProjectMemories(bankId: string): Promise<string> {
+    return this.safeRecall(
+      async () => {
+        const result = await this.hs.recall(
+          bankId,
+          'recent context, active work, key decisions',
+          { maxTokens: 4096, budget: 'mid' },
+        );
+        return result.results.map((m) => `[${m.context}] ${m.content}`).join('\n');
+      },
+      '',
+      'Project memories not available',
+      { bankId },
+    );
   }
 
-  private async recallSessionAnchor(): Promise<string> {
-    try {
-      const result = await this.hs.recall(
-        'core',
-        'session anchor, where we left off, pending decisions, unfinished work',
-        { maxTokens: 1024, budget: 'low', minRelevance: 0.2 },
-      );
-      const anchors = result.results.filter((m) =>
-        m.context === 'session_anchor' || m.content.includes('[Session Anchor'),
-      );
-      if (anchors.length === 0) return '';
-      anchors.sort((a, b) => {
-        if (!a.timestamp && !b.timestamp) return 0;
-        if (!a.timestamp) return 1;
-        if (!b.timestamp) return -1;
-        return b.timestamp.localeCompare(a.timestamp);
-      });
-      return anchors[0].content;
-    } catch (err) {
-      log.warn('Session anchor recall not available', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-      return '';
-    }
+  private filterAnchorResults<T extends { context: string; content: string }>(results: T[]): T[] {
+    return results.filter(
+      (m) => m.context === 'session_anchor' || m.content.includes('[Session Anchor'),
+    );
+  }
+
+  private sortByTimestamp<T extends { timestamp: string }>(a: T, b: T): number {
+    if (!a.timestamp && !b.timestamp) return 0;
+    if (!a.timestamp) return 1;
+    if (!b.timestamp) return -1;
+    return b.timestamp.localeCompare(a.timestamp);
+  }
+
+  private recallSessionAnchor(): Promise<string> {
+    return this.safeRecall(
+      async () => {
+        const result = await this.hs.recall(
+          'core',
+          'session anchor, where we left off, pending decisions, unfinished work',
+          { maxTokens: 1024, budget: 'low', minRelevance: 0.2 },
+        );
+        const anchors = this.filterAnchorResults(result.results);
+        if (anchors.length === 0) return '';
+        anchors.sort((a, b) => this.sortByTimestamp(a, b));
+        return anchors[0].content;
+      },
+      '',
+      'Session anchor recall not available',
+    );
   }
 }

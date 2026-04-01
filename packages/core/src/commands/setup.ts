@@ -1533,6 +1533,13 @@ async function finalizeSetup(config: OrionOmegaConfig): Promise<void> {
 type StepFn = (config: OrionOmegaConfig, stepIdx: number, totalSteps: number) => Promise<StepAction>;
 
 export async function runSetup(): Promise<void> {
+  if (!process.stdin.isTTY) {
+    println();
+    warn('Setup wizard requires an interactive terminal.');
+    println(`  Run ${GREEN}orionomega setup${RESET} in an interactive terminal to configure.`);
+    process.exit(1);
+  }
+
   println();
   println(`${BOLD}╔══════════════════════════════════════╗${RESET}`);
   println(`${BOLD}║     OrionOmega — Setup Wizard        ║${RESET}`);

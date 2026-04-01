@@ -45,6 +45,11 @@ function cleanupBuckets(): void {
 
 setInterval(cleanupBuckets, CLEANUP_INTERVAL_MS).unref();
 
+function sendRateLimitResponse(res: ServerResponse, retryAfter: number | string, message: string): void {
+  res.writeHead(429, { 'Content-Type': 'application/json', 'Retry-After': String(retryAfter) });
+  res.end(JSON.stringify({ error: message }));
+}
+
 function getClientIp(req: IncomingMessage): string {
   const socketAddr = req.socket.remoteAddress ?? 'unknown';
   const isLoopback = socketAddr === '127.0.0.1' || socketAddr === '::1' || socketAddr === '::ffff:127.0.0.1';
@@ -92,8 +97,7 @@ export function rateLimitRest(req: IncomingMessage, res: ServerResponse): boolea
 
   if (!tryConsume(restBuckets, ip, REST_RATE)) {
     log.warn('REST rate limit exceeded', { ip });
-    res.writeHead(429, { 'Content-Type': 'application/json', 'Retry-After': '1' });
-    res.end(JSON.stringify({ error: 'Too many requests' }));
+    sendRateLimitResponse(res, 1, 'Too many requests');
     return false;
   }
 
@@ -107,15 +111,13 @@ export function rateLimitAuth(req: IncomingMessage, res: ServerResponse): boolea
   if (tracker && Date.now() < tracker.cooldownUntil) {
     const retryAfter = Math.ceil((tracker.cooldownUntil - Date.now()) / 1000);
     log.warn('Auth cooldown active', { ip, retryAfter });
-    res.writeHead(429, { 'Content-Type': 'application/json', 'Retry-After': String(retryAfter) });
-    res.end(JSON.stringify({ error: 'Too many authentication failures. Try again later.' }));
+    sendRateLimitResponse(res, retryAfter, 'Too many authentication failures. Try again later.');
     return false;
   }
 
   if (!tryConsume(authBuckets, ip, AUTH_RATE)) {
     log.warn('Auth rate limit exceeded', { ip });
-    res.writeHead(429, { 'Content-Type': 'application/json', 'Retry-After': '1' });
-    res.end(JSON.stringify({ error: 'Too many requests' }));
+    sendRateLimitResponse(res, 1, 'Too many requests');
     return false;
   }
 

@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# When piped (curl | bash), stdin is the pipe, not the terminal.
+# Reclaim /dev/tty so interactive prompts and the setup wizard work.
+if [ ! -t 0 ] && [ -e /dev/tty ]; then
+  exec </dev/tty
+fi
+
 REPO="https://github.com/aaronboshart1/orionomega.git"
 INSTALL_DIR="${ORIONOMEGA_DIR:-$HOME/.orionomega/src}"
 BIN_DIR="$HOME/.orionomega/bin"
@@ -391,9 +397,10 @@ printf "\n"
 
 # ── 9. Run setup wizard ──────────────────────────────────────────
 if is_interactive; then
-  PATH="$BIN_DIR:$PATH" "$BIN_DIR/orionomega" setup </dev/tty
+  PATH="$BIN_DIR:$PATH" "$BIN_DIR/orionomega" setup < /dev/tty
 else
-  PATH="$BIN_DIR:$PATH" "$BIN_DIR/orionomega" setup || true
+  printf "  ${DIM}Non-interactive shell detected — skipping setup wizard.${NC}\n"
+  printf "  Run ${GREEN}orionomega setup${NC} in an interactive terminal to configure.\n"
 fi
 
 if [ -n "$SKIPPED_STEPS" ]; then

@@ -1,5 +1,6 @@
 import * as readline from 'node:readline';
-import { readdirSync, chmodSync, statSync } from 'node:fs';
+import { readdirSync, chmodSync, statSync, openSync } from 'node:fs';
+import { ReadStream } from 'node:tty';
 import { join } from 'node:path';
 
 export const GREEN = '\x1b[32m';
@@ -38,9 +39,25 @@ export function getRL(): readline.Interface {
 }
 
 export function initRL(): void {
+  let input: NodeJS.ReadableStream = process.stdin;
+
+  if (!process.stdin.isTTY) {
+    try {
+      const ttyFd = openSync('/dev/tty', 'r');
+      input = new ReadStream(ttyFd);
+    } catch {
+      input = process.stdin;
+    }
+  }
+
+  if ('isPaused' in input && typeof (input as any).isPaused === 'function' && (input as any).isPaused()) {
+    (input as any).resume();
+  }
+
   rl = readline.createInterface({
-    input: process.stdin,
+    input,
     output: process.stdout,
+    terminal: (input as any).isTTY ?? false,
   });
 
   rl.on('close', () => {

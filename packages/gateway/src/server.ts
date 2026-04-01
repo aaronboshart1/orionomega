@@ -10,7 +10,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { spawn as spawnProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { readConfig, normalizeBindAddresses, MainAgent, CommandFileLoader, createLogger, setGlobalLogLevel, enableFileLogging, discoverModels, clearModelCache, auditApiRequest } from '@orionomega/core';
-import type { MainAgentConfig, MainAgentCallbacks, LogLevel } from '@orionomega/core';
+import type { MainAgentConfig, MainAgentCallbacks, LogLevel, PlannerOutput } from '@orionomega/core';
 import { setLogLevel as setHindsightLogLevel } from '@orionomega/hindsight';
 import type { GatewayConfig, ServerMessage } from './types.js';
 import { SessionManager, DEFAULT_SESSION_ID } from './sessions.js';
@@ -112,6 +112,11 @@ if (fullConfig?.commands?.directory) {
   }
 }
 
+/** Assemble the final streamed text from a buffer and latest chunk. */
+function getFullContent(buffer: string, text: string, streaming: boolean): string {
+  return streaming ? (buffer + (text || '')) : text;
+}
+
 /**
  * Wire the MainAgent into the gateway.
  * Callbacks broadcast ServerMessages to all connected WebSocket clients.
@@ -138,7 +143,7 @@ async function initMainAgent(): Promise<void> {
   }
 
   const agentConfig: MainAgentConfig = {
-    model: freshConfig.models?.default ?? 'claude-sonnet-4-20250514',
+    model: freshConfig.models?.default || 'claude-sonnet-4-20250514',
     cheapModel: freshConfig.models?.cheap || 'claude-haiku-4-5-20251001',
     apiKey,
     systemPrompt: '',
@@ -183,7 +188,7 @@ async function initMainAgent(): Promise<void> {
         }
 
         if (done || !streaming) {
-          const fullContent = streaming ? (state.buffer + (text || '')) : text;
+          const fullContent = getFullContent(state.buffer, text, streaming);
           if (fullContent) {
             const sid = DEFAULT_SESSION_ID;
             if (sid) {
@@ -216,7 +221,7 @@ async function initMainAgent(): Promise<void> {
       }
 
       if (done || !streaming) {
-        const fullContent = streaming ? (streamBuffer + (text || '')) : text;
+        const fullContent = getFullContent(streamBuffer, text, streaming);
 
         if (fullContent) {
           const sid = DEFAULT_SESSION_ID;
@@ -259,7 +264,7 @@ async function initMainAgent(): Promise<void> {
     onPlan(plan) {
       // Use graph.id as the message ID so the TUI can send it back
       // in plan_response and the MainAgent can match it to pendingPlanId.
-      const graph = (plan as any)?.graph;
+      const graph = (plan as PlannerOutput).graph;
       const planId = graph?.id ?? randomBytes(8).toString('hex');
 
       // Clone plan for transport — MUST NOT mutate the original.
@@ -459,19 +464,22 @@ initMainAgent().catch((err) => {
 
 let lastHindsightConnected: boolean | null = null;
 
-/** Poll hindsight health every 15 seconds and broadcast changes. */
-const hindsightHealthTimer = setInterval(async () => {
-  let connected = false;
+/** Probe hindsight health with a 2-second timeout. */
+async function checkHindsightHealth(): Promise<boolean> {
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 2000);
     const resp = await fetch(`${hindsightUrl}/health`, { signal: controller.signal });
     clearTimeout(timeout);
-    connected = resp.ok;
+    return resp.ok;
   } catch {
-    connected = false;
+    return false;
   }
+}
 
+/** Poll hindsight health every 15 seconds and broadcast changes. */
+const hindsightHealthTimer = setInterval(async () => {
+  const connected = await checkHindsightHealth();
   // Only broadcast on state change (or first check)
   if (connected !== lastHindsightConnected) {
     lastHindsightConnected = connected;
@@ -485,16 +493,7 @@ const hindsightHealthTimer = setInterval(async () => {
 
 // Run an initial check immediately
 (async () => {
-  let connected = false;
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 2000);
-    const resp = await fetch(`${hindsightUrl}/health`, { signal: controller.signal });
-    clearTimeout(timeout);
-    connected = resp.ok;
-  } catch {
-    connected = false;
-  }
+  const connected = await checkHindsightHealth();
   lastHindsightConnected = connected;
   wsHandler.broadcast({
     id: randomBytes(8).toString('hex'),
@@ -819,9 +818,9 @@ async function shutdown(signal: string): Promise<void> {
 
   wsHandler.broadcast({
     id: randomBytes(8).toString('hex'),
-    type: 'command_result' as any,
-    commandResult: { command: 'restart', message: 'Gateway restarting…' },
-  } as any);
+    type: 'command_result',
+    commandResult: { command: 'restart', success: true, message: 'Gateway restarting…' },
+  });
 
   if (mainAgent) {
     try {

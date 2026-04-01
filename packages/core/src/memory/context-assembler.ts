@@ -655,9 +655,18 @@ export class ContextAssembler {
 
   // ── Causal Chain ────────────────────────────────────────────
 
-  private static readonly DECISION_MARKER = /\b(decided|decision|chose|agreed|ruling|went with|settled on)\b/i;
-  private static readonly ACTION_MARKER = /\b(implemented|built|created|deployed|migrated|configured|refactored)\b/i;
-  private static readonly OUTCOME_MARKER = /\b(result|outcome|because|resolved|fixed|caused|led to|broke|improved)\b/i;
+  /** Classifies a single line into a causal chain category. */
+  private static readonly MarkerClassifier = {
+    DECISION: /\b(decided|decision|chose|agreed|ruling|went with|settled on)\b/i,
+    ACTION:   /\b(implemented|built|created|deployed|migrated|configured|refactored)\b/i,
+    OUTCOME:  /\b(result|outcome|because|resolved|fixed|caused|led to|broke|improved)\b/i,
+    categorize(line: string): 'decision' | 'action' | 'outcome' | 'other' {
+      if (this.DECISION.test(line)) return 'decision';
+      if (this.OUTCOME.test(line)) return 'outcome';
+      if (this.ACTION.test(line)) return 'action';
+      return 'other';
+    },
+  } as const;
 
   private buildCausalChain(content: string): string {
     const lines = content.split('\n').filter(Boolean);
@@ -669,14 +678,11 @@ export class ContextAssembler {
     const other: string[] = [];
 
     for (const line of lines) {
-      if (ContextAssembler.DECISION_MARKER.test(line)) {
-        decision.push(line);
-      } else if (ContextAssembler.OUTCOME_MARKER.test(line)) {
-        outcome.push(line);
-      } else if (ContextAssembler.ACTION_MARKER.test(line)) {
-        action.push(line);
-      } else {
-        other.push(line);
+      switch (ContextAssembler.MarkerClassifier.categorize(line)) {
+        case 'decision': decision.push(line); break;
+        case 'outcome':  outcome.push(line);  break;
+        case 'action':   action.push(line);   break;
+        default:         other.push(line);
       }
     }
 

@@ -3,6 +3,7 @@ node_modules/
 
 # Build output
 dist/
+build/
 .next/
 *.tsbuildinfo
 
@@ -17,6 +18,7 @@ packages/*/src/**/*.d.ts.map
 .env.*
 .env.local
 .env.production
+!.env.example
 config.yaml
 .orionomega/
 *.key
@@ -51,9 +53,10 @@ attached_assets/
 output/
 *.research.md
 
-# Test reports (generated, not source)
+# Test reports and coverage (generated, not source)
 test/*.log
 test/*_REPORT.md
+coverage/
 
 # Replit
 .local/

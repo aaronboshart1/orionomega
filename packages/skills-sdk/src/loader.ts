@@ -345,6 +345,43 @@ export class SkillLoader {
     return Array.from(this.loaded.values());
   }
 
+  private matchByCriteria(
+    manifests: Map<string, SkillManifest>,
+    input: string,
+    inputLower: string,
+    matched: Map<string, SkillManifest>,
+    strategy: 'commands' | 'keywords' | 'patterns',
+  ): void {
+    for (const [, manifest] of manifests) {
+      if (strategy !== 'commands' && matched.has(manifest.name)) continue;
+      if (strategy === 'commands') {
+        for (const cmd of manifest.triggers.commands ?? []) {
+          if (inputLower === cmd.toLowerCase() || inputLower.startsWith(cmd.toLowerCase() + ' ')) {
+            matched.set(manifest.name, manifest);
+          }
+        }
+      } else if (strategy === 'keywords') {
+        for (const kw of manifest.triggers.keywords ?? []) {
+          if (inputLower.includes(kw.toLowerCase())) {
+            matched.set(manifest.name, manifest);
+            break;
+          }
+        }
+      } else {
+        for (const pattern of manifest.triggers.patterns ?? []) {
+          try {
+            if (new RegExp(pattern, 'i').test(input)) {
+              matched.set(manifest.name, manifest);
+              break;
+            }
+          } catch {
+            // Invalid regex — skip
+          }
+        }
+      }
+    }
+  }
+
   matchSkills(userInput: string): SkillManifest[] {
     const matched = new Map<string, SkillManifest>();
     const input = userInput.trim();
@@ -355,40 +392,9 @@ export class SkillLoader {
       allManifests.set(name, loaded.manifest);
     }
 
-    for (const [, manifest] of allManifests) {
-      for (const cmd of manifest.triggers.commands ?? []) {
-        if (
-          inputLower === cmd.toLowerCase() ||
-          inputLower.startsWith(cmd.toLowerCase() + ' ')
-        ) {
-          matched.set(manifest.name, manifest);
-        }
-      }
-    }
-
-    for (const [, manifest] of allManifests) {
-      if (matched.has(manifest.name)) continue;
-      for (const kw of manifest.triggers.keywords ?? []) {
-        if (inputLower.includes(kw.toLowerCase())) {
-          matched.set(manifest.name, manifest);
-          break;
-        }
-      }
-    }
-
-    for (const [, manifest] of allManifests) {
-      if (matched.has(manifest.name)) continue;
-      for (const pattern of manifest.triggers.patterns ?? []) {
-        try {
-          if (new RegExp(pattern, 'i').test(input)) {
-            matched.set(manifest.name, manifest);
-            break;
-          }
-        } catch {
-          // Invalid regex — skip
-        }
-      }
-    }
+    this.matchByCriteria(allManifests, input, inputLower, matched, 'commands');
+    this.matchByCriteria(allManifests, input, inputLower, matched, 'keywords');
+    this.matchByCriteria(allManifests, input, inputLower, matched, 'patterns');
 
     return Array.from(matched.values());
   }

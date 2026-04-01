@@ -4,10 +4,9 @@
  *
  * Handles the full lifecycle of skill settings:
  * 1. Extracting the UI-renderable schema from a manifest
- * 2. Shimming legacy `setup.fields` arrays to the modern `settings` block
- * 3. Merging manifest defaults with user-saved configuration
- * 4. Validating user-supplied values against the schema
- * 5. Masking secret values in log output
+ * 2. Merging manifest defaults with user-saved configuration
+ * 3. Validating user-supplied values against the schema
+ * 4. Masking secret values in log output
  *
  * No external dependencies — pure TypeScript validation to keep the package lightweight.
  */
@@ -16,85 +15,14 @@ import type {
   SkillManifest,
   SkillSettingsBlock,
   SkillSettingSchema,
-  SkillSetup,
-  SkillSetupField,
   ValidationResult,
 } from './types.js';
-import { SkillSettingGroup, SkillSettingType } from './types.js';
+import { SkillSettingType } from './types.js';
 
 // ── Schema Extraction ──────────────────────────────────────────────────
 
 export function getSettingsSchema(manifest: SkillManifest): SkillSettingsBlock | null {
-  if (manifest.settings) {
-    return manifest.settings;
-  }
-
-  if (manifest.setup?.fields && manifest.setup.fields.length > 0) {
-    return shimFieldsToSettings(manifest.setup);
-  }
-
-  return null;
-}
-
-export function shimFieldsToSettings(setup: SkillSetup): SkillSettingsBlock {
-  const properties: Record<string, SkillSettingSchema> = {};
-  const required: string[] = [];
-
-  for (const method of setup.auth?.methods ?? []) {
-    if (method.envVar) {
-      properties[method.envVar] = {
-        type: SkillSettingType.Password,
-        label: method.label,
-        description: method.description,
-        required: false,
-        group: SkillSettingGroup.Auth,
-        widget: 'secret',
-      };
-    }
-  }
-
-  for (const field of setup.fields ?? []) {
-    properties[field.name] = shimField(field);
-    if (field.required) {
-      required.push(field.name);
-    }
-  }
-
-  return {
-    type: 'object',
-    properties,
-    required: required.length > 0 ? required : undefined,
-  };
-}
-
-function shimField(field: SkillSetupField): SkillSettingSchema {
-  let type: SkillSettingType;
-  switch (field.type) {
-    case 'boolean':
-      type = SkillSettingType.Boolean;
-      break;
-    case 'number':
-      type = SkillSettingType.Number;
-      break;
-    case 'select':
-      type = SkillSettingType.Select;
-      break;
-    default:
-      type = field.mask ? SkillSettingType.Password : SkillSettingType.String;
-  }
-
-  const schema: SkillSettingSchema = {
-    type,
-    label: field.label,
-    description: field.description,
-    required: field.required,
-    default: field.default,
-    group: field.mask ? SkillSettingGroup.Auth : SkillSettingGroup.Preferences,
-    widget: field.mask ? 'secret' : undefined,
-    options: field.options,
-  };
-
-  return schema;
+  return manifest.settings ?? null;
 }
 
 // ── Settings Resolution ────────────────────────────────────────────────
@@ -200,6 +128,45 @@ function matchesType(value: unknown, type: SkillSettingType): boolean {
   }
 }
 
+type ValidationRules = NonNullable<SkillSettingSchema['validation']>;
+
+function checkStringConstraints(key: string, value: string, v: ValidationRules): string[] {
+  const errors: string[] = [];
+  if (v.min !== undefined && value.length < v.min) {
+    errors.push(`Setting "${key}" must be at least ${v.min} characters long.`);
+  }
+  if (v.max !== undefined && value.length > v.max) {
+    errors.push(`Setting "${key}" must be at most ${v.max} characters long.`);
+  }
+  if (v.pattern) {
+    try {
+      if (!new RegExp(v.pattern).test(value)) {
+        errors.push(`Setting "${key}" does not match the required pattern.`);
+      }
+    } catch {
+      // Silently ignore invalid patterns
+    }
+  }
+  if (v.enum && !v.enum.includes(value)) {
+    errors.push(`Setting "${key}" must be one of: ${v.enum.map(String).join(', ')}.`);
+  }
+  return errors;
+}
+
+function checkNumberConstraints(key: string, value: number, v: ValidationRules): string[] {
+  const errors: string[] = [];
+  if (v.min !== undefined && value < v.min) {
+    errors.push(`Setting "${key}" must be at least ${v.min}.`);
+  }
+  if (v.max !== undefined && value > v.max) {
+    errors.push(`Setting "${key}" must be at most ${v.max}.`);
+  }
+  if (v.enum && !v.enum.includes(value)) {
+    errors.push(`Setting "${key}" must be one of: ${v.enum.map(String).join(', ')}.`);
+  }
+  return errors;
+}
+
 function checkConstraints(
   key: string,
   value: unknown,
@@ -208,41 +175,12 @@ function checkConstraints(
   const errors: string[] = [];
   const v = prop.validation;
 
-  if (typeof value === 'string') {
-    if (v?.min !== undefined && value.length < v.min) {
-      errors.push(`Setting "${key}" must be at least ${v.min} characters long.`);
-    }
-    if (v?.max !== undefined && value.length > v.max) {
-      errors.push(`Setting "${key}" must be at most ${v.max} characters long.`);
-    }
-    if (v?.pattern) {
-      try {
-        if (!new RegExp(v.pattern).test(value)) {
-          errors.push(`Setting "${key}" does not match the required pattern.`);
-        }
-      } catch {
-        // Silently ignore invalid patterns
-      }
-    }
-    if (v?.enum && !v.enum.includes(value)) {
-      errors.push(
-        `Setting "${key}" must be one of: ${v.enum.map(String).join(', ')}.`,
-      );
-    }
+  if (typeof value === 'string' && v) {
+    errors.push(...checkStringConstraints(key, value, v));
   }
 
-  if (typeof value === 'number') {
-    if (v?.min !== undefined && value < v.min) {
-      errors.push(`Setting "${key}" must be at least ${v.min}.`);
-    }
-    if (v?.max !== undefined && value > v.max) {
-      errors.push(`Setting "${key}" must be at most ${v.max}.`);
-    }
-    if (v?.enum && !v.enum.includes(value)) {
-      errors.push(
-        `Setting "${key}" must be one of: ${v.enum.map(String).join(', ')}.`,
-      );
-    }
+  if (typeof value === 'number' && v) {
+    errors.push(...checkNumberConstraints(key, value, v));
   }
 
   const types = Array.isArray(prop.type) ? prop.type : [prop.type];

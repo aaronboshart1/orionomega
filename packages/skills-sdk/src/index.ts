@@ -65,13 +65,12 @@ export {
   validateSettings,
   maskSecrets,
   splitSecrets,
-  shimFieldsToSettings,
 } from './settings.js';
 
 // ── Interfaces ─────────────────────────────────────────────────────────
 
-export type { ISkill } from './interfaces.js';
-export { BaseSkill } from './interfaces.js';
+export type { ISkill, SkillDefinition } from './interfaces.js';
+export { BaseSkill, defineSkill } from './interfaces.js';
 
 // ── Skill Config ───────────────────────────────────────────────────────
 

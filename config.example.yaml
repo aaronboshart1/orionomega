@@ -1,0 +1,220 @@
+# OrionOmega — example configuration
+#
+# Copy this file to ~/.orionomega/config.yaml and fill in your values.
+# Run `orionomega setup` for an interactive wizard that writes this file for you.
+#
+# Environment variable interpolation is supported anywhere:
+#   apiKey: ${ANTHROPIC_API_KEY}
+#
+# All keys are optional — sensible defaults are used for any missing section.
+# See docs/getting-started.md for a complete walkthrough.
+
+# ─── Models ──────────────────────────────────────────────────────────────────
+models:
+  # Only "anthropic" is supported.
+  provider: anthropic
+
+  # Your Anthropic API key. Use ${ANTHROPIC_API_KEY} to read from the environment
+  # instead of storing the key in this file.
+  apiKey: ${ANTHROPIC_API_KEY}
+
+  # Default model used when no worker profile matches.
+  # Recommended: claude-sonnet-4-20250514
+  default: claude-sonnet-4-20250514
+
+  # Model used by the main agent to produce execution plans.
+  # A capable model here produces better DAG decompositions.
+  planner: claude-sonnet-4-20250514
+
+  # Lightweight model for cheap, fast tasks (intent classification, loop judges).
+  # Default: claude-haiku-4-5-20251001
+  cheap: claude-haiku-4-5-20251001
+
+  # Worker profile → model name.
+  # Workers are assigned a profile (e.g. "research", "code") by the planner.
+  # Any unmapped profile falls back to `default`.
+  workers:
+    research: claude-haiku-4-5-20251001
+    code: claude-sonnet-4-20250514
+    writing: claude-sonnet-4-20250514
+    analysis: claude-haiku-4-5-20251001
+
+# ─── Gateway ─────────────────────────────────────────────────────────────────
+gateway:
+  # TCP port the gateway listens on. Default: 8000
+  port: 8000
+
+  # Bind address(es). Accepts a string, comma-separated string, or YAML list.
+  #   '127.0.0.1'              — localhost only (recommended for local use)
+  #   '0.0.0.0'                — all interfaces (enable auth if you do this)
+  #   ['127.0.0.1', '::1']     — IPv4 and IPv6 loopback
+  # Default: ['127.0.0.1']
+  bind: '127.0.0.1'
+
+  auth:
+    # Authentication mode.
+    #   'none'    — no authentication (safe only when bind is localhost)
+    #   'api-key' — require a key on every request; hash stored below
+    # Default: 'none'
+    mode: none
+
+    # SHA-256 hex hash of your chosen API key.
+    # Generate with: echo -n "your-key" | sha256sum
+    # Only used when mode is 'api-key'.
+    # keyHash: <sha256-hex>
+
+  cors:
+    # Allowed CORS origins for the REST API. Glob patterns are supported.
+    # Default: ['http://localhost:*'] (restricts to localhost web UIs)
+    origins:
+      - 'http://localhost:*'
+
+# ─── Hindsight (persistent memory) ───────────────────────────────────────────
+hindsight:
+  # URL of your Hindsight server. Default: http://localhost:8888
+  # See https://github.com/aaronboshart1/hindsight for setup.
+  url: http://localhost:8888
+
+  # Memory bank to use for recall and retain. Default: 'default'
+  defaultBank: default
+
+  # Retain memories when a workflow completes successfully. Default: true
+  retainOnComplete: true
+
+  # Retain memories when a workflow ends with an error. Default: true
+  retainOnError: true
+
+# ─── Orchestration ───────────────────────────────────────────────────────────
+orchestration:
+  # Require the main agent to produce a plan before any worker executes.
+  # Set to false to skip the approval step (not recommended for destructive tasks).
+  # Default: true
+  planFirst: true
+
+  # Maximum number of nested agent-spawn levels. Guards against infinite recursion.
+  # Default: 3
+  maxSpawnDepth: 3
+
+  # Per-worker timeout in seconds. Workers that exceed this are killed and retried.
+  # Default: 300 (5 minutes)
+  workerTimeout: 300
+
+  # Maximum retry attempts per failed worker node. Default: 2
+  maxRetries: 2
+
+  # How often to write workflow checkpoints (seconds). Default: 30
+  checkpointInterval: 30
+
+  # Automatically resume interrupted workflows when the gateway reconnects.
+  # Default: false
+  autoResume: false
+
+  # Event batching — controls how often events are flushed to connected clients.
+  eventBatching:
+    # TUI flush interval (ms). Lower = more responsive, higher CPU. Default: 250
+    tuiIntervalMs: 250
+    # Web dashboard flush interval (ms). Default: 1000
+    webIntervalMs: 1000
+    # Event types that bypass batching and are sent immediately.
+    immediateTypes: [error, done, finding]
+
+# ─── Workspace ───────────────────────────────────────────────────────────────
+workspace:
+  # Directory where workers write output files and artifacts.
+  # Default: ~/orionomega/workspace
+  path: ~/orionomega/workspace
+
+  # Maximum total output written to disk per workflow run. Default: '10MB'
+  maxOutputSize: '10MB'
+
+# ─── Logging ─────────────────────────────────────────────────────────────────
+logging:
+  # Minimum log level: error | warn | info | verbose | debug
+  # Override at runtime with: ORIONOMEGA_LOG_LEVEL=verbose
+  # Default: info
+  level: info
+
+  # Log file path. Default: ~/.orionomega/logs/orionomega.log
+  file: ~/.orionomega/logs/orionomega.log
+
+  # Maximum log file size before rotation. Default: '50MB'
+  maxSize: '50MB'
+
+  # Number of rotated log files to keep. Default: 5
+  maxFiles: 5
+
+  # Also write logs to stdout. Default: true
+  console: true
+
+# ─── Skills ──────────────────────────────────────────────────────────────────
+skills:
+  # Directory where OrionOmega looks for skill packages.
+  # Default: ~/.orionomega/skills
+  directory: ~/.orionomega/skills
+
+  # Discover and register skills on gateway startup. Default: true
+  autoLoad: true
+
+# ─── Web UI ──────────────────────────────────────────────────────────────────
+webui:
+  # Port for the Next.js web dashboard server. Default: 5000
+  port: 5000
+
+  # Bind address(es) for the web UI. Same format as gateway.bind.
+  # Default: ['127.0.0.1']
+  bind: '127.0.0.1'
+
+# ─── Autonomous mode ─────────────────────────────────────────────────────────
+autonomous:
+  # Enable autonomous mode (processes queued tasks without per-task approval).
+  # Default: false
+  enabled: false
+
+  # Maximum total API spend in USD for the autonomous session. Default: 50
+  maxBudgetUsd: 50
+
+  # Maximum session duration in minutes. Default: 360 (6 hours)
+  maxDurationMinutes: 360
+
+  # How often to emit a progress summary (minutes). Default: 15
+  progressIntervalMinutes: 15
+
+  # Action names that require human confirmation before executing.
+  # Default: [deploy, merge, delete, destroy_vm]
+  humanGates: [deploy, merge, delete, destroy_vm]
+
+  # Automatically start the next queued task when one completes. Default: true
+  autoAdvance: true
+
+# ─── Claude Agent SDK ─────────────────────────────────────────────────────────
+agentSdk:
+  # Enable the Claude Agent SDK for coding-agent workers. Default: true
+  enabled: true
+
+  # Permission mode for the agent SDK.
+  #   'acceptEdits'       — auto-approve file edits (recommended for orchestration)
+  #   'bypassPermissions' — skip all permission prompts (use with care)
+  #   'default'           — prompt for each tool call
+  # Default: acceptEdits
+  permissionMode: acceptEdits
+
+  # Reasoning effort level. Controls how much thinking Claude applies.
+  # Options: low | medium | high | max
+  # Default: high
+  effort: high
+
+  # Maximum agentic turns (tool-use round trips) per invocation. Default: 50
+  maxTurns: 50
+
+  # Maximum spend in USD per coding-agent invocation (optional — no limit if unset).
+  # maxBudgetUsd: 5
+
+  # Additional directories the agent can read/write beyond the working directory.
+  # additionalDirectories:
+  #   - ~/projects/my-repo
+
+# ─── Commands ─────────────────────────────────────────────────────────────────
+commands:
+  # Directory containing custom slash command files (*.md).
+  # Default: ~/orionomega/commands
+  directory: ~/orionomega/commands

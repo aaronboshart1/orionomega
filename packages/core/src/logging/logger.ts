@@ -10,12 +10,13 @@
  *   const log = createLogger('my-module');
  *   log.verbose('Processing request', { requestId: 'abc', tokens: 1234 });
  *
- * Levels (ascending verbosity):
- *   error → warn → info → verbose → debug
- *
- * Verbose = operational detail useful for SSH-based troubleshooting:
- *   conversations, tool calls, Hindsight access, token usage, timing.
- * Debug = full request/response bodies, raw payloads, internal state dumps.
+ * Log level tiers (ascending verbosity — pick the right tier):
+ *   error  — unrecoverable failure; the operation cannot continue
+ *   warn   — recoverable issue; operation continues but something is wrong
+ *   info   — lifecycle milestone; start/stop/config events worth noting
+ *   verbose — operational detail for live troubleshooting (tool calls, tokens,
+ *             Hindsight access, timing, conversations)
+ *   debug  — full payloads and internal state; only useful when debugging
  */
 
 import { appendFileSync, mkdirSync, existsSync } from 'node:fs';
