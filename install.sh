@@ -391,7 +391,7 @@ printf "\n"
 
 # ── 9. Run setup wizard ──────────────────────────────────────────
 if is_interactive; then
-  PATH="$BIN_DIR:$PATH" "$BIN_DIR/orionomega" setup </dev/tty
+  PATH="$BIN_DIR:$PATH" "$BIN_DIR/orionomega" setup < /dev/tty
 else
   printf "  ${DIM}Non-interactive shell detected — skipping setup wizard.${NC}\n"
   printf "  Run ${GREEN}orionomega setup${NC} in an interactive terminal to configure.\n"
