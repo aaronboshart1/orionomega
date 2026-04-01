@@ -12,6 +12,11 @@
 # ═══════════════════════════════════════════════════════════════
 set -euo pipefail
 
+# When piped (curl | bash), stdin is the pipe. Reclaim the real terminal.
+if [ ! -t 0 ] && [ -e /dev/tty ]; then
+  exec </dev/tty
+fi
+
 INSTALLER_URL="https://raw.githubusercontent.com/aaronboshart1/orionomega/main/install.sh"
 
 AUTH_HEADER=""
