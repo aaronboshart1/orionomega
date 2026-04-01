@@ -393,7 +393,8 @@ printf "\n"
 if is_interactive; then
   PATH="$BIN_DIR:$PATH" "$BIN_DIR/orionomega" setup </dev/tty
 else
-  PATH="$BIN_DIR:$PATH" "$BIN_DIR/orionomega" setup || true
+  printf "  ${DIM}Non-interactive shell detected — skipping setup wizard.${NC}\n"
+  printf "  Run ${GREEN}orionomega setup${NC} in an interactive terminal to configure.\n"
 fi
 
 if [ -n "$SKIPPED_STEPS" ]; then
