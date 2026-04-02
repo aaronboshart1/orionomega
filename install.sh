@@ -79,11 +79,11 @@ if ! command -v pnpm &>/dev/null; then
   step "Installing pnpm..."
   if command -v corepack &>/dev/null; then
     corepack enable pnpm 2>/dev/null && info "pnpm installed via corepack" || {
-      npm install -g pnpm || fail "Could not install pnpm. Install it manually: npm install -g pnpm"
+      npm install -g pnpm </dev/null || fail "Could not install pnpm. Install it manually: npm install -g pnpm"
       info "pnpm installed via npm"
     }
   else
-    npm install -g pnpm || fail "Could not install pnpm. Install it manually: npm install -g pnpm"
+    npm install -g pnpm </dev/null || fail "Could not install pnpm. Install it manually: npm install -g pnpm"
     info "pnpm installed via npm"
   fi
 else
@@ -107,7 +107,7 @@ if [ -d "$INSTALL_DIR/.git" ]; then
 else
   printf "  Cloning into %s... " "$INSTALL_DIR"
   mkdir -p "$(dirname "$INSTALL_DIR")"
-  git clone "$REPO" "$INSTALL_DIR" || fail "Failed to clone repository. Check your network connection."
+  git clone "$REPO" "$INSTALL_DIR" </dev/null || fail "Failed to clone repository. Check your network connection."
   printf "done\n"
   cd "$INSTALL_DIR"
 fi
@@ -121,16 +121,16 @@ info "Source ready at $INSTALL_DIR"
 # ── 4. Install dependencies ─────────────────────────────────────
 
 step "Installing dependencies..."
-if ! pnpm install --frozen-lockfile 2>/dev/null; then
+if ! pnpm install --frozen-lockfile </dev/null 2>/dev/null; then
   warn "Frozen lockfile install failed — falling back to regular install (lockfile may be stale)"
-  pnpm install || fail "Dependency installation failed."
+  pnpm install </dev/null || fail "Dependency installation failed."
 fi
 info "Dependencies installed"
 
 # ── 5. Build ─────────────────────────────────────────────────────
 
 step "Building OrionOmega..."
-pnpm build || fail "Build failed. Run 'pnpm build' manually to see errors."
+pnpm build </dev/null || fail "Build failed. Run 'pnpm build' manually to see errors."
 info "Build complete"
 
 # ── 6. Link CLI globally ─────────────────────────────────────────
@@ -255,7 +255,7 @@ install_docker_macos() {
   info "Starting Colima (lightweight Docker runtime)..."
   colima start --cpu 2 --memory 4 2>&1 | tail -3
 
-  if docker info &>/dev/null 2>&1; then
+  if docker info &>/dev/null; then
     info "Docker is running via Colima"
     return 0
   else
@@ -267,7 +267,7 @@ install_docker_macos() {
 DOCKER_READY=false
 
 if command -v docker &>/dev/null; then
-  if docker info &>/dev/null 2>&1; then
+  if docker info &>/dev/null; then
     info "Docker is running"
     DOCKER_READY=true
   else
@@ -275,7 +275,7 @@ if command -v docker &>/dev/null; then
       if command -v colima &>/dev/null; then
         info "Starting Colima..."
         colima start --cpu 2 --memory 4 2>&1 | tail -3
-        if docker info &>/dev/null 2>&1; then
+        if docker info &>/dev/null; then
           info "Docker is running via Colima"
           DOCKER_READY=true
         fi
@@ -312,7 +312,7 @@ else
       if confirm_sudo "Enable and start Docker service"; then
         sudo systemctl enable --now docker 2>/dev/null || true
       fi
-      if docker info &>/dev/null 2>&1; then
+      if docker info &>/dev/null; then
         info "Docker installed and running"
         DOCKER_READY=true
       fi
@@ -323,7 +323,7 @@ fi
 HINDSIGHT_RUNNING=false
 
 if [ "$DOCKER_READY" = "true" ]; then
-  if docker image inspect ghcr.io/vectorize-io/hindsight:latest &>/dev/null 2>&1; then
+  if docker image inspect ghcr.io/vectorize-io/hindsight:latest &>/dev/null; then
     info "Hindsight image already available"
   else
     printf "  Pulling Hindsight image (this may take a few minutes)... "
@@ -338,7 +338,7 @@ if [ "$DOCKER_READY" = "true" ]; then
   if docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^hindsight$'; then
     info "Hindsight container already running"
     HINDSIGHT_RUNNING=true
-  elif docker image inspect ghcr.io/vectorize-io/hindsight:latest &>/dev/null 2>&1; then
+  elif docker image inspect ghcr.io/vectorize-io/hindsight:latest &>/dev/null; then
     CONFIG_FILE="$HOME/.orionomega/config.yaml"
     API_KEY=""
     if [ -f "$CONFIG_FILE" ]; then

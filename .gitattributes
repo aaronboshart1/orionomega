@@ -1,0 +1,5 @@
+# Normalize line endings: let git decide for text files
+* text=auto
+
+# Shell scripts must always use LF to prevent set -euo pipefail\r failures
+*.sh text eol=lf
