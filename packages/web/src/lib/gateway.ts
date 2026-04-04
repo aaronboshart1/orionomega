@@ -630,6 +630,7 @@ function bindListeners(ws: ReconnectingWebSocket): void {
           wsReady = true;
           healthCheckId = null;
           if (healthCheckTimer) { clearTimeout(healthCheckTimer); healthCheckTimer = null; }
+          useConnectionStore.getState().setGatewayConnected(true);
           flushPendingMessages(ws);
         }
         break;
@@ -639,7 +640,6 @@ function bindListeners(ws: ReconnectingWebSocket): void {
   };
 
   ws.onopen = () => {
-    useConnectionStore.getState().setGatewayConnected(true);
     if (pendingRestart) {
       pendingRestart = false;
       window.location.reload();
