@@ -61,8 +61,10 @@ if [ ! -s "$TMPFILE" ]; then
   exit 1
 fi
 
-# Pass all env vars through and restore tty for interactive prompts
-if [ -e /dev/tty ]; then
+# Pass all env vars through and restore tty for interactive prompts.
+# Test that /dev/tty is actually openable (it exists but ENXIO in non-TTY SSH
+# sessions), then fall back to inherited stdin if it isn't.
+if [ -e /dev/tty ] && ( : </dev/tty ) 2>/dev/null; then
   bash "$TMPFILE" </dev/tty
 else
   bash "$TMPFILE"

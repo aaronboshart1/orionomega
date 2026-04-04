@@ -16,6 +16,27 @@
 
 ---
 
+## Table of Contents
+
+- [Why OrionOmega?](#why-orionomega)
+- [Quick Start](#quick-start)
+- [Prerequisites](#prerequisites)
+- [Installation](#installation)
+  - [One-liner (Kali, Ubuntu, macOS)](#one-liner-kali-ubuntu-macos)
+  - [Manual install](#manual-install)
+  - [Environment variables](#environment-variables)
+- [Configuration](#configuration)
+- [CLI Reference](#cli-reference)
+- [Architecture](#architecture)
+- [Skills](#skills)
+- [Web UI](#web-ui)
+- [Troubleshooting](#troubleshooting)
+- [Security Considerations](#security-considerations)
+- [Contributing](#contributing)
+- [License](#license)
+
+---
+
 ## Why OrionOmega?
 
 Most AI agent frameworks grow into monoliths — hundreds of plugins, abstraction layers, and indirect API calls you can't trace. OrionOmega takes the opposite approach:
@@ -41,53 +62,252 @@ Most AI agent frameworks grow into monoliths — hundreds of plugins, abstractio
 
 ---
 
-## Key Features
+## Quick Start
 
-- 🧠 **Graph-based orchestration** — DAG decomposition with topological sorting and parallel execution
-- 📋 **Plan-first UX** — shows worker count, estimated cost, estimated time, and reasoning before any token is spent on execution
-- 💾 **Hindsight memory** — persistent knowledge graph with banks and mental models, recalled across sessions
-- 🖥️ **Dual interface** — TUI (Ink/React for CLI) and Web UI (Next.js with ReactFlow DAG visualization)
-- 🔍 **Full transparency** — see every tool call, thinking trace, finding, and event in real-time
-- 🔌 **Skills system** — extend worker capabilities with self-contained skill packages (manifest + docs + handler scripts)
-- 🤖 **Anthropic-native** — built for Claude models (Haiku, Sonnet, Opus) with native fetch, no SDK overhead
-- ⚡ **Lean footprint** — six focused packages, minimal dependencies
-- 🛠️ **Slash commands** — `/stop`, `/status`, `/restart`, `/reset`, `/plan`, `/workers`
-- 🔒 **Secure gateway** — supports API-key-hashed auth, configurable bind address, CORS allowlist (defaults are permissive; see Configuration section to harden)
+```bash
+# One-liner installer (Kali Linux, Ubuntu, macOS)
+curl -fsSL https://raw.githubusercontent.com/aaronboshart1/orionomega/main/scripts/install.sh | bash
+
+# Follow the prompts to enter your Anthropic API key, then:
+orionomega          # launch the TUI
+orionomega ui start # launch the web dashboard at http://localhost:3000
+```
 
 ---
 
-## Quick Start
+## Prerequisites
 
-### Prerequisites
+| Requirement | Version | Notes |
+|-------------|---------|-------|
+| **Node.js** | 22+ | Installed automatically by the one-liner if missing |
+| **pnpm** | 9+ | Installed automatically by the one-liner if missing |
+| **git** | Any recent | Required to clone the repo |
+| **Anthropic API key** | — | Get one at [console.anthropic.com](https://console.anthropic.com/) |
+| **Docker** (optional) | 20+ | Required only for Hindsight memory server |
+| **Homebrew** (macOS) | Any | Required on macOS for Node.js and Docker install |
 
-- Node.js 22+
-- pnpm (`npm install -g pnpm`)
-- An [Anthropic API key](https://console.anthropic.com/)
-- Optional: [Hindsight](https://github.com/aaronboshart1/hindsight) for persistent memory
+The installer checks all prerequisites and installs missing ones automatically (Node.js via NodeSource on Linux; via `brew` on macOS).
+
+---
+
+## Installation
+
+### One-liner (Kali, Ubuntu, macOS)
 
 ```bash
-# Clone and install
-git clone https://github.com/aaronboshart1/orionomega.git
-cd orionomega
-pnpm install
-
-# Build all packages
-pnpm build
-
-# Run the interactive setup wizard
-node packages/core/dist/cli.js setup
-
-# Launch the TUI
-node packages/core/dist/cli.js
-
-# Or launch the Web UI
-node packages/core/dist/cli.js ui start
+curl -fsSL https://raw.githubusercontent.com/aaronboshart1/orionomega/main/scripts/install.sh | bash
 ```
 
-> **One-line installer** (clones repo and builds from source):
-> ```bash
-> curl -fsSL https://raw.githubusercontent.com/aaronboshart1/orionomega/main/scripts/install.sh | bash
-> ```
+Or with wget:
+```bash
+wget -qO- https://raw.githubusercontent.com/aaronboshart1/orionomega/main/scripts/install.sh | bash
+```
+
+**What the installer does:**
+
+1. Detects your OS (Kali, Ubuntu/Debian, macOS, Fedora/RHEL)
+2. Installs missing prerequisites (Node.js 22, pnpm, Docker)
+3. Clones the repo to `~/.orionomega/repo` (or updates it if already present)
+4. Builds all 6 packages with `pnpm build`
+5. Links the `orionomega` CLI to `~/.local/bin` (Linux) or `~/.local/bin` (macOS)
+6. Runs the interactive setup wizard to configure your API key
+7. Starts Hindsight (memory server) via Docker if Docker is available
+8. Creates a systemd service (Linux) or launchd plist (macOS) for the gateway
+
+**Non-interactive install** (for CI or scripted environments):
+
+```bash
+ANTHROPIC_API_KEY=sk-ant-... \
+ORIONOMEGA_NON_INTERACTIVE=1 \
+  bash -c 'curl -fsSL https://raw.githubusercontent.com/aaronboshart1/orionomega/main/scripts/install.sh | bash'
+```
+
+**Private repo install** (with a GitHub token):
+
+```bash
+GITHUB_TOKEN=ghp_xxx \
+  bash -c 'curl -fsSL -H "Authorization: token $GITHUB_TOKEN" \
+    https://raw.githubusercontent.com/aaronboshart1/orionomega/main/scripts/install.sh | bash'
+```
+
+#### Kali Linux specifics
+
+OrionOmega installs cleanly on Kali Linux 2024.x and 2025.x. The installer correctly handles Kali's root-by-default environment:
+
+- Root user detection skips `sudo` calls (Kali ships as root by default)
+- Uses the same NodeSource + apt path as Ubuntu/Debian
+- Docker CE installs via the official Docker apt repo for Debian
+
+Verified on: Kali 2025.3, x86_64, Node.js 22+
+
+#### Ubuntu specifics
+
+Tested on Ubuntu 22.04 LTS and 24.04 LTS. The installer:
+
+- Installs Node.js 22 via NodeSource (`setup_22.x`)
+- Installs Docker CE via the official Docker apt repo
+- Creates a systemd service: `orionomega-gateway.service`
+
+To start the gateway at boot:
+```bash
+sudo systemctl enable orionomega-gateway
+```
+
+#### macOS specifics
+
+Tested on macOS 13 (Ventura) and 14 (Sonoma), Intel and Apple Silicon.
+
+- Requires [Homebrew](https://brew.sh/) — the installer will prompt you to install it if missing
+- Installs Node.js via `brew install node@22`
+- Installs Docker via Colima (`brew install colima docker`)
+- Creates a launchd plist at `~/Library/LaunchAgents/com.orionomega.gateway.plist`
+- The plist PATH includes `/opt/homebrew/bin` on Apple Silicon and `/usr/local/bin` on Intel
+
+To start the gateway at login:
+```bash
+launchctl load ~/Library/LaunchAgents/com.orionomega.gateway.plist
+launchctl start com.orionomega.gateway
+```
+
+---
+
+### Manual install
+
+```bash
+# 1. Clone
+git clone https://github.com/aaronboshart1/orionomega.git
+cd orionomega
+
+# 2. Install dependencies
+pnpm install
+
+# 3. Build all packages
+pnpm build
+
+# 4. Link the CLI
+ln -sf "$(pwd)/packages/core/dist/cli.js" ~/.local/bin/orionomega
+
+# 5. Run setup wizard
+orionomega setup
+
+# 6. Start the gateway
+orionomega gateway start
+```
+
+---
+
+### Environment variables
+
+All config can be provided via environment variables instead of (or in addition to) `config.yaml`. See `.env.example` for the full reference.
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `ANTHROPIC_API_KEY` | Yes | Your Anthropic API key |
+| `HINDSIGHT_API_KEY` | No | Auth key for Hindsight, if enabled |
+| `CONFIG_PATH` | No | Override config file path |
+| `ORIONOMEGA_LOG_LEVEL` | No | `error\|warn\|info\|verbose\|debug` |
+| `ORIONOMEGA_NON_INTERACTIVE` | No | Set to `1` to skip all interactive prompts |
+| `ORIONOMEGA_RESTART_DELAY` | No | Gateway restart backoff in ms (default: 1000) |
+| `GH_TOKEN` | No | GitHub token for the `github` skill |
+| `LINEAR_API_KEY` | No | Linear API key for the `linear` skill |
+
+---
+
+## Configuration
+
+Configuration lives at `~/.orionomega/config.yaml`. The file is written with `0o600` permissions (user-readable only).
+
+```yaml
+models:
+  provider: anthropic
+  apiKey: sk-ant-...          # or set ANTHROPIC_API_KEY in your environment
+  default: claude-haiku-4-5-20251001
+  planner: claude-sonnet-4-6
+  workers:
+    research: claude-haiku-4-5-20251001
+    code: claude-sonnet-4-6
+    writing: claude-sonnet-4-6
+    analysis: claude-haiku-4-5-20251001
+
+gateway:
+  port: 8000
+  bind: '127.0.0.1'           # Recommended: restrict to localhost
+  auth:
+    mode: none                 # Options: none | api-key
+    # keyHash: <sha256-of-your-key>  # Required if mode: api-key
+  cors:
+    origins:
+      - 'http://localhost:3000'
+      - 'http://localhost:*'
+
+hindsight:
+  url: http://localhost:8888
+  defaultBank: default
+  retainOnComplete: true
+  retainOnError: true
+
+orchestration:
+  planFirst: true              # always show plan before executing
+  autoApprove: false           # set true to skip plan approval
+  maxRetries: 2
+  workerTimeout: 300           # seconds
+  maxSpawnDepth: 3             # max recursive agent depth
+  checkpointInterval: 30       # seconds
+
+logging:
+  level: info                  # error | warn | info | verbose | debug
+  file: ~/.orionomega/logs/gateway.log
+```
+
+### Hardening for shared machines
+
+If you expose the gateway beyond `127.0.0.1`:
+
+```yaml
+gateway:
+  bind: '127.0.0.1'           # Never 0.0.0.0 on shared/internet-facing machines
+  auth:
+    mode: api-key
+    keyHash: <sha256-of-your-key>
+  cors:
+    origins:
+      - 'http://localhost:3000'   # exact origins only
+```
+
+Generate a keyHash:
+```bash
+echo -n "your-gateway-key" | sha256sum | awk '{print $1}'
+```
+
+See [`docs/getting-started.md`](docs/getting-started.md) for a complete walkthrough of every config option.
+
+---
+
+## CLI Reference
+
+| Command | Description |
+|---------|-------------|
+| `orionomega` | Launch TUI |
+| `orionomega ui <cmd>` | Manage web UI: `start \| stop \| restart \| status` |
+| `orionomega setup` | Interactive setup wizard |
+| `orionomega status` | System health check |
+| `orionomega doctor` | Full diagnostics (includes skill health checks) |
+| `orionomega gateway start\|stop\|restart` | Manage the gateway daemon |
+| `orionomega skill list\|install\|create` | Manage skills |
+| `orionomega config` | Edit configuration |
+| `orionomega logs` | Tail logs |
+| `orionomega update` | Pull latest and rebuild |
+
+**In-session slash commands:**
+
+| Command | Description |
+|---------|-------------|
+| `/stop` | Stop current orchestration |
+| `/status` | Show active workers and task state |
+| `/restart` | Restart the gateway |
+| `/reset` | Clear session state |
+| `/plan` | Show current execution plan |
+| `/workers` | List all workers and their status |
 
 ---
 
@@ -172,7 +392,7 @@ skills-sdk  hindsight
 
 ## Skills
 
-Skills are self-contained capability packages that add tools and domain knowledge to workers. They're how you teach OrionOmega to interact with external services, APIs, or data.
+Skills are self-contained capability packages that add tools and domain knowledge to workers.
 
 ```
 my-skill/
@@ -193,65 +413,7 @@ my-skill/
 | `web-search` | Web search via DuckDuckGo | None |
 | `web-fetch` | Fetch any URL as readable text | None |
 
-### Quick Example: Weather Skill
-
-```json
-// manifest.json
-{
-  "name": "weather",
-  "version": "1.0.0",
-  "description": "Get weather and forecasts for any location",
-  "orionomega": ">=0.1.0",
-  "tools": [{
-    "name": "get_weather",
-    "description": "Get current weather and forecast by lat/lon",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "latitude":  { "type": "number" },
-        "longitude": { "type": "number" },
-        "days":      { "type": "number", "default": 3 }
-      },
-      "required": ["latitude", "longitude"]
-    },
-    "handler": "scripts/get-weather.ts",
-    "timeout": 15000
-  }],
-  "triggers": {
-    "keywords": ["weather", "temperature", "forecast"],
-    "commands": ["/weather"]
-  }
-}
-```
-
-```typescript
-// scripts/get-weather.ts
-#!/usr/bin/env tsx
-import { readFileSync } from 'node:fs';
-
-const { latitude, longitude, days = 3 } = JSON.parse(readFileSync('/dev/stdin', 'utf-8'));
-
-const url = new URL('https://api.open-meteo.com/v1/forecast');
-url.searchParams.set('latitude', String(latitude));
-url.searchParams.set('longitude', String(longitude));
-url.searchParams.set('current', 'temperature_2m,weather_code,wind_speed_10m');
-url.searchParams.set('forecast_days', String(Math.min(days, 7)));
-
-const res = await fetch(url.toString());
-const data = await res.json();
-console.log(JSON.stringify({ current: data.current, daily: data.daily }));
-```
-
-```bash
-# Scaffold, then test directly
-orionomega skill create weather
-echo '{"latitude": 41.8781, "longitude": -87.6298}' | tsx scripts/get-weather.ts
-
-# Verify it loads
-orionomega skill list
-```
-
-See [`docs/skills-guide.md`](docs/skills-guide.md) for the full authoring guide, including manifest schema, handler protocol, SKILL.md best practices, auth patterns, and the complete weather skill walkthrough.
+See [`docs/skills-guide.md`](docs/skills-guide.md) for the full authoring guide.
 
 ---
 
@@ -266,76 +428,147 @@ The web dashboard is a split-pane layout:
   - **Worker detail** — click any node for its full event log, output, and timing
   - **Plan approval** — inline approve/reject/modify controls when a plan is pending
 
----
-
-## CLI Reference
-
-| Command | Description |
-|---------|-------------|
-| `orionomega` | Launch TUI |
-| `orionomega ui <cmd>` | Manage web UI: start \| stop \| restart \| status |
-| `orionomega setup` | Interactive setup wizard |
-| `orionomega status` | System health check |
-| `orionomega doctor` | Full diagnostics (includes skill health checks) |
-| `orionomega gateway start\|stop\|restart` | Manage the gateway daemon |
-| `orionomega skill list\|install\|create` | Manage skills |
-| `orionomega config` | Edit configuration |
-| `orionomega logs` | Tail logs |
-| `orionomega update` | Update to latest |
-
-**In-session slash commands:**
-
-| Command | Description |
-|---------|-------------|
-| `/stop` | Stop current orchestration |
-| `/status` | Show active workers and task state |
-| `/restart` | Restart the gateway |
-| `/reset` | Clear session state |
-| `/plan` | Show current execution plan |
-| `/workers` | List all workers and their status |
-
----
-
-## Configuration
-
-Configuration lives at `~/.orionomega/config.yaml`. Key sections:
-
-```yaml
-models:
-  provider: anthropic
-  apiKey: sk-ant-...
-  default: claude-sonnet-4-20250514
-  planner: claude-sonnet-4-20250514
-  workers:
-    research: claude-haiku-4-20250514
-    code: claude-sonnet-4-20250514
-    writing: claude-sonnet-4-20250514
-    analysis: claude-haiku-4-20250514
-
-gateway:
-  port: 8000                # default: 8000
-  bind: '127.0.0.1'        # default: 0.0.0.0 (recommended: restrict to localhost)
-  auth:
-    mode: api-key           # default: none (recommended: api-key for production)
-    keyHash: <hashed key>
-  cors:
-    origins: ['http://localhost:*']  # default includes http://*:* and https://*
-
-hindsight:
-  url: http://localhost:8888
-  defaultBank: default
-  retainOnComplete: true
-  retainOnError: true
-
-orchestration:
-  planFirst: true           # always plan before executing
-  maxRetries: 2
-  workerTimeout: 300        # seconds
-  maxSpawnDepth: 3
-  checkpointInterval: 30    # seconds
+```bash
+orionomega ui start    # starts on http://localhost:3000
+orionomega ui stop
+orionomega ui status
 ```
 
-See [`docs/getting-started.md`](docs/getting-started.md) for a complete walkthrough of every option.
+---
+
+## Troubleshooting
+
+### `orionomega: command not found`
+
+The CLI binary is in `~/.local/bin`. Add it to your PATH:
+
+```bash
+# Add to ~/.bashrc or ~/.zshrc
+export PATH="$HOME/.local/bin:$PATH"
+source ~/.bashrc   # or source ~/.zshrc
+```
+
+### Gateway won't start
+
+```bash
+orionomega doctor          # full diagnostics
+orionomega gateway status  # check if already running
+orionomega logs            # tail gateway logs
+
+# Check if port 8000 is in use:
+ss -tlnp | grep 8000   # Linux
+lsof -i :8000          # macOS
+```
+
+### `doctor` fails API key check
+
+Ensure `ANTHROPIC_API_KEY` is set:
+
+```bash
+echo $ANTHROPIC_API_KEY
+# If empty:
+export ANTHROPIC_API_KEY=sk-ant-...
+# Or set it in config.yaml:
+orionomega config
+```
+
+### Hindsight not connecting
+
+Hindsight runs in Docker. Verify:
+
+```bash
+docker ps | grep hindsight     # should show running container
+curl http://localhost:8888/health   # should return {"status":"healthy"}
+
+# If not running:
+docker start hindsight
+# Or re-run the installer to set it up:
+orionomega update
+```
+
+### Build fails after `pnpm install`
+
+```bash
+# Clean and rebuild:
+pnpm store prune
+pnpm install --force
+pnpm build
+
+# Check Node.js version (must be 22+):
+node --version
+```
+
+### One-liner fails in non-interactive SSH sessions
+
+The installer requires a TTY for interactive prompts. Use one of:
+
+```bash
+# Option 1: Allocate a pseudo-TTY
+ssh -tt user@host "curl -fsSL https://raw.githubusercontent.com/aaronboshart1/orionomega/main/scripts/install.sh | bash"
+
+# Option 2: Pass config non-interactively
+ssh user@host "ANTHROPIC_API_KEY=sk-ant-... ORIONOMEGA_NON_INTERACTIVE=1 bash -c '
+  curl -fsSL https://raw.githubusercontent.com/aaronboshart1/orionomega/main/scripts/install.sh | bash
+'"
+```
+
+### macOS: `node` not found after install on Apple Silicon
+
+Homebrew on Apple Silicon installs to `/opt/homebrew`. Add it to your PATH:
+
+```bash
+echo 'export PATH="/opt/homebrew/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
+```
+
+### Permission denied on Linux (non-root install)
+
+The installer does not require root. If you see permission errors on system directories, check that `~/.local/bin` is writable and that Docker is accessible:
+
+```bash
+groups | grep docker   # must include 'docker'
+# If not: sudo usermod -aG docker $USER && newgrp docker
+```
+
+### Kali Linux: `apt` lock or mirror errors
+
+```bash
+# Release the apt lock if stuck:
+sudo rm /var/lib/apt/lists/lock /var/cache/apt/archives/lock /var/lib/dpkg/lock* 2>/dev/null
+sudo dpkg --configure -a
+sudo apt update
+
+# Then re-run the installer
+curl -fsSL https://raw.githubusercontent.com/aaronboshart1/orionomega/main/scripts/install.sh | bash
+```
+
+---
+
+## Security Considerations
+
+OrionOmega runs with **exec-level access to your local machine** — this is intentional. The engine executes shell commands, reads and writes files, and calls external APIs on your behalf. Key points:
+
+- **Plan-first by default** — the agent proposes a plan and waits for your approval before executing anything
+- **Every action is visible** — tool calls, shell commands, and findings stream to your interface in real-time
+- **Credentials are user-scoped** — the process runs as your user; it cannot escalate privileges beyond what your account already has
+- **Local-only by default** — the gateway binds to `127.0.0.1:8000`; nothing is exposed to the network without explicit configuration
+
+For full details on the security model, hardening options, and responsible use, see [SECURITY.md](SECURITY.md).
+
+---
+
+## Key Features
+
+- **Graph-based orchestration** — DAG decomposition with topological sorting and parallel execution
+- **Plan-first UX** — shows worker count, estimated cost, estimated time, and reasoning before any token is spent on execution
+- **Hindsight memory** — persistent knowledge graph with banks and mental models, recalled across sessions
+- **Dual interface** — TUI (Ink/React for CLI) and Web UI (Next.js with ReactFlow DAG visualization)
+- **Full transparency** — see every tool call, thinking trace, finding, and event in real-time
+- **Skills system** — extend worker capabilities with self-contained skill packages (manifest + docs + handler scripts)
+- **Anthropic-native** — built for Claude models (Haiku, Sonnet, Opus) with native fetch, no SDK overhead
+- **Lean footprint** — six focused packages, minimal dependencies
+- **Slash commands** — `/stop`, `/status`, `/restart`, `/reset`, `/plan`, `/workers`
+- **Secure gateway** — API-key-hashed auth, configurable bind address, CORS allowlist
 
 ---
 
@@ -374,8 +607,12 @@ orionomega/
 │   ├── architecture.md    # System architecture deep-dive
 │   ├── getting-started.md # First-time user guide
 │   └── skills-guide.md    # Full skill authoring guide
-└── scripts/
-    └── install.sh      # One-line installer
+├── scripts/
+│   └── install.sh      # One-line installer download wrapper
+├── install.sh          # Main installer (clones, builds, configures)
+├── SECURITY.md         # Security model and hardening guide
+├── CONTRIBUTING.md     # Development setup and contribution guidelines
+└── CHANGELOG.md        # Release history
 ```
 
 ---

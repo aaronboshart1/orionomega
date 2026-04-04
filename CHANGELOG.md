@@ -8,6 +8,18 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- `scripts/install.sh`: `/dev/tty` redirect now tests openability via subshell before
+  redirecting, preventing ENXIO failures in non-TTY SSH sessions and CI environments
+- `install.sh`: launchd plist PATH now includes `$(brew --prefix)/bin` so Node.js binaries
+  resolve correctly on Apple Silicon Macs where Homebrew installs to `/opt/homebrew`
+
+### Added
+- `SECURITY.md`: documents the intentional exec-level access model, hardening options,
+  skill handler security, and API key storage
+- `README.md`: comprehensive installation guide for Kali Linux, Ubuntu, and macOS;
+  prerequisites table; configuration reference; troubleshooting section; security overview
+
 ### Changed
 - 2026-03-31 codebase audit (Passes 1–5): dead code removal, consolidation, file restructuring,
   pattern standardization, and documentation

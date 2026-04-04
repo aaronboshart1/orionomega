@@ -993,6 +993,10 @@ setup_launchd_service() {
   mkdir -p "$plist_dir"
   mkdir -p "$CONFIG_DIR/logs"
 
+  # Detect Homebrew prefix: /opt/homebrew on Apple Silicon, /usr/local on Intel
+  local brew_prefix
+  brew_prefix="$(brew --prefix 2>/dev/null || echo /usr/local)"
+
   cat > "$plist_file" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -1020,7 +1024,7 @@ setup_launchd_service() {
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
-    <string>${BIN_DIR}:/usr/local/bin:/usr/bin:/bin</string>
+    <string>${BIN_DIR}:${brew_prefix}/bin:/usr/local/bin:/usr/bin:/bin</string>
   </dict>
 </dict>
 </plist>
