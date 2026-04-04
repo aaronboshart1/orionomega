@@ -7,8 +7,10 @@ import { ActivityFeed } from './ActivityFeed';
 import { WorkerDetail } from './WorkerDetail';
 import { WorkflowSummary } from './WorkflowSummary';
 import { MemoryFeed } from './MemoryFeed';
-import { X, Play, Pause, Square } from 'lucide-react';
+import { X, Play, Pause, Square, FileText } from 'lucide-react';
 import { useGateway } from '@/lib/gateway';
+import { useFileViewerStore } from '@/stores/file-viewer';
+import { FileViewer } from './FileViewer';
 import type { InlineDAGStatus } from '@/stores/orchestration';
 
 const statusColors: Record<string, string> = {
@@ -54,6 +56,7 @@ export function OrchestrationPane() {
   const removeWorkflow = useOrchestrationStore((s) => s.removeWorkflow);
   const activitySectionCollapsed = useOrchestrationStore((s) => s.activitySectionCollapsed);
   const { sendWorkflowCommand } = useGateway();
+  const fileCount = useFileViewerStore((s) => s.openFiles.length);
 
   const workflowIds = Object.keys(workflows);
 
@@ -77,6 +80,25 @@ export function OrchestrationPane() {
             </span>
           )}
         </button>
+
+        {fileCount > 0 && (
+          <button
+            role="tab"
+            aria-selected={activeOrchTab === 'files'}
+            onClick={() => setActiveOrchTab('files')}
+            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium transition-colors rounded-md ${
+              activeOrchTab === 'files'
+                ? 'bg-zinc-800 text-blue-400 ring-1 ring-zinc-600'
+                : 'text-zinc-500 hover:bg-zinc-800/50 hover:text-zinc-300'
+            }`}
+          >
+            <FileText size={12} />
+            Files
+            <span className="text-xs bg-blue-500/20 text-blue-400 rounded-full px-1.5 py-0.5 font-mono">
+              {fileCount}
+            </span>
+          </button>
+        )}
 
         {workflowIds.map((wfId) => {
           const dag = inlineDAGs[wfId];
@@ -188,7 +210,11 @@ export function OrchestrationPane() {
         })}
       </div>
 
-      {activeOrchTab === 'memory' ? (
+      {activeOrchTab === 'files' ? (
+        <div className="flex-1 min-h-0 overflow-hidden">
+          <FileViewer />
+        </div>
+      ) : activeOrchTab === 'memory' ? (
         <div className="flex-1 min-h-0 overflow-hidden">
           <MemoryFeed />
         </div>

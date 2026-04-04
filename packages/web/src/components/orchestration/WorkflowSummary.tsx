@@ -3,6 +3,7 @@
 import { useMemo, useState } from 'react';
 import { FileText, ChevronRight } from 'lucide-react';
 import { useOrchestrationStore } from '@/stores/orchestration';
+import { useFileViewerStore } from '@/stores/file-viewer';
 import type { ModelUsageEntry } from '@/stores/orchestration';
 import { MarkdownContent } from '../chat/MarkdownContent';
 
@@ -140,7 +141,17 @@ export function WorkflowSummary() {
                 <div key={nodeLabel}>
                   <div className="text-xs font-medium text-zinc-300">{nodeLabel}</div>
                   {paths.map((p) => (
-                    <div key={p} className="ml-3 text-xs text-blue-400/80">{p}</div>
+                    <button
+                      key={p}
+                      type="button"
+                      onClick={() => {
+                        useFileViewerStore.getState().openFile(p);
+                        useOrchestrationStore.getState().setActiveOrchTab('files');
+                      }}
+                      className="ml-3 text-xs text-blue-400/80 hover:text-blue-300 hover:underline cursor-pointer text-left block w-full break-all"
+                    >
+                      {p}
+                    </button>
                   ))}
                 </div>
               ))}

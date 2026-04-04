@@ -3,6 +3,8 @@
 import { useState } from 'react';
 import { CheckCircle2, XCircle, Circle, FileText, ChevronRight } from 'lucide-react';
 import type { InlineDAG, ModelUsageEntry } from '@/stores/orchestration';
+import { useOrchestrationStore } from '@/stores/orchestration';
+import { useFileViewerStore } from '@/stores/file-viewer';
 import { MarkdownContent } from './MarkdownContent';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { formatTokens as fmtTokens, formatElapsed as fmtDuration } from '@/utils/format';
@@ -99,7 +101,18 @@ export function RunSummaryCard({ dag }: RunSummaryCardProps) {
               <div key={nodeLabel}>
                 <div className="text-xs font-medium text-zinc-300">{nodeLabel}</div>
                 {paths.map((p) => (
-                  <div key={p} className="ml-3 text-xs text-blue-400/80">{p}</div>
+                  <button
+                    key={p}
+                    type="button"
+                    onClick={() => {
+                      useFileViewerStore.getState().openFile(p);
+                      useOrchestrationStore.getState().setActiveOrchTab('files');
+                      useOrchestrationStore.getState().setOrchPaneOpen(true);
+                    }}
+                    className="ml-3 text-xs text-blue-400/80 hover:text-blue-300 hover:underline cursor-pointer text-left block w-full break-all"
+                  >
+                    {p}
+                  </button>
                 ))}
               </div>
             ))}

@@ -7,6 +7,8 @@
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { readFileSync, existsSync, statSync, realpathSync } from 'node:fs';
+import { resolve as resolvePath, normalize } from 'node:path';
 import { spawn as spawnProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { readConfig, normalizeBindAddresses, MainAgent, CommandFileLoader, createLogger, setGlobalLogLevel, enableFileLogging, discoverModels, clearModelCache, auditApiRequest } from '@orionomega/core';
@@ -671,6 +673,52 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
     const combined = agentCmds.length > 0 ? agentCmds : fileCmds;
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ commands: combined }));
+    return;
+  }
+
+  // --- File read ---
+  if (pathname === '/api/files' && method === 'GET') {
+    const queryStr = rawUrl.split('?')[1] ?? '';
+    const params = new URLSearchParams(queryStr);
+    const filePath = params.get('path');
+    if (!filePath) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing ?path= parameter' }));
+      return;
+    }
+    const resolved = resolvePath(normalize(filePath));
+    if (!existsSync(resolved)) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'File not found' }));
+      return;
+    }
+    try {
+      const workspaceRoot = realpathSync(resolvePath('.'));
+      const realResolved = realpathSync(resolved);
+      if (!realResolved.startsWith(workspaceRoot + '/') && realResolved !== workspaceRoot) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Access denied: path outside workspace' }));
+        return;
+      }
+      const st = statSync(realResolved);
+      if (!st.isFile()) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Path is not a file' }));
+        return;
+      }
+      if (st.size > 5 * 1024 * 1024) {
+        res.writeHead(413, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'File too large (>5MB)' }));
+        return;
+      }
+      const content = readFileSync(realResolved, 'utf-8');
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ path: realResolved, content }));
+    } catch (err) {
+      log.error('File read error', { error: err instanceof Error ? err.message : String(err) });
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Failed to read file' }));
+    }
     return;
   }
 

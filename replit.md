@@ -161,8 +161,8 @@ The orchestration pane now opens by default with a "Memory" tab as the first tab
 
 The orchestration sidebar supports multiple concurrent workflows via per-workflow tabs rendered inline in OrchestrationPane's single-row tablist:
 
-- `packages/web/src/stores/orchestration.ts` — the Zustand store scopes `graphState` and `events` per workflow ID in a `workflows` record, with `activeWorkflowId` controlling which workflow's data is surfaced as top-level `graphState`/`events` for existing consumers; `activeOrchTab` is `'memory' | 'workflow'`
-- `packages/web/src/components/orchestration/OrchestrationPane.tsx` — renders a single `role="tablist"` row containing the Memory tab followed by per-workflow tabs (each with status dot, label, pause/resume/stop controls, and close button for terminal workflows). There is no separate `WorkflowTabs.tsx` component.
+- `packages/web/src/stores/orchestration.ts` — the Zustand store scopes `graphState` and `events` per workflow ID in a `workflows` record, with `activeWorkflowId` controlling which workflow's data is surfaced as top-level `graphState`/`events` for existing consumers; `activeOrchTab` is `'memory' | 'workflow' | 'files'`
+- `packages/web/src/components/orchestration/OrchestrationPane.tsx` — renders a single `role="tablist"` row containing the Memory tab, Files tab (when files are open), and per-workflow tabs (each with status dot, label, pause/resume/stop controls, and close button for terminal workflows). There is no separate `WorkflowTabs.tsx` component.
 - `packages/web/src/app/page.tsx` — the orchestration pane toggle is always visible; rendering is gated on `orchPaneOpen` from the store
 - New workflows auto-select when they start; completed workflows remain as tabs until dismissed
 
@@ -208,3 +208,12 @@ Centralized z-index constants in `packages/web/src/lib/z-index.ts`:
 ## Markdown Rendering
 
 Chat assistant/system messages render full markdown via `react-markdown` with `remark-gfm`, `rehype-highlight` (syntax highlighting), and `rehype-sanitize`. The `MarkdownContent` component lives at `packages/web/src/components/chat/MarkdownContent.tsx`. User messages remain plain text. Streaming updates are throttled via `requestAnimationFrame` to avoid excessive re-renders. The highlight.js `github-dark` theme is imported in `packages/web/src/app/layout.tsx`.
+
+## Artifact File Viewer
+
+Artifact file paths produced by DAG nodes are clickable in both `WorkflowSummary` and `RunSummaryCard`. Clicking opens the file in a tabbed viewer in the orchestration pane:
+
+- **Gateway endpoint**: `GET /api/files?path=...` reads file content from disk; restricted to workspace root via `realpathSync` containment check; 5MB size limit; returns `{ path, content }` JSON
+- **Store**: `packages/web/src/stores/file-viewer.ts` — Zustand store managing `openFiles` array and `activeFilePath`; `openFile()` fetches via `/api/gateway/api/files`, deduplicates tabs, handles errors
+- **Component**: `packages/web/src/components/orchestration/FileViewer.tsx` — tabbed viewer; `.md` files rendered with `MarkdownContent`, others as `<pre>` plaintext; loading/error states inline
+- **Integration**: "Files" tab appears in OrchestrationPane when files are open, with badge count; clicking artifact paths in chat or workflow summary opens the file and switches to the Files tab
