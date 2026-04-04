@@ -693,11 +693,12 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
       return;
     }
     try {
-      const workspaceRoot = realpathSync(resolvePath('.'));
+      const cfg = readConfig();
+      const workspaceRoot = realpathSync(cfg.workspace?.path ?? resolvePath('.'));
       const realResolved = realpathSync(resolved);
       if (!realResolved.startsWith(workspaceRoot + '/') && realResolved !== workspaceRoot) {
-        res.writeHead(403, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Access denied: path outside workspace' }));
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid path: outside workspace' }));
         return;
       }
       const st = statSync(realResolved);
