@@ -687,14 +687,20 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
       return;
     }
     const resolved = resolvePath(normalize(filePath));
-    if (!existsSync(resolved)) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'File not found' }));
-      return;
-    }
     try {
       const cfg = readConfig();
       const workspaceRoot = realpathSync(cfg.workspace?.path ?? resolvePath('.'));
+      const normalizedResolved = resolvePath(resolved);
+      if (!normalizedResolved.startsWith(workspaceRoot + '/') && normalizedResolved !== workspaceRoot) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid path: outside workspace' }));
+        return;
+      }
+      if (!existsSync(resolved)) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'File not found' }));
+        return;
+      }
       const realResolved = realpathSync(resolved);
       if (!realResolved.startsWith(workspaceRoot + '/') && realResolved !== workspaceRoot) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
