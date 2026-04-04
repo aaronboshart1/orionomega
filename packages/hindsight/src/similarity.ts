@@ -35,20 +35,6 @@ export function trigramSimilarity(a: string, b: string): number {
 }
 
 /**
- * Compute a client-side relevance proxy for a memory item against a query.
- *
- * Uses a combination of:
- * 1. Trigram similarity (structural overlap)
- * 2. Keyword overlap (semantic signal from shared meaningful words)
- * 3. Length penalty (very short memories get a small penalty)
- *
- * This is used as a fallback when the API returns relevance=0 for all results.
- *
- * @param query - The search query.
- * @param content - The memory content to score.
- * @returns A relevance score between 0 and 1.
- */
-/**
  * Keyword overlap score: fraction of meaningful query words (>3 chars)
  * that appear in the content. Weighted 0.6 in the final composite score
  * because keyword overlap is the strongest semantic signal.
@@ -64,6 +50,20 @@ function computeKeywordScore(nQuery: string, nContent: string): number {
   return Math.min(1, hits / queryWords.size);
 }
 
+/**
+ * Compute a client-side relevance proxy for a memory item against a query.
+ *
+ * Uses a combination of:
+ * 1. Trigram similarity (structural overlap)
+ * 2. Keyword overlap (semantic signal from shared meaningful words)
+ * 3. Length penalty (very short memories get a small penalty)
+ *
+ * This is used as a fallback when the API returns relevance=0 for all results.
+ *
+ * @param query - The search query.
+ * @param content - The memory content to score.
+ * @returns A relevance score between 0 and 1.
+ */
 export function computeClientRelevance(query: string, content: string): number {
   const nq = normalize(query);
   const nc = normalize(content);

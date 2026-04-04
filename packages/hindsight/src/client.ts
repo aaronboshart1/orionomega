@@ -300,6 +300,7 @@ export class HindsightClient {
     }
 
     let filtered = allResults.filter((r) => r.relevance >= minRelevance);
+    const droppedByRelevance = allResults.length - filtered.length;
 
     log.verbose(`Recall relevance filter`, {
       bankId,
@@ -310,6 +311,7 @@ export class HindsightClient {
     });
 
     filtered = this.applyDeduplication(filtered, shouldDedup, dedupThreshold);
+    const droppedByDedup = allResults.length - droppedByRelevance - filtered.length;
 
     const result: RecallResult = {
       results: filtered,
@@ -320,10 +322,11 @@ export class HindsightClient {
     log.verbose(`Recall ← ${bankId}`, {
       durationMs,
       resultCount: result.results.length,
-      droppedByRelevance: allResults.length - filtered.length,
+      droppedByRelevance,
+      droppedByDedup,
     });
 
-    this.emitRecallIO(bankId, query, result.results, allResults.length, allResults.length - filtered.length, durationMs, {
+    this.emitRecallIO(bankId, query, result.results, allResults.length, droppedByRelevance, durationMs, {
       tier, effectiveMaxTokens, minRelevance, allZeroRelevance, tokensUsed: result.tokens_used,
     });
     return result;

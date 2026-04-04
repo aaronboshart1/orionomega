@@ -166,6 +166,8 @@ export class RetentionEngine {
   /** Map workflowId → bankId, set by the orchestration bridge when dispatching. */
   private workflowBanks = new Map<string, string>();
   onMemoryEvent?: (op: string, detail: string, bank?: string, meta?: Record<string, unknown>) => void;
+  /** Called after every successful retention so downstream consumers (e.g. MentalModelManager) can react. */
+  onAfterRetain?: (bankId: string, context: string) => void;
 
   constructor(
     private readonly hs: HindsightClient,
@@ -264,6 +266,7 @@ export class RetentionEngine {
         contentPreview: content.slice(0, 200),
         contentLength: content.length,
       });
+      this.onAfterRetain?.(bankId, context);
     } catch (err) {
       log.warn('Failed to retain memory', {
         bankId,

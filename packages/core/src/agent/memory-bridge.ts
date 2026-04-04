@@ -123,7 +123,11 @@ export class MemoryBridge {
       this.retentionEngine = new RetentionEngine(
         this.hindsightClient,
         this.eventBus,
-        { retainOnComplete: hsCfg.retainOnComplete, retainOnError: hsCfg.retainOnError },
+        {
+          retainOnComplete: hsCfg.retainOnComplete,
+          retainOnError: hsCfg.retainOnError,
+          defaultBank: hsCfg.defaultBank,
+        },
       );
 
       this.sessionSummarizer = new SessionSummarizer(
@@ -159,15 +163,26 @@ export class MemoryBridge {
 
       this.selfKnowledge = new SelfKnowledge(this.hindsightClient);
 
-      if (this.onMemoryEvent) {
-        this.retentionEngine.onMemoryEvent = (op, detail, bank, meta) => {
-          this.onMemoryEvent?.(op as MemoryOp, detail, bank, meta);
-        };
+      // Always register callbacks using optional chaining so they work even when
+      // onMemoryEvent is set after init() (e.g. in main-agent._init()).
+      this.retentionEngine.onMemoryEvent = (op, detail, bank, meta) => {
+        this.onMemoryEvent?.(op as MemoryOp, detail, bank, meta);
+      };
 
-        this.hindsightClient.onIO = (event) => {
-          this.onMemoryEvent?.(event.op as MemoryOp, event.detail, event.bank, event.meta);
-        };
-      }
+      this.hindsightClient.onIO = (event) => {
+        this.onMemoryEvent?.(event.op as MemoryOp, event.detail, event.bank, event.meta);
+      };
+
+      // Trigger mental model refresh after every successful retention.
+      this.retentionEngine.onAfterRetain = (bankId: string, context: string) => {
+        this.mentalModelManager?.onRetain(bankId, context).catch((err) => {
+          log.warn('Mental model refresh failed after retention', {
+            bankId,
+            context,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
+      };
 
       this.retentionEngine.start();
 
