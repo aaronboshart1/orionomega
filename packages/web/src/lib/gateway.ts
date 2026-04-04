@@ -53,7 +53,11 @@ function pruneExpiredMessages(): void {
   }
 }
 
+let lastDeliveryFailureAt = 0;
 function surfaceDeliveryFailure(): void {
+  const now = Date.now();
+  if (now - lastDeliveryFailureAt < 5000) return;
+  lastDeliveryFailureAt = now;
   const chat = useChatStore.getState();
   chat.addMessage({
     id: uuid(),
