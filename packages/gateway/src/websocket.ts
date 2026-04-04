@@ -280,6 +280,12 @@ export class WebSocketHandler {
       case 'subscribe':
         this.handleSubscribe(conn, msg);
         break;
+      case 'ping':
+        this.send(conn.ws, {
+          id: msg.id,
+          type: 'pong',
+        });
+        break;
       default:
         this.send(conn.ws, {
           id: randomBytes(8).toString('hex'),
@@ -292,12 +298,10 @@ export class WebSocketHandler {
   /** Handle a chat message — store it, acknowledge, and route to MainAgent. */
   private handleChat(conn: ClientConnection, session: ReturnType<SessionManager['getSession']> & object, msg: ClientMessage): void {
     const content = sanitizeChatInput(msg.content ?? '');
-    log.verbose(`Chat message from ${conn.id}`, {
+    log.info(`Chat message from ${conn.id}`, {
       sessionId: conn.sessionId,
       messageId: msg.id,
       contentLength: content.length,
-      contentPreview: content.slice(0, 200),
-      replyToId: msg.replyToId,
     });
 
     this.storeSessionMessage(conn.sessionId, {
@@ -523,6 +527,11 @@ export class WebSocketHandler {
     try {
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify(message));
+      } else {
+        log.warn('Message dropped — WebSocket not open', {
+          readyState: ws.readyState,
+          messageType: message.type,
+        });
       }
     } catch (err) {
       log.error('Send error', { error: err instanceof Error ? err.message : String(err) });

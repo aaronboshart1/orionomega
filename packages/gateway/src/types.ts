@@ -24,7 +24,7 @@ export interface ClientConnection {
 /** Client → Gateway message envelope. */
 export interface ClientMessage {
   id: string;
-  type: 'chat' | 'command' | 'plan_response' | 'subscribe' | 'dag_response';
+  type: 'chat' | 'command' | 'plan_response' | 'subscribe' | 'dag_response' | 'ping';
   content?: string;
   command?: string;
   planId?: string;
@@ -52,6 +52,7 @@ export interface ServerMessage {
     | 'text' | 'thinking' | 'thinking_step' | 'plan' | 'event' | 'status'
     | 'command_result' | 'session_status' | 'error' | 'ack' | 'history'
     | 'dag_dispatched' | 'dag_progress' | 'dag_complete' | 'dag_confirm'
+    | 'pong'
     | 'hindsight_status' | 'memory_event' | 'memory_history';
   /** Identifies which workflow this message relates to (events, status updates, plans). */
   workflowId?: string;

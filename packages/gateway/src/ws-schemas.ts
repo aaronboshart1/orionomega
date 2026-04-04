@@ -53,12 +53,18 @@ const subscribeSchema = z.object({
   workflowId: z.string().max(128).optional(),
 });
 
+const pingSchema = z.object({
+  id: z.string().min(1).max(128),
+  type: z.literal('ping'),
+});
+
 const clientMessageSchema = z.discriminatedUnion('type', [
   chatMessageSchema,
   commandMessageSchema,
   planResponseSchema,
   dagResponseSchema,
   subscribeSchema,
+  pingSchema,
 ]);
 
 export type ValidatedClientMessage = z.infer<typeof clientMessageSchema>;

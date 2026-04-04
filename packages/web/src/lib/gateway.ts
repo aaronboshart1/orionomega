@@ -38,6 +38,44 @@ function statusFromToolCall(toolName?: string): string {
 let singletonWs: ReconnectingWebSocket | null = null;
 let boundWs: ReconnectingWebSocket | null = null;
 let pendingRestart = false;
+let wsReady = false;
+const pendingMessages: string[] = [];
+let healthCheckTimer: ReturnType<typeof setTimeout> | null = null;
+let healthCheckId: string | null = null;
+
+function flushPendingMessages(ws: ReconnectingWebSocket): void {
+  const toFlush = pendingMessages.splice(0);
+  for (const msg of toFlush) {
+    if (ws.readyState !== WebSocket.OPEN) {
+      pendingMessages.unshift(msg);
+      console.warn('[gateway] Flush aborted — socket no longer open, requeued remaining');
+      break;
+    }
+    try {
+      ws.send(msg);
+    } catch (err) {
+      pendingMessages.unshift(msg);
+      console.warn('[gateway] Flush send failed, requeued', err);
+      break;
+    }
+  }
+}
+
+function safeSend(ws: ReconnectingWebSocket, data: string): boolean {
+  if (ws.readyState === WebSocket.OPEN && wsReady) {
+    try {
+      ws.send(data);
+      return true;
+    } catch (err) {
+      console.warn('[gateway] ws.send() threw', err);
+    }
+  }
+  pendingMessages.push(data);
+  if (!wsReady) {
+    console.debug('[gateway] Message queued — connection not ready yet');
+  }
+  return false;
+}
 
 interface HistoryMessage {
   id: string;
@@ -512,6 +550,12 @@ function bindListeners(ws: ReconnectingWebSocket): void {
           const ackData = msg.content ? JSON.parse(msg.content) : null;
           if (ackData?.sessionId) {
             localStorage.setItem(SESSION_KEY, ackData.sessionId);
+            if (!wsReady) {
+              wsReady = true;
+              if (healthCheckTimer) { clearTimeout(healthCheckTimer); healthCheckTimer = null; }
+              healthCheckId = null;
+              flushPendingMessages(ws);
+            }
           }
         } catch { /* ignore parse errors */ }
         break;
@@ -552,6 +596,14 @@ function bindListeners(ws: ReconnectingWebSocket): void {
         }
         break;
       }
+      case 'pong':
+        if (healthCheckId && msg.id === healthCheckId) {
+          wsReady = true;
+          healthCheckId = null;
+          if (healthCheckTimer) { clearTimeout(healthCheckTimer); healthCheckTimer = null; }
+          flushPendingMessages(ws);
+        }
+        break;
       default:
         console.debug('[gateway] unhandled message type:', msg.type, msg);
     }
@@ -563,6 +615,30 @@ function bindListeners(ws: ReconnectingWebSocket): void {
       pendingRestart = false;
       window.location.reload();
     }
+
+    const chat = useChatStore.getState();
+    if (chat.isStreaming) {
+      chat.setStreaming(false);
+      chat.setStreamingStatus('');
+    }
+
+    wsReady = false;
+    if (healthCheckTimer) clearTimeout(healthCheckTimer);
+    healthCheckId = uuid();
+    const pingId = healthCheckId;
+    try {
+      ws.send(JSON.stringify({ id: pingId, type: 'ping' }));
+    } catch {
+      /* will retry on next reconnect */
+    }
+    healthCheckTimer = setTimeout(() => {
+      if (!wsReady && healthCheckId === pingId) {
+        console.warn('[gateway] Health check timed out — marking ready anyway');
+        wsReady = true;
+        flushPendingMessages(ws);
+      }
+    }, 3000);
+
     if (statusFetchController) statusFetchController.abort();
     statusFetchController = new AbortController();
     const { signal } = statusFetchController;
@@ -579,6 +655,9 @@ function bindListeners(ws: ReconnectingWebSocket): void {
   };
 
   ws.onclose = () => {
+    wsReady = false;
+    if (healthCheckTimer) { clearTimeout(healthCheckTimer); healthCheckTimer = null; }
+    healthCheckId = null;
     if (statusFetchController) { statusFetchController.abort(); statusFetchController = null; }
     const connStore = useConnectionStore.getState();
     connStore.setGatewayConnected(false);
@@ -603,7 +682,7 @@ export function useGateway() {
   const send = useCallback((data: object) => {
     const ws = getOrCreateWs();
     bindListeners(ws);
-    ws.send(JSON.stringify(data));
+    safeSend(ws, JSON.stringify(data));
   }, []);
 
   const sendChat = useCallback(
