@@ -39,24 +39,53 @@ let singletonWs: ReconnectingWebSocket | null = null;
 let boundWs: ReconnectingWebSocket | null = null;
 let pendingRestart = false;
 let wsReady = false;
-const pendingMessages: string[] = [];
+const QUEUE_MAX_AGE_MS = 30_000;
+const QUEUE_MAX_SIZE = 50;
+interface QueuedMessage { data: string; queuedAt: number; }
+const pendingMessages: QueuedMessage[] = [];
 let healthCheckTimer: ReturnType<typeof setTimeout> | null = null;
 let healthCheckId: string | null = null;
 
+function pruneExpiredMessages(): void {
+  const now = Date.now();
+  while (pendingMessages.length > 0 && now - pendingMessages[0].queuedAt > QUEUE_MAX_AGE_MS) {
+    pendingMessages.shift();
+  }
+}
+
+function surfaceDeliveryFailure(): void {
+  const chat = useChatStore.getState();
+  chat.addMessage({
+    id: uuid(),
+    role: 'system',
+    content: 'Message could not be delivered — the connection was lost. Please try again.',
+    timestamp: new Date().toISOString(),
+    type: 'error',
+  });
+}
+
 function flushPendingMessages(ws: ReconnectingWebSocket): void {
+  const countBefore = pendingMessages.length;
+  pruneExpiredMessages();
+  const expired = countBefore - pendingMessages.length;
+  if (expired > 0) {
+    console.warn(`[gateway] Dropped ${expired} expired queued message(s)`);
+    surfaceDeliveryFailure();
+  }
   const toFlush = pendingMessages.splice(0);
-  for (const msg of toFlush) {
+  for (let i = 0; i < toFlush.length; i++) {
+    const entry = toFlush[i];
     if (ws.readyState !== WebSocket.OPEN) {
-      pendingMessages.unshift(msg);
+      pendingMessages.unshift(...toFlush.slice(i));
       console.warn('[gateway] Flush aborted — socket no longer open, requeued remaining');
-      break;
+      return;
     }
     try {
-      ws.send(msg);
+      ws.send(entry.data);
     } catch (err) {
-      pendingMessages.unshift(msg);
+      pendingMessages.unshift(...toFlush.slice(i));
       console.warn('[gateway] Flush send failed, requeued', err);
-      break;
+      return;
     }
   }
 }
@@ -70,7 +99,13 @@ function safeSend(ws: ReconnectingWebSocket, data: string): boolean {
       console.warn('[gateway] ws.send() threw', err);
     }
   }
-  pendingMessages.push(data);
+  pruneExpiredMessages();
+  if (pendingMessages.length >= QUEUE_MAX_SIZE) {
+    console.warn('[gateway] Message queue full, dropping oldest');
+    pendingMessages.shift();
+    surfaceDeliveryFailure();
+  }
+  pendingMessages.push({ data, queuedAt: Date.now() });
   if (!wsReady) {
     console.debug('[gateway] Message queued — connection not ready yet');
   }
@@ -550,12 +585,6 @@ function bindListeners(ws: ReconnectingWebSocket): void {
           const ackData = msg.content ? JSON.parse(msg.content) : null;
           if (ackData?.sessionId) {
             localStorage.setItem(SESSION_KEY, ackData.sessionId);
-            if (!wsReady) {
-              wsReady = true;
-              if (healthCheckTimer) { clearTimeout(healthCheckTimer); healthCheckTimer = null; }
-              healthCheckId = null;
-              flushPendingMessages(ws);
-            }
           }
         } catch { /* ignore parse errors */ }
         break;
@@ -633,9 +662,9 @@ function bindListeners(ws: ReconnectingWebSocket): void {
     }
     healthCheckTimer = setTimeout(() => {
       if (!wsReady && healthCheckId === pingId) {
-        console.warn('[gateway] Health check timed out — marking ready anyway');
-        wsReady = true;
-        flushPendingMessages(ws);
+        console.warn('[gateway] Health check timed out — forcing reconnect');
+        healthCheckId = null;
+        ws.reconnect();
       }
     }, 3000);
 
