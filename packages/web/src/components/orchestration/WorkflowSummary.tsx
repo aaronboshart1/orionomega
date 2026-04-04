@@ -109,7 +109,7 @@ export function WorkflowSummary() {
     const badge = statusBadge[completedDAG.status] || statusBadge.complete;
     return (
       <div className="h-full overflow-y-auto px-6 py-3">
-        <div className="flex items-center gap-3 mb-2">
+        <div className="flex items-center gap-3 mb-0.5">
           <h3 className="text-sm font-semibold text-zinc-200">Run Summary</h3>
           <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${badge.bg} ${badge.text}`}>
             {completedDAG.status.toUpperCase()}
@@ -124,6 +124,7 @@ export function WorkflowSummary() {
             <span className="text-xs font-medium text-green-400">${completedDAG.totalCostUsd.toFixed(4)}</span>
           )}
         </div>
+        <div className="text-[10px] font-mono text-zinc-600 mb-2">{completedDAG.dagId}</div>
         {completedDAG.modelUsage && completedDAG.modelUsage.length > 0 && (
           <ModelUsageTable models={completedDAG.modelUsage} totalCostUsd={completedDAG.totalCostUsd} />
         )}
@@ -190,11 +191,14 @@ export function WorkflowSummary() {
 
   return (
     <div className="flex h-full items-center gap-6 px-6">
-      <div className="flex items-center gap-3">
-        <h3 className="text-sm font-semibold text-zinc-200">{graphState.name}</h3>
-        <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${badge.bg} ${badge.text}`}>
-          {graphState.status.toUpperCase()}
-        </span>
+      <div className="flex flex-col gap-0.5">
+        <div className="flex items-center gap-3">
+          <h3 className="text-sm font-semibold text-zinc-200">{graphState.name}</h3>
+          <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${badge.bg} ${badge.text}`}>
+            {graphState.status.toUpperCase()}
+          </span>
+        </div>
+        <span className="text-[10px] font-mono text-zinc-600">{graphState.workflowId}</span>
       </div>
 
       <div className="h-6 w-px bg-zinc-800" />
