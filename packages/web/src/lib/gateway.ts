@@ -15,7 +15,8 @@ let statusFetchController: AbortController | null = null;
 function getGatewayUrl(): string {
   if (typeof window !== 'undefined') {
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const savedSession = localStorage.getItem(SESSION_KEY);
+    let savedSession: string | null = null;
+    try { savedSession = localStorage.getItem(SESSION_KEY); } catch { /* ignore */ }
     const sessionParam = savedSession ? `&session=${savedSession}` : '';
     return `${proto}//${window.location.host}/api/gateway/ws?client=web${sessionParam}`;
   }
@@ -588,7 +589,11 @@ function bindListeners(ws: ReconnectingWebSocket): void {
         try {
           const ackData = msg.content ? JSON.parse(msg.content) : null;
           if (ackData?.sessionId) {
-            localStorage.setItem(SESSION_KEY, ackData.sessionId);
+            try {
+              localStorage.setItem(SESSION_KEY, ackData.sessionId);
+            } catch {
+              // Quota exceeded — session ID is non-critical
+            }
           }
         } catch { /* ignore parse errors */ }
         break;

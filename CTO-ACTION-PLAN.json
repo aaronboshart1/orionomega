@@ -1,0 +1,1711 @@
+{
+  "_metadata": {
+    "title": "OrionOmega — CTO Consolidated Action Plan",
+    "version": "1.0.0",
+    "date": "2026-04-04",
+    "overall_score": "5.8/10",
+    "blockers_before_deployment": 3,
+    "total_items": 87,
+    "base_path": "/home/kali/.orionomega/src",
+    "severity_counts": {
+      "CRITICAL": 6,
+      "HIGH": 18,
+      "MEDIUM": 31,
+      "LOW": 20,
+      "INFO": 12
+    }
+  },
+
+  "1_CRITICAL_SECURITY": {
+    "_summary": "MUST fix before ANY public or multi-user deployment. 6 critical + 6 high items.",
+    "_estimated_effort": "3-5 days focused work",
+
+    "CRIT_SEC_01": {
+      "title": "OS Command Injection via exec() with shell=true",
+      "severity": "CRITICAL",
+      "source_reports": ["security_audit:CRIT-1", "architecture_review"],
+      "files": [
+        "packages/core/src/anthropic/tools.ts:111",
+        "packages/core/src/agent/conversation.ts:218"
+      ],
+      "current_behavior": "child_process.exec() with shell='/bin/bash' executes unsanitized AI-generated commands. Shell metacharacters (|;&$`) are checked but the check ENABLES shell path instead of blocking it.",
+      "changes": [
+        {
+          "file": "packages/core/src/anthropic/tools.ts",
+          "action": "Replace exec() with execFile() for non-shell commands",
+          "detail": "At line 111, replace `await execAsync(command, { shell: '/bin/bash', ... })` with `await execFileAsync('/bin/bash', ['-c', command], { ... })`. Add command allowlist validation. Add `maxBuffer: 10 * 1024 * 1024` limit. Wrap in try/catch with sanitized error output.",
+          "function": "The anonymous async function handling tool execution around line 100-130"
+        },
+        {
+          "file": "packages/core/src/agent/conversation.ts",
+          "action": "Same pattern fix at line 218",
+          "detail": "Replace `await execAsync(command, { ... })` with `await execFileAsync('/bin/bash', ['-c', command], { ... })`. Add input validation: reject commands containing known dangerous patterns (rm -rf /, dd if=, mkfs, etc). Add timeout enforcement."
+        },
+        {
+          "file": "packages/core/src/orchestration/worker.ts",
+          "action": "Audit lines 550-572 for same pattern",
+          "detail": "If exec() is used with shell=true, apply same fix. Use execFile() with explicit arg arrays where possible."
+        }
+      ],
+      "impact": "Prevents arbitrary OS command execution from compromised LLM output or prompt injection",
+      "testing": "Create test cases: command with semicolons, pipes, backticks, $() substitution — all should be contained within single bash -c invocation"
+    },
+
+    "CRIT_SEC_02": {
+      "title": "Missing Authentication on 7 REST Endpoints",
+      "severity": "CRITICAL",
+      "source_reports": ["security_audit:CRIT-2", "webui_review:9.6", "live_test"],
+      "files": [
+        "packages/gateway/src/server.ts:570-674",
+        "packages/gateway/src/routes/sessions.ts",
+        "packages/gateway/src/routes/auth-utils.ts"
+      ],
+      "current_behavior": "checkAuth() exists in auth-utils.ts but is only called on /api/config and /api/skills routes. 7 routes are completely unprotected: /api/status, /api/sessions (GET), /api/sessions (POST), /api/sessions/:id (GET), /api/models (GET), /api/commands (GET). /api/health intentionally public.",
+      "changes": [
+        {
+          "file": "packages/gateway/src/server.ts",
+          "action": "Add checkAuth guard to each unprotected handler",
+          "detail": "Import checkAuth from './routes/auth-utils'. Add `if (!checkAuth(req, res, config.gateway)) return;` as first line in each handler block for these routes:",
+          "endpoints_to_protect": [
+            { "line": "~576", "route": "GET /api/status", "handler": "handleStatus" },
+            { "line": "~586", "route": "GET /api/sessions", "handler": "handleListSessions" },
+            { "line": "~591", "route": "POST /api/sessions", "handler": "handleCreateSession" },
+            { "line": "~597", "route": "GET /api/sessions/:id", "handler": "handleGetSession" },
+            { "line": "~604", "route": "GET /api/models", "handler": "inline" },
+            { "line": "~668", "route": "GET /api/commands", "handler": "inline" }
+          ],
+          "keep_public": [
+            { "route": "GET /api/health", "reason": "Load balancer health checks must work without auth" }
+          ]
+        }
+      ],
+      "impact": "Prevents unauthenticated access to full conversation history, session data, infrastructure details, and model configuration",
+      "testing": "For each protected endpoint: verify 401 without token, 200 with valid token, 401 with expired/invalid token"
+    },
+
+    "CRIT_SEC_03": {
+      "title": "Change Default Auth Mode from 'none' to 'api-key'",
+      "severity": "CRITICAL",
+      "source_reports": ["security_audit:MED-1", "live_ssh_test"],
+      "files": [
+        "packages/core/src/config/loader.ts:39"
+      ],
+      "current_behavior": "Default auth mode is 'none', meaning all auth checks are bypassed unless user explicitly configures auth. Most users will never change this.",
+      "changes": [
+        {
+          "file": "packages/core/src/config/loader.ts",
+          "action": "Change default auth mode to 'api-key'",
+          "detail": "At line 39 (or wherever defaultConfig.gateway.auth.mode is set), change `mode: 'none'` to `mode: 'api-key'`. Add auto-generation of a random API key on first run if none exists: `key: crypto.randomBytes(32).toString('hex')`."
+        },
+        {
+          "file": "packages/core/src/commands/setup.ts",
+          "action": "Display generated API key during setup",
+          "detail": "After config is created, print the auto-generated API key to stdout with instructions on how to use it. Store in config.yaml under gateway.auth.key."
+        }
+      ],
+      "impact": "All new installations are secure by default. Eliminates the most common misconfiguration.",
+      "testing": "Fresh install should generate key, print it, and reject requests without it"
+    },
+
+    "CRIT_SEC_04": {
+      "title": "Installer Supply-Chain Integrity",
+      "severity": "CRITICAL",
+      "source_reports": ["security_audit:CRIT-3", "architecture_review"],
+      "files": [
+        "scripts/install.sh",
+        "install.sh:69",
+        "install.sh:364-399"
+      ],
+      "current_behavior": "Installation via `curl | bash` from mutable main branch. No checksum, GPG signature, or version pinning. Also pulls Node.js setup script with sudo via curl|bash. Docker images use :latest tag.",
+      "changes": [
+        {
+          "file": "scripts/install.sh",
+          "action": "Pin to tagged release URL with SHA256 verification",
+          "detail": "Replace line 7 `curl -fsSL https://raw.githubusercontent.com/aaronboshart1/orionomega/main/scripts/install.sh | bash` with versioned URL: `https://github.com/aaronboshart1/orionomega/releases/download/v0.1.0/install.sh`. Add SHA256 checksum verification step before execution."
+        },
+        {
+          "file": "install.sh",
+          "action": "Pin Docker image to digest instead of :latest",
+          "detail": "At lines 364-399, replace all `ghcr.io/vectorize-io/hindsight:latest` with `ghcr.io/vectorize-io/hindsight@sha256:<pinned_digest>`. Add a HINDSIGHT_VERSION variable at top of script for easy updates."
+        },
+        {
+          "file": "install.sh",
+          "action": "Replace curl|bash Node.js install with package manager",
+          "detail": "At line 69, replace `curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -` with apt-based install or nvm-based install without piping to shell with sudo."
+        }
+      ],
+      "impact": "Eliminates supply-chain attack vector from DNS hijack, CDN compromise, or MITM",
+      "testing": "Run installer with tampered URL — should fail checksum. Run with correct URL — should succeed."
+    },
+
+    "CRIT_SEC_05": {
+      "title": "WebSocket Token Exposure in URL Query Parameters",
+      "severity": "HIGH",
+      "source_reports": ["security_audit:HIGH-1"],
+      "files": [
+        "packages/gateway/src/websocket.ts:126-140",
+        "packages/web/src/lib/gateway.ts:16-21"
+      ],
+      "current_behavior": "Auth token passed as `?token=xxx` query parameter in WebSocket URL. Tokens appear in HTTP access logs, browser history, proxy logs, and Referer headers.",
+      "changes": [
+        {
+          "file": "packages/gateway/src/websocket.ts",
+          "action": "Accept token via Sec-WebSocket-Protocol header during HTTP upgrade",
+          "detail": "At line 127, instead of `url.searchParams.get('token')`, read from `req.headers['sec-websocket-protocol']` or a custom header. The WebSocket upgrade request supports custom headers. Parse: `const token = req.headers['authorization']?.replace('Bearer ', '') ?? '';`"
+        },
+        {
+          "file": "packages/web/src/lib/gateway.ts",
+          "action": "Send token via WebSocket subprotocol or first message",
+          "detail": "At lines 16-21, remove token from URL construction. Instead, pass token as second arg to WebSocket constructor: `new WebSocket(url, ['bearer', token])` or send as first message after connection: `ws.send(JSON.stringify({ type: 'auth', token }))`."
+        }
+      ],
+      "impact": "Prevents token leakage through logs and browser history",
+      "testing": "Connect with token in header — should authenticate. Verify no token appears in server access logs."
+    },
+
+    "CRIT_SEC_06": {
+      "title": "Add Security Headers to Web Server (server.mjs)",
+      "severity": "HIGH",
+      "source_reports": ["webui_review:9.6", "live_webui_test"],
+      "files": [
+        "packages/web/server.mjs"
+      ],
+      "current_behavior": "Gateway server (port 8000) has security headers via security-headers.ts, but the user-facing web server (port 5000, server.mjs) has NO security headers. No CSP, HSTS, X-Frame-Options, or X-Content-Type-Options.",
+      "changes": [
+        {
+          "file": "packages/web/server.mjs",
+          "action": "Add security headers middleware to all responses",
+          "detail": "Add a middleware function before route handlers that sets on every response: `Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws: wss:; frame-ancestors 'none'`, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Strict-Transport-Security: max-age=31536000; includeSubDomains` (when behind TLS), `Referrer-Policy: strict-origin-when-cross-origin`, `Permissions-Policy: camera=(), microphone=(), geolocation=()`."
+        }
+      ],
+      "impact": "Prevents XSS, clickjacking, MIME sniffing, and other client-side attacks on the user-facing server",
+      "testing": "curl -I http://localhost:5000 — verify all headers present"
+    },
+
+    "CRIT_SEC_07": {
+      "title": "Enable TLS/HTTPS Support",
+      "severity": "HIGH",
+      "source_reports": ["security_audit:HIGH-2"],
+      "files": [
+        "packages/gateway/src/server.ts:741",
+        "packages/core/src/config/loader.ts"
+      ],
+      "current_behavior": "All traffic including auth tokens, API keys, and conversation history transmitted in plaintext HTTP.",
+      "changes": [
+        {
+          "file": "packages/core/src/config/loader.ts",
+          "action": "Add TLS config options to schema",
+          "detail": "Add to gateway config: `tls: { enabled: boolean, certPath: string, keyPath: string }`. Default to disabled but warn on startup if auth is enabled without TLS."
+        },
+        {
+          "file": "packages/gateway/src/server.ts",
+          "action": "Support HTTPS server creation",
+          "detail": "At line 741 (server creation), check if TLS config is present. If so, use `https.createServer({ cert, key }, handler)` instead of `http.createServer(handler)`. Add startup warning if auth.mode !== 'none' && !tls.enabled."
+        }
+      ],
+      "impact": "Protects all data in transit. Required for any network-accessible deployment.",
+      "testing": "Configure with self-signed cert, verify HTTPS works, verify HTTP redirect or refusal"
+    },
+
+    "CRIT_SEC_08": {
+      "title": "Token Revocation Mechanism",
+      "severity": "HIGH",
+      "source_reports": ["security_audit:HIGH-4"],
+      "files": [
+        "packages/gateway/src/auth.ts:24-40",
+        "packages/gateway/src/routes/auth-utils.ts"
+      ],
+      "current_behavior": "Stolen API key is valid for 24h with no way to revoke it.",
+      "changes": [
+        {
+          "file": "packages/gateway/src/auth.ts",
+          "action": "Add revocation check during token validation",
+          "detail": "Maintain a revocation list in `~/.orionomega/revoked-tokens.json`. On each checkAuth call, check if the token's hash appears in the revocation list. Add `POST /api/auth/revoke` endpoint (protected, requires current valid token) that adds the token hash to the blocklist."
+        }
+      ],
+      "impact": "Allows immediate invalidation of compromised tokens",
+      "testing": "Issue token, use it successfully, revoke it, verify subsequent requests fail"
+    },
+
+    "CRIT_SEC_09": {
+      "title": "Restrict Hindsight Port Binding",
+      "severity": "HIGH",
+      "source_reports": ["live_ssh_test"],
+      "files": [
+        "install.sh:399",
+        "packages/core/src/commands/setup.ts"
+      ],
+      "current_behavior": "Hindsight Docker container binds port 8888 to 0.0.0.0, exposing the unauthenticated knowledge graph API to all network interfaces.",
+      "changes": [
+        {
+          "file": "install.sh",
+          "action": "Bind Hindsight to localhost only",
+          "detail": "At line 399 (docker run command), change port mapping from `-p 8888:8888` to `-p 127.0.0.1:8888:8888`."
+        },
+        {
+          "file": "packages/core/src/commands/setup.ts",
+          "action": "Same fix in programmatic Docker setup",
+          "detail": "Find docker run command around line 646, change port binding to 127.0.0.1:8888:8888."
+        }
+      ],
+      "impact": "Prevents remote access to unprotected memory/knowledge graph data",
+      "testing": "After fix, `curl http://<external_ip>:8888/health` should fail; `curl http://127.0.0.1:8888/health` should succeed"
+    },
+
+    "CRIT_SEC_10": {
+      "title": "API Key Secure Storage",
+      "severity": "HIGH",
+      "source_reports": ["security_audit:HIGH-3", "architecture_review"],
+      "files": [
+        "packages/core/src/config/loader.ts:247"
+      ],
+      "current_behavior": "API key stored in plaintext in config.yaml, readable by same-user processes, visible in process listings.",
+      "changes": [
+        {
+          "file": "packages/core/src/config/loader.ts",
+          "action": "Support env-var-only key storage with config reference",
+          "detail": "Allow config.yaml to reference environment variables: `anthropic_api_key: ${ANTHROPIC_API_KEY}`. Resolve env vars during config loading. Document Vault/Keychain/AWS Secrets Manager integration patterns. Remove any code that writes the API key directly to config.yaml during setup."
+        }
+      ],
+      "impact": "Reduces credential exposure surface",
+      "testing": "Set ANTHROPIC_API_KEY env var, verify config loads it, verify key not written to disk"
+    },
+
+    "CRIT_SEC_11": {
+      "title": "Add Vary: Origin Header to CORS",
+      "severity": "MEDIUM",
+      "source_reports": ["security_audit:MED-7"],
+      "files": [
+        "packages/gateway/src/server.ts:529-537"
+      ],
+      "current_behavior": "CORS headers set without Vary: Origin, causing cache poisoning risk with CDN/proxy.",
+      "changes": [
+        {
+          "file": "packages/gateway/src/server.ts",
+          "action": "Add Vary header in setCorsHeaders function",
+          "detail": "In the setCorsHeaders function around line 529-537, add `res.setHeader('Vary', 'Origin');` after setting Access-Control-Allow-Origin."
+        }
+      ],
+      "impact": "Prevents CORS cache poisoning",
+      "testing": "Verify Vary: Origin header present in responses with different Origin request headers"
+    },
+
+    "CRIT_SEC_12": {
+      "title": "Sanitize Audit Log Tool Arguments",
+      "severity": "MEDIUM",
+      "source_reports": ["security_audit:MED-5"],
+      "files": [
+        "packages/core/src/logging/audit.ts:28-35"
+      ],
+      "current_behavior": "Audit log records tool arguments including potentially sensitive data (API keys, passwords, tokens).",
+      "changes": [
+        {
+          "file": "packages/core/src/logging/audit.ts",
+          "action": "Redact sensitive patterns before logging",
+          "detail": "At lines 28-35, before writing tool arguments to the audit log, run them through a redaction function that replaces patterns matching API keys (sk-ant-*, ANTHROPIC_API_KEY=*), passwords, tokens, and authorization headers with '[REDACTED]'."
+        }
+      ],
+      "impact": "Prevents credential leakage through audit logs",
+      "testing": "Trigger tool call with API key in args, verify audit log contains [REDACTED]"
+    }
+  },
+
+  "2_MEMORY_SYSTEM": {
+    "_summary": "Hindsight memory improvements for token efficiency, recall quality, and unbounded growth prevention. 11 items.",
+    "_estimated_effort": "2-3 weeks",
+
+    "MEM_01": {
+      "title": "Fix Memory Injection Token Waste — Use System Parameter Instead of Synthetic Messages",
+      "severity": "HIGH",
+      "source_reports": ["memory_review"],
+      "files": [
+        "packages/core/src/agent/main-agent.ts:1112-1114"
+      ],
+      "current_behavior": "Memory injected as two synthetic messages: `{ role: 'user', content: '[PRIOR CONTEXT]\\n...' }` + `{ role: 'assistant', content: 'Understood. I have the prior context.' }`. This wastes tokens (synthetic ack), creates fake turn boundaries, and prevents Anthropic prompt caching.",
+      "changes": [
+        {
+          "file": "packages/core/src/agent/main-agent.ts",
+          "action": "Move prior context to system parameter with cache_control",
+          "detail": "At lines 1112-1114, instead of pushing two messages, append the prior context to the system prompt: `system: [{ type: 'text', text: baseSystemPrompt }, { type: 'text', text: assembled.priorContext, cache_control: { type: 'ephemeral' } }]`. Remove the synthetic 'Understood' assistant message entirely. This enables Anthropic prompt caching (90% cheaper on cache reads) and eliminates the fake turn boundary."
+        }
+      ],
+      "impact": "30-50% token cost reduction on memory-heavy conversations. Enables prompt caching.",
+      "testing": "Compare token costs before/after on same conversation. Verify LLM still uses prior context correctly."
+    },
+
+    "MEM_02": {
+      "title": "Replace Trigram Similarity with Lightweight Semantic Scoring",
+      "severity": "HIGH",
+      "source_reports": ["memory_review"],
+      "files": [
+        "packages/hindsight/src/similarity.ts:67-86"
+      ],
+      "current_behavior": "Client-side relevance scoring uses trigram Jaccard + keyword overlap. This is character-level only — synonym matching fails ('fix' vs 'resolve', 'auth' vs 'authentication'). Paraphrased content scores near zero.",
+      "changes": [
+        {
+          "file": "packages/hindsight/src/similarity.ts",
+          "action": "Add synonym expansion and BM25-lite scoring",
+          "detail": "In `computeClientRelevance()` at line 67: (1) Add a synonym map: { fix: ['resolve','repair','patch'], auth: ['authentication','login','credentials'], ... } — expand query terms before matching. (2) Replace raw keyword overlap with BM25-lite: `score = sum(idf(term) * tf(term, doc) * (k1+1) / (tf + k1*(1-b+b*dl/avgdl)))` where k1=1.2, b=0.75. (3) Keep trigram as tiebreaker (0.2 weight) not primary signal. (4) Add word stemming (porter stemmer, ~50 lines)."
+        }
+      ],
+      "impact": "2-3x improvement in recall relevance for paraphrased and synonym-heavy queries",
+      "testing": "Test: 'fix authentication bug' should match memory about 'resolve login issue'. 'refactored auth' should match 'rewrote authentication module'."
+    },
+
+    "MEM_03": {
+      "title": "Reduce Per-Turn HTTP Request Amplification",
+      "severity": "HIGH",
+      "source_reports": ["memory_review"],
+      "files": [
+        "packages/hindsight/src/client.ts:335-425"
+      ],
+      "current_behavior": "recallWithTemporalDiversity fires 4 parallel HTTP requests per bank (primary + 3 temporal windows). With N banks, each user message triggers 4N HTTP requests. 5 banks = 20 round-trips per message.",
+      "changes": [
+        {
+          "file": "packages/hindsight/src/client.ts",
+          "action": "Batch recalls and add response caching",
+          "detail": "In `recallWithTemporalDiversity()` at line 335: (1) Add a 30-second in-memory LRU cache (max 100 entries) keyed on `${bankId}:${queryHash}:${temporalWindow}`. Skip HTTP call if cache hit. (2) For multi-bank recalls, batch into single HTTP request if Hindsight API supports it, or serialize with connection pooling. (3) Add config option `memory.maxBanksPerRecall: 3` to cap bank fan-out. (4) Skip temporal diversity requests for 'low' budget tier — only fire primary recall."
+        }
+      ],
+      "impact": "50-80% reduction in per-turn HTTP requests. Sub-100ms recall latency for cached queries.",
+      "testing": "Measure request count and latency before/after. Verify cache invalidation on new retentions."
+    },
+
+    "MEM_04": {
+      "title": "Add Memory Expiration and Garbage Collection",
+      "severity": "HIGH",
+      "source_reports": ["memory_review"],
+      "files": [
+        "packages/hindsight/src/client.ts",
+        "packages/core/src/memory/retention-engine.ts"
+      ],
+      "current_behavior": "No TTL, no expiration, no cleanup. retainOne() only appends. Banks grow unbounded. At 10K+ memories, trigram dedup checks become O(n).",
+      "changes": [
+        {
+          "file": "packages/hindsight/src/client.ts",
+          "action": "Add memory lifecycle management",
+          "detail": "Add new methods: `pruneBank(bankId, { maxAge: 90, maxCount: 5000, minRelevance: 0.2 })` that calls Hindsight API to delete old/low-relevance memories. Add `compactBank(bankId)` that merges similar memories. Schedule weekly via setInterval or external cron."
+        },
+        {
+          "file": "packages/core/src/memory/retention-engine.ts",
+          "action": "Add retention limits",
+          "detail": "Before calling retainOne(), check bank size. If bank exceeds maxCount (configurable, default 5000), run pruneBank() first. Add relevance decay: memories older than 90 days get score multiplied by 0.7."
+        }
+      ],
+      "impact": "Prevents unbounded storage growth and query degradation",
+      "testing": "Seed bank with 10K memories, verify prune reduces to target count, verify old low-relevance memories removed first"
+    },
+
+    "MEM_05": {
+      "title": "Improve Token Count Estimation",
+      "severity": "MEDIUM",
+      "source_reports": ["memory_review"],
+      "files": [
+        "packages/core/src/memory/context-assembler.ts:99",
+        "packages/core/src/memory/query-classifier.ts:88",
+        "packages/core/src/agent/conversation.ts:331"
+      ],
+      "current_behavior": "`Math.ceil(text.length / 4)` used everywhere. Undercounts by 30-50% for code-heavy content (tokens are shorter in code).",
+      "changes": [
+        {
+          "file": "packages/core/src/memory/context-assembler.ts",
+          "action": "Use content-aware token estimation",
+          "detail": "Replace `Math.ceil(text.length / 4)` at line 99 with a function that detects content type: for code (detected by backtick blocks, indentation patterns), use `text.length / 3`; for prose, use `text.length / 4.5`; for mixed, use `text.length / 3.7`. Extract to shared utility `estimateTokens(text: string): number` in a new file `packages/core/src/utils/tokens.ts`."
+        },
+        {
+          "file": "packages/core/src/memory/query-classifier.ts",
+          "action": "Use same shared estimateTokens utility at line 88"
+        },
+        {
+          "file": "packages/core/src/agent/conversation.ts",
+          "action": "Use same shared estimateTokens utility at line 331"
+        }
+      ],
+      "impact": "10-20% more accurate token budgeting, prevents context window overflow",
+      "testing": "Compare estimateTokens output against actual tokenizer (tiktoken) for 100 sample messages"
+    },
+
+    "MEM_06": {
+      "title": "Fix Bank Slug Collisions",
+      "severity": "MEDIUM",
+      "source_reports": ["memory_review"],
+      "files": [
+        "packages/hindsight/src/bank-manager.ts:101-110"
+      ],
+      "current_behavior": "Bank slugs derived from task descriptions can collide. 'Build landing page for Acme' and 'Update landing page Acme' both generate `project-landing-page-acme`.",
+      "changes": [
+        {
+          "file": "packages/hindsight/src/bank-manager.ts",
+          "action": "Add collision detection and disambiguation",
+          "detail": "At lines 101-110, after generating slug: (1) Check if bank with slug already exists via listBanks(). (2) If exists, append short hash of full task description: `project-landing-page-acme-a3f2`. (3) Add `bankDescription` metadata to bank creation for disambiguation."
+        }
+      ],
+      "impact": "Prevents cross-project memory contamination",
+      "testing": "Create two tasks with similar names, verify separate banks created"
+    },
+
+    "MEM_07": {
+      "title": "Add LLM-Based Quality Scoring Option for High-Value Memories",
+      "severity": "MEDIUM",
+      "source_reports": ["memory_review"],
+      "files": [
+        "packages/core/src/memory/retention-engine.ts:84-125"
+      ],
+      "current_behavior": "Quality scoring is regex-only. Pattern matching for keywords like 'decision', 'architecture', 'blocker'. No semantic understanding of memory importance.",
+      "changes": [
+        {
+          "file": "packages/core/src/memory/retention-engine.ts",
+          "action": "Add optional LLM quality evaluation for borderline memories",
+          "detail": "At lines 84-125, after regex scoring: if score is between 0.25-0.45 (borderline), optionally invoke cheap model (claude-haiku) with prompt: 'Rate the importance of this message for long-term project memory on a scale of 0-1: [content]'. Use LLM score as tiebreaker. Gate behind config flag `memory.llmQualityScoring: boolean` (default false). Cache LLM scores."
+        }
+      ],
+      "impact": "10-30% improvement in retention quality for borderline memories",
+      "testing": "Compare retention decisions with/without LLM scoring on 50 sample messages"
+    },
+
+    "MEM_08": {
+      "title": "Session Anchor Cleanup",
+      "severity": "MEDIUM",
+      "source_reports": ["memory_review"],
+      "files": [
+        "packages/hindsight/src/session-bootstrap.ts:128-229"
+      ],
+      "current_behavior": "Session anchors stored with context 'session_anchor' but only latest recalled. Old anchors accumulate forever.",
+      "changes": [
+        {
+          "file": "packages/hindsight/src/session-bootstrap.ts",
+          "action": "Prune old session anchors",
+          "detail": "At line 128 where new anchor is stored, also delete anchors older than 30 days. Add a cleanup method `pruneOldAnchors(maxAge: number = 30)` that lists all session_anchor entries and deletes those beyond maxAge."
+        }
+      ],
+      "impact": "Prevents anchor accumulation consuming storage and slowing queries",
+      "testing": "Create 100 anchors over simulated 60-day period, verify prune keeps only last 30 days"
+    },
+
+    "MEM_09": {
+      "title": "Improve Query Classification Beyond Regex",
+      "severity": "LOW",
+      "source_reports": ["memory_review"],
+      "files": [
+        "packages/core/src/memory/query-classifier.ts"
+      ],
+      "current_behavior": "Query type classification (factual, procedural, decision, etc.) uses regex patterns only.",
+      "changes": [
+        {
+          "file": "packages/core/src/memory/query-classifier.ts",
+          "action": "Add intent keywords and fallback classification",
+          "detail": "Expand regex patterns to cover more query types. Add keyword-to-intent mapping. For unclassified queries, default to 'general' with broader recall strategy instead of narrow pattern match."
+        }
+      ],
+      "impact": "Better recall strategy selection for edge-case queries",
+      "testing": "Test with 50 diverse queries, measure classification accuracy"
+    },
+
+    "MEM_10": {
+      "title": "Add Memory Usage Metrics Endpoint",
+      "severity": "LOW",
+      "source_reports": ["memory_review", "webui_review"],
+      "files": [
+        "packages/hindsight/src/client.ts",
+        "packages/gateway/src/routes/status.ts"
+      ],
+      "current_behavior": "No visibility into memory system health: bank sizes, recall latencies, retention rates, cache hit rates.",
+      "changes": [
+        {
+          "file": "packages/hindsight/src/client.ts",
+          "action": "Add metrics collection",
+          "detail": "Add internal counters: recallCount, retainCount, cacheHits, cacheMisses, avgRecallLatencyMs, totalMemoriesStored. Expose via `getMetrics()` method."
+        },
+        {
+          "file": "packages/gateway/src/routes/status.ts",
+          "action": "Include memory metrics in status endpoint",
+          "detail": "Add hindsight metrics to /api/status response: `memory: { banks: N, totalMemories: N, avgRecallMs: N, cacheHitRate: N }`."
+        }
+      ],
+      "impact": "Operational visibility into memory system performance",
+      "testing": "Verify metrics increment correctly after recall/retain operations"
+    },
+
+    "MEM_11": {
+      "title": "Hot Window Persistence Robustness",
+      "severity": "LOW",
+      "source_reports": ["memory_review"],
+      "files": [
+        "packages/core/src/memory/context-assembler.ts:707-751"
+      ],
+      "current_behavior": "Hot window (20 messages) persisted as JSON. If write fails, context is lost silently.",
+      "changes": [
+        {
+          "file": "packages/core/src/memory/context-assembler.ts",
+          "action": "Add write-ahead logging and error handling",
+          "detail": "At lines 707-751, write to temp file first then atomic rename. Add try/catch with error logging. On load failure, log warning and start with empty window instead of crashing."
+        }
+      ],
+      "impact": "Prevents silent context loss on disk errors",
+      "testing": "Simulate disk full scenario, verify graceful degradation"
+    }
+  },
+
+  "3_WEBUI_FEATURES": {
+    "_summary": "Message retention, activity feeds, token tracking, run details, DAG visualization. 12 items.",
+    "_estimated_effort": "2-3 weeks",
+
+    "WEBUI_FEAT_01": {
+      "title": "Track and Display Conversational Token Usage",
+      "severity": "CRITICAL",
+      "source_reports": ["webui_review:3.1"],
+      "files": [
+        "packages/web/src/stores/chat.ts",
+        "packages/web/src/lib/gateway.ts",
+        "packages/gateway/src/websocket.ts"
+      ],
+      "current_behavior": "DAG workflow tokens tracked via dag-complete metadata, but non-DAG conversational tokens completely untracked. Users have zero cost visibility for regular chat.",
+      "changes": [
+        {
+          "file": "packages/gateway/src/websocket.ts",
+          "action": "Emit token usage events for conversational messages",
+          "detail": "After each Claude API response, broadcast a `token_usage` WebSocket event: `{ type: 'token_usage', data: { inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, model, costUsd } }`. Extract usage from Anthropic API response headers/body."
+        },
+        {
+          "file": "packages/web/src/lib/gateway.ts",
+          "action": "Handle token_usage events",
+          "detail": "Add handler for 'token_usage' message type. Update chat store with cumulative session totals."
+        },
+        {
+          "file": "packages/web/src/stores/chat.ts",
+          "action": "Add token tracking state",
+          "detail": "Add to store: `sessionTokens: { input: number, output: number, cacheRead: number, totalCostUsd: number }`. Add `addTokenUsage(usage)` action. Display in UI header or footer."
+        }
+      ],
+      "impact": "Users can monitor and control API spending in real-time",
+      "testing": "Send chat message, verify token count displayed and updates after each response"
+    },
+
+    "WEBUI_FEAT_02": {
+      "title": "Fix ActivityFeed React Key Collisions",
+      "severity": "HIGH",
+      "source_reports": ["webui_review:2.1"],
+      "files": [
+        "packages/web/src/components/orchestration/ActivityFeed.tsx:148"
+      ],
+      "current_behavior": "Keys use `${timestamp}-${index}` which collides when parallel workers emit events at the same timestamp.",
+      "changes": [
+        {
+          "file": "packages/web/src/components/orchestration/ActivityFeed.tsx",
+          "action": "Use unique IDs for React keys",
+          "detail": "At line 148, replace `key={`${event.timestamp}-${index}`}` with `key={event.id ?? `${event.timestamp}-${event.workerId ?? 'system'}-${index}`}`. Better: add `id: string` field to activity events using crypto.randomUUID() at creation time."
+        }
+      ],
+      "impact": "Prevents rendering bugs and state corruption with parallel workers",
+      "testing": "Run 5-node DAG, verify no duplicate key warnings in console"
+    },
+
+    "WEBUI_FEAT_03": {
+      "title": "Fix DAGVisualization ReactFlow State Drift",
+      "severity": "HIGH",
+      "source_reports": ["webui_review:5.1"],
+      "files": [
+        "packages/web/src/components/orchestration/DAGVisualization.tsx:88-94"
+      ],
+      "current_behavior": "React.memo and ReactFlow internal state desync. Layout recomputes every render.",
+      "changes": [
+        {
+          "file": "packages/web/src/components/orchestration/DAGVisualization.tsx",
+          "action": "Use useNodesState/useEdgesState hooks and stable layout",
+          "detail": "At lines 88-94: (1) Replace manual node/edge state with ReactFlow's `useNodesState()` and `useEdgesState()` hooks. (2) Memoize layout computation with `useMemo()` keyed on node count and edge list hash. (3) Only recompute layout when graph topology changes, not on status updates. (4) Use `onNodesChange` and `onEdgesChange` callbacks for ReactFlow-driven updates."
+        }
+      ],
+      "impact": "Eliminates visual flicker and state desyncs in DAG visualization",
+      "testing": "Run multi-node DAG, verify smooth status transitions without layout jumps"
+    },
+
+    "WEBUI_FEAT_04": {
+      "title": "Add DAG Edge Labels and MiniMap",
+      "severity": "MEDIUM",
+      "source_reports": ["webui_review:5.2,5.4"],
+      "files": [
+        "packages/web/src/components/orchestration/DAGVisualization.tsx"
+      ],
+      "current_behavior": "No edge labels showing data flow. No MiniMap for navigation in large graphs. Fixed spacing doesn't scale.",
+      "changes": [
+        {
+          "file": "packages/web/src/components/orchestration/DAGVisualization.tsx",
+          "action": "Add edge labels and MiniMap component",
+          "detail": "Import `MiniMap` from '@xyflow/react'. Add `<MiniMap />` component inside ReactFlow. For edges, add `label` property showing dependency relationship. Make node spacing dynamic based on node count: `spacing = Math.max(200, 350 - nodeCount * 10)`."
+        }
+      ],
+      "impact": "Better navigation and understanding of complex DAG workflows",
+      "testing": "Create 10+ node DAG, verify MiniMap shows overview, edges have labels"
+    },
+
+    "WEBUI_FEAT_05": {
+      "title": "Config-Driven Token Pricing",
+      "severity": "MEDIUM",
+      "source_reports": ["webui_review:3.2,3.3"],
+      "files": [
+        "packages/web/src/components/chat/RunSummaryCard.tsx"
+      ],
+      "current_behavior": "Pricing hardcoded with 'June 2025' Anthropic rates. No config-driven updates. Cache tokens displayed but not separately costed (cache reads are 90% cheaper).",
+      "changes": [
+        {
+          "file": "packages/web/src/components/chat/RunSummaryCard.tsx",
+          "action": "Move pricing to config and add cache-aware costing",
+          "detail": "Extract pricing constants to a separate `packages/web/src/lib/pricing.ts` file. Load pricing from gateway config (add `GET /api/pricing` endpoint or include in `/api/config`). Calculate cache read tokens at 10% of standard input cost. Display breakdown: `Input: $X.XX | Cache Read: $X.XX (90% savings) | Output: $X.XX | Total: $X.XX`."
+        }
+      ],
+      "impact": "Accurate cost reporting as model prices change. Users see cache savings.",
+      "testing": "Verify pricing updates when config changes. Verify cache savings displayed correctly."
+    },
+
+    "WEBUI_FEAT_06": {
+      "title": "Add ActivityFeed Filtering",
+      "severity": "MEDIUM",
+      "source_reports": ["webui_review:2.4"],
+      "files": [
+        "packages/web/src/components/orchestration/ActivityFeed.tsx"
+      ],
+      "current_behavior": "ActivityFeed has zero filtering capability, unlike MemoryFeed which has comprehensive type toggles.",
+      "changes": [
+        {
+          "file": "packages/web/src/components/orchestration/ActivityFeed.tsx",
+          "action": "Add filter controls matching MemoryFeed pattern",
+          "detail": "Add filter bar at top of ActivityFeed with: (1) Worker filter dropdown (show events from specific worker). (2) Event type toggles: status, tool_call, error, memory, dag. (3) Text search field for event content. Model on the existing MemoryFeed.tsx filter implementation (packages/web/src/components/orchestration/MemoryFeed.tsx)."
+        }
+      ],
+      "impact": "Users can focus on relevant events during complex workflows",
+      "testing": "Run workflow, filter by worker, verify only that worker's events shown"
+    },
+
+    "WEBUI_FEAT_07": {
+      "title": "Run History Page with Persistent Storage",
+      "severity": "MEDIUM",
+      "source_reports": ["webui_review:4.1,4.2"],
+      "files": [
+        "packages/web/src/components/orchestration/OrchestrationPane.tsx",
+        "packages/web/src/stores/orchestration.ts"
+      ],
+      "current_behavior": "No dedicated run history page. Past runs only visible inline in chat. GraphState frozen after completion; node details unavailable after tab close.",
+      "changes": [
+        {
+          "file": "packages/web/src/stores/orchestration.ts",
+          "action": "Persist completed run data",
+          "detail": "Add `completedRuns: RunSummary[]` to orchestration store with Zustand persist middleware. Store: runId, timestamp, nodeStatuses, totalCost, duration, workerOutputPaths. Cap at 50 most recent runs."
+        },
+        {
+          "file": "packages/web/src/components/orchestration/OrchestrationPane.tsx",
+          "action": "Add 'History' tab to orchestration pane",
+          "detail": "Add a third tab 'History' alongside existing tabs. Show list of completed runs with: date, duration, cost, node count, status. Click to expand and view DAG visualization + worker details for that run."
+        }
+      ],
+      "impact": "Users can review and compare past workflow executions",
+      "testing": "Run 3 workflows, close tab, reopen, verify all 3 visible in history"
+    },
+
+    "WEBUI_FEAT_08": {
+      "title": "Cumulative Session Cost Display",
+      "severity": "MEDIUM",
+      "source_reports": ["webui_review:3.4"],
+      "files": [
+        "packages/web/src/stores/chat.ts",
+        "packages/web/src/components/chat/ChatPane.tsx"
+      ],
+      "current_behavior": "Individual run costs shown in RunSummaryCard but no cumulative session total.",
+      "changes": [
+        {
+          "file": "packages/web/src/stores/chat.ts",
+          "action": "Track cumulative cost",
+          "detail": "Add `sessionCost: number` to chat store. Increment on each token_usage event and dag-complete event. Persist with Zustand persist middleware."
+        },
+        {
+          "file": "packages/web/src/components/chat/ChatPane.tsx",
+          "action": "Display cumulative cost in header",
+          "detail": "Add small cost badge in chat pane header: `Session: $X.XX`. Update in real-time as messages are sent/received."
+        }
+      ],
+      "impact": "Users can monitor total spend across a session",
+      "testing": "Send multiple messages and run DAG, verify cumulative total matches sum of individual costs"
+    },
+
+    "WEBUI_FEAT_09": {
+      "title": "Virtualize ActivityFeed for Large Event Lists",
+      "severity": "MEDIUM",
+      "source_reports": ["webui_review:2.3", "webui_review:10.4"],
+      "files": [
+        "packages/web/src/components/orchestration/ActivityFeed.tsx"
+      ],
+      "current_behavior": "1000-event ring buffer rendered as full DOM without virtualization. Causes jank with many events.",
+      "changes": [
+        {
+          "file": "packages/web/src/components/orchestration/ActivityFeed.tsx",
+          "action": "Add virtual scrolling with react-virtuoso",
+          "detail": "Replace the mapped event list with `<Virtuoso data={filteredEvents} itemContent={(index, event) => <ActivityItem event={event} />} />`. Install `react-virtuoso` package. This renders only visible items in the viewport."
+        }
+      ],
+      "impact": "Smooth scrolling regardless of event count",
+      "testing": "Generate 5000 events, verify smooth scroll performance (60fps)"
+    },
+
+    "WEBUI_FEAT_10": {
+      "title": "Improve formatTokens Precision",
+      "severity": "LOW",
+      "source_reports": ["webui_review:3.5"],
+      "files": [
+        "packages/web/src/components/chat/RunSummaryCard.tsx"
+      ],
+      "current_behavior": "formatTokens() truncates precision (shows '1.2M' instead of '1,234,567').",
+      "changes": [
+        {
+          "file": "packages/web/src/components/chat/RunSummaryCard.tsx",
+          "action": "Add tooltip with full precision",
+          "detail": "Keep compact display (1.2M) but add `title` attribute with full number: `<span title='1,234,567 tokens'>1.2M</span>`. Use Intl.NumberFormat for locale-aware formatting."
+        }
+      ],
+      "impact": "Users can see exact token counts on hover",
+      "testing": "Hover over token count, verify tooltip shows full number"
+    },
+
+    "WEBUI_FEAT_11": {
+      "title": "WorkerDetail Data Persistence",
+      "severity": "LOW",
+      "source_reports": ["webui_review:4.3"],
+      "files": [
+        "packages/web/src/components/orchestration/WorkerDetail.tsx"
+      ],
+      "current_behavior": "WorkerDetail reasoning/tool tabs lose data on refresh.",
+      "changes": [
+        {
+          "file": "packages/web/src/components/orchestration/WorkerDetail.tsx",
+          "action": "Persist worker detail data in orchestration store",
+          "detail": "Store worker reasoning and tool call history in orchestration store (already persisted). On component mount, load from store instead of only relying on WebSocket events."
+        }
+      ],
+      "impact": "Worker details survive page refresh",
+      "testing": "View worker detail, refresh page, verify data still visible"
+    },
+
+    "WEBUI_FEAT_12": {
+      "title": "Handle proOptions License Requirement",
+      "severity": "LOW",
+      "source_reports": ["webui_review:5.5"],
+      "files": [
+        "packages/web/src/components/orchestration/DAGVisualization.tsx"
+      ],
+      "current_behavior": "`proOptions={{ hideAttribution: true }}` may require ReactFlow Pro license.",
+      "changes": [
+        {
+          "file": "packages/web/src/components/orchestration/DAGVisualization.tsx",
+          "action": "Remove proOptions or acquire license",
+          "detail": "If no Pro license: remove `proOptions={{ hideAttribution: true }}` to comply with ReactFlow open-source license. The ReactFlow attribution watermark is small and non-intrusive."
+        }
+      ],
+      "impact": "License compliance",
+      "testing": "Verify ReactFlow renders correctly with attribution visible"
+    }
+  },
+
+  "4_WEBUI_UX": {
+    "_summary": "UI/UX improvements following design best practices. 11 items.",
+    "_estimated_effort": "1-2 weeks",
+
+    "UX_01": {
+      "title": "WCAG AA Color Contrast Fix",
+      "severity": "HIGH",
+      "source_reports": ["webui_review:accessibility"],
+      "files": [
+        "packages/web/src/components/orchestration/ActivityFeed.tsx",
+        "packages/web/src/components/orchestration/WorkflowSummary.tsx",
+        "packages/web/src/components/orchestration/MemoryFeed.tsx",
+        "packages/web/src/components/chat/MessageBubble.tsx"
+      ],
+      "current_behavior": "`text-zinc-600` on `bg-zinc-900` = 2.8:1 contrast ratio (below WCAG AA 4.5:1 minimum).",
+      "changes": [
+        {
+          "action": "Replace text-zinc-600 with text-zinc-400 globally",
+          "detail": "Search all .tsx files for `text-zinc-600` and replace with `text-zinc-400` (contrast ratio 5.3:1, meets AA). For secondary text that needs to be dimmer, use `text-zinc-500` (4.1:1) with `font-size: 0.875rem` (AA for large text).",
+          "search_pattern": "text-zinc-600",
+          "replace_with": "text-zinc-400"
+        }
+      ],
+      "impact": "Meets WCAG AA accessibility standards. Better readability for all users.",
+      "testing": "Use axe-core browser extension to verify no contrast violations"
+    },
+
+    "UX_02": {
+      "title": "Add Keyboard Navigation and ARIA Labels",
+      "severity": "HIGH",
+      "source_reports": ["webui_review:accessibility"],
+      "files": [
+        "packages/web/src/components/shared/TabGroup.tsx",
+        "packages/web/src/components/orchestration/ActivityFeed.tsx",
+        "packages/web/src/components/chat/ChatInput.tsx",
+        "packages/web/src/components/chat/ToolCallCard.tsx"
+      ],
+      "current_behavior": "No skip-to-content link. Missing aria-label on interactive elements. No keyboard navigation in TabGroup (Arrow keys). Color-only status indicators.",
+      "changes": [
+        {
+          "file": "packages/web/src/components/shared/TabGroup.tsx",
+          "action": "Add role='tablist', role='tab', aria-selected, arrow key navigation",
+          "detail": "Add `role='tablist'` to container, `role='tab'` + `aria-selected` + `tabIndex` to each tab button. Handle ArrowLeft/ArrowRight for tab switching. Handle Home/End for first/last tab."
+        },
+        {
+          "file": "packages/web/src/components/orchestration/ActivityFeed.tsx",
+          "action": "Add aria-label and role='log'",
+          "detail": "Add `role='log'` and `aria-label='Activity feed'` to the feed container. Add `aria-live='polite'` for new events."
+        },
+        {
+          "file": "packages/web/src/components/chat/ChatInput.tsx",
+          "action": "Add aria-label to input and buttons",
+          "detail": "Add `aria-label='Message input'` to textarea. Add `aria-label='Send message'` to send button. Add `aria-label='Attach file'` to file attachment button."
+        }
+      ],
+      "impact": "Screen reader and keyboard-only user accessibility",
+      "testing": "Navigate entire UI with keyboard only. Run NVDA/VoiceOver and verify all interactive elements announced."
+    },
+
+    "UX_03": {
+      "title": "Add Skip-to-Content Link",
+      "severity": "MEDIUM",
+      "source_reports": ["webui_review:accessibility"],
+      "files": [
+        "packages/web/src/app/page.tsx"
+      ],
+      "current_behavior": "No skip-to-content link for keyboard users.",
+      "changes": [
+        {
+          "file": "packages/web/src/app/page.tsx",
+          "action": "Add skip link as first focusable element",
+          "detail": "Add `<a href='#main-content' className='sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50 focus:bg-zinc-800 focus:text-white focus:p-2 focus:rounded'>Skip to main content</a>` as first child. Add `id='main-content'` to the main chat area."
+        }
+      ],
+      "impact": "Keyboard users can skip navigation",
+      "testing": "Tab into page, verify skip link appears and works"
+    },
+
+    "UX_04": {
+      "title": "Add Light Mode / System Preference Detection",
+      "severity": "MEDIUM",
+      "source_reports": ["webui_review:6g"],
+      "files": [
+        "packages/web/src/app/layout.tsx",
+        "packages/web/tailwind.config.ts"
+      ],
+      "current_behavior": "Dark mode only. No light mode or `prefers-color-scheme` detection.",
+      "changes": [
+        {
+          "file": "packages/web/tailwind.config.ts",
+          "action": "Enable dark mode class strategy",
+          "detail": "Add `darkMode: 'class'` to tailwind config. This allows toggling dark mode via a class on the html element."
+        },
+        {
+          "file": "packages/web/src/app/layout.tsx",
+          "action": "Add theme detection and toggle",
+          "detail": "Add a `useEffect` that reads `prefers-color-scheme` media query and sets initial theme. Add a theme toggle button in the header. Store preference in localStorage. Apply 'dark' class to `<html>` element."
+        }
+      ],
+      "impact": "Users in bright environments can use light mode. Respects OS preference.",
+      "testing": "Toggle system dark mode, verify UI follows. Toggle manual switch, verify override works."
+    },
+
+    "UX_05": {
+      "title": "Status Indicators Beyond Color-Only",
+      "severity": "MEDIUM",
+      "source_reports": ["webui_review:accessibility"],
+      "files": [
+        "packages/web/src/components/orchestration/WorkerNode.tsx",
+        "packages/web/src/components/orchestration/DAGVisualization.tsx",
+        "packages/web/src/components/chat/ConnectionStatus.tsx"
+      ],
+      "current_behavior": "Status indicators use color only (green=running, red=error, yellow=pending). No text or icon alternatives.",
+      "changes": [
+        {
+          "file": "packages/web/src/components/orchestration/WorkerNode.tsx",
+          "action": "Add text labels and icons alongside colors",
+          "detail": "Add `aria-label` with status text. Add small text label below status dot: 'Running', 'Error', 'Done'. Add icons: ⏳ pending, ▶ running, ✓ done, ✕ error."
+        },
+        {
+          "file": "packages/web/src/components/chat/ConnectionStatus.tsx",
+          "action": "Add text alongside connection status dot",
+          "detail": "Show 'Connected', 'Disconnected', 'Reconnecting' text next to the color indicator."
+        }
+      ],
+      "impact": "Color-blind users can determine status. Screen readers announce status.",
+      "testing": "Enable grayscale display filter, verify all statuses distinguishable"
+    },
+
+    "UX_06": {
+      "title": "Add prefers-reduced-motion Support",
+      "severity": "MEDIUM",
+      "source_reports": ["webui_review:accessibility"],
+      "files": [
+        "packages/web/src/components/chat/OmegaSpinner.tsx",
+        "packages/web/src/components/chat/ThinkingIndicator.tsx",
+        "packages/web/src/components/orchestration/DAGVisualization.tsx"
+      ],
+      "current_behavior": "Animations play regardless of user motion preferences.",
+      "changes": [
+        {
+          "action": "Add motion-safe wrapper to all animations",
+          "detail": "Replace `animate-spin` with `motion-safe:animate-spin`. Replace `animate-pulse` with `motion-safe:animate-pulse`. For CSS animations, add `@media (prefers-reduced-motion: reduce) { animation: none; }`. Tailwind's `motion-safe:` prefix handles this automatically."
+        }
+      ],
+      "impact": "Respects user accessibility preferences for motion sensitivity",
+      "testing": "Enable 'reduce motion' in OS, verify no animations play"
+    },
+
+    "UX_07": {
+      "title": "Responsive Model Usage Table",
+      "severity": "MEDIUM",
+      "source_reports": ["webui_review:6b"],
+      "files": [
+        "packages/web/src/components/chat/RunSummaryCard.tsx"
+      ],
+      "current_behavior": "Model usage grid unreadable on mobile. No responsive font sizing.",
+      "changes": [
+        {
+          "file": "packages/web/src/components/chat/RunSummaryCard.tsx",
+          "action": "Make model usage table responsive",
+          "detail": "On mobile (< 640px): switch from table to stacked card layout. Each model gets its own card with label: value pairs. Use `sm:table-cell hidden` / `sm:hidden block` pattern for responsive switching."
+        }
+      ],
+      "impact": "Usable on mobile devices",
+      "testing": "Resize browser to 375px width, verify all data visible and readable"
+    },
+
+    "UX_08": {
+      "title": "URL Routing for Shareable Links",
+      "severity": "LOW",
+      "source_reports": ["webui_review:6a"],
+      "files": [
+        "packages/web/src/app/page.tsx"
+      ],
+      "current_behavior": "Single-page app with no URL routing. Can't share links to specific runs or conversations.",
+      "changes": [
+        {
+          "file": "packages/web/src/app/page.tsx",
+          "action": "Add URL hash-based routing",
+          "detail": "Use `window.location.hash` for lightweight routing: `#/chat`, `#/run/{id}`, `#/settings`. Listen for `hashchange` events. Update hash when navigating. On page load, parse hash and restore view."
+        }
+      ],
+      "impact": "Users can bookmark and share links to specific views",
+      "testing": "Navigate to run, copy URL, open in new tab, verify same view"
+    },
+
+    "UX_09": {
+      "title": "Add Breadcrumb Navigation",
+      "severity": "LOW",
+      "source_reports": ["webui_review"],
+      "files": [
+        "packages/web/src/components/chat/ChatPane.tsx"
+      ],
+      "current_behavior": "No breadcrumb or back navigation between views.",
+      "changes": [
+        {
+          "file": "packages/web/src/components/chat/ChatPane.tsx",
+          "action": "Add breadcrumb bar when viewing sub-views",
+          "detail": "When viewing run details or settings, show breadcrumb: `Chat > Run #123 > Worker A`. Clickable segments to navigate back."
+        }
+      ],
+      "impact": "Better navigation flow for users",
+      "testing": "Navigate into run detail, click breadcrumb to go back"
+    },
+
+    "UX_10": {
+      "title": "Improve Error Message Display",
+      "severity": "LOW",
+      "source_reports": ["webui_review"],
+      "files": [
+        "packages/web/src/components/chat/ErrorMessage.tsx"
+      ],
+      "current_behavior": "ErrorMessage component is minimal (23 lines). Generic error display.",
+      "changes": [
+        {
+          "file": "packages/web/src/components/chat/ErrorMessage.tsx",
+          "action": "Add error categorization and retry action",
+          "detail": "Categorize errors: network, auth, rate-limit, server. Show appropriate icon and message for each. Add 'Retry' button for retriable errors. Add 'Copy error' button for bug reports."
+        }
+      ],
+      "impact": "Users can understand and resolve errors faster",
+      "testing": "Trigger each error type, verify appropriate message and actions shown"
+    },
+
+    "UX_11": {
+      "title": "Add Loading Skeleton for Initial Page Load",
+      "severity": "LOW",
+      "source_reports": ["webui_review"],
+      "files": [
+        "packages/web/src/components/orchestration/OrchestrationPane.tsx"
+      ],
+      "current_behavior": "OrchestrationPane loads client-side only (SSR disabled). Shows blank space during hydration.",
+      "changes": [
+        {
+          "file": "packages/web/src/components/orchestration/OrchestrationPane.tsx",
+          "action": "Add skeleton placeholder during CSR hydration",
+          "detail": "Show a skeleton shimmer layout (matching final layout structure) while the dynamic import loads. Use the same skeleton pattern already used in ChatPane."
+        }
+      ],
+      "impact": "Eliminates layout shift during page load",
+      "testing": "Hard refresh page, verify skeleton appears then transitions smoothly to content"
+    }
+  },
+
+  "5_ARCHITECTURE": {
+    "_summary": "Code organization, god file decomposition, dead code removal, dependency cleanup. 10 items.",
+    "_estimated_effort": "2-3 weeks",
+
+    "ARCH_01": {
+      "title": "Decompose main-agent.ts God File (1,251 lines)",
+      "severity": "HIGH",
+      "source_reports": ["architecture_review"],
+      "files": [
+        "packages/core/src/agent/main-agent.ts"
+      ],
+      "current_behavior": "MainAgent class handles 10+ responsibilities: message handling, tool execution, memory integration, streaming, error handling, checkpoint management, context assembly, conversation management.",
+      "changes": [
+        {
+          "file": "packages/core/src/agent/main-agent.ts",
+          "action": "Extract into focused modules",
+          "detail": "Split into: (1) `main-agent.ts` — orchestration only (~200 lines). (2) `message-handler.ts` — user/assistant message processing. (3) `tool-executor.ts` — tool call dispatch and result handling. (4) `stream-manager.ts` — streaming response management. (5) `checkpoint-manager.ts` — checkpoint save/restore. (6) `context-builder.ts` — system prompt and context assembly. Each module exports a class or set of functions consumed by MainAgent."
+        }
+      ],
+      "impact": "Testable, maintainable components. Each module can be tested independently.",
+      "testing": "After decomposition, verify all existing functionality works. Each new module should have clear interface."
+    },
+
+    "ARCH_02": {
+      "title": "Decompose gateway server.ts (861 lines)",
+      "severity": "HIGH",
+      "source_reports": ["architecture_review"],
+      "files": [
+        "packages/gateway/src/server.ts"
+      ],
+      "current_behavior": "Single file handles HTTP server creation, all route registration, CORS, error handling, shutdown, and configuration.",
+      "changes": [
+        {
+          "file": "packages/gateway/src/server.ts",
+          "action": "Extract route handlers into separate route files",
+          "detail": "Move inline route handlers to their respective route files: (1) Move /api/models handler to `routes/models.ts`. (2) Move /api/commands handler to `routes/commands.ts`. (3) Move /api/shutdown and /api/restart to `routes/lifecycle.ts`. (4) Keep server.ts as pure server setup + route registration (~200 lines). (5) Extract CORS handling to `middleware/cors.ts`."
+        }
+      ],
+      "impact": "Clean separation of concerns. Each route file independently testable.",
+      "testing": "All API endpoints respond identically after refactor"
+    },
+
+    "ARCH_03": {
+      "title": "Decompose setup.ts (1,631 lines)",
+      "severity": "HIGH",
+      "source_reports": ["architecture_review"],
+      "files": [
+        "packages/core/src/commands/setup.ts"
+      ],
+      "current_behavior": "Largest file in codebase. Handles: interactive setup wizard, Docker management, config generation, dependency checking, service management, health verification.",
+      "changes": [
+        {
+          "file": "packages/core/src/commands/setup.ts",
+          "action": "Split into focused setup modules",
+          "detail": "Extract: (1) `setup/wizard.ts` — interactive prompts and user input. (2) `setup/docker.ts` — Docker image management, container lifecycle. (3) `setup/config-generator.ts` — config.yaml generation and validation. (4) `setup/health-check.ts` — service health verification. (5) `setup/dependencies.ts` — system dependency checking (Node, Docker, etc). Keep `setup.ts` as orchestrator (~150 lines)."
+        }
+      ],
+      "impact": "Each setup phase independently testable and maintainable",
+      "testing": "Run full setup wizard, verify identical behavior"
+    },
+
+    "ARCH_04": {
+      "title": "Type WebSocket Messages (Replace 'any')",
+      "severity": "HIGH",
+      "source_reports": ["architecture_review", "webui_review:7.3"],
+      "files": [
+        "packages/web/src/lib/gateway.ts",
+        "packages/gateway/src/websocket.ts"
+      ],
+      "current_behavior": "WebSocket message handlers type `msg` as `any`. No type safety for message parsing.",
+      "changes": [
+        {
+          "file": "packages/gateway/src/websocket.ts",
+          "action": "Define typed message union",
+          "detail": "Create `packages/gateway/src/ws-types.ts` with discriminated union: `type WsMessage = TextMessage | DagDispatchedMessage | DagCompleteMessage | TokenUsageMessage | MemoryEventMessage | StatusMessage | ...`. Each type has `type` discriminant field. Use in send/receive handlers."
+        },
+        {
+          "file": "packages/web/src/lib/gateway.ts",
+          "action": "Import and use typed messages",
+          "detail": "Import shared types (or duplicate if no shared package). Replace `any` with the discriminated union. Use type narrowing: `if (msg.type === 'text') { /* msg is TextMessage */ }`."
+        }
+      ],
+      "impact": "Compile-time safety for all WebSocket communication. Catches message format errors early.",
+      "testing": "TypeScript compilation should catch any message format mismatches"
+    },
+
+    "ARCH_05": {
+      "title": "Create Test Infrastructure",
+      "severity": "HIGH",
+      "source_reports": ["architecture_review"],
+      "files": [
+        "package.json (root)",
+        "packages/core/package.json",
+        "packages/gateway/package.json",
+        "packages/hindsight/package.json",
+        "packages/web/package.json"
+      ],
+      "current_behavior": "ZERO test files in entire repository. No test runner configured.",
+      "changes": [
+        {
+          "action": "Set up Vitest across all packages",
+          "detail": "Install vitest as dev dependency. Create `vitest.config.ts` in each package. Add `test` script to each package.json. Create initial test files for critical paths: (1) `packages/gateway/src/__tests__/auth.test.ts` — auth validation. (2) `packages/hindsight/src/__tests__/similarity.test.ts` — relevance scoring. (3) `packages/core/src/memory/__tests__/retention-engine.test.ts` — quality scoring. (4) `packages/gateway/src/__tests__/routes.test.ts` — route auth guards. Target: 20 tests covering security-critical paths first."
+        }
+      ],
+      "impact": "Foundation for CI/CD, regression prevention, and confidence in refactoring",
+      "testing": "Run `pnpm test` across all packages, verify all pass"
+    },
+
+    "ARCH_06": {
+      "title": "Fix Silent Error Swallowing",
+      "severity": "MEDIUM",
+      "source_reports": ["architecture_review"],
+      "files": [
+        "packages/core/src/agent/main-agent.ts",
+        "packages/core/src/memory/context-assembler.ts",
+        "packages/core/src/memory/retention-engine.ts"
+      ],
+      "current_behavior": "Fire-and-forget promises and checkpoint saves swallow errors with empty catch blocks or .catch(() => {}).",
+      "changes": [
+        {
+          "action": "Replace empty catch blocks with error logging",
+          "detail": "Search for `.catch(() => {})`, `.catch(() => undefined)`, `catch { }`, and `catch { /* ignore */ }` patterns. Replace with `.catch(err => logger.warn('Operation failed', { error: err.message, context: '<specific context>' }))`. For critical operations (checkpoint save, memory retain), add retry logic."
+        }
+      ],
+      "impact": "Errors become visible for debugging. Critical failures trigger retries.",
+      "testing": "Simulate failures (disk full, network down), verify errors logged"
+    },
+
+    "ARCH_07": {
+      "title": "Extract Shared Types Package",
+      "severity": "MEDIUM",
+      "source_reports": ["architecture_review"],
+      "files": [
+        "packages/core/src/types/",
+        "packages/gateway/src/",
+        "packages/web/src/"
+      ],
+      "current_behavior": "Types duplicated across packages. WebSocket message types defined separately in gateway and web.",
+      "changes": [
+        {
+          "action": "Create @orionomega/shared-types package",
+          "detail": "Create `packages/shared-types/` with shared interfaces: WsMessage types, config schema, session types, memory types, API request/response types. Import from this package in core, gateway, and web packages."
+        }
+      ],
+      "impact": "Single source of truth for all cross-package types",
+      "testing": "TypeScript compilation across all packages succeeds with shared types"
+    },
+
+    "ARCH_08": {
+      "title": "Add API Versioning",
+      "severity": "MEDIUM",
+      "source_reports": ["webui_review:11.1"],
+      "files": [
+        "packages/gateway/src/server.ts"
+      ],
+      "current_behavior": "No API versioning. Routes are `/api/health`, not `/api/v1/health`.",
+      "changes": [
+        {
+          "file": "packages/gateway/src/server.ts",
+          "action": "Add /v1/ prefix to all API routes",
+          "detail": "Prefix all routes with `/api/v1/`. Keep old routes as aliases for backward compatibility during transition. Add `API-Version: v1` response header."
+        }
+      ],
+      "impact": "Enables non-breaking API evolution",
+      "testing": "Both `/api/health` and `/api/v1/health` should work during transition"
+    },
+
+    "ARCH_09": {
+      "title": "Reduce SettingsModal.tsx (1,061 lines)",
+      "severity": "LOW",
+      "source_reports": ["architecture_review"],
+      "files": [
+        "packages/web/src/components/settings/SettingsModal.tsx"
+      ],
+      "current_behavior": "Single component handles all settings tabs, forms, and validation.",
+      "changes": [
+        {
+          "file": "packages/web/src/components/settings/SettingsModal.tsx",
+          "action": "Extract each tab into its own component",
+          "detail": "Split into: GeneralTab, ModelsTab, MemoryTab, OrchestrationTab components. SettingsModal becomes a thin shell (~100 lines) with tab switching and modal chrome."
+        }
+      ],
+      "impact": "Each settings section independently maintainable",
+      "testing": "All settings tabs function identically after split"
+    },
+
+    "ARCH_10": {
+      "title": "Add Error Boundaries to Key UI Sections",
+      "severity": "LOW",
+      "source_reports": ["webui_review"],
+      "files": [
+        "packages/web/src/components/ErrorBoundary.tsx",
+        "packages/web/src/components/orchestration/OrchestrationPane.tsx",
+        "packages/web/src/components/chat/ChatPane.tsx"
+      ],
+      "current_behavior": "Single ErrorBoundary exists (40 lines) but may not wrap all critical sections.",
+      "changes": [
+        {
+          "action": "Wrap each major section in ErrorBoundary",
+          "detail": "Add ErrorBoundary around: (1) OrchestrationPane (so DAG crash doesn't kill chat). (2) ChatPane message list (so bad message doesn't kill UI). (3) SettingsModal (so settings error doesn't kill app). Each boundary should show section-specific error message with retry button."
+        }
+      ],
+      "impact": "Partial failures don't crash entire application",
+      "testing": "Simulate component error, verify only that section shows error boundary"
+    }
+  },
+
+  "6_FEATURE_PARITY": {
+    "_summary": "Ensuring CLI/TUI features work equivalently in WebUI. 7 items.",
+    "_estimated_effort": "1-2 weeks",
+
+    "PARITY_01": {
+      "title": "File Output Viewing in WebUI",
+      "severity": "MEDIUM",
+      "source_reports": ["webui_review:feature_parity"],
+      "files": [
+        "packages/web/src/components/chat/ToolCallCard.tsx",
+        "packages/gateway/src/websocket.ts"
+      ],
+      "current_behavior": "CLI can view file contents (cat). WebUI only shows file path in tool results, can't view artifact contents.",
+      "changes": [
+        {
+          "file": "packages/gateway/src/websocket.ts",
+          "action": "Add file content endpoint",
+          "detail": "Add `GET /api/files?path=<encoded_path>` endpoint (with auth + path traversal prevention). Returns file content with syntax highlighting hint based on extension. Limit to workspace directory only."
+        },
+        {
+          "file": "packages/web/src/components/chat/ToolCallCard.tsx",
+          "action": "Add 'View File' button for file paths",
+          "detail": "When tool result contains a file path, show 'View' button. On click, fetch file content from new endpoint. Display in modal with syntax highlighting."
+        }
+      ],
+      "impact": "Users can inspect generated files without switching to terminal",
+      "testing": "Run tool that creates file, click View, verify content displayed with highlighting"
+    },
+
+    "PARITY_02": {
+      "title": "Log Viewer in WebUI",
+      "severity": "MEDIUM",
+      "source_reports": ["webui_review:feature_parity"],
+      "files": [
+        "packages/gateway/src/routes/",
+        "packages/web/src/components/"
+      ],
+      "current_behavior": "CLI has `orionomega logs` command. WebUI has no log viewing capability.",
+      "changes": [
+        {
+          "action": "Add log streaming endpoint and viewer component",
+          "detail": "Add `GET /api/logs?lines=100&follow=true` endpoint that reads from log files and optionally streams via SSE. Create `LogViewer.tsx` component with auto-scroll, log level filtering (info/warn/error), and search. Add as tab in OrchestrationPane or Settings."
+        }
+      ],
+      "impact": "Debugging without terminal access",
+      "testing": "Generate log entries, verify they appear in real-time in WebUI"
+    },
+
+    "PARITY_03": {
+      "title": "Doctor/Diagnostics in WebUI",
+      "severity": "MEDIUM",
+      "source_reports": ["webui_review:feature_parity"],
+      "files": [
+        "packages/gateway/src/routes/",
+        "packages/web/src/components/settings/"
+      ],
+      "current_behavior": "CLI has `orionomega doctor` command for system diagnostics. WebUI has no equivalent.",
+      "changes": [
+        {
+          "action": "Add diagnostics endpoint and UI",
+          "detail": "Add `GET /api/diagnostics` endpoint that runs same checks as CLI doctor: Node version, Docker status, Hindsight health, API key validity, disk space, memory usage. Return JSON results. Add 'Diagnostics' tab in Settings with pass/fail display for each check."
+        }
+      ],
+      "impact": "Users can troubleshoot without terminal",
+      "testing": "Run diagnostics with one service down, verify failure reported clearly"
+    },
+
+    "PARITY_04": {
+      "title": "Session Management in WebUI",
+      "severity": "MEDIUM",
+      "source_reports": ["webui_review:feature_parity"],
+      "files": [
+        "packages/web/src/components/",
+        "packages/web/src/stores/chat.ts"
+      ],
+      "current_behavior": "CLI can create and switch sessions. WebUI only uses 'default' session with no ability to create/switch.",
+      "changes": [
+        {
+          "action": "Add session selector UI",
+          "detail": "Add session dropdown in chat header. On click, show list of sessions from `GET /api/sessions`. 'New Session' button calls `POST /api/sessions`. Switching session reconnects WebSocket with new session ID. Show session name and creation date."
+        }
+      ],
+      "impact": "Users can manage multiple conversation contexts",
+      "testing": "Create 3 sessions, switch between them, verify messages are session-specific"
+    },
+
+    "PARITY_05": {
+      "title": "Update Progress Indicator",
+      "severity": "LOW",
+      "source_reports": ["webui_review:feature_parity"],
+      "files": [
+        "packages/web/src/components/settings/"
+      ],
+      "current_behavior": "Update command partially available but no progress indicator in WebUI.",
+      "changes": [
+        {
+          "action": "Add update progress display",
+          "detail": "When `POST /api/restart` or update is triggered, show progress bar or status messages in a modal. Stream update output via SSE."
+        }
+      ],
+      "impact": "Users know update status without switching to terminal",
+      "testing": "Trigger update, verify progress shown"
+    },
+
+    "PARITY_06": {
+      "title": "sanitizeChatInput HTML Sanitization",
+      "severity": "MEDIUM",
+      "source_reports": ["webui_review:9.4", "security_audit:MED-2"],
+      "files": [
+        "packages/gateway/src/ws-schemas.ts:82-93"
+      ],
+      "current_behavior": "sanitizeChatInput strips some patterns but doesn't sanitize HTML injection.",
+      "changes": [
+        {
+          "file": "packages/gateway/src/ws-schemas.ts",
+          "action": "Add HTML entity encoding to sanitization",
+          "detail": "In `sanitizeChatInput()` at lines 82-93, add HTML entity encoding: replace `<` with `&lt;`, `>` with `&gt;`, `\"` with `&quot;`. This prevents HTML injection if content is ever rendered in non-React contexts."
+        }
+      ],
+      "impact": "Defense-in-depth against XSS",
+      "testing": "Send message with `<script>alert(1)</script>`, verify entities escaped in storage"
+    },
+
+    "PARITY_07": {
+      "title": "WebSocket Client-Side Heartbeat",
+      "severity": "LOW",
+      "source_reports": ["webui_review:7.1"],
+      "files": [
+        "packages/web/src/lib/gateway.ts"
+      ],
+      "current_behavior": "No client-side heartbeat ping. Server ping timeout may go undetected by client.",
+      "changes": [
+        {
+          "file": "packages/web/src/lib/gateway.ts",
+          "action": "Add client-initiated ping/pong",
+          "detail": "Add 30-second heartbeat interval. Send `{ type: 'ping' }` message. If no pong received within 5 seconds, trigger reconnection. Clear interval on disconnect."
+        }
+      ],
+      "impact": "Faster detection of zombie WebSocket connections",
+      "testing": "Kill server process, verify client detects disconnect within 35 seconds"
+    }
+  },
+
+  "7_PERFORMANCE": {
+    "_summary": "Optimization opportunities for response time, bundle size, and resource usage. 8 items.",
+    "_estimated_effort": "1 week",
+
+    "PERF_01": {
+      "title": "Selective highlight.js Language Loading",
+      "severity": "MEDIUM",
+      "source_reports": ["webui_review:10.2"],
+      "files": [
+        "packages/web/src/components/chat/MarkdownContent.tsx"
+      ],
+      "current_behavior": "highlight.js loads ALL grammars (~300KB). Most are never used.",
+      "changes": [
+        {
+          "file": "packages/web/src/components/chat/MarkdownContent.tsx",
+          "action": "Switch to lowlight with selective language registration",
+          "detail": "Replace `highlight.js` import with `lowlight` (same API, tree-shakeable). Register only common languages: javascript, typescript, python, bash, json, yaml, html, css, sql, go, rust, java, markdown. Saves ~250KB bundle size."
+        }
+      ],
+      "impact": "~250KB reduction in JavaScript bundle size",
+      "testing": "Verify syntax highlighting works for common languages. Measure bundle size before/after."
+    },
+
+    "PERF_02": {
+      "title": "Memoize buildRenderItems in ChatPane",
+      "severity": "MEDIUM",
+      "source_reports": ["webui_review:10.1"],
+      "files": [
+        "packages/web/src/components/chat/ChatPane.tsx"
+      ],
+      "current_behavior": "`buildRenderItems()` runs O(n) scan on every message change, even when only one message was added.",
+      "changes": [
+        {
+          "file": "packages/web/src/components/chat/ChatPane.tsx",
+          "action": "Memoize with useMemo keyed on messages array reference",
+          "detail": "Wrap `buildRenderItems()` call in `useMemo(() => buildRenderItems(messages), [messages])`. Since Zustand returns new array reference only on actual changes, this prevents redundant recomputation."
+        }
+      ],
+      "impact": "Eliminates redundant O(n) scans during rapid streaming",
+      "testing": "Profile with React DevTools during streaming, verify no unnecessary re-renders"
+    },
+
+    "PERF_03": {
+      "title": "Optimize Image Attachment Storage",
+      "severity": "MEDIUM",
+      "source_reports": ["webui_review:10.3"],
+      "files": [
+        "packages/web/src/components/chat/ChatInput.tsx"
+      ],
+      "current_behavior": "Image attachments stored as full base64 in localStorage. Large images consume quota rapidly.",
+      "changes": [
+        {
+          "file": "packages/web/src/components/chat/ChatInput.tsx",
+          "action": "Resize images before storage and limit dimensions",
+          "detail": "Before base64 encoding: (1) Use Canvas API to resize images > 1920px to max 1920px width. (2) Compress JPEG to quality 0.8. (3) For PNG, convert to JPEG if no transparency. (4) Display thumbnail in chat, store reference to original on server."
+        }
+      ],
+      "impact": "50-80% reduction in image storage size",
+      "testing": "Attach 5MB image, verify stored size < 1MB, verify display quality acceptable"
+    },
+
+    "PERF_04": {
+      "title": "Redis-Backed Rate Limiting",
+      "severity": "MEDIUM",
+      "source_reports": ["security_audit:MED-3"],
+      "files": [
+        "packages/gateway/src/rate-limit.ts:22-26"
+      ],
+      "current_behavior": "In-memory rate limiting. Lost on server restart. Not shared across instances.",
+      "changes": [
+        {
+          "file": "packages/gateway/src/rate-limit.ts",
+          "action": "Add optional Redis backend with in-memory fallback",
+          "detail": "If Redis URL configured in config, use Redis for rate limit counters. Otherwise fall back to current in-memory implementation. Use Redis MULTI/EXEC for atomic increment + TTL. Add to config: `rateLimit: { backend: 'memory' | 'redis', redisUrl?: string }`."
+        }
+      ],
+      "impact": "Rate limits survive restarts and work across multiple instances",
+      "testing": "With Redis: verify rate limit persists across restart. Without: verify fallback works."
+    },
+
+    "PERF_05": {
+      "title": "Monitor Hindsight Memory Usage",
+      "severity": "MEDIUM",
+      "source_reports": ["live_ssh_test"],
+      "files": [
+        "packages/core/src/commands/setup.ts",
+        "install.sh"
+      ],
+      "current_behavior": "Hindsight Python API consuming ~2GB (26% of 7.7GB RAM). No memory limits configured in Docker.",
+      "changes": [
+        {
+          "file": "install.sh",
+          "action": "Add Docker memory limit to Hindsight container",
+          "detail": "In docker run command, add `--memory=1g --memory-swap=1.5g` to cap Hindsight memory usage. Add `--restart=unless-stopped` for resilience."
+        }
+      ],
+      "impact": "Prevents Hindsight from consuming all available RAM",
+      "testing": "Restart Hindsight with limits, verify it operates within 1GB, verify OOM behavior graceful"
+    },
+
+    "PERF_06": {
+      "title": "Connection Pooling for Hindsight HTTP Client",
+      "severity": "LOW",
+      "source_reports": ["memory_review"],
+      "files": [
+        "packages/hindsight/src/client.ts"
+      ],
+      "current_behavior": "Each HTTP request to Hindsight creates new connection. No connection pooling or keep-alive.",
+      "changes": [
+        {
+          "file": "packages/hindsight/src/client.ts",
+          "action": "Enable HTTP keep-alive and connection pooling",
+          "detail": "Use Node.js `http.Agent` with `{ keepAlive: true, maxSockets: 10 }`. Pass as agent option to all fetch/http calls. Reduces TCP handshake overhead for the 4N requests per turn."
+        }
+      ],
+      "impact": "~30% reduction in Hindsight recall latency",
+      "testing": "Measure recall latency before/after. Verify connection reuse via netstat."
+    },
+
+    "PERF_07": {
+      "title": "History Reconciliation Robustness",
+      "severity": "LOW",
+      "source_reports": ["webui_review:1.2"],
+      "files": [
+        "packages/web/src/lib/gateway.ts"
+      ],
+      "current_behavior": "processHistoryWhenHydrated uses 3-second timestamp bucketing for dedup. Misses messages on clock drift between client and server.",
+      "changes": [
+        {
+          "file": "packages/web/src/lib/gateway.ts",
+          "action": "Use message ID for dedup instead of timestamp",
+          "detail": "Replace timestamp bucketing with message ID comparison. Each message already has a unique ID. On history receive, filter out any messages whose IDs already exist in the local store. This is clock-independent."
+        }
+      ],
+      "impact": "Eliminates duplicate/missing messages on reconnection",
+      "testing": "Disconnect, send 3 messages from another client, reconnect, verify exactly 3 new messages appear"
+    },
+
+    "PERF_08": {
+      "title": "Lazy Load OrchestrationPane Components",
+      "severity": "LOW",
+      "source_reports": ["webui_review"],
+      "files": [
+        "packages/web/src/components/orchestration/OrchestrationPane.tsx"
+      ],
+      "current_behavior": "All orchestration components loaded upfront even if pane is collapsed.",
+      "changes": [
+        {
+          "file": "packages/web/src/components/orchestration/OrchestrationPane.tsx",
+          "action": "Lazy load tab contents",
+          "detail": "Use `React.lazy()` for DAGVisualization, MemoryFeed, and WorkflowSummary. Only load when their respective tab is selected. Show skeleton while loading."
+        }
+      ],
+      "impact": "Faster initial page load when orchestration pane is collapsed",
+      "testing": "Measure Time to Interactive with pane collapsed. Verify lazy loading on tab switch."
+    }
+  },
+
+  "8_DOCUMENTATION": {
+    "_summary": "README, API docs, deployment guides. 6 items.",
+    "_estimated_effort": "3-5 days",
+
+    "DOC_01": {
+      "title": "API Reference Documentation",
+      "severity": "MEDIUM",
+      "source_reports": ["webui_review:11.2"],
+      "files": [
+        "docs/"
+      ],
+      "current_behavior": "No OpenAPI/Swagger documentation for the gateway REST API.",
+      "changes": [
+        {
+          "action": "Generate OpenAPI 3.0 spec",
+          "detail": "Create `docs/api/openapi.yaml` documenting all gateway endpoints: request/response schemas, auth requirements, error codes. Serve via Swagger UI at `/api/docs` in development mode."
+        }
+      ],
+      "impact": "Developers can understand and integrate with the API without reading source code",
+      "testing": "Load Swagger UI, verify all endpoints documented with examples"
+    },
+
+    "DOC_02": {
+      "title": "Security Deployment Guide",
+      "severity": "HIGH",
+      "source_reports": ["security_audit"],
+      "files": [
+        "docs/"
+      ],
+      "current_behavior": "No security-focused deployment documentation.",
+      "changes": [
+        {
+          "action": "Create security deployment checklist",
+          "detail": "Create `docs/SECURITY-DEPLOYMENT.md` covering: (1) Enable auth and generate API key. (2) Configure TLS certificates. (3) Restrict network bindings. (4) Pin Docker image digests. (5) Configure rate limiting. (6) Set up audit logging. (7) Backup and encryption. (8) Monitoring and alerting."
+        }
+      ],
+      "impact": "Users deploy securely by following checklist",
+      "testing": "Follow guide on fresh install, verify all security measures active"
+    },
+
+    "DOC_03": {
+      "title": "Architecture Decision Records",
+      "severity": "LOW",
+      "source_reports": ["architecture_review"],
+      "files": [
+        "docs/adr/"
+      ],
+      "current_behavior": "No architecture decision records. Design rationale lives only in code comments.",
+      "changes": [
+        {
+          "action": "Create initial ADRs",
+          "detail": "Create `docs/adr/` directory with: ADR-001-monorepo-structure.md, ADR-002-memory-architecture.md, ADR-003-websocket-protocol.md, ADR-004-auth-model.md. Each ADR: Context, Decision, Consequences, Status."
+        }
+      ],
+      "impact": "New contributors understand why decisions were made",
+      "testing": "N/A — documentation review"
+    },
+
+    "DOC_04": {
+      "title": "Memory System Configuration Guide",
+      "severity": "LOW",
+      "source_reports": ["memory_review"],
+      "files": [
+        "docs/"
+      ],
+      "current_behavior": "Memory system has many configurable thresholds but no documentation on tuning them.",
+      "changes": [
+        {
+          "action": "Create memory tuning guide",
+          "detail": "Create `docs/MEMORY-TUNING.md` covering: budget tiers (low/mid/high), retention quality thresholds, bank management, recall diversity settings, compaction triggers, and recommendations for different use cases (solo dev, team, enterprise)."
+        }
+      ],
+      "impact": "Users can optimize memory behavior for their use case",
+      "testing": "Follow guide recommendations, verify memory behavior changes as expected"
+    },
+
+    "DOC_05": {
+      "title": "WebSocket Protocol Documentation",
+      "severity": "LOW",
+      "source_reports": ["webui_review"],
+      "files": [
+        "docs/"
+      ],
+      "current_behavior": "WebSocket message format undocumented. Client developers must read source code.",
+      "changes": [
+        {
+          "action": "Document WebSocket protocol",
+          "detail": "Create `docs/WEBSOCKET-PROTOCOL.md` documenting: connection URL, auth handshake, all message types (ack, history, text, streaming, dag_*, memory_*, token_usage, ping/pong), message formats with JSON examples, reconnection behavior."
+        }
+      ],
+      "impact": "Enables third-party client development",
+      "testing": "Build simple WS client following only the docs, verify it works"
+    },
+
+    "DOC_06": {
+      "title": "Contributing Guide",
+      "severity": "LOW",
+      "source_reports": ["architecture_review"],
+      "files": [
+        "CONTRIBUTING.md"
+      ],
+      "current_behavior": "No contributing guide for the open-source project.",
+      "changes": [
+        {
+          "action": "Create contributing guide",
+          "detail": "Create `CONTRIBUTING.md` covering: (1) Development setup (pnpm install, build, run). (2) Package structure overview. (3) Code style (TypeScript strict, no any). (4) PR process. (5) Testing requirements. (6) Security reporting process."
+        }
+      ],
+      "impact": "Lowers barrier to community contributions",
+      "testing": "New developer follows guide, successfully builds and runs project"
+    }
+  },
+
+  "_execution_phases": {
+    "phase_1_security_sprint": {
+      "duration": "1 week",
+      "items": ["CRIT_SEC_01", "CRIT_SEC_02", "CRIT_SEC_03", "CRIT_SEC_06", "CRIT_SEC_09", "CRIT_SEC_11"],
+      "goal": "Eliminate all CRITICAL security blockers",
+      "success_criteria": "All API endpoints require auth. No exec() with unsanitized input. Hindsight bound to localhost. Security headers on web server."
+    },
+    "phase_2_security_hardening": {
+      "duration": "1 week",
+      "items": ["CRIT_SEC_04", "CRIT_SEC_05", "CRIT_SEC_07", "CRIT_SEC_08", "CRIT_SEC_10", "CRIT_SEC_12", "DOC_02"],
+      "goal": "TLS, token revocation, installer integrity, secure credential storage",
+      "success_criteria": "TLS configurable. Tokens revocable. Installer verifies integrity. API keys in env vars."
+    },
+    "phase_3_memory_and_testing": {
+      "duration": "2 weeks",
+      "items": ["MEM_01", "MEM_02", "MEM_03", "MEM_04", "ARCH_05", "WEBUI_FEAT_01"],
+      "goal": "Fix memory token waste, improve recall, add test foundation",
+      "success_criteria": "30%+ token cost reduction. Semantic recall improvement. 20+ critical path tests. Token usage visible in WebUI."
+    },
+    "phase_4_webui_and_architecture": {
+      "duration": "2 weeks",
+      "items": ["WEBUI_FEAT_02", "WEBUI_FEAT_03", "ARCH_01", "ARCH_02", "ARCH_04", "UX_01", "UX_02", "PARITY_01", "PARITY_04"],
+      "goal": "Fix WebUI bugs, decompose god files, accessibility",
+      "success_criteria": "No React key warnings. No DAG state drift. God files split. WCAG AA contrast. File viewing and session management in WebUI."
+    },
+    "phase_5_polish": {
+      "duration": "2 weeks",
+      "items": ["MEM_05", "MEM_06", "MEM_07", "WEBUI_FEAT_04", "WEBUI_FEAT_05", "WEBUI_FEAT_06", "WEBUI_FEAT_07", "UX_04", "UX_05", "PERF_01", "PERF_02", "DOC_01", "DOC_05"],
+      "goal": "Feature completeness, performance, documentation",
+      "success_criteria": "All MEDIUM items resolved. API docs published. Bundle size reduced. Feature parity gaps closed."
+    }
+  },
+
+  "_cross_cutting_concerns": {
+    "testing_strategy": "Start with security-critical paths (auth, input validation, command execution). Expand to memory system (relevance scoring, retention decisions). Then WebUI (store actions, component rendering). Target 60% coverage by end of phase 5.",
+    "monitoring": "Add structured logging (JSON format) with correlation IDs across gateway, WebSocket, and memory system. Track: request latency (p50/p95/p99), memory recall latency, token usage per session, error rates by category.",
+    "ci_cd": "Set up GitHub Actions: lint (eslint + tsc), test (vitest), security audit (pnpm audit), build verification. Block merge on any failure.",
+    "backwards_compatibility": "All API changes must be backwards compatible for at least 1 minor version. Use feature flags for behavioral changes. WebSocket protocol changes require version negotiation."
+  }
+}
