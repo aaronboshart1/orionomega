@@ -264,12 +264,13 @@ export function ChatPane() {
             ref={virtuosoRef}
             totalCount={renderItems.length}
             itemContent={itemContent}
-            followOutput="smooth"
+            initialTopMostItemIndex={renderItems.length > 0 ? renderItems.length - 1 : 0}
+            followOutput={(isAtBottom) => (isAtBottom ? 'auto' : false)}
             atBottomStateChange={setAtBottom}
             atBottomThreshold={50}
             overscan={400}
             className="h-full"
-            style={{ height: '100%' }}
+            style={{ height: '100%', overscrollBehavior: 'none' }}
             components={{
               Footer,
               Header: () => <div className="pt-4" />,
