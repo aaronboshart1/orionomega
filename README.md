@@ -84,7 +84,7 @@ node packages/core/dist/cli.js
 node packages/core/dist/cli.js ui start
 ```
 
-> **One-line installer** (if you have a pre-built release):
+> **One-line installer** (clones repo and builds from source):
 > ```bash
 > curl -fsSL https://raw.githubusercontent.com/aaronboshart1/orionomega/main/scripts/install.sh | bash
 > ```
