@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Restore stdin from /dev/tty when piped (e.g., curl | bash)
+# This allows interactive prompts to work properly
+if [ ! -t 0 ]; then
+  exec < /dev/tty 2>/dev/null || true
+fi
+
 # Support GITHUB_TOKEN for private repo access
 if [ -n "${GITHUB_TOKEN:-}" ]; then
   REPO="https://${GITHUB_TOKEN}@github.com/aaronboshart1/orionomega.git"
@@ -266,7 +272,26 @@ install_docker_macos() {
 
 DOCKER_READY=false
 
+# Check if 'docker' found is the npm package (not Docker Engine)
+# npm's 'docker' package doesn't support 'docker info' properly
 if command -v docker &>/dev/null; then
+  DOCKER_PATH=$(command -v docker)
+  # npm packages are typically in node_modules/.bin or similar paths
+  if echo "$DOCKER_PATH" | grep -q "node_modules\|npm\|\.npm"; then
+    echo ""
+    echo "WARNING: Found 'docker' at $DOCKER_PATH but this appears to be the npm 'docker' package,"
+    echo "not Docker Engine (the container runtime)."
+    echo "The npm 'docker' package is NOT the same as Docker Engine."
+    echo ""
+    echo "To install Docker Engine, visit: https://docs.docker.com/engine/install/"
+    echo "On macOS: Install Docker Desktop from https://www.docker.com/products/docker-desktop/"
+    echo ""
+    # Unset docker so we fall through to installation logic
+    DOCKER_READY=false
+  fi
+fi
+
+if command -v docker &>/dev/null && ! echo "$(command -v docker)" | grep -q "node_modules\|npm\|\.npm"; then
   if docker info &>/dev/null; then
     info "Docker is running"
     DOCKER_READY=true
@@ -316,6 +341,19 @@ else
         info "Docker installed and running"
         DOCKER_READY=true
       fi
+    fi
+    if [ "$DOCKER_READY" != "true" ]; then
+      echo ""
+      echo "Docker Engine is required but was not found or could not be started."
+      echo ""
+      echo "NOTE: If you ran 'npm install docker', that installs an npm package, NOT Docker Engine."
+      echo "      The npm 'docker' package is unrelated to Docker Engine."
+      echo ""
+      echo "To install Docker Engine:"
+      echo "  - macOS:   https://www.docker.com/products/docker-desktop/"
+      echo "  - Ubuntu:  curl -fsSL https://get.docker.com | sh"
+      echo "  - Other:   https://docs.docker.com/engine/install/"
+      echo ""
     fi
   fi
 fi

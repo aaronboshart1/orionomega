@@ -560,8 +560,10 @@ async function tryStartHindsightContainer(config: OrionOmegaConfig): Promise<voi
   try {
     execSync('docker --version', { stdio: 'pipe', timeout: 5000 });
   } catch {
-    warn('Docker not found — cannot start Hindsight automatically.');
-    println(`  ${DIM}Install Docker or point to a remote Hindsight instance.${RESET}`);
+    warn('Docker Engine is not installed or not running.');
+    println(`  ${DIM}Note: 'npm install docker' installs an npm package, NOT Docker Engine.${RESET}`);
+    println(`  ${DIM}Install Docker Engine from: https://docs.docker.com/engine/install/${RESET}`);
+    println(`  ${DIM}Or point to a remote Hindsight instance instead.${RESET}`);
     return;
   }
 
@@ -618,7 +620,9 @@ async function tryStartHindsightContainer(config: OrionOmegaConfig): Promise<voi
         execSync('sudo docker info', { stdio: 'pipe', timeout: 10000 });
         docker = 'sudo docker';
       } catch {
-        warn('Docker not found or not running. Install Docker and try again.');
+        warn('Docker Engine not found or not running.');
+        println(`  ${DIM}Note: 'npm install docker' installs an npm package, NOT Docker Engine.${RESET}`);
+        println(`  ${DIM}Install Docker Engine from: https://docs.docker.com/engine/install/${RESET}`);
       }
     }
   }
