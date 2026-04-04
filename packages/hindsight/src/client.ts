@@ -246,22 +246,35 @@ export class HindsightClient {
     const tierCap = BUDGET_TIER_MAX_TOKENS[tier] ?? 4096;
     const effectiveMaxTokens = Math.min(opts?.maxTokens ?? tierCap, tierCap);
 
+    // F6: Truncate oversized queries to prevent HTTP 400 errors from the API.
+    // Context assembler can pass full workflow payloads (~10KB+) as queries.
+    const MAX_QUERY_LENGTH = 4000;
+    const effectiveQuery = query.length > MAX_QUERY_LENGTH
+      ? query.slice(0, MAX_QUERY_LENGTH)
+      : query;
+
+    if (query.length > MAX_QUERY_LENGTH) {
+      log.verbose(`Recall query truncated from ${query.length} to ${MAX_QUERY_LENGTH} chars`, { bankId });
+    }
+
     log.verbose(`Recall → ${bankId}`, {
-      queryPreview: query.slice(0, 200),
+      queryPreview: effectiveQuery.slice(0, 200),
       maxTokens: effectiveMaxTokens,
       budget: tier,
       tierCap,
     });
     const body: Record<string, unknown> = {
-      query,
+      query: effectiveQuery,
       max_tokens: effectiveMaxTokens,
       budget: tier,
     };
     if (opts?.maxCandidates) {
       body.max_candidates = opts.maxCandidates;
     }
+    // F5: Fix temporal diversity parameter name to match API schema.
+    // The API expects `query_timestamp`, not `before`.
     if (opts?.before) {
-      body.before = opts.before;
+      body.query_timestamp = opts.before;
     }
 
     const raw = await this.request<{ results: Array<Record<string, unknown>> }>(
@@ -270,7 +283,9 @@ export class HindsightClient {
       body,
     );
 
-    const minRelevance = opts?.minRelevance ?? 0.3;
+    // F4: Default threshold lowered from 0.3 → 0.15. The old 0.3 was calibrated
+    // for embedding scores; the client-side fallback produces ~0.05–0.40.
+    const requestedMinRelevance = opts?.minRelevance ?? 0.15;
     const shouldDedup = opts?.deduplicate !== false;
     const dedupThreshold = opts?.deduplicationThreshold ?? 0.85;
 
@@ -281,10 +296,8 @@ export class HindsightClient {
       relevance: (r.relevance as number) ?? 0,
     }));
 
-    // ── Fix 1: Client-side relevance when API returns all zeros ──
-    // The Hindsight API sometimes returns relevance=0 for all results.
-    // When this happens, compute client-side relevance scores so that
-    // the minRelevance filter and confidence propagation still work.
+    // Client-side relevance when API returns all zeros.
+    // Hindsight v0.4.x without embedding backend returns relevance=0 always.
     const allZeroRelevance = allResults.length > 0 &&
       allResults.every((r) => r.relevance === 0);
 
@@ -295,20 +308,42 @@ export class HindsightClient {
       });
       allResults = allResults.map((r) => ({
         ...r,
-        relevance: computeClientRelevance(query, r.content),
+        relevance: computeClientRelevance(effectiveQuery, r.content),
       }));
     }
+
+    // When using client-side scoring, cap the threshold at 0.15 even if
+    // callers passed a higher value (their 0.3 was calibrated for embeddings).
+    const CLIENT_FALLBACK_CEILING = 0.15;
+    const minRelevance = allZeroRelevance
+      ? Math.min(requestedMinRelevance, CLIENT_FALLBACK_CEILING)
+      : requestedMinRelevance;
 
     let filtered = allResults.filter((r) => r.relevance >= minRelevance);
     const droppedByRelevance = allResults.length - filtered.length;
 
-    log.verbose(`Recall relevance filter`, {
-      bankId,
-      totalFromApi: allResults.length,
-      aboveThreshold: filtered.length,
-      minRelevance,
-      usedClientRelevance: allZeroRelevance,
-    });
+    // F10: Distinguish "no API results" from "threshold dropped all results".
+    if (allResults.length === 0) {
+      log.verbose(`Recall: API returned 0 results`, { bankId });
+    } else if (filtered.length === 0) {
+      const topScore = Math.max(...allResults.map((r) => r.relevance));
+      log.warn(`Recall: ${allResults.length} result(s) dropped by relevance threshold`, {
+        bankId,
+        totalFromApi: allResults.length,
+        minRelevance,
+        topScore: topScore.toFixed(3),
+        usedClientRelevance: allZeroRelevance,
+      });
+    } else {
+      log.verbose(`Recall relevance filter`, {
+        bankId,
+        totalFromApi: allResults.length,
+        aboveThreshold: filtered.length,
+        dropped: droppedByRelevance,
+        minRelevance,
+        usedClientRelevance: allZeroRelevance,
+      });
+    }
 
     filtered = this.applyDeduplication(filtered, shouldDedup, dedupThreshold);
     const droppedByDedup = allResults.length - droppedByRelevance - filtered.length;
@@ -326,8 +361,19 @@ export class HindsightClient {
       droppedByDedup,
     });
 
+    // F13: Recall effectiveness metric — log the ratio of results surfaced vs total
+    // from API. Critical for monitoring recall health. Alert when <10% sustained.
+    const surfaceRate = allResults.length > 0
+      ? filtered.length / allResults.length
+      : 1; // no results from API → not a scoring problem
+    if (allResults.length > 0 && surfaceRate < 0.1) {
+      log.warn(`Recall effectiveness critically low: ${(surfaceRate * 100).toFixed(0)}% surfaced (${filtered.length}/${allResults.length})`, {
+        bankId, minRelevance, usedClientRelevance: allZeroRelevance,
+      });
+    }
+
     this.emitRecallIO(bankId, query, result.results, allResults.length, droppedByRelevance, durationMs, {
-      tier, effectiveMaxTokens, minRelevance, allZeroRelevance, tokensUsed: result.tokens_used,
+      tier, effectiveMaxTokens, minRelevance, allZeroRelevance, tokensUsed: result.tokens_used, surfaceRate,
     });
     return result;
   }
@@ -375,7 +421,7 @@ export class HindsightClient {
           maxTokens: perBucketTokens,
           maxCandidates: perBucketCandidates,
           before: cutoff.toISOString(),
-          minRelevance: Math.max((opts?.minRelevance ?? 0.3) - 0.1, 0.1),
+          minRelevance: Math.max((opts?.minRelevance ?? 0.15) - 0.05, 0.05),
           deduplicate: false,
         };
         temporalPromises.push(
@@ -414,7 +460,9 @@ export class HindsightClient {
     const dedupThreshold = opts?.deduplicationThreshold ?? 0.85;
     const final = this.applyDeduplication(merged, shouldDedup, dedupThreshold);
 
-    const LOW_CONFIDENCE_THRESHOLD = 0.5;
+    // Lowered from 0.5 to 0.3 — client-side scores top out ~0.4, so 0.5
+    // would flag essentially every client-scored recall as "low confidence".
+    const LOW_CONFIDENCE_THRESHOLD = 0.3;
     const lowConfidence = final.length === 0 || final.every((r) => r.relevance < LOW_CONFIDENCE_THRESHOLD);
 
     return {
@@ -441,14 +489,14 @@ export class HindsightClient {
     totalFromApi: number,
     droppedByRelevance: number,
     durationMs: number,
-    params: { tier: string; effectiveMaxTokens: number; minRelevance: number; allZeroRelevance: boolean; tokensUsed: number },
+    params: { tier: string; effectiveMaxTokens: number; minRelevance: number; allZeroRelevance: boolean; tokensUsed: number; surfaceRate?: number },
   ): void {
     if (results.length > 0) {
       const topScore = Math.max(...results.map(r => r.relevance));
       this.onIO?.({
         op: 'recall',
         bank: bankId,
-        detail: `Retrieved ${results.length} memories (top relevance: ${topScore.toFixed(2)}${params.allZeroRelevance ? ', client-scored' : ''})`,
+        detail: `Retrieved ${results.length}/${totalFromApi} memories (${((params.surfaceRate ?? 1) * 100).toFixed(0)}% surfaced, top: ${topScore.toFixed(2)}${params.allZeroRelevance ? ', client-scored' : ''})`,
         meta: {
           query,
           resultCount: results.length,
@@ -461,6 +509,7 @@ export class HindsightClient {
           budget: params.tier,
           maxTokens: params.effectiveMaxTokens,
           minRelevance: params.minRelevance,
+          surfaceRate: params.surfaceRate,
           results: results.map(r => ({
             content: r.content,
             context: r.context,
@@ -470,10 +519,16 @@ export class HindsightClient {
         },
       });
     } else {
+      // F10: Differentiate "API returned no results" from "all results filtered
+      // below threshold" — the old message was identical for both, making
+      // diagnostics impossible.
+      const detail = totalFromApi === 0
+        ? 'No matching memories found (API returned 0 results)'
+        : `All ${totalFromApi} results filtered below relevance threshold (min: ${params.minRelevance}, dropped: ${droppedByRelevance})`;
       this.onIO?.({
         op: 'recall',
         bank: bankId,
-        detail: 'No matching memories found',
+        detail,
         meta: {
           query,
           resultCount: 0,

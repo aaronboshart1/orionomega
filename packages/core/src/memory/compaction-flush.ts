@@ -75,10 +75,17 @@ export class CompactionFlush {
     }
 
     try {
-      // Format conversation for the extraction prompt
-      const conversationText = messages
+      // Format conversation for the extraction prompt.
+      // Truncate to ~60K chars (~15K tokens) to prevent oversized API requests.
+      const MAX_CONVERSATION_CHARS = 60_000;
+      let conversationText = messages
         .map((m) => `[${m.role}]: ${m.content}`)
         .join('\n\n');
+
+      if (conversationText.length > MAX_CONVERSATION_CHARS) {
+        log.verbose(`Truncating conversation for extraction: ${conversationText.length} → ${MAX_CONVERSATION_CHARS} chars`);
+        conversationText = conversationText.slice(-MAX_CONVERSATION_CHARS);
+      }
 
       const response = await this.anthropic.createMessage({
         model: this.model,

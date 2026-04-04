@@ -42,7 +42,7 @@ export interface MemoryBootstrapConfig {
 
 const DEFAULT_BOOTSTRAP: Omit<MemoryBootstrapConfig, 'apiEndpoint'> = {
   deduplicationThreshold: 0.85,
-  relevanceFloor: 0.3,
+  relevanceFloor: 0.15,
   qualityThreshold: 0.3,
   budgetTiers: { low: 1024, mid: 4096, high: 8192 },
   architecturalDecisions: [
@@ -163,6 +163,15 @@ export class MemoryBridge {
 
       this.selfKnowledge = new SelfKnowledge(this.hindsightClient);
 
+      // F7: Seed mental models on first run. The refresh callback only updates
+      // existing models — if they were never created, every bootstrap attempt
+      // returns 404. Seed them once so subsequent refreshes work.
+      this.seedMentalModelsIfNeeded().catch((err) => {
+        log.warn('Mental model seeding failed', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+
       // Always register callbacks using optional chaining so they work even when
       // onMemoryEvent is set after init() (e.g. in main-agent._init()).
       this.retentionEngine.onMemoryEvent = (op, detail, bank, meta) => {
@@ -229,6 +238,8 @@ export class MemoryBridge {
   /**
    * Recall context from Hindsight for a planning operation.
    * Queries the core bank and the active project bank.
+   *
+   * F12: Emits recall metrics for observability.
    */
   async recallForPlanning(task: string): Promise<string[]> {
     if (!this.hindsightClient) return [];
@@ -239,9 +250,14 @@ export class MemoryBridge {
     }
 
     const memories: string[] = [];
+    const recallStart = Date.now();
+    let totalResults = 0;
+    let totalTokensUsed = 0;
 
     try {
       const result = await this.hindsightClient.recall('core', task, { maxTokens: 1024 });
+      totalResults += result.results.length;
+      totalTokensUsed += result.tokens_used;
       if (result.results.length) {
         memories.push(result.results.map((m) => m.content).join('\n\n'));
       }
@@ -254,6 +270,8 @@ export class MemoryBridge {
     if (this.activeProjectBank) {
       try {
         const result = await this.hindsightClient.recall(this.activeProjectBank, task, { maxTokens: 2048 });
+        totalResults += result.results.length;
+        totalTokensUsed += result.tokens_used;
         if (result.results.length) {
           memories.push(result.results.map((m) => m.content).join('\n\n'));
         }
@@ -265,7 +283,73 @@ export class MemoryBridge {
       }
     }
 
+    // F12: Emit recall metrics for observability
+    const recallDurationMs = Date.now() - recallStart;
+    this.onMemoryEvent?.('recall', `Planning recall: ${totalResults} memories in ${recallDurationMs}ms`, undefined, {
+      totalResults,
+      totalTokensUsed,
+      durationMs: recallDurationMs,
+      banksQueried: this.activeProjectBank ? ['core', this.activeProjectBank] : ['core'],
+    });
+
     return memories;
+  }
+
+  /**
+   * F12: Verify consistency between index and storage.
+   * Checks that the core bank exists and is accessible, and that
+   * the banks cache is not serving stale data.
+   */
+  async verifyConsistency(): Promise<{ healthy: boolean; issues: string[] }> {
+    const issues: string[] = [];
+
+    if (!this.hindsightClient) {
+      return { healthy: false, issues: ['Hindsight client not initialised'] };
+    }
+
+    // Check health
+    try {
+      const health = await this.hindsightClient.health();
+      if (health.status !== 'ok') {
+        issues.push(`Hindsight health check returned: ${health.status}`);
+      }
+    } catch (err) {
+      issues.push(`Hindsight health check failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    // Verify core bank exists
+    try {
+      const coreExists = await this.hindsightClient.bankExists('core');
+      if (!coreExists) {
+        issues.push('Core bank does not exist — index/storage mismatch');
+      }
+    } catch (err) {
+      issues.push(`Core bank check failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    // Verify active project bank if set
+    if (this.activeProjectBank) {
+      try {
+        const projExists = await this.hindsightClient.bankExists(this.activeProjectBank);
+        if (!projExists) {
+          issues.push(`Active project bank "${this.activeProjectBank}" does not exist`);
+          // Invalidate cache to prevent stale references
+          this.hindsightClient.invalidateBanksCache();
+        }
+      } catch (err) {
+        issues.push(`Project bank check failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    // Force cache refresh to ensure consistency
+    this.hindsightClient.invalidateBanksCache();
+
+    const healthy = issues.length === 0;
+    if (!healthy) {
+      log.warn('Memory consistency check found issues', { issues });
+    }
+
+    return { healthy, issues };
   }
 
   /**
@@ -308,6 +392,42 @@ export class MemoryBridge {
       log.warn('Failed to store session anchor', {
         error: err instanceof Error ? err.message : String(err),
       });
+    }
+  }
+
+  /**
+   * F7: Seed mental models if they don't exist yet.
+   * GET each model — if 404, trigger a refresh to create it.
+   * This ensures the first session creates the models so that
+   * subsequent onRetain refreshes can update them.
+   */
+  private async seedMentalModelsIfNeeded(): Promise<void> {
+    if (!this.hindsightClient || !this.mentalModelManager) return;
+
+    const models: Array<{ bankId: string; modelId: string }> = [
+      { bankId: 'core', modelId: 'user-profile' },
+      { bankId: 'core', modelId: 'session-context' },
+      { bankId: 'infra', modelId: 'infra-map' },
+    ];
+
+    for (const { bankId, modelId } of models) {
+      try {
+        await this.hindsightClient.getMentalModel(bankId, modelId);
+        // Model exists, no seeding needed
+      } catch (err) {
+        // Model doesn't exist (404) — trigger refresh to create it
+        try {
+          await this.hindsightClient.refreshMentalModel(bankId, modelId);
+          log.info('Seeded mental model via refresh', { bankId, modelId });
+          this.onMemoryEvent?.('bootstrap', `Seeded mental model: ${modelId}`, bankId);
+        } catch (refreshErr) {
+          log.warn('Failed to seed mental model', {
+            bankId,
+            modelId,
+            error: refreshErr instanceof Error ? refreshErr.message : String(refreshErr),
+          });
+        }
+      }
     }
   }
 

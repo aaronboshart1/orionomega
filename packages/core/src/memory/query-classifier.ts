@@ -149,7 +149,7 @@ export function getRecallStrategy(classification: QueryClassification): RecallSt
       return {
         convBudgetRatio: 0.8,
         temporalDiversityRatio: 0.05,
-        minRelevance: 0.3,
+        minRelevance: 0.15,
         recallBudget: 'mid',
         preferredContextCategories: [],
         temporalBias: 'recent',
@@ -159,7 +159,7 @@ export function getRecallStrategy(classification: QueryClassification): RecallSt
       return {
         convBudgetRatio: 0.3,
         temporalDiversityRatio: 0.4,
-        minRelevance: 0.2,
+        minRelevance: 0.1,
         recallBudget: 'high',
         preferredContextCategories: ['session_summary', 'project_update', 'lesson'],
         temporalBias: 'broad',
@@ -169,7 +169,7 @@ export function getRecallStrategy(classification: QueryClassification): RecallSt
       return {
         convBudgetRatio: 0.35,
         temporalDiversityRatio: 0.3,
-        minRelevance: 0.25,
+        minRelevance: 0.12,
         recallBudget: 'high',
         preferredContextCategories: ['decision', 'architecture', 'preference'],
         temporalBias: 'targeted',
@@ -179,7 +179,7 @@ export function getRecallStrategy(classification: QueryClassification): RecallSt
       return {
         convBudgetRatio: 0.5,
         temporalDiversityRatio: 0.1,
-        minRelevance: 0.3,
+        minRelevance: 0.15,
         recallBudget: 'mid',
         preferredContextCategories: ['project_update', 'session_summary'],
         temporalBias: 'recent',

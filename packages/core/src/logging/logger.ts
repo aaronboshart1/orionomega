@@ -103,6 +103,34 @@ export interface Logger {
  * @param name - Logger name (typically a module or component name).
  * @returns A Logger instance.
  */
+
+// ── Telemetry hook ─────────────────────────────────────────────────────────
+
+/** A structured log event passed to the telemetry hook. */
+export interface LogTelemetryEvent {
+  level: LogLevel;
+  name: string;
+  message: string;
+  data?: Record<string, unknown>;
+  ts: string;
+}
+
+/** Optional hook invoked for every warn/error log call. */
+let telemetryHook: ((event: LogTelemetryEvent) => void) | null = null;
+
+/**
+ * Register a telemetry hook for structured error and warning events.
+ * The hook is called synchronously — keep it fast (queue, don't block).
+ * Only fires for warn and error levels to avoid overhead on verbose/debug.
+ */
+export function setLogTelemetryHook(hook: (event: LogTelemetryEvent) => void): void {
+  telemetryHook = hook;
+}
+
+export function clearLogTelemetryHook(): void {
+  telemetryHook = null;
+}
+
 export function createLogger(name: string): Logger {
   function log(
     level: LogLevel,
@@ -115,6 +143,15 @@ export function createLogger(name: string): Logger {
 
     const timestamp = new Date().toISOString();
     const tag = level.toUpperCase().padEnd(7);
+
+    // Telemetry hook — fires for warn and error to enable external monitoring
+    if (telemetryHook && LEVEL_ORDER[level] <= LEVEL_ORDER['warn']) {
+      try {
+        telemetryHook({ level, name, message, data, ts: timestamp });
+      } catch {
+        // Never let a hook crash the logger
+      }
+    }
 
     // Data serialization (shared between console and file)
     const dataStr = data !== undefined && Object.keys(data).length > 0

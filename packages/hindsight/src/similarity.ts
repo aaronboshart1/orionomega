@@ -5,8 +5,23 @@
  * text comparison.
  */
 
+/**
+ * Structural prefixes added during storage (e.g. `[user]`, `Task:`, `Node:`)
+ * must be stripped before scoring so they don't pollute keyword matching.
+ */
+const STRUCTURAL_PREFIX_RE = /^\[(user|assistant|system)\]\s*/i;
+const STRUCTURAL_LABEL_RE = /\b(Task|Workers|Decisions|Findings|Node|Workflow|Output|Result|Errors|Outputs|Artifacts):\s*/gi;
+const BRACKET_NOISE_RE = /[\[\]]/g;
+
 function normalize(text: string): string {
-  return text.toLowerCase().replace(/\s+/g, ' ').trim();
+  let t = text.toLowerCase();
+  // F1: Strip structural prefixes that pollute keyword matching
+  t = t.replace(STRUCTURAL_PREFIX_RE, '');
+  t = t.replace(STRUCTURAL_LABEL_RE, '');
+  t = t.replace(BRACKET_NOISE_RE, '');
+  // Strip colons fused to any word (e.g. "context:" → "context", "mentioned_at:" → "mentioned_at")
+  t = t.replace(/(\w):/g, '$1');
+  return t.replace(/\s+/g, ' ').trim();
 }
 
 function trigrams(normalized: string): Set<string> {
@@ -35,19 +50,25 @@ export function trigramSimilarity(a: string, b: string): number {
 }
 
 /**
- * Keyword overlap score: fraction of meaningful query words (>3 chars)
- * that appear in the content. Weighted 0.6 in the final composite score
- * because keyword overlap is the strongest semantic signal.
+ * Keyword overlap score: fraction of meaningful query words (>2 chars)
+ * that appear in the content. Uses distinct-match counting via Set
+ * intersection to avoid frequency bias.
+ *
+ * F2: Lowered from >3 to >2 to include 3-char technical terms
+ *     (fix, bug, sql, api, git, npm, cli, css, env, etc.)
+ * F3: Count distinct matches instead of frequency-based hits to prevent
+ *     content repeating one word from outscoring content matching multiple
+ *     query words.
  */
 function computeKeywordScore(nQuery: string, nContent: string): number {
-  const queryWords = new Set(nQuery.split(' ').filter((w) => w.length > 3));
+  const queryWords = new Set(nQuery.split(' ').filter((w) => w.length > 2));
   if (queryWords.size === 0) return 0;
-  const contentWords = nContent.split(' ').filter((w) => w.length > 3);
-  let hits = 0;
-  for (const w of contentWords) {
-    if (queryWords.has(w)) hits++;
+  const contentWordSet = new Set(nContent.split(' ').filter((w) => w.length > 2));
+  let distinctHits = 0;
+  for (const w of queryWords) {
+    if (contentWordSet.has(w)) distinctHits++;
   }
-  return Math.min(1, hits / queryWords.size);
+  return Math.min(1, distinctHits / queryWords.size);
 }
 
 /**

@@ -149,4 +149,49 @@ export class MentalModelManager {
       return '';
     }
   }
+
+  /**
+   * F8: Seed all system mental models that don't exist yet.
+   *
+   * Called during init to bootstrap the mental model layer. Each model
+   * is checked with a GET first; if it 404s, a refresh is triggered to
+   * synthesize it from existing memories. This is fire-and-forget —
+   * failures are logged but don't block startup.
+   */
+  async seedSystemModels(): Promise<void> {
+    const results: Array<{ key: string; action: string }> = [];
+
+    for (const model of SYSTEM_MODELS) {
+      const key = `${model.bank}/${model.id}`;
+      try {
+        const existing = await this.hs.getMentalModel(model.bank, model.id);
+        if (existing.content) {
+          results.push({ key, action: 'exists' });
+          continue;
+        }
+      } catch {
+        // 404 or other error — model doesn't exist, seed it
+      }
+
+      try {
+        await this.hs.refreshMentalModel(model.bank, model.id);
+        this.lastRefreshAt.set(key, Date.now());
+        results.push({ key, action: 'seeded' });
+      } catch (err) {
+        results.push({ key, action: 'failed' });
+        log.debug('Failed to seed mental model', {
+          key,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    const seeded = results.filter((r) => r.action === 'seeded').length;
+    const existing = results.filter((r) => r.action === 'exists').length;
+    const failed = results.filter((r) => r.action === 'failed').length;
+
+    if (seeded > 0 || failed > 0) {
+      log.info('Mental model seed complete', { seeded, existing, failed });
+    }
+  }
 }

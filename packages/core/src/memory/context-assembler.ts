@@ -73,7 +73,7 @@ export interface ContextAssemblerConfig {
   persistPath?: string;
   /** Enable cross-bank federation: discover and query all populated banks. Default: true. */
   federateBanks?: boolean;
-  /** Minimum relevance score for recalled memories. Default: 0.3. */
+  /** Minimum relevance score for recalled memories. Default: 0.15 (aligned with client-side scoring range). */
   minRelevance?: number;
   /** Similarity threshold for storage-time deduplication. Default: 0.85. */
   storageDeduplicationThreshold?: number;
@@ -86,7 +86,11 @@ export interface ContextAssemblerConfig {
 }
 
 const DEFAULT_HOT_WINDOW = 20;
-const DEFAULT_RECALL_BUDGET = 30_000;
+// F11: Aligned with API tier cap. The previous value of 30,000 exceeded
+// the 'high' tier cap (8192) by 4×, causing the HindsightClient to silently
+// clamp it down anyway. Using 8192 makes the budget explicit and prevents
+// over-requesting tokens that will be wasted.
+const DEFAULT_RECALL_BUDGET = 8_192;
 const DEFAULT_MAX_TURN_TOKENS = 60_000;
 const DEFAULT_SYSTEM_PROMPT_TOKENS = 4_000;
 const DEFAULT_OUTPUT_RESERVE = 4_096;
@@ -156,7 +160,7 @@ export class ContextAssembler {
     this.recallBudget = config.recallBudget ?? 'mid';
     this.persistPath = config.persistPath ?? null;
     this.federateBanks = config.federateBanks !== false;
-    this.minRelevance = config.minRelevance ?? 0.3;
+    this.minRelevance = config.minRelevance ?? 0.15;
     this.storageDeduplicationThreshold = config.storageDeduplicationThreshold ?? 0.85;
     this.temporalDiversityRatio = config.temporalDiversityRatio ?? 0.15;
     this.adaptiveRecall = config.adaptiveRecall !== false;
