@@ -686,16 +686,23 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
       res.end(JSON.stringify({ error: 'Missing ?path= parameter' }));
       return;
     }
-    const resolved = resolvePath(normalize(filePath));
+    let resolved = resolvePath(normalize(filePath));
     try {
       const cfg = readConfig();
       const workspaceRoot = realpathSync(cfg.workspace?.path ?? resolvePath('.'));
-      const normalizedResolved = resolvePath(resolved);
-      if (!normalizedResolved.startsWith(workspaceRoot + '/') && normalizedResolved !== workspaceRoot) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Invalid path: outside workspace' }));
-        return;
+
+      const wsMarker = '/orionomega/workspace/';
+      const markerIdx = resolved.indexOf(wsMarker);
+      if (markerIdx !== -1) {
+        const relPart = resolved.slice(markerIdx + wsMarker.length);
+        const remapped = resolvePath(workspaceRoot, relPart);
+        if (existsSync(remapped)) {
+          resolved = remapped;
+        } else if (!existsSync(resolved)) {
+          resolved = remapped;
+        }
       }
+
       if (!existsSync(resolved)) {
         res.writeHead(404, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'File not found' }));

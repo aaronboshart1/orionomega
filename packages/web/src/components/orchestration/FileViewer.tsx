@@ -62,10 +62,24 @@ export function FileViewer() {
         )}
 
         {activeFile?.error && (
-          <div className="flex h-full flex-col items-center justify-center gap-2 text-xs text-red-400">
+          <div className="flex h-full flex-col items-center justify-center gap-2 text-xs text-red-400 px-6">
             <AlertCircle size={16} />
             <span>{activeFile.error}</span>
-            <span className="text-zinc-600 max-w-[300px] truncate">{activeFile.path}</span>
+            <span className="text-zinc-600 max-w-[400px] break-all text-center">{activeFile.path}</span>
+            {activeFile.error === 'File not found' && (
+              <span className="text-zinc-600 text-center max-w-[360px] mt-1">
+                This artifact may have been generated on a different machine and is not available in this environment.
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                useFileViewerStore.getState().openFile(activeFile.path);
+              }}
+              className="mt-2 text-blue-400/80 hover:text-blue-300 hover:underline"
+            >
+              Retry
+            </button>
           </div>
         )}
 
