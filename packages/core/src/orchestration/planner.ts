@@ -86,10 +86,11 @@ export class Planner {
         if (hindsightUrl) {
           const { HindsightClient } = await import('@orionomega/hindsight');
           const hsClient = new HindsightClient(hindsightUrl);
+          const recallQuery = this.extractRecallQuery(task);
 
           const recalls = await Promise.allSettled([
-            hsClient.recall('infra', task, { maxTokens: 1024, budget: 'low' }),
-            hsClient.recall(appConfig.hindsight?.defaultBank ?? 'default', task, { maxTokens: 1024, budget: 'low' }),
+            hsClient.recall('infra', recallQuery, { maxTokens: 1024, budget: 'low' }),
+            hsClient.recall(appConfig.hindsight?.defaultBank ?? 'default', recallQuery, { maxTokens: 1024, budget: 'low' }),
           ]);
 
           const parts: string[] = [];
@@ -369,6 +370,18 @@ Respond ONLY with the JSON object. No markdown fences, no commentary.`;
   }
 
   // ── Private helpers ──────────────────────────────────────────────
+
+  /**
+   * Extracts a concise recall query from a potentially long task string.
+   * Hindsight performs best with short, focused queries (under 200 chars),
+   * not full multi-paragraph task instructions.
+   */
+  private extractRecallQuery(task: string): string {
+    // Take the first sentence or first 200 chars, whichever is shorter
+    const firstSentence = task.match(/^[^.!?\n]+[.!?]?/);
+    const candidate = firstSentence ? firstSentence[0] : task;
+    return candidate.length > 200 ? candidate.slice(0, 200).trim() : candidate.trim();
+  }
 
   /**
    * Extracts a JSON object from the LLM response text.
