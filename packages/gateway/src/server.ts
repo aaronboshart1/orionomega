@@ -28,6 +28,8 @@ import { handleGetConfig, handlePutConfig } from './routes/config.js';
 import { handleGetSkills, handlePutSkillConfig } from './routes/skills.js';
 import { rateLimitRest } from './rate-limit.js';
 import { setSecurityHeaders } from './security-headers.js';
+import { handleStartCodingSession, handleGetCodingSession, handleGetCodingSteps, handleCancelCodingSession } from './routes/coding.js';
+import { setCodingEventStreamer } from './coding-events.js';
 
 process.on('uncaughtException', (err) => {
   console.error('[gateway] Uncaught exception:', err);
@@ -87,6 +89,10 @@ const activityService = new ActivityService();
 const commandHandler = new CommandHandler(sessionManager);
 const eventStreamer = new EventStreamer();
 const wsHandler = new WebSocketHandler(config, sessionManager, commandHandler, eventStreamer, activityService);
+
+// Wire the EventStreamer into the coding-events emitter module so that
+// emitCoding* functions can broadcast to all connected WebSocket clients.
+setCodingEventStreamer(eventStreamer);
 wsHandler.setHindsightStatusProvider(() => ({
   connected: lastHindsightConnected ?? false,
   busy: false,
@@ -686,6 +692,50 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
       res.end(JSON.stringify({ error: 'Internal server error' }));
     });
     return;
+  }
+
+  // --- Coding sessions ---
+
+  // POST /api/coding/sessions — start a coding session
+  if (pathname === '/api/coding/sessions' && method === 'POST') {
+    handleStartCodingSession(req, res, mainAgent).catch((err) => {
+      log.error('Coding session start route error', { error: err instanceof Error ? err.message : String(err) });
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Internal server error' }));
+    });
+    return;
+  }
+
+  // GET /api/coding/sessions/:id/steps
+  const codingStepsMatch = pathname.match(/^\/api\/coding\/sessions\/([a-z0-9_-]+)\/steps$/);
+  if (codingStepsMatch && method === 'GET') {
+    handleGetCodingSteps(req, res, codingStepsMatch[1]!).catch((err) => {
+      log.error('Coding steps route error', { error: err instanceof Error ? err.message : String(err) });
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Internal server error' }));
+    });
+    return;
+  }
+
+  // GET /api/coding/sessions/:id  |  DELETE /api/coding/sessions/:id
+  const codingSessionMatch = pathname.match(/^\/api\/coding\/sessions\/([a-z0-9_-]+)$/);
+  if (codingSessionMatch) {
+    if (method === 'GET') {
+      handleGetCodingSession(req, res, codingSessionMatch[1]!).catch((err) => {
+        log.error('Coding session get route error', { error: err instanceof Error ? err.message : String(err) });
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Internal server error' }));
+      });
+      return;
+    }
+    if (method === 'DELETE') {
+      handleCancelCodingSession(req, res, codingSessionMatch[1]!).catch((err) => {
+        log.error('Coding session cancel route error', { error: err instanceof Error ? err.message : String(err) });
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Internal server error' }));
+      });
+      return;
+    }
   }
 
   // --- File commands ---

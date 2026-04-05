@@ -12,6 +12,19 @@ export type {
   WorkflowSummary,
   CommandResult,
   GatewayConfig,
+  // Coding Mode event types
+  CodingEventType,
+  CodingEventPayload,
+  CodingSessionStartedPayload,
+  CodingWorkflowStartedPayload,
+  CodingStepStartedPayload,
+  CodingStepProgressPayload,
+  CodingStepCompletedPayload,
+  CodingStepFailedPayload,
+  CodingReviewStartedPayload,
+  CodingReviewCompletedPayload,
+  CodingCommitCompletedPayload,
+  CodingSessionCompletedPayload,
 } from './types.js';
 
 // Sessions
@@ -23,6 +36,21 @@ export { generateToken, validateToken, hashPassword, verifyPassword } from './au
 
 // Events
 export { EventStreamer } from './events.js';
+
+// Coding Mode event emitters
+export {
+  setCodingEventStreamer,
+  emitCodingSessionStarted,
+  emitCodingWorkflowStarted,
+  emitCodingStepStarted,
+  emitCodingStepProgress,
+  emitCodingStepCompleted,
+  emitCodingStepFailed,
+  emitCodingReviewStarted,
+  emitCodingReviewCompleted,
+  emitCodingCommitCompleted,
+  emitCodingSessionCompleted,
+} from './coding-events.js';
 
 // Commands
 export { CommandHandler } from './commands.js';

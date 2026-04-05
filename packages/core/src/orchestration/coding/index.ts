@@ -70,6 +70,17 @@ export {
 } from './coding-planner.js';
 export type { CodingPlannerOptions } from './coding-planner.js';
 
+// ── Orchestrator ──────────────────────────────────────────────────────────────
+export {
+  CodingOrchestrator,
+  setCodingOrchestatorEmitters,
+  parseCodingRequest,
+} from './coding-orchestrator.js';
+export type {
+  CodingOrchestratorConfig,
+  CodingEventEmitters,
+} from './coding-orchestrator.js';
+
 // ── Templates ─────────────────────────────────────────────────────────────────
 export {
   loadCodingTemplate,

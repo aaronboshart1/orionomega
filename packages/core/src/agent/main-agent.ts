@@ -374,7 +374,7 @@ export class MainAgent {
     content: string,
     replyContext?: { messageId: string; content: string; role: string; dagId?: string; workflowId?: string },
     attachments?: { name: string; size: number; type: string; data?: string; textContent?: string }[],
-    agentMode?: 'orchestrate' | 'direct',
+    agentMode?: 'orchestrate' | 'direct' | 'code',
   ): Promise<void> {
     if (this.initPromise) {
       await this.initPromise;
@@ -512,6 +512,17 @@ export class MainAgent {
         this.emitStep('route', 'Routing request', 'done', 'Direct mode');
         this.callbacks.onThinking('Thinking…', true, false);
         await this.respondConversationally(userContent, signal, runId);
+        return;
+      }
+
+      // 2b. Coding mode — trigger the coding DAG workflow
+      if (agentMode === 'code') {
+        log.verbose('Route: CODE (coding mode — DAG workflow)');
+        this.emitStep('route', 'Routing request', 'done', 'Coding mode');
+        await this.orchestration.dispatchCodingWorkflow(
+          userContent,
+          (e) => this.pushHistory(e as HistoryEntry),
+        );
         return;
       }
 

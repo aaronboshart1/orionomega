@@ -48,9 +48,112 @@ export interface ClientMessage {
    * Agent routing mode chosen by the user.
    * 'orchestrate' (default) — full planner DAG execution.
    * 'direct' — bypass DAG, respond conversationally even for complex tasks.
+   * 'code' — activate coding mode, trigger the coding DAG workflow.
    */
-  agentMode?: 'orchestrate' | 'direct';
+  agentMode?: 'orchestrate' | 'direct' | 'code';
 }
+
+// ── Coding Mode Event Types ───────────────────────────────────────────────────
+
+/** All Coding Mode WebSocket event type names. */
+export type CodingEventType =
+  | 'coding:session:started'
+  | 'coding:workflow:started'
+  | 'coding:step:started'
+  | 'coding:step:progress'
+  | 'coding:step:completed'
+  | 'coding:step:failed'
+  | 'coding:review:started'
+  | 'coding:review:completed'
+  | 'coding:commit:completed'
+  | 'coding:session:completed';
+
+/** Payload for `coding:session:started` — emitted when a coding session begins. */
+export interface CodingSessionStartedPayload {
+  repoUrl: string;
+  branch: string;
+  sessionId: string;
+}
+
+/** Payload for `coding:workflow:started` — emitted when the DAG workflow starts executing. */
+export interface CodingWorkflowStartedPayload {
+  workflowId: string;
+  /** The DAG template selected for this session. */
+  template: string;
+  nodeCount: number;
+}
+
+/** Payload for `coding:step:started` — emitted when a workflow node begins. */
+export interface CodingStepStartedPayload {
+  nodeId: string;
+  label: string;
+  /** The coding role of this node (e.g. 'architect', 'implementer'). */
+  type: string;
+}
+
+/** Payload for `coding:step:progress` — progress updates during step execution. */
+export interface CodingStepProgressPayload {
+  nodeId: string;
+  message: string;
+  /** 0–100 completion percentage. */
+  percentage: number;
+}
+
+/** Payload for `coding:step:completed` — emitted when a step finishes successfully. */
+export interface CodingStepCompletedPayload {
+  nodeId: string;
+  status: 'success';
+  /** Brief prose summary of the step's output. */
+  outputSummary: string;
+}
+
+/** Payload for `coding:step:failed` — emitted when a step fails. */
+export interface CodingStepFailedPayload {
+  nodeId: string;
+  error: string;
+}
+
+/** Payload for `coding:review:started` — emitted when architect review begins. */
+export interface CodingReviewStartedPayload {
+  /** 1-indexed iteration counter. */
+  iteration: number;
+}
+
+/** Payload for `coding:review:completed` — emitted with review results. */
+export interface CodingReviewCompletedPayload {
+  decision: 'approve' | 'reject' | 'request-changes';
+  feedback: string;
+  metrics?: Record<string, unknown>;
+}
+
+/** Payload for `coding:commit:completed` — emitted when code is committed and pushed. */
+export interface CodingCommitCompletedPayload {
+  commitHash: string;
+  branch: string;
+}
+
+/** Payload for `coding:session:completed` — emitted when the entire coding session finishes. */
+export interface CodingSessionCompletedPayload {
+  summary: string;
+  filesModified?: string[];
+  filesCreated?: string[];
+  totalDurationMs?: number;
+}
+
+/** Discriminated union of all Coding Mode event payloads, keyed by event type. */
+export type CodingEventPayload =
+  | { type: 'coding:session:started'; payload: CodingSessionStartedPayload }
+  | { type: 'coding:workflow:started'; payload: CodingWorkflowStartedPayload }
+  | { type: 'coding:step:started'; payload: CodingStepStartedPayload }
+  | { type: 'coding:step:progress'; payload: CodingStepProgressPayload }
+  | { type: 'coding:step:completed'; payload: CodingStepCompletedPayload }
+  | { type: 'coding:step:failed'; payload: CodingStepFailedPayload }
+  | { type: 'coding:review:started'; payload: CodingReviewStartedPayload }
+  | { type: 'coding:review:completed'; payload: CodingReviewCompletedPayload }
+  | { type: 'coding:commit:completed'; payload: CodingCommitCompletedPayload }
+  | { type: 'coding:session:completed'; payload: CodingSessionCompletedPayload };
+
+// ── Server Message ────────────────────────────────────────────────────────────
 
 /** Gateway → Client message envelope. */
 export interface ServerMessage {
@@ -60,7 +163,8 @@ export interface ServerMessage {
     | 'command_result' | 'session_status' | 'error' | 'ack' | 'history'
     | 'dag_dispatched' | 'dag_progress' | 'dag_complete' | 'dag_confirm'
     | 'pong' | 'file_content'
-    | 'hindsight_status' | 'memory_event' | 'memory_history';
+    | 'hindsight_status' | 'memory_event' | 'memory_history'
+    | 'coding_event';
   /** Identifies which workflow this message relates to (events, status updates, plans). */
   workflowId?: string;
   /** The user message ID this response is answering (set by handleChat). */
@@ -133,6 +237,9 @@ export interface ServerMessage {
     nodes: Array<{ id: string; label: string; type: string }>;
     guardedActions: string[];
   };
+
+  /** Coding Mode lifecycle event. Present when `type === 'coding_event'`. */
+  codingEvent?: CodingEventPayload;
 }
 
 /** Aggregate system health status. */

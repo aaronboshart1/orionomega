@@ -357,7 +357,7 @@ export class WebSocketHandler {
     const attachments = Array.isArray(msg.attachments) ? (msg.attachments as { name: string; size: number; type: string; data?: string; textContent?: string }[]) : undefined;
 
     if (this.mainAgent) {
-      const agentMode = (msg.agentMode === 'direct' || msg.agentMode === 'orchestrate') ? msg.agentMode : undefined;
+      const agentMode = (msg.agentMode === 'direct' || msg.agentMode === 'orchestrate' || msg.agentMode === 'code') ? msg.agentMode : undefined;
       if (agentMode) {
         this.sessionManager.updateAgentMode(conn.sessionId, agentMode);
       }

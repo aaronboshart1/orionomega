@@ -60,7 +60,7 @@ interface SessionData {
   activeWorkflows: string[];
   hindsightBank?: string;
   memoryEvents?: MemoryEventData[];
-  agentMode?: 'orchestrate' | 'direct';
+  agentMode?: 'orchestrate' | 'direct' | 'code';
 }
 
 /** Maximum memory events to persist per session. */
@@ -78,7 +78,7 @@ export interface Session {
   memoryEvents: MemoryEventData[];
   clients: Set<string>;
   /** Last agent routing mode chosen by the user — persisted so reconnecting clients restore it. */
-  agentMode?: 'orchestrate' | 'direct';
+  agentMode?: 'orchestrate' | 'direct' | 'code';
 }
 
 /**
@@ -223,9 +223,9 @@ export class SessionManager {
    * Persist the user's agent routing mode choice for a session.
    * Called each time the frontend sends a chat message with an explicit agentMode.
    * @param sessionId - Target session ID.
-   * @param mode - 'orchestrate' | 'direct'
+   * @param mode - 'orchestrate' | 'direct' | 'code'
    */
-  updateAgentMode(sessionId: string, mode: 'orchestrate' | 'direct'): void {
+  updateAgentMode(sessionId: string, mode: 'orchestrate' | 'direct' | 'code'): void {
     const session = this.sessions.get(sessionId);
     if (!session) return;
     if (session.agentMode === mode) return; // no-op if unchanged

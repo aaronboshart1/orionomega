@@ -107,3 +107,32 @@ export type { DiscoveredModel } from "./models/model-discovery.js";
 
 // Utilities
 export { deepMerge } from './utils/deep-merge.js';
+
+// Database (Coding Mode persistence)
+export {
+  architectReviews,
+  closeDb,
+  codingSessions,
+  getDb,
+  runMigrations,
+  workflowExecutions,
+  workflowSteps,
+} from './db/index.js';
+export type {
+  ArchitectReview,
+  BuildTestStatus,
+  CodingDb,
+  CodingSession,
+  CodingSessionStatus,
+  CodingSessionWithExecutions,
+  NewArchitectReview,
+  NewCodingSession,
+  NewWorkflowExecution,
+  NewWorkflowStep,
+  ReviewDecision,
+  WorkflowExecution,
+  WorkflowExecutionStatus,
+  WorkflowExecutionWithSteps,
+  WorkflowStep,
+  WorkflowStepStatus,
+} from './db/index.js';

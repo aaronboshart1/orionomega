@@ -8,6 +8,8 @@
  */
 
 import { Planner } from '../orchestration/planner.js';
+import { CodingOrchestrator } from '../orchestration/coding/coding-orchestrator.js';
+import type { CodingOrchestratorConfig } from '../orchestration/coding/coding-orchestrator.js';
 import { GraphExecutor } from '../orchestration/executor.js';
 import type { ExecutorConfig } from '../orchestration/executor.js';
 import { EventBus } from '../orchestration/event-bus.js';
@@ -37,6 +39,8 @@ export interface OrchestrationConfig {
   checkpointDir: string;
   workerTimeout: number;
   maxRetries: number;
+  /** Optional coding mode config — enables dispatchCodingWorkflow(). */
+  codingOrchestratorConfig?: CodingOrchestratorConfig;
 }
 
 /** An active, running workflow. */
@@ -220,6 +224,38 @@ export class OrchestrationBridge {
       this.callbacks.onThinking('', true, true);
       this.callbacks.onText(`Failed to plan: ${msg}`, false, true);
     }
+  }
+
+  // ── Coding mode dispatch ──────────────────────────────────────────
+
+  /**
+   * Start a Coding Mode workflow for the given task.
+   * Resolves immediately — the workflow runs asynchronously.
+   */
+  async dispatchCodingWorkflow(
+    task: string,
+    pushHistory: (entry: { role: string; content: string }) => void,
+  ): Promise<void> {
+    const orchestratorConfig = this.config.codingOrchestratorConfig;
+    if (!orchestratorConfig) {
+      log.warn('CodingOrchestrator not configured — falling back to full DAG');
+      await this.dispatchFullDAG(task, pushHistory);
+      return;
+    }
+
+    const orchestrator = new CodingOrchestrator(orchestratorConfig);
+    const conversationId = `conv-${Date.now().toString(36)}`;
+
+    this.callbacks.onText('Starting coding session…', false, true);
+    pushHistory({ role: 'assistant', content: `[Coding session started] ${task}` });
+
+    void orchestrator.start(task, conversationId).then((sessionId) => {
+      log.info('Coding session started', { sessionId });
+    }).catch((err) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      log.error('Coding session failed to start', { error: msg });
+      this.callbacks.onText(`Coding session failed: ${msg}`, false, true);
+    });
   }
 
   // ── Async dispatch (shared by micro and full DAGs) ────────────────

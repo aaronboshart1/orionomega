@@ -2,7 +2,14 @@
   "name": "@orionomega/core",
   "version": "0.1.0",
   "description": "Orchestration engine, Anthropic client, config, memory, and CLI for OrionOmega",
-  "keywords": ["ai", "agent", "orchestration", "claude", "anthropic", "dag"],
+  "keywords": [
+    "ai",
+    "agent",
+    "orchestration",
+    "claude",
+    "anthropic",
+    "dag"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/aaronboshart1/orionomega.git",
@@ -23,10 +30,13 @@
     "@anthropic-ai/claude-agent-sdk": "^0.2.71",
     "@orionomega/hindsight": "workspace:*",
     "@orionomega/skills-sdk": "workspace:*",
+    "better-sqlite3": "^12.8.0",
+    "drizzle-orm": "^0.45.2",
     "js-yaml": "^4.1.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.0.0",
     "typescript": "^5.7.0"
