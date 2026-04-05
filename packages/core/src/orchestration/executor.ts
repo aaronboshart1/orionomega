@@ -598,7 +598,10 @@ export class GraphExecutor {
           }
 
           // 2. Hindsight memory recall (multi-bank)
-          const recalled = await this.recallContext(node.agent.task);
+          // Use the original user task for recall — agent node instructions are
+          // sub-task decompositions and cause semantic mismatch against memories
+          // that were retained against the user's natural-language request.
+          const recalled = await this.recallContext(this.config.task ?? node.agent.task);
           if (recalled) {
             contextParts.push(`## Relevant Memories\n${recalled}`);
           }
@@ -1188,30 +1191,25 @@ export class GraphExecutor {
         return undefined;
       }
 
-      const client = new HindsightClient(hindsightUrl);
+      const defaultBank = config.hindsight?.defaultBank ?? 'default';
+      const client = new HindsightClient(hindsightUrl, defaultBank);
       if (this.config.onMemoryIO) {
         client.onIO = this.config.onMemoryIO;
       }
-      const defaultBank = config.hindsight?.defaultBank ?? 'default';
 
       // Determine which banks to query
       const banks = new Set<string>([defaultBank, 'infra']);
 
       // Discover project banks that might be relevant
       try {
-        const res = await fetch(`${hindsightUrl}/v1/default/banks`, {
-          signal: AbortSignal.timeout(5000),
-        });
-        if (res.ok) {
-          const data = await res.json() as { banks?: { id: string }[] };
-          const taskLower = task.toLowerCase();
-          for (const bank of data.banks ?? []) {
-            if (bank.id.startsWith('project-')) {
-              // Check if project name appears in the task
-              const projectName = bank.id.replace('project-', '');
-              if (taskLower.includes(projectName)) {
-                banks.add(bank.id);
-              }
+        const allBanks = await client.listBanksCached();
+        const taskLower = task.toLowerCase();
+        for (const bank of allBanks) {
+          if (bank.bank_id.startsWith('project-')) {
+            // Check if project name appears in the task
+            const projectName = bank.bank_id.replace('project-', '');
+            if (taskLower.includes(projectName)) {
+              banks.add(bank.bank_id);
             }
           }
         }
@@ -1222,7 +1220,7 @@ export class GraphExecutor {
       // Recall from all banks concurrently
       const recallPromises = [...banks].map(async (bankId) => {
         try {
-          const result = await client.recall(bankId, task, { maxTokens: 1024, budget: 'low' });
+          const result = await client.recall(bankId, task, { maxTokens: 4096, budget: 'mid' });
           const memories = result?.results ?? [];
           if (memories.length > 0) {
             const text = memories.map((m: { content: string }) => m.content).join('\n');

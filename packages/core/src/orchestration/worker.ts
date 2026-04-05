@@ -462,9 +462,13 @@ export class WorkerProcess {
     systemPrompt?: string;
     skillIds?: string[];
   }): Promise<string> {
-    // If there's an explicit system prompt override, use it
+    // If there's an explicit system prompt override, use it — but still
+    // prepend any recalled hindsight context so the recall isn't discarded.
     if (agentConfig.systemPrompt) {
-      return agentConfig.systemPrompt;
+      const contextSection = this.context
+        ? `## Relevant Context\n${this.context}\n\n`
+        : '';
+      return `${contextSection}${agentConfig.systemPrompt}`;
     }
 
     // Load SKILL.md content for any assigned skills
