@@ -20,6 +20,7 @@ import { SkillLoader, readSkillConfig, writeSkillConfig } from '@orionomega/skil
 import type { OrionOmegaConfig } from '../config/types.js';
 import { CommandFileLoader } from '../commands/command-file-loader.js';
 
+import type { CodingOrchestratorConfig } from '../orchestration/coding/coding-orchestrator.js';
 import type {
   PlannerOutput, WorkerEvent, GraphState, WorkflowCheckpoint,
   DAGDispatchInfo, DAGProgressInfo, DAGCompleteInfo, DAGConfirmInfo,
@@ -57,6 +58,8 @@ export interface MainAgentConfig {
   commandsDir?: string;
   hindsight?: OrionOmegaConfig['hindsight'];
   autoResume?: boolean;
+  /** Optional coding orchestrator config — enables Code mode. */
+  codingOrchestratorConfig?: CodingOrchestratorConfig;
 }
 
 // ── Callbacks ──────────────────────────────────────────────────────────────
@@ -310,6 +313,7 @@ export class MainAgent {
         checkpointDir: this.config.checkpointDir,
         workerTimeout: this.config.workerTimeout,
         maxRetries: this.config.maxRetries,
+        codingOrchestratorConfig: this.config.codingOrchestratorConfig,
       },
       wrappedCallbacks,
       this.memory,
