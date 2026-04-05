@@ -315,6 +315,20 @@ export interface DAGCompleteInfo {
   toolCallCount?: number;
 }
 
+
+/** Info emitted when a direct (non-DAG) conversation turn completes with stats. */
+export interface DirectCompleteInfo {
+  /** Unique ID for this direct run. */
+  runId: string;
+  /** Model used for the response. */
+  model: string;
+  /** Duration of the response in seconds. */
+  durationSec: number;
+  /** Per-model token usage (single entry for direct mode). */
+  modelUsage: ModelUsage[];
+  /** Total cost in USD for this turn. */
+  totalCostUsd: number;
+}
 /** Info emitted when a guarded DAG needs user confirmation. */
 export interface DAGConfirmInfo {
   workflowId: string;

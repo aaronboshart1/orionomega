@@ -12,7 +12,7 @@ import { resolve as resolvePath, normalize } from 'node:path';
 import { homedir } from 'node:os';
 import { spawn as spawnProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { readConfig, normalizeBindAddresses, MainAgent, CommandFileLoader, createLogger, setGlobalLogLevel, enableFileLogging, discoverModels, clearModelCache, auditApiRequest } from '@orionomega/core';
+import { readConfig, normalizeBindAddresses, MainAgent, CommandFileLoader, createLogger, setGlobalLogLevel, enableFileLogging, discoverModels, clearModelCache, auditApiRequest, setCodingOrchestatorEmitters } from '@orionomega/core';
 import type { MainAgentConfig, MainAgentCallbacks, LogLevel, PlannerOutput } from '@orionomega/core';
 import { setLogLevel as setHindsightLogLevel } from '@orionomega/hindsight';
 import type { GatewayConfig, ServerMessage } from './types.js';
@@ -30,7 +30,7 @@ import { handleGetSkills, handlePutSkillConfig } from './routes/skills.js';
 import { rateLimitRest } from './rate-limit.js';
 import { setSecurityHeaders } from './security-headers.js';
 import { handleStartCodingSession, handleGetCodingSession, handleGetCodingSteps, handleCancelCodingSession } from './routes/coding.js';
-import { setCodingEventStreamer } from './coding-events.js';
+import { setCodingEventStreamer, emitCodingSessionStarted, emitCodingWorkflowStarted, emitCodingStepStarted, emitCodingStepProgress, emitCodingStepCompleted, emitCodingStepFailed, emitCodingReviewStarted, emitCodingReviewCompleted, emitCodingCommitCompleted, emitCodingSessionCompleted } from './coding-events.js';
 import { FeedService } from './feed/index.js';
 import { handleGetFeed, handleGetFeedMessage, handlePostFeedMessage, handleGetFeedCount } from './routes/feed.js';
 
@@ -97,6 +97,21 @@ const wsHandler = new WebSocketHandler(config, sessionManager, commandHandler, e
 // Wire the EventStreamer into the coding-events emitter module so that
 // emitCoding* functions can broadcast to all connected WebSocket clients.
 setCodingEventStreamer(eventStreamer);
+
+// Wire the CodingOrchestrator legacy emitters to the gateway coding event system.
+// This ensures coding_event messages are broadcast to WebSocket clients in real time.
+setCodingOrchestatorEmitters({
+  sessionStarted: (p) => emitCodingSessionStarted(p, p.sessionId),
+  workflowStarted: (p) => emitCodingWorkflowStarted(p, p.workflowId),
+  stepStarted: (p) => emitCodingStepStarted(p),
+  stepProgress: (p) => emitCodingStepProgress(p),
+  stepCompleted: (p) => emitCodingStepCompleted(p),
+  stepFailed: (p) => emitCodingStepFailed(p),
+  reviewStarted: (p) => emitCodingReviewStarted(p),
+  reviewCompleted: (p) => emitCodingReviewCompleted(p),
+  commitCompleted: (p) => emitCodingCommitCompleted(p),
+  sessionCompleted: (p) => emitCodingSessionCompleted(p),
+});
 wsHandler.setHindsightStatusProvider(() => ({
   connected: lastHindsightConnected ?? false,
   busy: false,
@@ -331,6 +346,28 @@ async function initMainAgent(): Promise<void> {
         type: "session_status",
         sessionStatus: status,
       });
+    },
+    onDirectComplete(info) {
+      const msgId = randomBytes(8).toString("hex");
+      wsHandler.broadcast({
+        id: msgId,
+        type: "direct_complete",
+        directComplete: info,
+      });
+      const sid = DEFAULT_SESSION_ID;
+      if (sid) {
+        sessionManager.addMessage(sid, {
+          id: msgId,
+          role: "assistant",
+          content: "",
+          timestamp: new Date().toISOString(),
+          type: "direct-complete",
+          metadata: {
+            runId: info.runId,
+            directComplete: info,
+          },
+        });
+      }
     },
     onWorkflowStart(workflowId, _workflowName) {
       const sessionId = DEFAULT_SESSION_ID;

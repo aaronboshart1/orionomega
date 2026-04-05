@@ -50,7 +50,7 @@ export function RunSummaryCard({ dag }: RunSummaryCardProps) {
 
       <div className="flex items-center gap-3 text-xs text-zinc-500">
         {dag.durationSec !== undefined && <span>{fmtDuration(dag.durationSec)}</span>}
-        {dag.workerCount !== undefined && <span>{dag.workerCount} worker{dag.workerCount !== 1 ? 's' : ''}</span>}
+        {dag.workerCount !== undefined && dag.workerCount > 1 && <span>{dag.workerCount} workers</span>}
         {dag.toolCallCount != null && dag.toolCallCount > 0 && <span>{dag.toolCallCount} tool call{dag.toolCallCount !== 1 ? 's' : ''}</span>}
         {dag.totalCostUsd !== undefined && (
           <span className="font-medium text-green-400">${dag.totalCostUsd.toFixed(4)}</span>

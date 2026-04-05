@@ -136,3 +136,7 @@ export type {
   WorkflowStep,
   WorkflowStepStatus,
 } from './db/index.js';
+
+// Coding orchestrator emitters (for gateway wiring)
+export { setCodingOrchestatorEmitters } from './orchestration/index.js';
+export type { CodingEventEmitters } from './orchestration/index.js';

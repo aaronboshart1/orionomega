@@ -51,6 +51,7 @@ export interface ChatMessage {
     | 'dag-dispatched'
     | 'dag-progress'
     | 'dag-complete'
+    | 'direct-complete'
     | 'dag-confirmation'
     | 'tool-call'
     | 'error';

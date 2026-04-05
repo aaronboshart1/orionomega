@@ -23,7 +23,7 @@ import { CommandFileLoader } from '../commands/command-file-loader.js';
 import type { CodingOrchestratorConfig } from '../orchestration/coding/coding-orchestrator.js';
 import type {
   PlannerOutput, WorkerEvent, GraphState, WorkflowCheckpoint,
-  DAGDispatchInfo, DAGProgressInfo, DAGCompleteInfo, DAGConfirmInfo,
+  DAGDispatchInfo, DAGProgressInfo, DAGCompleteInfo, DAGConfirmInfo, DirectCompleteInfo, ModelUsage,
 } from '../orchestration/types.js';
 import { EventBus } from '../orchestration/event-bus.js';
 
@@ -95,6 +95,8 @@ export interface MainAgentCallbacks {
   onDAGProgress?: (progress: DAGProgressInfo) => void;
   onDAGComplete?: (result: DAGCompleteInfo) => void;
   onDAGConfirm?: (confirm: DAGConfirmInfo) => void;
+  /** Emitted when a direct (non-DAG) conversation turn completes with per-run stats. */
+  onDirectComplete?: (info: DirectCompleteInfo) => void;
 
   /** Hindsight I/O activity state change (connected/busy). */
   onHindsightActivity?: (status: { connected: boolean; busy: boolean }) => void;
@@ -1152,6 +1154,7 @@ export class MainAgent {
     wrappedOnThinking('Generating response…', true, false);
 
     try {
+      const turnStartTime = Date.now();
       const result = await streamConversation({
         client: this.anthropic,
         model: this.config.model,
@@ -1182,6 +1185,29 @@ export class MainAgent {
         this.pushHistory({ role: "assistant", content: `[Background ${effectiveRunId.slice(0, 12)}]: ${result.text}` });
       }
       this.emitSessionStatus();
+
+      // Emit per-run stats for direct mode (mirrors DAGCompleteInfo for orchestration runs)
+      const turnDurationSec = (Date.now() - turnStartTime) / 1000;
+      const turnCost = this.estimateConversationalCost(
+        result.inputTokens, result.outputTokens,
+        result.cacheCreationTokens, result.cacheReadTokens,
+      );
+      const shortModel = this.config.model.replace(/^claude-/, '').replace(/-\d{8}$/, '');
+      this.callbacks.onDirectComplete?.({
+        runId: `direct-${effectiveRunId}`,
+        model: this.config.model,
+        durationSec: Math.round(turnDurationSec * 10) / 10,
+        modelUsage: [{
+          model: shortModel,
+          inputTokens: result.inputTokens,
+          outputTokens: result.outputTokens,
+          cacheReadTokens: result.cacheReadTokens,
+          cacheCreationTokens: result.cacheCreationTokens,
+          workerCount: 1,
+          costUsd: turnCost,
+        }],
+        totalCostUsd: turnCost,
+      });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       log.error('Conversational response error', { error: msg, runId: effectiveRunId, isBackground: wasDetached });

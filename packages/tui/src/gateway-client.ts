@@ -25,7 +25,7 @@ interface ServerMessage {
   id: string;
   workflowId?: string;
   replyTo?: string;
-  type: 'text' | 'thinking' | 'plan' | 'event' | 'status' | 'command_result' | 'session_status' | 'hindsight_status' | 'dag_complete' | 'error' | 'ack' | 'history';
+  type: 'text' | 'thinking' | 'plan' | 'event' | 'status' | 'command_result' | 'session_status' | 'hindsight_status' | 'dag_complete' | 'direct_complete' | 'error' | 'ack' | 'history';
   content?: string;
   streaming?: boolean;
   done?: boolean;
@@ -57,6 +57,21 @@ interface ServerMessage {
       workerCount: number;
       costUsd: number;
     }>;
+  };
+  directComplete?: {
+    runId: string;
+    model: string;
+    durationSec: number;
+    modelUsage: Array<{
+      model: string;
+      inputTokens: number;
+      outputTokens: number;
+      cacheReadTokens: number;
+      cacheCreationTokens: number;
+      workerCount: number;
+      costUsd: number;
+    }>;
+    totalCostUsd: number;
   };
   history?: Array<{ id: string; role: string; content: string; timestamp: string }>;
 }
@@ -96,6 +111,7 @@ export interface GatewayClientEvents {
   sessionStatus: [{ model: string; inputTokens: number; outputTokens: number; cacheCreationTokens: number; cacheReadTokens: number; maxContextTokens: number; sessionCostUsd: number }];
   hindsightStatus: [{ connected: boolean; busy: boolean }];
   dagComplete: [NonNullable<ServerMessage['dagComplete']>];
+  directComplete: [NonNullable<ServerMessage['directComplete']>];
   history: [Array<{ id: string; role: string; content: string; timestamp: string }>];
 }
 
@@ -406,6 +422,11 @@ export class GatewayClient extends EventEmitter<GatewayClientEvents> {
       case 'dag_complete':
         if (msg.dagComplete) {
           this.emit('dagComplete', msg.dagComplete);
+        }
+        break;
+      case 'direct_complete':
+        if (msg.directComplete) {
+          this.emit('directComplete', msg.directComplete);
         }
         break;
 

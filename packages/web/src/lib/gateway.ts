@@ -6,6 +6,7 @@ import { useOrchestrationStore } from '@/stores/orchestration';
 import { useChatStore } from '@/stores/chat';
 import { useConnectionStore } from '@/stores/connection';
 import { useAgentModeStore } from '@/stores/agent-mode';
+import { useCodingModeStore } from '@/stores/coding-mode';
 import type { ChatMessage } from '@/stores/chat';
 import type { FileAttachment } from '@/components/chat/ChatInput';
 import { uuid } from '@/lib/uuid';
@@ -661,6 +662,121 @@ function bindListeners(ws: ReconnectingWebSocket): void {
               }
             }
           });
+        }
+        break;
+      }
+      case 'direct_complete': {
+        const dc = msg.directComplete;
+        if (!dc) break;
+        // Create an InlineDAG entry so RunSummaryCard can render
+        orch.upsertInlineDAG({
+          dagId: dc.runId,
+          summary: 'Direct response',
+          status: 'dispatched',
+          nodes: [],
+          completedCount: 0,
+          totalCount: 1,
+          elapsed: 0,
+        });
+        orch.completeDAG(dc.runId, undefined, undefined, {
+          durationSec: dc.durationSec,
+          workerCount: 1,
+          totalCostUsd: dc.totalCostUsd,
+          modelUsage: dc.modelUsage?.map((m: { model: string; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreationTokens: number; workerCount: number; costUsd: number }) => ({
+            model: m.model,
+            inputTokens: m.inputTokens,
+            outputTokens: m.outputTokens,
+            cacheReadTokens: m.cacheReadTokens,
+            cacheCreationTokens: m.cacheCreationTokens,
+            workerCount: m.workerCount,
+            costUsd: m.costUsd,
+          })),
+        });
+        // Add a chat message that renders as RunSummaryCard
+        chat.addMessage({
+          id: msg.id || uuid(),
+          role: 'assistant',
+          content: '',
+          timestamp: new Date().toISOString(),
+          type: 'dag-complete',
+          dagId: dc.runId,
+        });
+        break;
+      }
+      case 'coding_event': {
+        const ce = msg.codingEvent;
+        if (!ce) break;
+        const codingStore = useCodingModeStore.getState();
+        switch (ce.type) {
+          case 'coding:session:started':
+            codingStore.setSession({
+              sessionId: ce.payload.sessionId,
+              taskDescription: '',
+              repoUrl: ce.payload.repoUrl,
+              branch: ce.payload.branch,
+              status: 'running',
+              steps: [],
+              reviews: [],
+              currentIteration: 0,
+            });
+            break;
+          case 'coding:workflow:started':
+            // Steps will be added as they start
+            break;
+          case 'coding:step:started':
+            codingStore.addOrUpdateStep({
+              id: ce.payload.nodeId,
+              label: ce.payload.label,
+              type: (ce.payload.type || 'custom') as import('@/stores/coding-mode').CodingStepType,
+              status: 'running',
+              startedAt: new Date().toISOString(),
+            });
+            break;
+          case 'coding:step:progress':
+            codingStore.updateStep(ce.payload.nodeId, {
+              output: ce.payload.message,
+            });
+            break;
+          case 'coding:step:completed':
+            codingStore.updateStep(ce.payload.nodeId, {
+              status: 'completed',
+              completedAt: new Date().toISOString(),
+              output: ce.payload.outputSummary,
+            });
+            break;
+          case 'coding:step:failed':
+            codingStore.updateStep(ce.payload.nodeId, {
+              status: 'failed',
+              completedAt: new Date().toISOString(),
+              error: ce.payload.error,
+            });
+            break;
+          case 'coding:review:started':
+            codingStore.addReview({
+              iteration: ce.payload.iteration,
+              buildStatus: 'pending',
+              decision: 'pending',
+            });
+            break;
+          case 'coding:review:completed':
+            codingStore.addReview({
+              iteration: codingStore.session?.currentIteration ?? 1,
+              buildStatus: 'pass',
+              decision: ce.payload.decision === 'approve' ? 'approved' : 'retask',
+              feedback: ce.payload.feedback,
+            });
+            break;
+          case 'coding:commit:completed':
+            codingStore.completeSession({
+              commitHash: ce.payload.commitHash,
+            });
+            break;
+          case 'coding:session:completed':
+            codingStore.completeSession({
+              filesChanged: [...(ce.payload.filesModified ?? []), ...(ce.payload.filesCreated ?? [])],
+              totalDurationMs: ce.payload.totalDurationMs,
+            });
+            break;
         }
         break;
       }

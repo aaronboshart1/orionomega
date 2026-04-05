@@ -411,6 +411,17 @@ export async function start(): Promise<void> {
     throttledRender();
   });
 
+  client.on('directComplete', (info) => {
+    chatLog.addRunStats({
+      status: 'complete',
+      durationSec: info.durationSec,
+      workerCount: 1,
+      totalCostUsd: info.totalCostUsd,
+      modelUsage: info.modelUsage,
+    });
+    throttledRender();
+  });
+
   client.on("sessionStatus", (status) => {
     statusBar.updateStatus({
       model: status.model,

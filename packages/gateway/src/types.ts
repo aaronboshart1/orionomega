@@ -164,7 +164,8 @@ export interface ServerMessage {
     | 'dag_dispatched' | 'dag_progress' | 'dag_complete' | 'dag_confirm'
     | 'pong' | 'file_content'
     | 'hindsight_status' | 'memory_event' | 'memory_history'
-    | 'coding_event';
+    | 'coding_event'
+    | 'direct_complete';
   /** Identifies which workflow this message relates to (events, status updates, plans). */
   workflowId?: string;
   /** The user message ID this response is answering (set by handleChat). */
@@ -240,6 +241,22 @@ export interface ServerMessage {
 
   /** Coding Mode lifecycle event. Present when `type === 'coding_event'`. */
   codingEvent?: CodingEventPayload;
+  /** Per-run stats for direct (non-DAG) conversation turns. Present when `type === 'direct_complete'`. */
+  directComplete?: {
+    runId: string;
+    model: string;
+    durationSec: number;
+    modelUsage: Array<{
+      model: string;
+      inputTokens: number;
+      outputTokens: number;
+      cacheReadTokens: number;
+      cacheCreationTokens: number;
+      workerCount: number;
+      costUsd: number;
+    }>;
+    totalCostUsd: number;
+  };
 }
 
 /** Aggregate system health status. */

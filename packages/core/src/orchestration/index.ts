@@ -60,5 +60,9 @@ export type { CodingAgentResult, CodingAgentConfig } from "./agent-sdk-bridge.js
 export { CheckpointManager } from './checkpoint.js';
 export type {
   WorkflowCheckpoint, LoopNodeConfig, LoopExitCondition, AutonomousConfig, HumanGateAction,
-  IntentTier, DAGDispatchInfo, DAGProgressInfo, DAGCompleteInfo, DAGConfirmInfo,
+  IntentTier, DAGDispatchInfo, DAGProgressInfo, DAGCompleteInfo, DAGConfirmInfo, DirectCompleteInfo,
 } from './types.js';
+
+// Coding orchestrator emitters
+export { setCodingOrchestatorEmitters } from './coding/coding-orchestrator.js';
+export type { CodingEventEmitters, CodingOrchestratorConfig, CodingProgressCallback } from './coding/coding-orchestrator.js';
