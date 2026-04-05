@@ -9,7 +9,7 @@
 
 import { Planner } from '../orchestration/planner.js';
 import { CodingOrchestrator } from '../orchestration/coding/coding-orchestrator.js';
-import type { CodingOrchestratorConfig } from '../orchestration/coding/coding-orchestrator.js';
+import type { CodingOrchestratorConfig, CodingProgressCallback } from '../orchestration/coding/coding-orchestrator.js';
 import { GraphExecutor } from '../orchestration/executor.js';
 import type { ExecutorConfig } from '../orchestration/executor.js';
 import { EventBus } from '../orchestration/event-bus.js';
@@ -230,7 +230,8 @@ export class OrchestrationBridge {
 
   /**
    * Start a Coding Mode workflow for the given task.
-   * Resolves immediately — the workflow runs asynchronously.
+   * Awaits the full workflow and reports step-by-step progress + completion
+   * through the standard DAG dispatch/progress/complete callback pipeline.
    */
   async dispatchCodingWorkflow(
     task: string,
@@ -245,17 +246,130 @@ export class OrchestrationBridge {
 
     const orchestrator = new CodingOrchestrator(orchestratorConfig);
     const conversationId = `conv-${Date.now().toString(36)}`;
+    const workflowId = `coding-${Date.now().toString(36)}`;
 
-    this.callbacks.onText('Starting coding session…', false, true);
+    // Emit DAG dispatch event so the frontend shows the workflow card
+    const dispatchInfo: DAGDispatchInfo = {
+      workflowId,
+      workflowName: 'Coding Session',
+      nodeCount: 6,
+      summary: `Coding: ${task.slice(0, 120)}`,
+      estimatedTime: 0,
+      estimatedCost: 0,
+      nodes: [
+        { id: 'clone', label: 'Clone / sync repo', type: 'git' },
+        { id: 'analyze', label: 'Analyze codebase', type: 'analysis' },
+        { id: 'plan', label: 'Design implementation plan', type: 'architect' },
+        { id: 'implement', label: 'Implementation loop', type: 'implementer' },
+        { id: 'review', label: 'Architect review', type: 'reviewer' },
+        { id: 'commit', label: 'Commit and push', type: 'git' },
+      ],
+    };
+    this.callbacks.onDAGDispatched?.(dispatchInfo);
     pushHistory({ role: 'assistant', content: `[Coding session started] ${task}` });
 
-    void orchestrator.start(task, conversationId).then((sessionId) => {
-      log.info('Coding session started', { sessionId });
-    }).catch((err) => {
+    // Build progress callback that relays to the DAG progress pipeline
+    const progress: CodingProgressCallback = {
+      onStepStarted: (nodeId, label) => {
+        this.callbacks.onDAGProgress?.({
+          workflowId,
+          nodeId,
+          nodeLabel: label,
+          status: 'started',
+          message: `Starting: ${label}`,
+        });
+      },
+      onStepProgress: (nodeId, message, _percentage) => {
+        this.callbacks.onDAGProgress?.({
+          workflowId,
+          nodeId,
+          nodeLabel: nodeId,
+          status: 'progress',
+          message,
+        });
+      },
+      onStepCompleted: (nodeId, outputSummary) => {
+        this.callbacks.onDAGProgress?.({
+          workflowId,
+          nodeId,
+          nodeLabel: nodeId,
+          status: 'done',
+          message: outputSummary,
+        });
+      },
+      onStepFailed: (nodeId, error) => {
+        this.callbacks.onDAGProgress?.({
+          workflowId,
+          nodeId,
+          nodeLabel: nodeId,
+          status: 'error',
+          message: error,
+        });
+      },
+    };
+
+    try {
+      const result = await orchestrator.run(task, conversationId, progress);
+
+      // Build completion summary
+      const parts: string[] = ['Coding session complete.'];
+      parts.push('', `**Task:** ${task.slice(0, 200)}`);
+      parts.push(`**Template:** ${result.template}`);
+      parts.push(`**Duration:** ${result.durationSec}s`);
+      parts.push(`**Review:** ${result.reviewDecision}`);
+      if (result.commitHash && result.commitHash !== 'no-commit') {
+        parts.push(`**Commit:** ${result.commitHash.slice(0, 8)} on ${result.branch}`);
+      }
+      if (result.filesModified.length > 0) {
+        parts.push('', `**Files modified:** ${result.filesModified.length}`);
+        for (const f of result.filesModified.slice(0, 10)) parts.push(`  - ${f}`);
+      }
+      if (result.filesCreated.length > 0) {
+        parts.push('', `**Files created:** ${result.filesCreated.length}`);
+        for (const f of result.filesCreated.slice(0, 10)) parts.push(`  - ${f}`);
+      }
+
+      // Step details
+      if (result.stepResults.length > 0) {
+        parts.push('', '**Steps:**');
+        for (const s of result.stepResults) {
+          parts.push(`  ${s.status === 'completed' ? '✅' : '❌'} ${s.label}: ${s.output.slice(0, 100)}`);
+        }
+      }
+
+      const summary = parts.join('\n');
+      this.callbacks.onText(summary, false, true, workflowId);
+      pushHistory({ role: 'assistant', content: `[Coding session result] ${summary}` });
+
+      // Emit DAG complete event for the summary card
+      const completeInfo: DAGCompleteInfo = {
+        workflowId,
+        status: result.status === 'completed' ? 'complete' : 'error',
+        summary: `Coding: ${task.slice(0, 120)}`,
+        output: summary,
+        durationSec: result.durationSec,
+        workerCount: 6,
+        totalCostUsd: 0,
+      };
+      this.callbacks.onDAGComplete?.(completeInfo);
+
+    } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      log.error('Coding session failed to start', { error: msg });
-      this.callbacks.onText(`Coding session failed: ${msg}`, false, true);
-    });
+      log.error('Coding session failed', { error: msg });
+      this.callbacks.onText(`Coding session failed: ${msg}`, false, true, workflowId);
+      pushHistory({ role: 'assistant', content: `[Coding session failed] ${msg}` });
+
+      // Emit DAG complete with error status
+      this.callbacks.onDAGComplete?.({
+        workflowId,
+        status: 'error',
+        summary: `Coding: ${task.slice(0, 120)}`,
+        output: msg,
+        durationSec: 0,
+        workerCount: 0,
+        totalCostUsd: 0,
+      });
+    }
   }
 
   // ── Async dispatch (shared by micro and full DAGs) ────────────────

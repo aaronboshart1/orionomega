@@ -9,6 +9,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { readFileSync, existsSync, statSync, realpathSync } from 'node:fs';
 import { resolve as resolvePath, normalize } from 'node:path';
+import { homedir } from 'node:os';
 import { spawn as spawnProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { readConfig, normalizeBindAddresses, MainAgent, CommandFileLoader, createLogger, setGlobalLogLevel, enableFileLogging, discoverModels, clearModelCache, auditApiRequest } from '@orionomega/core';
@@ -176,6 +177,7 @@ async function initMainAgent(): Promise<void> {
       codingModeConfig: freshConfig.codingMode,
       fallbackModel: freshConfig.models?.default || 'claude-sonnet-4-20250514',
       highPowerModel: freshConfig.models?.planner || freshConfig.models?.default || 'claude-sonnet-4-20250514',
+      sourceRepoDir: resolvePath(homedir(), '.orionomega', 'src'),
     } : undefined,
   };
 
