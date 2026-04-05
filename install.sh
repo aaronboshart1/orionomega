@@ -33,10 +33,14 @@ CONFIG_DIR="$HOME/.orionomega"
 DATA_DIR="$HOME/.orionomega/hindsight-data"
 COMMANDS_DIR="$HOME/.orionomega/commands"
 
-# ── Restore stdin when piped (curl | bash) ────────────────────────────────────
-
-if [ ! -t 0 ]; then
-  exec < /dev/tty 2>/dev/null || true
+# ── TTY detection for interactive prompts (curl | bash safe) ──────────────────
+# Do NOT use "exec < /dev/tty" here — it replaces stdin mid-stream and kills
+# the pipe that bash is reading the script from, causing curl error 23.
+# Instead, all interactive reads use explicit "</dev/tty" redirects, and
+# is_interactive() checks /dev/tty availability directly.
+TTY_AVAILABLE=false
+if [ -e /dev/tty ] && ( : </dev/tty ) 2>/dev/null; then
+  TTY_AVAILABLE=true
 fi
 
 # ── Repository URL (with optional token) ──────────────────────────────────────
@@ -78,7 +82,7 @@ warn()  { printf "${YELLOW}${SYM_WARN}${NC} %s\n" "$1"; }
 fail()  { printf "${RED}${SYM_FAIL}${NC} %s\n" "$1" >&2; exit 1; }
 step()  { printf "\n${BOLD}%s${NC}\n" "$1"; }
 
-is_interactive() { [ -t 0 ] && [ -t 1 ]; }
+is_interactive() { $TTY_AVAILABLE && [ -t 1 ]; }
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  OS detection
