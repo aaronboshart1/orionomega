@@ -8,8 +8,7 @@
  */
 
 import { Planner } from '../orchestration/planner.js';
-import { CodingOrchestrator } from '../orchestration/coding/coding-orchestrator.js';
-import type { CodingOrchestratorConfig, CodingProgressCallback } from '../orchestration/coding/coding-orchestrator.js';
+// Coding mode uses the standard Planner → Executor pipeline with a coding-specific task preamble.
 import { GraphExecutor } from '../orchestration/executor.js';
 import type { ExecutorConfig } from '../orchestration/executor.js';
 import { EventBus } from '../orchestration/event-bus.js';
@@ -39,8 +38,8 @@ export interface OrchestrationConfig {
   checkpointDir: string;
   workerTimeout: number;
   maxRetries: number;
-  /** Optional coding mode config — enables dispatchCodingWorkflow(). */
-  codingOrchestratorConfig?: CodingOrchestratorConfig;
+  /** Path to the source repo for coding mode (default working directory). */
+  codingRepoDir?: string;
 }
 
 /** An active, running workflow. */
@@ -229,149 +228,102 @@ export class OrchestrationBridge {
   // ── Coding mode dispatch ──────────────────────────────────────────
 
   /**
-   * Start a Coding Mode workflow for the given task.
-   * Awaits the full workflow and reports step-by-step progress + completion
-   * through the standard DAG dispatch/progress/complete callback pipeline.
+   * Dispatch a Coding Mode workflow.
+   *
+   * Code mode is a specialized orchestration that uses the standard
+   * Planner → GraphExecutor → EventBus pipeline with a coding-specific
+   * task preamble. This guarantees the DAG includes:
+   *   1. Clone/sync the repo to workspace/repo/{reponame-branch}
+   *   2. Analyze the codebase structure
+   *   3. Implement changes using CODING_AGENT nodes
+   *   4. Run tests and validation
+   *   5. Commit and push to the remote repo
+   *
+   * All standard orchestration features work automatically:
+   * - DAG visualizer with real-time node progress
+   * - Worker event feed (tool calls, thinking, status)
+   * - Pause/resume/stop controls
+   * - Checkpoint recovery
+   * - Memory recall per worker
+   * - Cost and token tracking
    */
   async dispatchCodingWorkflow(
     task: string,
     pushHistory: (entry: { role: string; content: string }) => void,
   ): Promise<void> {
-    const orchestratorConfig = this.config.codingOrchestratorConfig;
-    if (!orchestratorConfig) {
-      log.warn('CodingOrchestrator not configured — falling back to full DAG');
-      await this.dispatchFullDAG(task, pushHistory);
-      return;
-    }
+    // Resolve the repo directory for the coding session
+    const repoDir = this.config.codingRepoDir ?? this.config.workspaceDir;
 
-    const orchestrator = new CodingOrchestrator(orchestratorConfig);
-    const conversationId = `conv-${Date.now().toString(36)}`;
-    const workflowId = `coding-${Date.now().toString(36)}`;
+    // Build the coding-specific task preamble that instructs the planner
+    // to structure the DAG as a coding workflow
+    const codingTask = this.buildCodingTask(task, repoDir);
 
-    // Emit DAG dispatch event so the frontend shows the workflow card
-    const dispatchInfo: DAGDispatchInfo = {
-      workflowId,
-      workflowName: 'Coding Session',
-      nodeCount: 6,
-      summary: `Coding: ${task.slice(0, 120)}`,
-      estimatedTime: 0,
-      estimatedCost: 0,
-      nodes: [
-        { id: 'clone', label: 'Clone / sync repo', type: 'git' },
-        { id: 'analyze', label: 'Analyze codebase', type: 'analysis' },
-        { id: 'plan', label: 'Design implementation plan', type: 'architect' },
-        { id: 'implement', label: 'Implementation loop', type: 'implementer' },
-        { id: 'review', label: 'Architect review', type: 'reviewer' },
-        { id: 'commit', label: 'Commit and push', type: 'git' },
-      ],
-    };
-    this.callbacks.onDAGDispatched?.(dispatchInfo);
-    pushHistory({ role: 'assistant', content: `[Coding session started] ${task}` });
+    log.info('Dispatching coding workflow via standard orchestration pipeline', {
+      repoDir,
+      taskPreview: task.slice(0, 120),
+    });
 
-    // Build progress callback that relays to the DAG progress pipeline
-    const progress: CodingProgressCallback = {
-      onStepStarted: (nodeId, label) => {
-        this.callbacks.onDAGProgress?.({
-          workflowId,
-          nodeId,
-          nodeLabel: label,
-          status: 'started',
-          message: `Starting: ${label}`,
-        });
-      },
-      onStepProgress: (nodeId, message, _percentage) => {
-        this.callbacks.onDAGProgress?.({
-          workflowId,
-          nodeId,
-          nodeLabel: nodeId,
-          status: 'progress',
-          message,
-        });
-      },
-      onStepCompleted: (nodeId, outputSummary) => {
-        this.callbacks.onDAGProgress?.({
-          workflowId,
-          nodeId,
-          nodeLabel: nodeId,
-          status: 'done',
-          message: outputSummary,
-        });
-      },
-      onStepFailed: (nodeId, error) => {
-        this.callbacks.onDAGProgress?.({
-          workflowId,
-          nodeId,
-          nodeLabel: nodeId,
-          status: 'error',
-          message: error,
-        });
-      },
-    };
+    // Delegate to the standard DAG dispatch — this gives us the full
+    // orchestration pipeline: Planner → GraphExecutor → EventBus → DAG visualizer
+    await this.dispatchFullDAG(codingTask, pushHistory);
+  }
 
-    try {
-      const result = await orchestrator.run(task, conversationId, progress);
+  /**
+   * Build the coding-specific task string that instructs the planner to
+   * create a coding workflow DAG.
+   *
+   * The preamble provides explicit instructions for the planner to include
+   * repo management, CODING_AGENT nodes, testing, and git operations.
+   */
+  private buildCodingTask(userTask: string, repoDir: string): string {
+    return `## CODING MODE — Structured Software Engineering Workflow
 
-      // Build completion summary
-      const parts: string[] = ['Coding session complete.'];
-      parts.push('', `**Task:** ${task.slice(0, 200)}`);
-      parts.push(`**Template:** ${result.template}`);
-      parts.push(`**Duration:** ${result.durationSec}s`);
-      parts.push(`**Review:** ${result.reviewDecision}`);
-      if (result.commitHash && result.commitHash !== 'no-commit') {
-        parts.push(`**Commit:** ${result.commitHash.slice(0, 8)} on ${result.branch}`);
-      }
-      if (result.filesModified.length > 0) {
-        parts.push('', `**Files modified:** ${result.filesModified.length}`);
-        for (const f of result.filesModified.slice(0, 10)) parts.push(`  - ${f}`);
-      }
-      if (result.filesCreated.length > 0) {
-        parts.push('', `**Files created:** ${result.filesCreated.length}`);
-        for (const f of result.filesCreated.slice(0, 10)) parts.push(`  - ${f}`);
-      }
+You are planning a **coding workflow**. The user wants code changes made to a repository.
+You MUST structure the DAG to follow this coding workflow:
 
-      // Step details
-      if (result.stepResults.length > 0) {
-        parts.push('', '**Steps:**');
-        for (const s of result.stepResults) {
-          parts.push(`  ${s.status === 'completed' ? '✅' : '❌'} ${s.label}: ${s.output.slice(0, 100)}`);
-        }
-      }
+### Required Workflow Structure
 
-      const summary = parts.join('\n');
-      this.callbacks.onText(summary, false, true, workflowId);
-      pushHistory({ role: 'assistant', content: `[Coding session result] ${summary}` });
+1. **Clone / Sync Repo** (first node, no dependencies)
+   - Use a CODING_AGENT node that clones or syncs the repository
+   - Working directory: \`${repoDir}\`
+   - If the repo is already local, verify it's clean and pull latest
+   - Use \`git pull\` to sync, or \`git clone\` if needed
 
-      // Emit DAG complete event for the summary card
-      const implCost = result.implementationCostUsd ?? 0;
-      const completeInfo: DAGCompleteInfo = {
-        workflowId,
-        status: result.status === 'completed' ? 'complete' : 'error',
-        summary: `Coding: ${task.slice(0, 120)}`,
-        output: summary,
-        durationSec: result.durationSec,
-        workerCount: 6,
-        totalCostUsd: implCost,
-        toolCallCount: result.implementationToolCalls,
-      };
-      this.callbacks.onDAGComplete?.(completeInfo);
+2. **Analyze Codebase** (depends on step 1)
+   - Use a CODING_AGENT node to scan the project structure
+   - Identify: language, framework, test framework, build system, entry points
+   - Read key files (package.json, tsconfig.json, etc.) to understand the project
+   - Produce a summary of the codebase architecture
 
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      log.error('Coding session failed', { error: msg });
-      this.callbacks.onText(`Coding session failed: ${msg}`, false, true, workflowId);
-      pushHistory({ role: 'assistant', content: `[Coding session failed] ${msg}` });
+3. **Implement Changes** (depends on step 2)
+   - Use one or more CODING_AGENT nodes for the actual implementation
+   - Parallelise independent implementation tasks where possible
+   - Each CODING_AGENT gets the codebase analysis as upstream context
+   - Working directory MUST be: \`${repoDir}\`
+   - Use Read, Write, Edit, Bash, Glob, Grep tools
 
-      // Emit DAG complete with error status
-      this.callbacks.onDAGComplete?.({
-        workflowId,
-        status: 'error',
-        summary: `Coding: ${task.slice(0, 120)}`,
-        output: msg,
-        durationSec: 0,
-        workerCount: 0,
-        totalCostUsd: 0,
-      });
-    }
+4. **Test & Validate** (depends on step 3)
+   - Use a CODING_AGENT node to run the project's test suite and build
+   - Run: build/compile, lint, type-check, unit tests
+   - Report results clearly (pass/fail with details)
+   - Working directory: \`${repoDir}\`
+
+5. **Commit & Push** (depends on step 4, LAST node)
+   - Use a CODING_AGENT node to stage, commit, and push changes
+   - Commit message should describe what was implemented
+   - Push to the remote repository
+   - Working directory: \`${repoDir}\`
+   - Use \`git add -A && git commit -m "..." && git push\`
+
+### Critical Rules for Coding Mode
+- ALL CODING_AGENT nodes MUST set \`cwd\` to \`${repoDir}\`
+- Use CODING_AGENT (not AGENT) for all coding tasks — they get the full Claude Code toolset
+- The workflow MUST start with repo sync and end with commit & push
+- Prefer LOOP nodes for build-test-fix cycles if the implementation is complex
+- Maximise parallelism for independent implementation sub-tasks
+
+### User's Task
+${userTask}`;
   }
 
   // ── Async dispatch (shared by micro and full DAGs) ────────────────

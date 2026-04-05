@@ -187,13 +187,7 @@ async function initMainAgent(): Promise<void> {
     commandsDir: freshConfig.commands?.directory,
     hindsight: freshConfig.hindsight,
     autoResume: freshConfig.orchestration?.autoResume ?? false,
-    codingOrchestratorConfig: freshConfig.codingMode?.enabled !== false ? {
-      workspaceDir: freshConfig.workspace?.path ?? '/tmp/orionomega-workspace',
-      codingModeConfig: freshConfig.codingMode,
-      fallbackModel: freshConfig.models?.default || 'claude-sonnet-4-20250514',
-      highPowerModel: freshConfig.models?.planner || freshConfig.models?.default || 'claude-sonnet-4-20250514',
-      sourceRepoDir: resolvePath(homedir(), '.orionomega', 'src'),
-    } : undefined,
+    codingRepoDir: resolvePath(homedir(), '.orionomega', 'src'),
   };
 
   let currentTextId = randomBytes(8).toString('hex');
