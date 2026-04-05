@@ -21,6 +21,8 @@ import { EventStreamer } from './events.js';
 import { WebSocketHandler } from './websocket.js';
 import { handleHealth } from './routes/health.js';
 import { handleListSessions, handleGetSession, handleCreateSession } from './routes/sessions.js';
+import { handleLogActivity, handleGetActivity } from './routes/activity.js';
+import { ActivityService } from './activity.js';
 import { handleStatus } from './routes/status.js';
 import { handleGetConfig, handlePutConfig } from './routes/config.js';
 import { handleGetSkills, handlePutSkillConfig } from './routes/skills.js';
@@ -81,9 +83,10 @@ try {
 // ---------------------------------------------------------------------------
 
 const sessionManager = new SessionManager();
+const activityService = new ActivityService();
 const commandHandler = new CommandHandler(sessionManager);
 const eventStreamer = new EventStreamer();
-const wsHandler = new WebSocketHandler(config, sessionManager, commandHandler, eventStreamer);
+const wsHandler = new WebSocketHandler(config, sessionManager, commandHandler, eventStreamer, activityService);
 wsHandler.setHindsightStatusProvider(() => ({
   connected: lastHindsightConnected ?? false,
   busy: false,
@@ -596,10 +599,29 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
   }
 
   // GET /api/sessions/:id
-  const sessionMatch = pathname.match(/^\/api\/sessions\/([a-z0-9]+)$/);
+  const sessionMatch = pathname.match(/^\/api\/sessions\/([a-z0-9_-]+)$/);
   if (sessionMatch && method === 'GET') {
     handleGetSession(req, res, sessionManager, sessionMatch[1]!);
     return;
+  }
+
+  // --- Activity log ---
+  // POST /api/sessions/:id/activity — log a custom action
+  // GET  /api/sessions/:id/activity — fetch activity history
+  const activityMatch = pathname.match(/^\/api\/sessions\/([a-z0-9_-]+)\/activity$/);
+  if (activityMatch) {
+    if (method === 'POST') {
+      handleLogActivity(req, res, sessionManager, activityService, activityMatch[1]!).catch((err) => {
+        log.error('Activity log route error', { error: err instanceof Error ? err.message : String(err) });
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Internal server error' }));
+      });
+      return;
+    }
+    if (method === 'GET') {
+      handleGetActivity(req, res, sessionManager, activityService, activityMatch[1]!);
+      return;
+    }
   }
 
   // --- Models ---
@@ -920,4 +942,4 @@ async function shutdown(signal: string): Promise<void> {
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
 
-export { server, servers, sessionManager, commandHandler, eventStreamer, wsHandler };
+export { server, servers, sessionManager, activityService, commandHandler, eventStreamer, wsHandler };

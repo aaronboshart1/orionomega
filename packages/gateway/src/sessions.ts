@@ -248,6 +248,27 @@ export class SessionManager {
   }
 
   /**
+   * Return all messages and memory events that occurred strictly after `since`.
+   * Used by the /activity endpoint to let reconnecting clients fetch only new data.
+   * @param sessionId - Target session ID.
+   * @param since - ISO-8601 timestamp; items with timestamps > this value are returned.
+   * @returns Object with filtered messages and memory events, or null if session not found.
+   */
+  getActivitySince(
+    sessionId: string,
+    since: Date,
+  ): { messages: Message[]; memoryEvents: MemoryEventData[]; activeWorkflows: string[] } | null {
+    const session = this.sessions.get(sessionId);
+    if (!session) return null;
+    const sinceMs = since.getTime();
+    return {
+      messages: session.messages.filter((m) => new Date(m.timestamp).getTime() > sinceMs),
+      memoryEvents: session.memoryEvents.filter((e) => new Date(e.timestamp).getTime() > sinceMs),
+      activeWorkflows: [...session.activeWorkflows],
+    };
+  }
+
+  /**
    * Serialize a session for REST responses (converts Set to array).
    * @param session - The session to serialize.
    * @returns A JSON-safe representation.

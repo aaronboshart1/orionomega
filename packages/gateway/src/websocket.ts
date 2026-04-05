@@ -23,6 +23,7 @@ import { CommandHandler } from './commands.js';
 import { EventStreamer } from './events.js';
 import { rateLimitWsConnection } from './rate-limit.js';
 import { validateClientMessage, sanitizeChatInput } from './ws-schemas.js';
+import type { ActivityService } from './activity.js';
 
 const log = createLogger('websocket');
 
@@ -44,6 +45,7 @@ export class WebSocketHandler {
     private sessionManager: SessionManager,
     private commandHandler: CommandHandler,
     private eventStreamer: EventStreamer,
+    private activityService?: ActivityService,
   ) {
     this.wss = new WebSocketServer({ noServer: true, maxPayload: 10 * 1024 * 1024 });
   }
@@ -159,6 +161,11 @@ export class WebSocketHandler {
     this.eventStreamer.addClient(conn);
 
     log.info(` Client connected: ${clientId} (${clientType}) → session ${session.id}`);
+
+    this.activityService?.log(session.id, 'client_connect', {
+      clientType,
+      remoteAddress: req.socket.remoteAddress ?? null,
+    }, clientId);
 
     // Send connection acknowledgement
     this.send(ws, {
