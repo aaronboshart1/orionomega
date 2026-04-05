@@ -49,6 +49,17 @@ export interface CodingAgentResult {
   durationSec: number;
   /** Paths of files written or edited during execution. */
   outputPaths: string[];
+  // Token usage fields — needed so executor.ts can aggregate costs for CODING_AGENT nodes.
+  /** Model used (for cost tracking). */
+  model?: string;
+  /** Input tokens consumed across all turns. */
+  inputTokens?: number;
+  /** Output tokens consumed across all turns. */
+  outputTokens?: number;
+  /** Cache read tokens across all turns. */
+  cacheReadTokens?: number;
+  /** Cache creation tokens across all turns. */
+  cacheCreationTokens?: number;
 }
 
 /** Configuration for a coding agent node. */
@@ -639,6 +650,11 @@ export async function executeCodingAgent(
   let toolCalls = 0;
   let costUsd: number | undefined;
   const outputPaths: string[] = [];
+  // Fix: accumulate token counts across all turns so they can be reported upstream.
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
+  let totalCacheReadTokens = 0;
+  let totalCacheCreationTokens = 0;
 
   try {
     // Build the system prompt
@@ -725,6 +741,15 @@ export async function executeCodingAgent(
       // Assistant message — collect text, thinking, and tool use
       if (message.type === 'assistant') {
         const assistantMsg = message as SDKAssistantMessage;
+        // Fix: extract per-turn token usage so we can report total costs for CODING_AGENT nodes.
+        const usage = (assistantMsg.message as Record<string, unknown>)?.usage as
+          { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number } | undefined;
+        if (usage) {
+          totalInputTokens += usage.input_tokens ?? 0;
+          totalOutputTokens += usage.output_tokens ?? 0;
+          totalCacheReadTokens += usage.cache_read_input_tokens ?? 0;
+          totalCacheCreationTokens += usage.cache_creation_input_tokens ?? 0;
+        }
         if (assistantMsg.message?.content) {
           for (const block of assistantMsg.message.content) {
             if (block.type === 'thinking' && 'thinking' in block) {
@@ -821,6 +846,12 @@ export async function executeCodingAgent(
       durationSec,
       costUsd,
       outputPaths: [...new Set(outputPaths)],
+      // Fix: include token counts and model so executor.ts can aggregate cost for CODING_AGENT nodes.
+      model,
+      inputTokens: totalInputTokens,
+      outputTokens: totalOutputTokens,
+      cacheReadTokens: totalCacheReadTokens,
+      cacheCreationTokens: totalCacheCreationTokens,
     };
   } catch (err) {
     const durationSec = (Date.now() - startTime) / 1000;
@@ -840,6 +871,12 @@ export async function executeCodingAgent(
       error: errorMsg,
       durationSec,
       outputPaths: [...new Set(outputPaths)],
+      // Fix: include partial token counts even on failure so partial usage is accounted for.
+      model,
+      inputTokens: totalInputTokens,
+      outputTokens: totalOutputTokens,
+      cacheReadTokens: totalCacheReadTokens,
+      cacheCreationTokens: totalCacheCreationTokens,
     };
   }
 }

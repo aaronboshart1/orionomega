@@ -758,6 +758,14 @@ export class GraphExecutor {
             toolCallCount: codingResult.toolCalls,
             findings: [],
             outputPaths: dedupedCodingPaths,
+            // Fix: thread token usage and cost through so buildResult() can aggregate
+            // CODING_AGENT costs. Previously these were computed but never transferred.
+            model: codingResult.model,
+            costUsd: codingResult.costUsd,
+            inputTokens: codingResult.inputTokens,
+            outputTokens: codingResult.outputTokens,
+            cacheReadTokens: codingResult.cacheReadTokens,
+            cacheCreationTokens: codingResult.cacheCreationTokens,
           };
         } catch (err) {
           if (this.stopRequested) {
