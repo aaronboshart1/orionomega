@@ -27,6 +27,7 @@
   - [Environment variables](#environment-variables)
 - [Configuration](#configuration)
 - [CLI Reference](#cli-reference)
+- [Agent Mode Toggle](#agent-mode-toggle)
 - [Architecture](#architecture)
 - [Skills](#skills)
 - [Web UI](#web-ui)
@@ -253,6 +254,7 @@ orchestration:
   workerTimeout: 300           # seconds
   maxSpawnDepth: 3             # max recursive agent depth
   checkpointInterval: 30       # seconds
+  defaultAgentMode: orchestrate  # 'orchestrate' | 'direct' — see Agent Mode Toggle
 
 logging:
   level: info                  # error | warn | info | verbose | debug
@@ -308,6 +310,33 @@ See [`docs/getting-started.md`](docs/getting-started.md) for a complete walkthro
 | `/reset` | Clear session state |
 | `/plan` | Show current execution plan |
 | `/workers` | List all workers and their status |
+| `/mode` | Show current agent mode (`orchestrate` \| `direct`) |
+| `/mode direct` | Switch to Direct mode for this session |
+| `/mode orchestrate` | Switch to Orchestrate mode for this session |
+
+---
+
+## Agent Mode Toggle
+
+OrionOmega supports two execution modes, switchable per-session or per-message:
+
+| Mode | Description |
+|------|-------------|
+| **Orchestrate** (default) | Full multi-agent DAG execution — plan → review → parallel workers |
+| **Direct** | Bypass orchestration; respond conversationally without planning or worker spawning |
+
+**Switching modes:**
+
+- **Web UI:** Toggle buttons (⚡ Direct / ⎇ Orchestrate) in the chat toolbar, or press **Ctrl+M**
+- **Slash command:** `/mode direct` or `/mode orchestrate` (works in both TUI and Web UI)
+- **Config default:** Set `orchestration.defaultAgentMode` in `config.yaml`
+- **WebSocket API:** Include `"agentMode": "direct"` in any `chat` message for a per-message override
+
+**When to use Direct mode:** questions, quick lookups, single-step tasks, conversational brainstorming.
+
+**When to use Orchestrate mode:** complex multi-file changes, research tasks, automated workflows, anything that benefits from a DAG plan and parallel execution.
+
+Mode is persisted per-session and restored automatically on reconnect. See [`docs/agent-mode.md`](docs/agent-mode.md) for the full reference.
 
 ---
 
@@ -422,6 +451,7 @@ See [`docs/skills-guide.md`](docs/skills-guide.md) for the full authoring guide.
 The web dashboard is a split-pane layout:
 
 - **Left panel** — Chat interface for conversing with the main agent
+  - **Agent Mode Toggle** — ⚡ Direct / ⎇ Orchestrate buttons in the chat toolbar (Ctrl+M to toggle)
 - **Right panel** — Orchestration dashboard with:
   - **DAG visualization** (ReactFlow) — interactive graph, nodes colored by status
   - **Activity feed** — real-time stream of worker events (thinking, tool calls, findings)
@@ -561,13 +591,14 @@ For full details on the security model, hardening options, and responsible use, 
 
 - **Graph-based orchestration** — DAG decomposition with topological sorting and parallel execution
 - **Plan-first UX** — shows worker count, estimated cost, estimated time, and reasoning before any token is spent on execution
+- **Agent Mode Toggle** — switch between full orchestration and direct conversational mode per-session or per-message (Ctrl+M in the Web UI)
 - **Hindsight memory** — persistent knowledge graph with banks and mental models, recalled across sessions
 - **Dual interface** — TUI (Ink/React for CLI) and Web UI (Next.js with ReactFlow DAG visualization)
 - **Full transparency** — see every tool call, thinking trace, finding, and event in real-time
 - **Skills system** — extend worker capabilities with self-contained skill packages (manifest + docs + handler scripts)
 - **Anthropic-native** — built for Claude models (Haiku, Sonnet, Opus) with native fetch, no SDK overhead
 - **Lean footprint** — six focused packages, minimal dependencies
-- **Slash commands** — `/stop`, `/status`, `/restart`, `/reset`, `/plan`, `/workers`
+- **Slash commands** — `/stop`, `/status`, `/restart`, `/reset`, `/plan`, `/workers`, `/mode`
 - **Secure gateway** — API-key-hashed auth, configurable bind address, CORS allowlist
 
 ---

@@ -188,6 +188,9 @@ Now you can use `/summarize` followed by your content in the TUI or Web UI. The 
 | `/reset` | Clear the current conversation |
 | `/plan` | Show the last plan |
 | `/workers` | Show status of all active workers |
+| `/mode` | Show the current agent mode (`orchestrate` \| `direct`) |
+| `/mode direct` | Switch to Direct mode — conversational responses, no planning |
+| `/mode orchestrate` | Switch to Orchestrate mode — full DAG execution with planning |
 
 ---
 
@@ -245,8 +248,11 @@ orionomega ui start
 Open your browser to `http://localhost:5000`. The web UI provides:
 
 - **Chat panel** (left) — conversational interface, same as the TUI
+  - **Agent Mode Toggle** — ⚡ Direct / ⎇ Orchestrate buttons in the chat toolbar; press **Ctrl+M** to toggle
 - **Orchestration panel** (right) — real-time DAG visualization, worker status, memory feed
 - **Settings** — click the gear icon to configure models, gateway, Hindsight, and skills
+
+The agent mode toggle switches between full orchestration (plan → approve → workers) and direct conversational mode. The chosen mode is saved per-session and restored on reconnect. See [`docs/agent-mode.md`](agent-mode.md) for the full guide.
 
 To access the Web UI from another machine on your network:
 

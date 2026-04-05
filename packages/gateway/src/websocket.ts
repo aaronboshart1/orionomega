@@ -358,6 +358,9 @@ export class WebSocketHandler {
 
     if (this.mainAgent) {
       const agentMode = (msg.agentMode === 'direct' || msg.agentMode === 'orchestrate') ? msg.agentMode : undefined;
+      if (agentMode) {
+        this.sessionManager.updateAgentMode(conn.sessionId, agentMode);
+      }
       log.verbose('Routing to MainAgent', { hasReplyContext: !!replyContext, attachmentCount: attachments?.length ?? 0, agentMode });
       this.mainAgent.handleMessage(content, replyContext, attachments, agentMode).catch((err) => {
         log.error('MainAgent.handleMessage error', { error: err instanceof Error ? err.message : String(err) });

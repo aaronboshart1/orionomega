@@ -64,6 +64,7 @@ export function getDefaultConfig(): OrionOmegaConfig {
       planFirst: true,
       checkpointInterval: 30,
       autoResume: false,
+      defaultAgentMode: 'orchestrate',
       eventBatching: {
         tuiIntervalMs: 250,
         webIntervalMs: 1000,

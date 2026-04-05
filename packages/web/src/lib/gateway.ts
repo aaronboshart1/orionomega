@@ -5,6 +5,7 @@ import ReconnectingWebSocket from 'reconnecting-websocket';
 import { useOrchestrationStore } from '@/stores/orchestration';
 import { useChatStore } from '@/stores/chat';
 import { useConnectionStore } from '@/stores/connection';
+import { useAgentModeStore } from '@/stores/agent-mode';
 import type { ChatMessage } from '@/stores/chat';
 import type { FileAttachment } from '@/components/chat/ChatInput';
 import { uuid } from '@/lib/uuid';
@@ -813,7 +814,12 @@ export function useGateway() {
       });
       chat.setStreaming(true);
       chat.setStreamingStatus('Thinking…');
-      const payload: Record<string, unknown> = { id: msgId, type: 'chat', content };
+      const payload: Record<string, unknown> = {
+        id: msgId,
+        type: 'chat',
+        content,
+        agentMode: useAgentModeStore.getState().mode,
+      };
       if (replyToId && replyTarget) {
         payload.replyToId = replyToId;
         payload.replyToContent = replyTarget.content;

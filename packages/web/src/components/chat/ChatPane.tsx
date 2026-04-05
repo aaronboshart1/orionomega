@@ -10,6 +10,7 @@ import { MessageBubble } from './MessageBubble';
 import { ToolCallGroup } from './ToolCallCard';
 import { ChatInput } from './ChatInput';
 import type { FileAttachment } from './ChatInput';
+import { AgentModeToggle } from './AgentModeToggle';
 import { ThinkingIndicator } from './ThinkingIndicator';
 import { ThinkingTimeline } from './ThinkingTimeline';
 import { ErrorMessage } from './ErrorMessage';
@@ -290,6 +291,9 @@ export function ChatPane() {
         )}
       </div>
 
+      <div className="flex items-end gap-2 px-3 md:px-6 pb-1">
+        <AgentModeToggle disabled={isStreaming} />
+      </div>
       <ChatInput onSend={handleSend} />
     </div>
   );

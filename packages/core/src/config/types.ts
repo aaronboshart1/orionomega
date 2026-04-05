@@ -61,6 +61,8 @@ export interface OrionOmegaConfig {
     checkpointInterval: number;
     /** Whether to auto-resume interrupted workflows on reconnect. */
     autoResume: boolean;
+    /** Default agent mode when no per-message or session mode is set. */
+    defaultAgentMode: 'orchestrate' | 'direct';
     eventBatching: {
       /** TUI event batching interval in milliseconds. */
       tuiIntervalMs: number;

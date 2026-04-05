@@ -129,8 +129,51 @@ Get details for a specific session.
   "connectedAt": "2026-04-04T10:00:00.000Z",
   "messageCount": 42,
   "projectBank": "project-my-task",
+  "agentMode": "orchestrate",
   "lastActivity": "2026-04-04T10:05:00.000Z"
 }
+```
+
+The `agentMode` field reflects the session's current persisted mode. If `null`, the system default (`orchestration.defaultAgentMode`) applies.
+
+---
+
+#### `PUT /sessions/:id/agent-mode`
+
+Update the agent mode for a specific session. The change is persisted to disk and takes effect immediately for subsequent messages.
+
+**Request body:**
+
+```json
+{
+  "mode": "direct"
+}
+```
+
+**Valid values:** `"orchestrate"` | `"direct"`
+
+**Response `200 OK`:**
+
+```json
+{
+  "id": "sess_abc123",
+  "agentMode": "direct"
+}
+```
+
+**Error responses:**
+
+| Status | Body | Meaning |
+|--------|------|---------|
+| `400 Bad Request` | `{"error": "Invalid mode: must be 'orchestrate' or 'direct'"}` | Mode value is not recognized |
+| `404 Not Found` | `{"error": "Session not found"}` | Session ID does not exist |
+
+**Example:**
+
+```bash
+curl -X PUT http://localhost:8000/sessions/sess_abc123/agent-mode \
+  -H 'Content-Type: application/json' \
+  -d '{"mode": "direct"}'
 ```
 
 ---
@@ -345,9 +388,22 @@ Send a user message to the active session.
 {
   "type": "chat",
   "content": "Refactor the authentication module to use JWT",
-  "sessionId": "sess_abc123"
+  "sessionId": "sess_abc123",
+  "agentMode": "orchestrate"
 }
 ```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"chat"` | Yes | Message type |
+| `content` | `string` | Yes | The user message |
+| `sessionId` | `string` | Yes | Target session ID |
+| `agentMode` | `"orchestrate" \| "direct"` | No | Override mode for this message only. Omit to use the session's persisted mode. |
+
+**Agent Mode values:**
+- `"orchestrate"` — Full DAG execution with planning, approval, and parallel workers
+- `"direct"` — Bypass orchestration; respond conversationally without spawning workers
+- *(omit)* — Use the session's current mode (or `orchestration.defaultAgentMode` from config)
 
 ---
 
@@ -406,6 +462,23 @@ Sent once on connection establishment.
   "timestamp": "2026-04-04T10:00:00.000Z"
 }
 ```
+
+---
+
+#### `agent_mode_changed`
+
+Sent to all clients in the session when the agent mode is updated (via REST, WebSocket toggle, or slash command).
+
+```json
+{
+  "type": "agent_mode_changed",
+  "sessionId": "sess_abc123",
+  "mode": "direct",
+  "changedAt": "2026-04-04T10:06:00.000Z"
+}
+```
+
+Clients should update their UI to reflect the new mode when this event is received.
 
 ---
 
