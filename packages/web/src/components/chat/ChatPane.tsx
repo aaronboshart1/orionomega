@@ -291,10 +291,10 @@ export function ChatPane() {
         )}
       </div>
 
-      <div className="flex items-end gap-2 px-3 md:px-6 pb-1">
-        <AgentModeToggle disabled={isStreaming} />
-      </div>
-      <ChatInput onSend={handleSend} />
+      <ChatInput
+        onSend={handleSend}
+        modeToggle={<AgentModeToggle disabled={isStreaming} variant="inline" />}
+      />
     </div>
   );
 }

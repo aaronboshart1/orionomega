@@ -19,6 +19,8 @@ export interface FileAttachment {
 interface ChatInputProps {
   onSend: (text: string, replyToId?: string, attachments?: FileAttachment[]) => void;
   disabled?: boolean;
+  /** Optional element rendered as a prefix inside the input container (e.g. mode toggle) */
+  modeToggle?: React.ReactNode;
 }
 
 const BUILTIN_COMMANDS = [
@@ -74,7 +76,7 @@ function isImageType(type: string): boolean {
   return type.startsWith('image/');
 }
 
-export function ChatInput({ onSend, disabled }: ChatInputProps) {
+export function ChatInput({ onSend, disabled, modeToggle }: ChatInputProps) {
   const [input, setInput] = useState('');
   const [showPalette, setShowPalette] = useState(false);
   const [attachments, setAttachments] = useState<FileAttachment[]>([]);
@@ -463,7 +465,15 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
         tabIndex={-1}
       />
 
-      <div className="flex items-end gap-2 md:gap-3 rounded-xl border border-zinc-700 bg-zinc-900 px-3 md:px-4 py-2.5 md:py-3 focus-within:border-blue-600">
+      <div className="flex items-end gap-2 md:gap-3 rounded-xl border border-zinc-700 bg-zinc-900 px-2 md:px-3 py-2 md:py-2.5 focus-within:border-blue-600">
+        {modeToggle && (
+          <>
+            <div className="flex shrink-0 items-center self-stretch py-0.5">
+              {modeToggle}
+            </div>
+            <div className="self-stretch w-px shrink-0 bg-zinc-700/70" aria-hidden="true" />
+          </>
+        )}
         <textarea
           ref={textareaRef}
           value={input}
@@ -472,7 +482,7 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
           placeholder="Message OmegaClaw..."
           disabled={disabled}
           rows={1}
-          className="max-h-64 flex-1 resize-none bg-transparent text-sm leading-relaxed text-zinc-100 placeholder-zinc-500 outline-none transition-[height] duration-150 ease-out disabled:opacity-50"
+          className="max-h-64 flex-1 resize-none bg-transparent pl-1 text-sm leading-relaxed text-zinc-100 placeholder-zinc-500 outline-none transition-[height] duration-150 ease-out disabled:opacity-50"
           aria-label="Message input"
           aria-multiline="true"
           enterKeyHint="send"

@@ -6,6 +6,8 @@ import { useAgentModeStore, type AgentMode } from '@/stores/agent-mode';
 
 interface AgentModeToggleProps {
   disabled?: boolean;
+  /** 'inline' removes the outer border/background so the toggle can live inside another container */
+  variant?: 'default' | 'inline';
 }
 
 /** Label shown in the toast when switching modes. */
@@ -15,7 +17,7 @@ const MODE_LABELS: Record<AgentMode, string> = {
   code: '🔧 Code mode',
 };
 
-export function AgentModeToggle({ disabled }: AgentModeToggleProps) {
+export function AgentModeToggle({ disabled, variant = 'default' }: AgentModeToggleProps) {
   const mode = useAgentModeStore((s) => s.mode);
   const setMode = useAgentModeStore((s) => s.setMode);
   const [showToast, setShowToast] = useState(false);
@@ -58,9 +60,9 @@ export function AgentModeToggle({ disabled }: AgentModeToggleProps) {
       <div
         role="radiogroup"
         aria-label="Agent execution mode"
-        className={`flex items-center rounded-lg border border-zinc-700 bg-zinc-900 p-0.5 ${
-          disabled ? 'pointer-events-none opacity-40' : ''
-        }`}
+        className={`flex items-center ${
+          variant === 'default' ? 'rounded-lg border border-zinc-700 bg-zinc-900 p-0.5' : ''
+        } ${disabled ? 'pointer-events-none opacity-40' : ''}`}
       >
         {/* Direct mode button */}
         <button
