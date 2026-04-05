@@ -374,6 +374,7 @@ export class MainAgent {
     content: string,
     replyContext?: { messageId: string; content: string; role: string; dagId?: string; workflowId?: string },
     attachments?: { name: string; size: number; type: string; data?: string; textContent?: string }[],
+    agentMode?: 'orchestrate' | 'direct',
   ): Promise<void> {
     if (this.initPromise) {
       await this.initPromise;
@@ -393,6 +394,7 @@ export class MainAgent {
       replyToDagId: replyContext?.dagId,
       replyToWorkflowId: replyContext?.workflowId,
       attachmentCount: attachments?.length ?? 0,
+      agentMode: agentMode ?? 'orchestrate',
     });
 
     const replyDagId = replyContext?.dagId || replyContext?.workflowId;
@@ -504,7 +506,16 @@ export class MainAgent {
         return;
       }
 
-      // 2. Skill-match shortcut — route through orchestration so skill MCP tools are available
+      // 2. Direct mode — bypass all DAG dispatch and respond conversationally regardless of content
+      if (agentMode === 'direct') {
+        log.verbose('Route: CHAT (direct mode — DAG bypassed)');
+        this.emitStep('route', 'Routing request', 'done', 'Direct mode');
+        this.callbacks.onThinking('Thinking…', true, false);
+        await this.respondConversationally(userContent, signal, runId);
+        return;
+      }
+
+      // 3. Skill-match shortcut — route through orchestration so skill MCP tools are available
       if (this.matchesAvailableSkill(trimmed)) {
         log.verbose('Route: ORCHESTRATE (skill match)', { guarded: isGuardedRequest(trimmed) });
         await this.orchestration.dispatchFullDAG(
@@ -515,7 +526,7 @@ export class MainAgent {
         return;
       }
 
-      // 3. CHAT fast-path
+      // 4. CHAT fast-path
       if (isFastConversational(trimmed)) {
         log.verbose('Route: CHAT fast-path');
         this.emitStep('route', 'Routing request', 'done', 'Chat fast-path');
@@ -524,7 +535,7 @@ export class MainAgent {
         return;
       }
 
-      // 4. ORCHESTRATE fast-path — full planner DAG
+      // 5. ORCHESTRATE fast-path — full planner DAG
       if (isOrchestrateRequest(trimmed)) {
         log.verbose('Route: ORCHESTRATE fast-path', { guarded: isGuardedRequest(trimmed) });
         this.emitStep('route', 'Routing request', 'done', 'Orchestration fast-path');
@@ -537,7 +548,7 @@ export class MainAgent {
         return; // Returns immediately — DAG runs async
       }
 
-      // 5. Ambiguous — LLM 2-tier classifier
+      // 6. Ambiguous — LLM 2-tier classifier
       log.verbose('Route: LLM intent classification');
       this.emitStep('classify', 'Classifying intent', 'active');
       this.callbacks.onThinking('Classifying intent…', true, false);

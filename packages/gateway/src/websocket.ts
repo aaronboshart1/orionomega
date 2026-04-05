@@ -357,8 +357,9 @@ export class WebSocketHandler {
     const attachments = Array.isArray(msg.attachments) ? (msg.attachments as { name: string; size: number; type: string; data?: string; textContent?: string }[]) : undefined;
 
     if (this.mainAgent) {
-      log.verbose('Routing to MainAgent', { hasReplyContext: !!replyContext, attachmentCount: attachments?.length ?? 0 });
-      this.mainAgent.handleMessage(content, replyContext, attachments).catch((err) => {
+      const agentMode = (msg.agentMode === 'direct' || msg.agentMode === 'orchestrate') ? msg.agentMode : undefined;
+      log.verbose('Routing to MainAgent', { hasReplyContext: !!replyContext, attachmentCount: attachments?.length ?? 0, agentMode });
+      this.mainAgent.handleMessage(content, replyContext, attachments, agentMode).catch((err) => {
         log.error('MainAgent.handleMessage error', { error: err instanceof Error ? err.message : String(err) });
         this.send(conn.ws, {
           id: randomBytes(8).toString('hex'),

@@ -44,6 +44,12 @@ export interface ClientMessage {
   replyToDagId?: string;
   /** File attachments sent with the message. */
   attachments?: { name: string; size: number; type: string; data?: string; textContent?: string }[];
+  /**
+   * Agent routing mode chosen by the user.
+   * 'orchestrate' (default) — full planner DAG execution.
+   * 'direct' — bypass DAG, respond conversationally even for complex tasks.
+   */
+  agentMode?: 'orchestrate' | 'direct';
 }
 
 /** Gateway → Client message envelope. */

@@ -22,6 +22,7 @@ const chatMessageSchema = z.object({
   replyToRole: z.enum(VALID_REPLY_ROLES).optional(),
   replyToDagId: z.string().max(128).optional(),
   attachments: z.array(attachmentSchema).max(10).optional(),
+  agentMode: z.enum(['orchestrate', 'direct']).optional(),
 });
 
 const commandMessageSchema = z.object({

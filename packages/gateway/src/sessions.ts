@@ -60,6 +60,7 @@ interface SessionData {
   activeWorkflows: string[];
   hindsightBank?: string;
   memoryEvents?: MemoryEventData[];
+  agentMode?: 'orchestrate' | 'direct';
 }
 
 /** Maximum memory events to persist per session. */
@@ -76,6 +77,8 @@ export interface Session {
   hindsightBank?: string;
   memoryEvents: MemoryEventData[];
   clients: Set<string>;
+  /** Last agent routing mode chosen by the user — persisted so reconnecting clients restore it. */
+  agentMode?: 'orchestrate' | 'direct';
 }
 
 /**
@@ -217,6 +220,21 @@ export class SessionManager {
   }
 
   /**
+   * Persist the user's agent routing mode choice for a session.
+   * Called each time the frontend sends a chat message with an explicit agentMode.
+   * @param sessionId - Target session ID.
+   * @param mode - 'orchestrate' | 'direct'
+   */
+  updateAgentMode(sessionId: string, mode: 'orchestrate' | 'direct'): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    if (session.agentMode === mode) return; // no-op if unchanged
+    session.agentMode = mode;
+    session.updatedAt = new Date().toISOString();
+    this.schedulePersist(sessionId);
+  }
+
+  /**
    * Reset a session: clear messages, memory events, and active workflows,
    * then persist the cleared state to disk.
    * @param sessionId - Target session ID.
@@ -282,6 +300,7 @@ export class SessionManager {
       activeWorkflows: [...session.activeWorkflows],
       hindsightBank: session.hindsightBank ?? null,
       memoryEvents: session.memoryEvents,
+      agentMode: session.agentMode ?? null,
       clientCount: session.clients.size,
     };
   }
@@ -357,6 +376,7 @@ export class SessionManager {
       activeWorkflows: [...session.activeWorkflows],
       hindsightBank: session.hindsightBank,
       memoryEvents: session.memoryEvents,
+      agentMode: session.agentMode,
     };
 
     try {
@@ -386,6 +406,7 @@ export class SessionManager {
             activeWorkflows: new Set(data.activeWorkflows ?? []),
             hindsightBank: data.hindsightBank,
             memoryEvents: data.memoryEvents ?? [],
+            agentMode: data.agentMode,
             clients: new Set(), // No clients on startup — they reconnect
           };
 
