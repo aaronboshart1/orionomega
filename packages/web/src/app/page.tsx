@@ -33,12 +33,15 @@ export default function Home() {
 
       <button
         onClick={() => setOrchPaneOpen(!orchPaneOpen)}
-        className="absolute right-3 top-3 rounded-lg border border-zinc-700 bg-zinc-800 p-2.5 md:p-2 text-zinc-400 shadow-lg transition-colors hover:border-zinc-600 hover:text-zinc-200 min-h-[44px] min-w-[44px] flex items-center justify-center"
+        className="absolute right-3 top-3 flex items-center gap-1.5 rounded-lg border border-zinc-700 bg-zinc-800/90 px-2.5 py-2 text-zinc-400 shadow-lg backdrop-blur transition-colors hover:border-zinc-600 hover:text-zinc-200 min-h-[44px] min-w-[44px] md:min-h-0"
         style={{ zIndex: Z.orchPaneToggle }}
         title={showOrchPane ? 'Hide detail pane' : 'Show detail pane'}
         aria-label={showOrchPane ? 'Hide detail pane' : 'Show detail pane'}
       >
-        {showOrchPane ? <PanelRightClose size={16} /> : <PanelRightOpen size={16} />}
+        {showOrchPane ? <PanelRightClose size={15} /> : <PanelRightOpen size={15} />}
+        <span className="hidden md:inline text-xs font-medium">
+          {showOrchPane ? 'Hide' : 'Detail'}
+        </span>
       </button>
 
       {showOrchPane && (

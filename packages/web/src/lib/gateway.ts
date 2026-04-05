@@ -260,10 +260,13 @@ function processHistoryWhenHydrated(history: HistoryMessage[]): void {
             .filter((m) => contentDedupTypes.has(m.type))
             .flatMap((m) => {
               const ts = Math.floor(new Date(m.timestamp).getTime() / 3000);
+              // Include workflow context so identical-content messages from
+              // different workflows produce distinct dedup keys.
+              const ctx = m.dagId || m.workflowId || '';
               return [
-                `${m.role}:${m.content}:${ts}`,
-                `${m.role}:${m.content}:${ts - 1}`,
-                `${m.role}:${m.content}:${ts + 1}`,
+                `${m.role}:${ctx}:${m.content}:${ts}`,
+                `${m.role}:${ctx}:${m.content}:${ts - 1}`,
+                `${m.role}:${ctx}:${m.content}:${ts + 1}`,
               ];
             }),
         );
@@ -272,7 +275,8 @@ function processHistoryWhenHydrated(history: HistoryMessage[]): void {
           if (m.type && dagTypes.has(m.type) && m.dagId && localDagKeys.has(`${m.type}:${m.dagId}`)) return false;
           if (contentDedupTypes.has(m.type)) {
             const ts = Math.floor(new Date(m.timestamp).getTime() / 3000);
-            const contentKey = `${m.role}:${m.content}:${ts}`;
+            const ctx = m.dagId || m.workflowId || '';
+            const contentKey = `${m.role}:${ctx}:${m.content}:${ts}`;
             if (localContentKeys.has(contentKey)) return false;
           }
           return true;
@@ -376,7 +380,16 @@ function bindListeners(ws: ReconnectingWebSocket): void {
     const orch = orchStore();
 
     switch (msg.type) {
-      case 'text':
+      case 'text': {
+        // Extract per-message metadata (model, tokens, cost) if present
+        const textMeta = msg.metadata ? {
+          model: msg.metadata.model,
+          inputTokens: msg.metadata.inputTokens,
+          outputTokens: msg.metadata.outputTokens,
+          cacheReadTokens: msg.metadata.cacheReadTokens,
+          costUsd: msg.metadata.costUsd,
+        } : undefined;
+
         if (msg.workflowId && msg.workflowId.startsWith('conv-')) {
           if (msg.streaming && !msg.done && msg.content) {
             chat.appendToBackground(msg.workflowId, msg.content, msg.id);
@@ -388,6 +401,7 @@ function bindListeners(ws: ReconnectingWebSocket): void {
               timestamp: new Date().toISOString(),
               workflowId: msg.workflowId,
               isBackground: true,
+              metadata: textMeta,
             });
           }
         } else {
@@ -399,12 +413,21 @@ function bindListeners(ws: ReconnectingWebSocket): void {
               role: 'assistant',
               content: msg.content,
               timestamp: new Date().toISOString(),
+              metadata: textMeta,
+              ...(msg.workflowId ? { workflowId: msg.workflowId, dagId: msg.workflowId } : {}),
             });
             chat.setStreaming(false);
           }
-          if (msg.done) chat.setStreaming(false);
+          if (msg.done) {
+            chat.setStreaming(false);
+            // Accumulate session token totals when a non-streaming message completes with metadata
+            if (textMeta && (textMeta.inputTokens || textMeta.outputTokens)) {
+              chat.accumulateTokens(textMeta);
+            }
+          }
         }
         break;
+      }
       case 'thinking':
         if (msg.workflowId && msg.workflowId.startsWith('conv-')) {
           break;
@@ -465,6 +488,21 @@ function bindListeners(ws: ReconnectingWebSocket): void {
           status: statusMap[p.status] ?? 'running',
           progress: p.progress,
         });
+
+        // Also feed dag_progress events into the activity feed
+        const progressEventType = p.tool?.name
+          ? (p.status === 'done' || p.status === 'error' ? 'tool_result' : 'tool_call')
+          : p.status === 'error' ? 'error' : 'status';
+        orch.addEvent({
+          workerId: p.workerId || p.nodeId,
+          nodeId: p.nodeId,
+          timestamp: new Date().toISOString(),
+          type: progressEventType as import('@/stores/orchestration').WorkerEventType,
+          tool: p.tool ? { name: p.tool.name, action: p.tool.action, file: p.tool.file, summary: p.tool.summary || '' } : undefined,
+          message: p.message || (p.status === 'started' ? `${p.nodeLabel} started` : p.status === 'done' ? `${p.nodeLabel} completed` : undefined),
+          progress: p.progress,
+          error: p.status === 'error' ? (p.message || 'Node error') : undefined,
+        }, p.workflowId);
 
         if (p.tool && p.tool.name) {
           const currentDAGs = useOrchestrationStore.getState().inlineDAGs;
@@ -564,12 +602,20 @@ function bindListeners(ws: ReconnectingWebSocket): void {
       }
       case 'event': {
         if (msg.event) orch.addEvent(msg.event, msg.workflowId);
-        const evt = msg.event as { type?: string; tool?: { name?: string }; error?: string; message?: string } | undefined;
+        const evt = msg.event as {
+          type?: string;
+          tool?: { name?: string };
+          error?: string;
+          message?: string;
+          iteration?: number;
+          totalIterations?: number;
+          fileLock?: { action: string; file: string };
+        } | undefined;
         if (evt) {
           if (evt.type === 'tool_call' && evt.tool?.name) {
             chat.setStreamingStatus(statusFromToolCall(evt.tool.name));
           } else if (evt.type === 'tool_result') {
-            chat.setStreamingStatus('Thinking…');
+            chat.setStreamingStatus('Thinking\u2026');
           } else if (evt.type === 'error') {
             chat.markLastInterrupted();
             chat.addMessage({
@@ -581,6 +627,23 @@ function bindListeners(ws: ReconnectingWebSocket): void {
             });
           } else if (evt.type === 'status' && evt.message) {
             chat.setStreamingStatus(evt.message);
+          } else if (evt.type === 'loop_iteration') {
+            const iterLabel = evt.iteration != null
+              ? `Loop iteration ${evt.iteration}${evt.totalIterations != null ? `/${evt.totalIterations}` : ''}`
+              : 'Loop iteration';
+            chat.setStreamingStatus(iterLabel);
+          } else if (evt.type === 'replan') {
+            chat.setStreamingStatus('Replanning\u2026');
+          } else if (evt.type === 'planning') {
+            chat.setStreamingStatus('Planning\u2026');
+          } else if (evt.type === 'fileLock' && evt.fileLock) {
+            if (evt.fileLock.action === 'conflict') {
+              chat.setStreamingStatus(`File lock conflict: ${evt.fileLock.file}`);
+            }
+          } else if (evt.type === 'agent_start') {
+            chat.setStreamingStatus(evt.message || 'Starting agent\u2026');
+          } else if (evt.type === 'warning') {
+            chat.setStreamingStatus(evt.message || 'Warning');
           }
         }
         if (msg.graphState) orch.setGraphState(msg.graphState);

@@ -1,3 +1,4 @@
+import { estimateTokens } from '@orionomega/hindsight';
 import { createLogger } from '../logging/logger.js';
 
 const log = createLogger('query-classifier');
@@ -84,9 +85,7 @@ export function isExternalAction(text: string): boolean {
   return hasStrongExternalIntent(trimmed);
 }
 
-function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4);
-}
+// Token estimation uses the shared estimateTokens from @orionomega/hindsight.
 
 function scorePatterns(text: string, patterns: RegExp[]): number {
   let matches = 0;

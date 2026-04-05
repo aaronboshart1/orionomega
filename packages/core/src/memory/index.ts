@@ -11,7 +11,8 @@ export type { BootstrapContext } from '@orionomega/hindsight';
 
 // Retention Engine (stays in core — needs EventBus, WorkerEvent types)
 export type { RetentionConfig, WorkflowOutcome } from './retention-engine.js';
-export { RetentionEngine } from './retention-engine.js';
+export { RetentionEngine, scoreMemoryQuality, computeImportance, isMemoryExpired, consolidateMemories } from './retention-engine.js';
+export type { QualityScore } from './retention-engine.js';
 
 // Compaction Flush (stays in core — needs AnthropicClient)
 export type { FlushResult } from './compaction-flush.js';
@@ -31,3 +32,11 @@ export type { QueryType, QueryClassification, RecallStrategy } from "./query-cla
 // Dynamic Summary Generator — on-demand project summaries from recalled memories
 export { DynamicSummaryGenerator } from "./dynamic-summary.js";
 export type { DynamicSummaryOptions, DynamicSummaryResult } from "./dynamic-summary.js";
+
+// Memory Telemetry — token efficiency, latency, dedup tracking
+export {
+  recordRecall, recordRetain, recordRetainDedup, recordError,
+  getRecallEffectiveness, getBankEffectiveness, getAvgRecallLatency, getTokenEfficiency,
+  getSnapshot, logTelemetrySummary, setMonitoringHook, resetTelemetry,
+} from './memory-telemetry.js';
+export type { BankCounters, TelemetrySnapshot, TelemetryEvent } from './memory-telemetry.js';

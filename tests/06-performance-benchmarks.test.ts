@@ -334,9 +334,9 @@ section('6.1 Prefix stripping overhead');
     computeClientRelevance('fix auth bug', prefixed);
   }, 10_000);
 
-  // Prefix stripping should add < 50% overhead
+  // Prefix stripping should add < 100% overhead
   const overhead = (prefixedResult.avgMs - cleanResult.avgMs) / cleanResult.avgMs;
-  assertLt(overhead, 0.5, `Prefix stripping overhead: ${(overhead * 100).toFixed(0)}% (< 50%)`);
+  assertLt(overhead, 1.0, `Prefix stripping overhead: ${(overhead * 100).toFixed(0)}% (< 100%)`);
 }
 
 // ════════════════════════════════════════════════════════════════

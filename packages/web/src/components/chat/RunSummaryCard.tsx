@@ -7,7 +7,14 @@ import { useOrchestrationStore } from '@/stores/orchestration';
 import { useFileViewerStore } from '@/stores/file-viewer';
 import { MarkdownContent } from './MarkdownContent';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
-import { formatTokens as fmtTokens, formatElapsed as fmtDuration } from '@/utils/format';
+import { formatTokens as fmtTokens, formatElapsed as fmtDuration, formatCost } from '@/utils/format';
+
+function modelTierBadge(model: string): { label: string; cls: string } {
+  const lower = model.toLowerCase();
+  if (lower.includes('opus')) return { label: 'Opus', cls: 'bg-purple-500/20 text-purple-400' };
+  if (lower.includes('haiku')) return { label: 'Haiku', cls: 'bg-emerald-500/20 text-emerald-400' };
+  return { label: 'Sonnet', cls: 'bg-blue-500/20 text-blue-400' };
+}
 
 interface RunSummaryCardProps {
   dag: InlineDAG;
@@ -53,7 +60,7 @@ export function RunSummaryCard({ dag }: RunSummaryCardProps) {
         {dag.workerCount !== undefined && dag.workerCount > 1 && <span>{dag.workerCount} workers</span>}
         {dag.toolCallCount != null && dag.toolCallCount > 0 && <span>{dag.toolCallCount} tool call{dag.toolCallCount !== 1 ? 's' : ''}</span>}
         {dag.totalCostUsd !== undefined && (
-          <span className="font-medium text-green-400">${dag.totalCostUsd.toFixed(4)}</span>
+          <span className="font-medium text-green-400">{formatCost(dag.totalCostUsd)}</span>
         )}
       </div>
 
@@ -67,16 +74,23 @@ export function RunSummaryCard({ dag }: RunSummaryCardProps) {
             <span className="text-right">Cache W</span>
             <span className="text-right">Cost</span>
           </div>
-          {dag.modelUsage!.map((m) => (
+          {dag.modelUsage!.map((m) => {
+            const tier = modelTierBadge(m.model);
+            return (
             <div key={m.model} className="grid grid-cols-[1fr_3rem_3rem_3rem_3rem_3.5rem] gap-1 text-xs">
-              <span className="truncate text-purple-400">{m.model}</span>
+              <span className="truncate flex items-center gap-1">
+                <span className={`inline-block rounded px-1 py-px text-[9px] font-medium ${tier.cls}`}>{tier.label}</span>
+                <span className="text-purple-400 truncate">{m.model}</span>
+                {m.workerCount > 1 && <span className="text-zinc-600 text-[10px]">x{m.workerCount}</span>}
+              </span>
               <span className="text-right text-zinc-400">{fmtTokens(m.inputTokens)}</span>
               <span className="text-right text-zinc-400">{fmtTokens(m.outputTokens)}</span>
               <span className="text-right text-zinc-500">{fmtTokens(m.cacheReadTokens)}</span>
               <span className="text-right text-zinc-500">{fmtTokens(m.cacheCreationTokens)}</span>
-              <span className="text-right text-zinc-300">${m.costUsd.toFixed(4)}</span>
+              <span className="text-right text-zinc-300">{formatCost(m.costUsd)}</span>
             </div>
-          ))}
+            );
+          })}
           {totals && (
             <div className="grid grid-cols-[1fr_3rem_3rem_3rem_3rem_3.5rem] gap-1 border-t border-zinc-700/30 pt-0.5 text-xs font-medium">
               <span className="text-zinc-400">Total</span>
@@ -84,7 +98,7 @@ export function RunSummaryCard({ dag }: RunSummaryCardProps) {
               <span className="text-right text-zinc-300">{fmtTokens(totals.output)}</span>
               <span className="text-right text-zinc-400">{fmtTokens(totals.cacheR)}</span>
               <span className="text-right text-zinc-400">{fmtTokens(totals.cacheW)}</span>
-              <span className="text-right text-green-400">${dag.totalCostUsd?.toFixed(4) ?? '0.0000'}</span>
+              <span className="text-right text-green-400">{formatCost(dag.totalCostUsd ?? 0)}</span>
             </div>
           )}
         </div>

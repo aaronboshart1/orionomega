@@ -22,7 +22,7 @@ const SESSIONS_DIR = join(homedir(), '.orionomega', 'sessions');
 export const DEFAULT_SESSION_ID = 'default';
 
 /** Maximum messages per session before oldest are pruned. */
-const MAX_MESSAGES_PER_SESSION = 500;
+const MAX_MESSAGES_PER_SESSION = 1000;
 
 /** Maximum age (ms) before a session is eligible for archival — 24 hours. */
 const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -37,7 +37,18 @@ export interface Message {
   content: string;
   timestamp: string;
   type?: 'text' | 'plan' | 'orchestration-update' | 'command-result' | 'event' | 'dag-update' | 'workflow-result' | 'dag-dispatched' | 'dag-complete' | 'dag-confirmation' | 'direct-complete' | 'tool-call';
-  metadata?: Record<string, unknown>;
+  metadata?: Record<string, unknown> & {
+    /** Model used for this response */
+    model?: string;
+    /** Input tokens consumed */
+    inputTokens?: number;
+    /** Output tokens generated */
+    outputTokens?: number;
+    /** Cache read tokens */
+    cacheReadTokens?: number;
+    /** Cost in USD */
+    costUsd?: number;
+  };
   replyToId?: string;
 }
 
@@ -51,6 +62,28 @@ export interface MemoryEventData {
   meta?: Record<string, unknown>;
 }
 
+/** Persisted run summary for completed DAG/direct runs. */
+export interface RunSummary {
+  runId: string;
+  status: 'complete' | 'error' | 'stopped';
+  startedAt: string;
+  completedAt: string;
+  durationSec: number;
+  workerCount: number;
+  totalCostUsd: number;
+  toolCallCount?: number;
+  summary?: string;
+  error?: string;
+  modelUsage?: Array<{
+    model: string;
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+    cacheCreationTokens: number;
+    costUsd: number;
+  }>;
+}
+
 /** Serializable session shape (written to disk). */
 interface SessionData {
   id: string;
@@ -61,10 +94,15 @@ interface SessionData {
   hindsightBank?: string;
   memoryEvents?: MemoryEventData[];
   agentMode?: 'orchestrate' | 'direct' | 'code';
+  /** Completed run summaries for review after completion. */
+  runHistory?: RunSummary[];
 }
 
 /** Maximum memory events to persist per session. */
 const MAX_MEMORY_EVENTS = 200;
+
+/** Maximum run summaries to persist per session. */
+const MAX_RUN_HISTORY = 100;
 
 /** A gateway session grouping one or more client connections. */
 export interface Session {
@@ -76,6 +114,8 @@ export interface Session {
   activeWorkflows: Set<string>;
   hindsightBank?: string;
   memoryEvents: MemoryEventData[];
+  /** Completed run summaries for post-hoc review. */
+  runHistory: RunSummary[];
   clients: Set<string>;
   /** Last agent routing mode chosen by the user — persisted so reconnecting clients restore it. */
   agentMode?: 'orchestrate' | 'direct' | 'code';
@@ -158,6 +198,20 @@ export class SessionManager {
     const session = this.sessions.get(sessionId);
     if (!session) return;
     this.pushToArrayWithCap(session.memoryEvents, event, MAX_MEMORY_EVENTS);
+    session.updatedAt = new Date().toISOString();
+    this.schedulePersist(sessionId);
+  }
+
+  /**
+   * Record a completed run summary for a session.
+   * Enables post-hoc review of run details (status, cost, duration, errors).
+   * @param sessionId - Target session ID.
+   * @param run - The run summary to persist.
+   */
+  addRunSummary(sessionId: string, run: RunSummary): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    this.pushToArrayWithCap(session.runHistory, run, MAX_RUN_HISTORY);
     session.updatedAt = new Date().toISOString();
     this.schedulePersist(sessionId);
   }
@@ -406,6 +460,7 @@ export class SessionManager {
             activeWorkflows: new Set(data.activeWorkflows ?? []),
             hindsightBank: data.hindsightBank,
             memoryEvents: data.memoryEvents ?? [],
+            runHistory: data.runHistory ?? [],
             agentMode: data.agentMode,
             clients: new Set(), // No clients on startup — they reconnect
           };
@@ -483,6 +538,7 @@ export class SessionManager {
       messages: [],
       activeWorkflows: new Set(),
       memoryEvents: [],
+      runHistory: [],
       clients: new Set(),
     };
     this.sessions.set(DEFAULT_SESSION_ID, session);

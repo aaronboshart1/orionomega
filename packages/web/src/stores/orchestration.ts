@@ -2,17 +2,43 @@ import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import { useEffect, useMemo, useState } from 'react';
 
+export type WorkerEventType =
+  | 'thinking'
+  | 'tool_call'
+  | 'tool_result'
+  | 'finding'
+  | 'status'
+  | 'error'
+  | 'done'
+  | 'loop_iteration'
+  | 'replan'
+  | 'fileLock'
+  | 'planning'
+  | 'warning'
+  | 'agent_start'
+  | 'agent_complete'
+  | 'info';
+
 export interface WorkerEvent {
   workerId: string;
   nodeId: string;
   timestamp: string;
-  type: 'thinking' | 'tool_call' | 'tool_result' | 'finding' | 'status' | 'error' | 'done';
-  tool?: { name: string; action?: string; file?: string; summary: string };
+  type: WorkerEventType;
+  tool?: { name: string; action?: string; file?: string; summary: string; params?: Record<string, unknown> };
   thinking?: string;
   progress?: number;
   message?: string;
   data?: unknown;
   error?: string;
+  /** Loop iteration metadata */
+  iteration?: number;
+  totalIterations?: number;
+  /** File lock metadata (coding mode) */
+  fileLock?: { action: 'acquire' | 'release' | 'conflict' | 'timeout'; file: string; holder?: string };
+  /** Duration in milliseconds for completed events */
+  durationMs?: number;
+  /** Token counts for agent events */
+  tokenUsage?: { input: number; output: number; cacheRead?: number; cacheWrite?: number };
 }
 
 export interface GraphNode {
@@ -202,10 +228,10 @@ interface OrchestrationStore {
 }
 
 /** Max entries to persist for each collection to prevent localStorage bloat. */
-const MAX_PERSISTED_WORKFLOWS = 10;
-const MAX_PERSISTED_EVENTS = 100;
-const MAX_PERSISTED_MEMORY_EVENTS = 100;
-const MAX_PERSISTED_INLINE_DAGS = 20;
+const MAX_PERSISTED_WORKFLOWS = 20;
+const MAX_PERSISTED_EVENTS = 200;
+const MAX_PERSISTED_MEMORY_EVENTS = 200;
+const MAX_PERSISTED_INLINE_DAGS = 50;
 
 /**
  * Safe localStorage adapter that catches QuotaExceededError.

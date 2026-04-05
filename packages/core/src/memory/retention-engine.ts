@@ -2,9 +2,13 @@
  * @module memory/retention-engine
  * Automatic event-driven memory retention. Listens to orchestration events
  * and evaluates user messages for patterns worth retaining.
+ *
+ * Includes importance scoring, TTL-based expiry checks, token budget awareness,
+ * and memory consolidation for related items.
  */
 
-import { HindsightClient } from '@orionomega/hindsight';
+import { HindsightClient, estimateTokens, compressMemoryContent, isDuplicateInBatch } from '@orionomega/hindsight';
+import type { RetentionPolicy, ImportanceFactors } from '@orionomega/hindsight';
 import type { EventBus } from '../orchestration/event-bus.js';
 import type { WorkerEvent } from '../orchestration/types.js';
 import { createLogger } from '../logging/logger.js';
@@ -23,6 +27,10 @@ export interface RetentionConfig {
   deduplicationThreshold?: number;
   /** Minimum quality score (0-1) for a memory to be retained. Default: 0.3. */
   qualityThreshold?: number;
+  /** TTL/retention policy for memory expiry. */
+  retentionPolicy?: RetentionPolicy;
+  /** Maximum token budget per retain operation. Prevents oversized storage. Default: 2048. */
+  maxRetainTokens?: number;
 }
 
 /** Outcome data for workflow completion retention. */
@@ -48,6 +56,26 @@ export interface QualityScore {
 
 /** Configurable quality threshold. Memories below this score are rejected. Default: 0.3. */
 const DEFAULT_QUALITY_THRESHOLD = 0.3;
+
+/** Default max tokens per single memory retention. */
+const DEFAULT_MAX_RETAIN_TOKENS = 2048;
+
+/** Default TTL values per context category (in days). 0 = no expiry. */
+const DEFAULT_CATEGORY_TTL: Record<string, number> = {
+  decision: 0,        // Decisions never expire
+  preference: 0,      // Preferences never expire
+  architecture: 0,    // Architecture decisions never expire
+  session_anchor: 30,  // Session anchors expire after 30 days
+  node_output: 14,     // Node outputs expire after 14 days
+  artifact: 30,        // Artifact manifests expire after 30 days
+  project_update: 90,  // Project updates expire after 90 days
+  lesson: 0,          // Lessons never expire
+  infrastructure: 0,   // Infrastructure never expires
+  session_summary: 180, // Session summaries expire after 6 months
+};
+
+/** Categories that should never expire regardless of default TTL. */
+const DEFAULT_PINNED_CATEGORIES = ['decision', 'preference', 'architecture', 'lesson', 'infrastructure'];
 
 const HIGH_SIGNAL_PATTERNS: Array<{ pattern: RegExp; weight: number; label: string }> = [
   { pattern: /\b(decided|decision|chose|chosen|agreed|ruling)\b/i, weight: 0.3, label: 'decision' },
@@ -126,6 +154,157 @@ function scoreMemoryQuality(content: string, context: string): QualityScore {
 
 export { scoreMemoryQuality };
 
+// ── Importance Scoring ─────────────────────────────────────────────────
+
+/**
+ * Compute composite importance score for a memory. Combines:
+ * - Quality score (content signal analysis)
+ * - Context category weight
+ * - Recency decay (exponential, halves every 30 days)
+ * - Token efficiency (penalize very large memories slightly)
+ *
+ * Used to prioritize which memories to retain and which to consolidate/prune.
+ */
+export function computeImportance(
+  content: string,
+  context: string,
+  timestamp?: string,
+): ImportanceFactors {
+  const quality = scoreMemoryQuality(content, context);
+  const contextBoost = CONTEXT_WEIGHT_BOOSTS[context] ?? 0;
+
+  // Recency: exponential decay with 30-day half-life
+  let recencyFactor = 1.0;
+  if (timestamp) {
+    const ageMs = Date.now() - new Date(timestamp).getTime();
+    const ageDays = ageMs / (1000 * 60 * 60 * 24);
+    const HALF_LIFE_DAYS = 30;
+    recencyFactor = Math.pow(0.5, ageDays / HALF_LIFE_DAYS);
+  }
+
+  // Token efficiency: slight penalty for very large memories (>500 tokens)
+  const tokens = estimateTokens(content);
+  const tokenPenalty = tokens > 500 ? Math.max(0.7, 1 - (tokens - 500) / 5000) : 1.0;
+
+  // Composite: weighted combination
+  const composite = Math.min(1, Math.max(0,
+    quality.score * 0.5 +
+    contextBoost * 0.2 +
+    recencyFactor * 0.2 +
+    tokenPenalty * 0.1
+  ));
+
+  return {
+    qualityScore: quality.score,
+    contextBoost,
+    recencyFactor,
+    accessFrequency: 0, // Not tracked client-side; placeholder for server integration
+    composite,
+  };
+}
+
+// ── TTL Check ──────────────────────────────────────────────────────────
+
+/**
+ * Check whether a memory has expired according to retention policy.
+ * Returns true if the memory should be considered stale.
+ */
+export function isMemoryExpired(
+  context: string,
+  timestamp: string,
+  policy?: RetentionPolicy,
+): boolean {
+  const pinnedCategories = policy?.pinnedCategories ?? DEFAULT_PINNED_CATEGORIES;
+  if (pinnedCategories.includes(context)) return false;
+
+  const categoryTTL = policy?.categoryTTL ?? DEFAULT_CATEGORY_TTL;
+  const ttlDays = categoryTTL[context] ?? policy?.defaultTTLDays ?? 0;
+  if (ttlDays === 0) return false;
+
+  const ageMs = Date.now() - new Date(timestamp).getTime();
+  const ageDays = ageMs / (1000 * 60 * 60 * 24);
+  return ageDays > ttlDays;
+}
+
+// ── Memory Consolidation ───────────────────────────────────────────────
+
+/**
+ * Consolidate a batch of related memory items into fewer, denser items.
+ * Groups by context category, then merges items within each group that
+ * are similar enough (above consolidation threshold). Preserves the
+ * highest-quality content from each group.
+ *
+ * @returns Consolidated items with combined content.
+ */
+export function consolidateMemories(
+  items: Array<{ content: string; context: string; timestamp: string }>,
+  similarityThreshold = 0.6,
+): Array<{ content: string; context: string; timestamp: string }> {
+  if (items.length <= 1) return items;
+
+  // Group by context category
+  const groups = new Map<string, Array<{ content: string; context: string; timestamp: string }>>();
+  for (const item of items) {
+    const group = groups.get(item.context) ?? [];
+    group.push(item);
+    groups.set(item.context, group);
+  }
+
+  const consolidated: Array<{ content: string; context: string; timestamp: string }> = [];
+
+  for (const [context, group] of groups) {
+    if (group.length === 1) {
+      consolidated.push(group[0]);
+      continue;
+    }
+
+    // Within each group, find clusters of similar items and merge them
+    const clusters: Array<Array<typeof group[0]>> = [];
+    const assigned = new Set<number>();
+
+    for (let i = 0; i < group.length; i++) {
+      if (assigned.has(i)) continue;
+
+      const cluster = [group[i]];
+      assigned.add(i);
+
+      for (let j = i + 1; j < group.length; j++) {
+        if (assigned.has(j)) continue;
+        if (isDuplicateInBatch(group[j].content, cluster, similarityThreshold)) {
+          cluster.push(group[j]);
+          assigned.add(j);
+        }
+      }
+      clusters.push(cluster);
+    }
+
+    for (const cluster of clusters) {
+      if (cluster.length === 1) {
+        consolidated.push(cluster[0]);
+      } else {
+        // Merge: keep the longest (most complete) content, use most recent timestamp
+        cluster.sort((a, b) => b.content.length - a.content.length);
+        const mostRecent = cluster.reduce((latest, item) =>
+          item.timestamp > latest.timestamp ? item : latest,
+        );
+        consolidated.push({
+          content: compressMemoryContent(cluster[0].content),
+          context,
+          timestamp: mostRecent.timestamp,
+        });
+
+        log.debug('Consolidated memory cluster', {
+          context,
+          originalCount: cluster.length,
+          mergedLength: cluster[0].content.length,
+        });
+      }
+    }
+  }
+
+  return consolidated;
+}
+
 /** Phrases indicating user preferences. */
 const PREFERENCE_PATTERNS = [
   /\bi prefer\b/i,
@@ -160,11 +339,19 @@ const REMEMBER_PATTERNS = [
  * Listens to orchestration events and user messages, automatically retaining
  * noteworthy information to Hindsight. All retention is fire-and-forget —
  * failures are logged but never propagated.
+ *
+ * Enhanced with importance scoring, TTL awareness, token budgets, and
+ * memory consolidation.
  */
 export class RetentionEngine {
   private unsubscribe: (() => void) | null = null;
   /** Map workflowId → bankId, set by the orchestration bridge when dispatching. */
   private workflowBanks = new Map<string, string>();
+  /** Recent retention buffer for intra-batch dedup (avoids redundant API calls). */
+  private recentRetentions: Array<{ content: string; bankId: string; ts: number }> = [];
+  private static readonly RECENT_BUFFER_TTL_MS = 30_000; // 30 seconds
+  private static readonly RECENT_BUFFER_MAX = 50;
+
   onMemoryEvent?: (op: string, detail: string, bank?: string, meta?: Record<string, unknown>) => void;
   /** Called after every successful retention so downstream consumers (e.g. MentalModelManager) can react. */
   onAfterRetain?: (bankId: string, context: string) => void;
@@ -217,6 +404,8 @@ export class RetentionEngine {
 
   /**
    * Manually retain a piece of information to a specific bank.
+   * Now includes: token budget enforcement, importance scoring,
+   * local dedup buffer, and content compression.
    *
    * @param bankId - Target Hindsight bank.
    * @param content - The information to retain.
@@ -224,7 +413,21 @@ export class RetentionEngine {
    */
   async retain(bankId: string, content: string, context: string): Promise<void> {
     try {
-      const quality = scoreMemoryQuality(content, context);
+      // Compress content before any scoring or storage
+      const compressed = compressMemoryContent(content);
+
+      // Token budget check: reject oversized single memories
+      const maxTokens = this.config.maxRetainTokens ?? DEFAULT_MAX_RETAIN_TOKENS;
+      const contentTokens = estimateTokens(compressed);
+      if (contentTokens > maxTokens) {
+        log.debug('Memory exceeds token budget, compressing', {
+          bankId, context, tokens: contentTokens, maxTokens,
+        });
+        // Smart truncation would lose info; instead just log warning and proceed
+        // (the client.ts retain method will also compress)
+      }
+
+      const quality = scoreMemoryQuality(compressed, context);
       const threshold = this.config.qualityThreshold ?? DEFAULT_QUALITY_THRESHOLD;
 
       if (quality.score < threshold) {
@@ -236,35 +439,57 @@ export class RetentionEngine {
           threshold,
           context,
           signals: quality.signals,
-          contentPreview: content.slice(0, 200),
-          wordCount: content.split(/\s+/).filter(Boolean).length,
+          contentPreview: compressed.slice(0, 200),
+          wordCount: compressed.split(/\s+/).filter(Boolean).length,
+          estimatedTokens: contentTokens,
+        });
+        return;
+      }
+
+      // Local dedup buffer: avoid redundant API isDuplicate calls for rapid-fire retentions
+      if (this.isRecentDuplicate(bankId, compressed)) {
+        log.debug('Skipped duplicate via local buffer', { bankId, context });
+        this.onMemoryEvent?.('dedup', `Skipped duplicate memory (local buffer, ${context})`, bankId, {
+          context, contentPreview: compressed.slice(0, 200), bankId,
         });
         return;
       }
 
       const dedupThreshold = this.config.deduplicationThreshold ?? 0.85;
-      const isDup = await this.hs.isDuplicateContent(bankId, content, dedupThreshold);
+      const isDup = await this.hs.isDuplicateContent(bankId, compressed, dedupThreshold);
       if (isDup) {
-        log.debug('Skipped duplicate memory retention', { bankId, context, length: content.length });
+        log.debug('Skipped duplicate memory retention', { bankId, context, length: compressed.length });
         this.onMemoryEvent?.('dedup', `Skipped duplicate memory (${context})`, bankId, {
           context,
-          contentPreview: content.slice(0, 200),
+          contentPreview: compressed.slice(0, 200),
           bankId,
           similarityThreshold: dedupThreshold,
         });
         return;
       }
-      await this.hs.retainOne(bankId, content, context);
+
+      // Compute importance for metadata
+      const importance = computeImportance(compressed, context);
+
+      await this.hs.retainOne(bankId, compressed, context);
+
+      // Track in local buffer
+      this.trackRetention(bankId, compressed);
+
       log.debug('Retained memory', {
-        bankId, context, length: content.length,
+        bankId, context, length: compressed.length,
         qualityScore: quality.score, signals: quality.signals,
+        importance: importance.composite.toFixed(3),
+        estimatedTokens: contentTokens,
       });
-      this.onMemoryEvent?.('retain', `Retained ${context} memory (quality: ${quality.score.toFixed(2)})`, bankId, {
+      this.onMemoryEvent?.('retain', `Retained ${context} memory (quality: ${quality.score.toFixed(2)}, importance: ${importance.composite.toFixed(2)})`, bankId, {
         context,
         score: quality.score,
+        importance: importance.composite,
         signals: quality.signals,
-        contentPreview: content.slice(0, 200),
-        contentLength: content.length,
+        contentPreview: compressed.slice(0, 200),
+        contentLength: compressed.length,
+        estimatedTokens: contentTokens,
       });
       this.onAfterRetain?.(bankId, context);
     } catch (err) {
@@ -311,6 +536,7 @@ export class RetentionEngine {
   /**
    * Retain the outcome of a completed workflow, including decisions, findings,
    * errors, and infrastructure changes as separate memory items.
+   * Uses consolidation to merge related findings before storage.
    *
    * @param outcome - Structured workflow outcome data.
    */
@@ -346,14 +572,19 @@ export class RetentionEngine {
 
       await this.retain(bankId, summary, 'project_update');
 
+      // Consolidate findings before retaining to reduce redundant memories
+      const now = new Date().toISOString();
+      const findingItems = findings.map((f) => ({ content: f, context: 'lesson', timestamp: now }));
+      const consolidatedFindings = consolidateMemories(findingItems);
+
       // Retain decisions individually
       for (const decision of decisions) {
         this.retain(bankId, decision, 'decision').catch((err) => { log.debug('Fire-and-forget retain failed', { error: err instanceof Error ? err.message : String(err) }); });
       }
 
-      // Retain findings individually
-      for (const finding of findings) {
-        this.retain(bankId, finding, 'lesson').catch((err) => { log.debug('Fire-and-forget retain failed', { error: err instanceof Error ? err.message : String(err) }); });
+      // Retain consolidated findings
+      for (const finding of consolidatedFindings) {
+        this.retain(bankId, finding.content, 'lesson').catch((err) => { log.debug('Fire-and-forget retain failed', { error: err instanceof Error ? err.message : String(err) }); });
       }
 
       // Retain errors as lessons
@@ -397,6 +628,35 @@ export class RetentionEngine {
     }
   }
 
+  // ── Local Dedup Buffer ─────────────────────────────────────────────
+
+  /**
+   * Check if content was recently retained to the same bank.
+   * Avoids redundant isDuplicateContent API calls during rapid-fire retention.
+   */
+  private isRecentDuplicate(bankId: string, content: string): boolean {
+    const now = Date.now();
+    // Prune expired entries
+    this.recentRetentions = this.recentRetentions.filter(
+      (r) => now - r.ts < RetentionEngine.RECENT_BUFFER_TTL_MS,
+    );
+
+    const bankEntries = this.recentRetentions
+      .filter((r) => r.bankId === bankId);
+
+    return isDuplicateInBatch(content, bankEntries, this.config.deduplicationThreshold ?? 0.85);
+  }
+
+  private trackRetention(bankId: string, content: string): void {
+    this.recentRetentions.push({ content, bankId, ts: Date.now() });
+    // Cap buffer size
+    if (this.recentRetentions.length > RetentionEngine.RECENT_BUFFER_MAX) {
+      this.recentRetentions = this.recentRetentions.slice(-RetentionEngine.RECENT_BUFFER_MAX);
+    }
+  }
+
+  // ── Event Handling ─────────────────────────────────────────────────
+
   /**
    * Resolve the correct bank ID for event-driven retention.
    * Uses the workflow → bank mapping if available, otherwise falls back
@@ -415,10 +675,6 @@ export class RetentionEngine {
   /**
    * Handle a worker event from the EventBus.
    * Retains findings and (optionally) errors to the correct bank.
-   *
-   * Previously this used event.nodeId as the bank ID — that was a bug since
-   * node IDs are UUIDs like "micro-65262f46c5268f8e", not valid bank names.
-   * Now resolves the bank via workflow → bank mapping or falls back to 'default'.
    */
   private handleEvent(event: WorkerEvent): void {
     const bankId = this.resolveBankForEvent(event);

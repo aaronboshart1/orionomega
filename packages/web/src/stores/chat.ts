@@ -38,6 +38,19 @@ export interface MessageAttachment {
   dataUrl?: string;
 }
 
+export interface MessageMetadata {
+  /** Model used for this response */
+  model?: string;
+  /** Input tokens consumed */
+  inputTokens?: number;
+  /** Output tokens generated */
+  outputTokens?: number;
+  /** Cache read tokens */
+  cacheReadTokens?: number;
+  /** Cost in USD for this message */
+  costUsd?: number;
+}
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
@@ -62,6 +75,17 @@ export interface ChatMessage {
   interrupted?: boolean;
   replyTo?: ReplyToData;
   attachments?: MessageAttachment[];
+  /** Per-message token/cost metadata */
+  metadata?: MessageMetadata;
+}
+
+/** Cumulative session-level token/cost totals */
+export interface SessionTokenTotals {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  totalCostUsd: number;
+  messageCount: number;
 }
 
 interface ChatStore {
@@ -71,6 +95,7 @@ interface ChatStore {
   streamingStatus: string;
   thinkingSteps: ThinkingStep[];
   replyTarget: ReplyToData | null;
+  sessionTotals: SessionTokenTotals;
   addMessage: (msg: ChatMessage) => void;
   setMessages: (msgs: ChatMessage[]) => void;
   appendToLast: (content: string, messageId?: string) => void;
@@ -86,10 +111,11 @@ interface ChatStore {
   updateMessage: (id: string, updates: Partial<ChatMessage>) => void;
   clearMessages: () => void;
   setReplyTarget: (target: ReplyToData | null) => void;
+  accumulateTokens: (meta: MessageMetadata) => void;
 }
 
 /** Max messages to persist to localStorage to prevent quota exhaustion. */
-const MAX_PERSISTED_MESSAGES = 50;
+const MAX_PERSISTED_MESSAGES = 200;
 
 /**
  * Safe localStorage adapter that catches QuotaExceededError.
@@ -135,6 +161,7 @@ export const useChatStore = create<ChatStore>()(
       streamingStatus: '',
       thinkingSteps: [],
       replyTarget: null,
+      sessionTotals: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, totalCostUsd: 0, messageCount: 0 },
       addMessage: (msg) => set((s) => ({ messages: [...s.messages, msg] })),
       setMessages: (messages) => set({ messages }),
       appendToLast: (content, messageId) =>
@@ -220,8 +247,18 @@ export const useChatStore = create<ChatStore>()(
         set((s) => ({
           messages: s.messages.map((m) => (m.id === id ? { ...m, ...updates } : m)),
         })),
-      clearMessages: () => set({ messages: [] }),
+      clearMessages: () => set({ messages: [], sessionTotals: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, totalCostUsd: 0, messageCount: 0 } }),
       setReplyTarget: (replyTarget) => set({ replyTarget }),
+      accumulateTokens: (meta) =>
+        set((s) => ({
+          sessionTotals: {
+            inputTokens: s.sessionTotals.inputTokens + (meta.inputTokens ?? 0),
+            outputTokens: s.sessionTotals.outputTokens + (meta.outputTokens ?? 0),
+            cacheReadTokens: s.sessionTotals.cacheReadTokens + (meta.cacheReadTokens ?? 0),
+            totalCostUsd: s.sessionTotals.totalCostUsd + (meta.costUsd ?? 0),
+            messageCount: s.sessionTotals.messageCount + 1,
+          },
+        })),
     }),
     {
       name: 'orionomega-chat',
@@ -237,6 +274,7 @@ export const useChatStore = create<ChatStore>()(
           }
           return m;
         }),
+        sessionTotals: state.sessionTotals,
       }),
     },
   ),

@@ -40,7 +40,7 @@ function AttachmentDisplay({ attachments }: { attachments: MessageAttachment[] }
                 width={280}
                 height={192}
               />
-              <div className="bg-emerald-700 px-2 py-1 text-xs text-white/60">
+              <div className="bg-black/50 px-2 py-1 text-xs text-white/50">
                 {att.name} ({formatBytes(att.size)})
               </div>
             </div>
@@ -67,7 +67,7 @@ function ReplyButton({ onClick }: { onClick: () => void }) {
   return (
     <button
       onClick={onClick}
-      className="absolute -bottom-1 right-0 flex h-11 w-11 items-center justify-center rounded-full bg-emerald-600 text-emerald-100 opacity-100 shadow transition-opacity hover:bg-emerald-500 hover:text-white md:h-6 md:w-6 md:opacity-0 md:group-hover:opacity-100 focus-visible:opacity-100"
+      className="absolute -bottom-1 right-0 flex h-11 w-11 items-center justify-center rounded-full bg-zinc-700 text-zinc-300 opacity-100 shadow transition-all hover:bg-zinc-600 hover:text-white md:h-6 md:w-6 md:opacity-0 md:group-hover:opacity-100 focus-visible:opacity-100"
       aria-label="Reply to this message"
     >
       <Reply size={12} />

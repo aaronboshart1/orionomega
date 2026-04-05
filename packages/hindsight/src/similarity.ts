@@ -1,8 +1,8 @@
 /**
  * @module similarity
- * Fast text similarity utilities for deduplication and relevance scoring
- * of recalled memories. Uses trigram overlap (Jaccard index) for short
- * text comparison.
+ * Fast text similarity utilities for deduplication, relevance scoring,
+ * and token-efficient memory management. Provides shared token estimation,
+ * smart truncation, and content compression used across the memory subsystem.
  */
 
 /**
@@ -12,6 +12,109 @@
 const STRUCTURAL_PREFIX_RE = /^\[(user|assistant|system)\]\s*/i;
 const STRUCTURAL_LABEL_RE = /\b(Task|Workers|Decisions|Findings|Node|Workflow|Output|Result|Errors|Outputs|Artifacts):\s*/gi;
 const BRACKET_NOISE_RE = /[[\]]/g;
+
+// ── Token Estimation ───────────────────────────────────────────────────
+
+// Patterns that indicate code-heavy content (lower chars-per-token ratio)
+const CODE_INDICATORS = /[{}();=<>]|\b(function|const|let|var|import|export|class|interface|type|return|if|else|for|while)\b/;
+
+/**
+ * Estimate token count for text content. More accurate than naive `length/4`
+ * by accounting for content type:
+ * - Code/structured text: ~3.2 chars per token (more symbols, short identifiers)
+ * - Natural language: ~4.0 chars per token
+ * - Whitespace-heavy: compressed by tokenizer, so pre-collapse before counting
+ *
+ * Shared across the memory subsystem to ensure consistent budgeting.
+ */
+export function estimateTokens(text: string): number {
+  if (!text) return 0;
+  // Collapse whitespace runs — tokenizers compress these
+  const collapsed = text.replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n');
+  const ratio = CODE_INDICATORS.test(collapsed) ? 3.2 : 4.0;
+  return Math.ceil(collapsed.length / ratio);
+}
+
+// ── Smart Truncation ───────────────────────────────────────────────────
+
+// High-signal sentence patterns worth preserving during truncation
+const HIGH_SIGNAL_SENTENCE = /\b(decided|decision|chose|because|blocked|error|fix|prefer|requirement|architecture|deploy|migration|config)\b/i;
+
+/**
+ * Truncate content to fit within a token budget while preserving the most
+ * important information. Strategy:
+ * 1. If content fits, return as-is
+ * 2. Always keep first sentence (establishes context) and last sentence (recency)
+ * 3. From the middle, prefer sentences with high-signal keywords
+ * 4. Append truncation marker so consumers know content was shortened
+ */
+export function smartTruncate(content: string, maxTokens: number): string {
+  if (estimateTokens(content) <= maxTokens) return content;
+
+  const sentences = content.split(/(?<=[.!?\n])\s+/).filter(Boolean);
+  if (sentences.length <= 2) {
+    // Can't split further — hard truncate by character
+    const maxChars = Math.floor(maxTokens * 3.5);
+    return content.slice(0, maxChars) + '…';
+  }
+
+  // Always include first and last sentence
+  const first = sentences[0];
+  const last = sentences[sentences.length - 1];
+  let budget = maxTokens - estimateTokens(first) - estimateTokens(last) - 5; // 5 tokens for marker
+
+  // Score middle sentences by signal keywords
+  const middle = sentences.slice(1, -1).map((s, idx) => ({
+    text: s,
+    idx,
+    signal: HIGH_SIGNAL_SENTENCE.test(s) ? 1 : 0,
+    tokens: estimateTokens(s),
+  }));
+
+  // Sort by signal (high first), then by original order for stability
+  middle.sort((a, b) => b.signal - a.signal || a.idx - b.idx);
+
+  const kept: Array<{ text: string; idx: number }> = [];
+  for (const s of middle) {
+    if (budget < s.tokens) continue;
+    budget -= s.tokens;
+    kept.push({ text: s.text, idx: s.idx });
+  }
+
+  // Restore original order
+  kept.sort((a, b) => a.idx - b.idx);
+
+  const parts = [first, ...kept.map((k) => k.text), last];
+  const truncatedCount = sentences.length - parts.length;
+  if (truncatedCount > 0) {
+    parts.push(`[${truncatedCount} sentences truncated]`);
+  }
+  return parts.join(' ');
+}
+
+// ── Content Compression ────────────────────────────────────────────────
+
+/**
+ * Compress memory content to reduce token overhead before storage.
+ * Applies transformations that preserve meaning:
+ * - Collapse excessive whitespace and blank lines
+ * - Deduplicate consecutive identical lines
+ * - Strip trailing filler phrases
+ */
+export function compressMemoryContent(content: string): string {
+  let c = content;
+  // Collapse multiple blank lines to single
+  c = c.replace(/\n{3,}/g, '\n\n');
+  // Collapse whitespace runs
+  c = c.replace(/[ \t]{2,}/g, ' ');
+  // Strip trailing filler phrases
+  c = c.replace(/\s*(let me know if you (?:need|have|want) (?:anything|any|more)|feel free to (?:ask|reach out)|hope this helps|happy to help)[.!]?\s*$/i, '');
+  // Deduplicate consecutive identical lines
+  c = c.replace(/^(.+)$\n(?:\1$\n?)+/gm, '$1');
+  return c.trim();
+}
+
+// ── Normalization & Trigrams ───────────────────────────────────────────
 
 function normalize(text: string): string {
   let t = text.toLowerCase();
@@ -108,19 +211,52 @@ export function computeClientRelevance(query: string, content: string): number {
   return Math.max(0, Math.min(1, raw));
 }
 
+// ── Deduplication ──────────────────────────────────────────────────────
+
+/**
+ * Deduplicate items by content similarity. Uses a fingerprint cache to
+ * short-circuit exact matches before falling through to trigram comparison.
+ * Items should be pre-sorted by relevance (highest first) for best results.
+ */
 export function deduplicateByContent<T extends { content: string; relevance?: number }>(
   items: T[],
   threshold = 0.85,
 ): T[] {
   if (items.length <= 1) return items;
+
+  // Fast path: exact-match fingerprint check before expensive trigram comparison
+  const seenFingerprints = new Set<string>();
   const kept: T[] = [];
+
   for (const item of items) {
+    // Fingerprint: first 100 chars normalized (catches exact and near-exact dupes cheaply)
+    const fp = item.content.toLowerCase().replace(/\s+/g, ' ').slice(0, 100);
+    if (seenFingerprints.has(fp)) continue;
+
     const isDuplicate = kept.some(
       (existing) => trigramSimilarity(existing.content, item.content) >= threshold,
     );
     if (!isDuplicate) {
       kept.push(item);
+      seenFingerprints.add(fp);
     }
   }
   return kept;
+}
+
+// ── Batch Deduplication ────────────────────────────────────────────────
+
+/**
+ * Check if a new content string is a duplicate of any item in a batch.
+ * More efficient than isDuplicateContent for checking against a local set.
+ */
+export function isDuplicateInBatch(
+  content: string,
+  existing: Array<{ content: string }>,
+  threshold = 0.85,
+): boolean {
+  for (const item of existing) {
+    if (trigramSimilarity(content, item.content) >= threshold) return true;
+  }
+  return false;
 }

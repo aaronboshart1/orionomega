@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useOrchestrationStore, useFilteredMemoryEvents, type MemoryEvent, type MemoryFilterState, type RecallMeta, type RetainMeta, type QualityMeta, type DedupMeta } from '@/stores/orchestration';
 import {
   Brain,
@@ -463,6 +463,45 @@ function FilterBar({
   );
 }
 
+function MemoryStatsBar({ events }: { events: MemoryEvent[] }) {
+  const stats = useMemo(() => {
+    const counts: Partial<Record<MemoryEvent['op'], number>> = {};
+    let totalTokens = 0;
+    for (const e of events) {
+      counts[e.op] = (counts[e.op] ?? 0) + 1;
+      const meta = e.meta as Record<string, unknown> | undefined;
+      if (meta?.tokensUsed) totalTokens += meta.tokensUsed as number;
+    }
+    return { counts, totalTokens };
+  }, [events]);
+
+  const highlights: { op: MemoryEvent['op']; label: string }[] = [
+    { op: 'retain', label: 'Stored' },
+    { op: 'recall', label: 'Recalled' },
+    { op: 'dedup', label: 'Deduped' },
+    { op: 'quality', label: 'Filtered' },
+  ];
+
+  return (
+    <div className="flex items-center gap-3 border-b border-zinc-800 px-3 py-1.5 text-[10px] font-mono text-zinc-600 bg-zinc-900/30">
+      <span className="text-zinc-500 font-medium">{events.length} ops</span>
+      {highlights.map(({ op, label }) =>
+        stats.counts[op] ? (
+          <span key={op} className="flex items-center gap-1">
+            <span className={OP_CONFIG[op]?.color ?? 'text-zinc-500'}>{label}</span>
+            <span className="text-zinc-500">{stats.counts[op]}</span>
+          </span>
+        ) : null
+      )}
+      {stats.totalTokens > 0 && (
+        <span className="ml-auto text-zinc-700">
+          {stats.totalTokens.toLocaleString()} tok recalled
+        </span>
+      )}
+    </div>
+  );
+}
+
 export function MemoryFeed() {
   const allEvents = useOrchestrationStore((s) => s.memoryEvents);
   const filter = useOrchestrationStore((s) => s.memoryFilter);
@@ -490,13 +529,14 @@ export function MemoryFeed() {
 
   return (
     <div className="h-full flex flex-col">
+      <MemoryStatsBar events={allEvents} />
       <FilterBar
         events={allEvents}
         filter={filter}
         setFilter={setMemoryFilter}
         filteredCount={filteredEvents.length}
       />
-      <div className="flex-1 overflow-y-auto scrollbar-thin scrollbar-track-transparent scrollbar-thumb-zinc-700">
+      <div className="flex-1 overflow-y-auto">
         {filteredEvents.length === 0 ? (
           <div className="flex items-center justify-center h-24 text-zinc-600 text-xs">
             No events match current filters

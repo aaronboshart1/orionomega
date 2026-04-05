@@ -1,6 +1,9 @@
 import { HindsightError } from './errors.js';
 import { createLogger } from './logger.js';
-import { computeClientRelevance, deduplicateByContent, trigramSimilarity } from './similarity.js';
+import {
+  computeClientRelevance, deduplicateByContent, trigramSimilarity,
+  estimateTokens, smartTruncate, compressMemoryContent,
+} from './similarity.js';
 import type {
   BankConfig,
   BankInfo,
@@ -9,6 +12,7 @@ import type {
   MentalModel,
   RecallOptions,
   RecallResult,
+  RecalledMemory,
   RetainResult,
 } from './types.js';
 
@@ -172,15 +176,27 @@ export class HindsightClient {
    */
   async retain(bankId: string, items: MemoryItem[]): Promise<RetainResult> {
     const start = Date.now();
+
+    // Compress content and compute token estimates before storage
+    const processedItems = items.map((item) => {
+      const compressed = compressMemoryContent(item.content);
+      return {
+        ...item,
+        content: compressed,
+        estimatedTokens: item.estimatedTokens ?? estimateTokens(compressed),
+      };
+    });
+
     log.verbose(`Retain → ${bankId}`, {
-      itemCount: items.length,
-      contexts: items.map(i => i.context),
-      totalChars: items.reduce((sum, i) => sum + (i.content?.length ?? 0), 0),
+      itemCount: processedItems.length,
+      contexts: processedItems.map(i => i.context),
+      totalChars: processedItems.reduce((sum, i) => sum + (i.content?.length ?? 0), 0),
+      totalTokens: processedItems.reduce((sum, i) => sum + (i.estimatedTokens ?? 0), 0),
     });
     const result = await this.request<RetainResult>(
       'POST',
       `${this.bankPath(bankId)}/memories`,
-      { items },
+      { items: processedItems },
     );
     const durationMs = Date.now() - start;
     log.verbose(`Retain ← ${bankId}`, { durationMs });
@@ -289,12 +305,16 @@ export class HindsightClient {
     const shouldDedup = opts?.deduplicate !== false;
     const dedupThreshold = opts?.deduplicationThreshold ?? 0.85;
 
-    let allResults = (raw.results ?? []).map((r) => ({
-      content: (r.text as string) ?? (r.content as string) ?? '',
-      context: (r.context as string) ?? '',
-      timestamp: (r.mentioned_at as string) ?? (r.timestamp as string) ?? '',
-      relevance: (r.relevance as number) ?? 0,
-    }));
+    let allResults: RecalledMemory[] = (raw.results ?? []).map((r) => {
+      const content = (r.text as string) ?? (r.content as string) ?? '';
+      return {
+        content,
+        context: (r.context as string) ?? '',
+        timestamp: (r.mentioned_at as string) ?? (r.timestamp as string) ?? '',
+        relevance: (r.relevance as number) ?? 0,
+        estimatedTokens: estimateTokens(content),
+      };
+    });
 
     // Client-side relevance when API returns all zeros.
     // Hindsight v0.4.x without embedding backend returns relevance=0 always.
@@ -348,10 +368,39 @@ export class HindsightClient {
     filtered = this.applyDeduplication(filtered, shouldDedup, dedupThreshold);
     const droppedByDedup = allResults.length - droppedByRelevance - filtered.length;
 
+    // Enforce token budget: trim results that would exceed the requested max tokens.
+    // Smart-truncate individual items that are oversized before dropping them entirely.
+    const budgetCap = effectiveMaxTokens;
+    let tokenAccum = 0;
+    const budgetFiltered: RecalledMemory[] = [];
+    for (const r of filtered) {
+      const itemTokens = r.estimatedTokens ?? estimateTokens(r.content);
+      if (tokenAccum + itemTokens > budgetCap && budgetFiltered.length > 0) {
+        // Try smart truncation to fit remaining budget
+        const remaining = budgetCap - tokenAccum;
+        if (remaining > 50) {
+          const truncated = smartTruncate(r.content, remaining);
+          const truncTokens = estimateTokens(truncated);
+          if (truncTokens <= remaining) {
+            budgetFiltered.push({ ...r, content: truncated, estimatedTokens: truncTokens });
+            tokenAccum += truncTokens;
+          }
+        }
+        break;
+      }
+      budgetFiltered.push(r);
+      tokenAccum += itemTokens;
+    }
+
+    const totalEstimatedTokens = budgetFiltered.reduce((sum, r) => sum + (r.estimatedTokens ?? 0), 0);
+
     const result: RecallResult = {
-      results: filtered,
+      results: budgetFiltered,
       tokens_used: (raw as unknown as Record<string, unknown>).tokens_used as number ?? 0,
+      totalEstimatedTokens,
     };
+
+    const droppedByBudget = filtered.length - budgetFiltered.length;
 
     const durationMs = Date.now() - start;
     log.verbose(`Recall ← ${bankId}`, {
@@ -359,12 +408,14 @@ export class HindsightClient {
       resultCount: result.results.length,
       droppedByRelevance,
       droppedByDedup,
+      droppedByBudget,
+      totalEstimatedTokens,
     });
 
     // F13: Recall effectiveness metric — log the ratio of results surfaced vs total
     // from API. Critical for monitoring recall health. Alert when <10% sustained.
     const surfaceRate = allResults.length > 0
-      ? filtered.length / allResults.length
+      ? budgetFiltered.length / allResults.length
       : 1; // no results from API → not a scoring problem
     if (allResults.length > 0 && surfaceRate < 0.1) {
       log.warn(`Recall effectiveness critically low: ${(surfaceRate * 100).toFixed(0)}% surfaced (${filtered.length}/${allResults.length})`, {
@@ -374,6 +425,7 @@ export class HindsightClient {
 
     this.emitRecallIO(bankId, query, result.results, allResults.length, droppedByRelevance, durationMs, {
       tier, effectiveMaxTokens, minRelevance, allZeroRelevance, tokensUsed: result.tokens_used, surfaceRate,
+      totalEstimatedTokens, droppedByBudget,
     });
     return result;
   }
@@ -489,7 +541,7 @@ export class HindsightClient {
     totalFromApi: number,
     droppedByRelevance: number,
     durationMs: number,
-    params: { tier: string; effectiveMaxTokens: number; minRelevance: number; allZeroRelevance: boolean; tokensUsed: number; surfaceRate?: number },
+    params: { tier: string; effectiveMaxTokens: number; minRelevance: number; allZeroRelevance: boolean; tokensUsed: number; surfaceRate?: number; totalEstimatedTokens?: number; droppedByBudget?: number },
   ): void {
     if (results.length > 0) {
       const topScore = Math.max(...results.map(r => r.relevance));

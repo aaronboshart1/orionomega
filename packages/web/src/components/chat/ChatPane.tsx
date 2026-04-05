@@ -17,6 +17,7 @@ import { ErrorMessage } from './ErrorMessage';
 import { PlanCard } from './PlanCard';
 import { BackgroundTaskIndicator } from './BackgroundTaskIndicator';
 import { ConnectionStatus } from './ConnectionStatus';
+import { SessionCostBar } from './SessionCostBar';
 import type { ChatMessage } from '@/stores/chat';
 import dynamic from 'next/dynamic';
 import Image from 'next/image';
@@ -253,12 +254,26 @@ export function ChatPane() {
             </div>
           </div>
         ) : messages.length === 0 ? (
-          <div className="flex h-full flex-col items-center justify-center text-zinc-600">
-            <Image src="/omegaclaw-logo.png" alt="OmegaClaw" width={48} height={48} className="mb-3" />
-            <p className="text-sm">Send a message to begin</p>
-            <p className="mt-1 text-xs text-zinc-700">
+          <div className="flex h-full flex-col items-center justify-center px-8 text-zinc-600">
+            <Image src="/omegaclaw-logo.png" alt="OmegaClaw" width={44} height={44} className="mb-4 opacity-60" />
+            <p className="text-sm font-medium text-zinc-400">Ready</p>
+            <p className="mt-1 text-xs text-zinc-600">
               Ask anything — I&apos;ll handle the orchestration
             </p>
+            <div className="mt-6 grid grid-cols-1 gap-1.5 w-full max-w-xs">
+              {[
+                { hint: 'Multi-agent DAG orchestration', detail: 'Orch mode' },
+                { hint: 'Direct streaming response', detail: 'Direct mode' },
+                { hint: 'Coding workflow with review', detail: 'Code mode' },
+                { hint: 'Type / for commands', detail: '/help · /stop · /clear' },
+              ].map(({ hint, detail }) => (
+                <div key={hint} className="flex items-center gap-2 rounded-lg bg-zinc-900/40 px-3 py-2">
+                  <span className="h-1 w-1 flex-shrink-0 rounded-full bg-zinc-700" />
+                  <span className="text-xs text-zinc-500">{hint}</span>
+                  <span className="ml-auto text-[10px] text-zinc-700 tabular-nums">{detail}</span>
+                </div>
+              ))}
+            </div>
           </div>
         ) : (
           <Virtuoso
@@ -291,6 +306,7 @@ export function ChatPane() {
         )}
       </div>
 
+      <SessionCostBar />
       <ChatInput
         onSend={handleSend}
         modeToggle={<AgentModeToggle disabled={isStreaming} variant="inline" />}

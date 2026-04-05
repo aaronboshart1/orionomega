@@ -2,8 +2,9 @@
  * @module memory/memory-telemetry
  * Lightweight in-process telemetry for the Hindsight memory subsystem.
  *
- * Tracks recall effectiveness, retain success rates, and error counts so
- * operators can detect degradation without instrumenting every call site.
+ * Tracks recall effectiveness, retain success rates, token efficiency,
+ * latency percentiles, and error counts so operators can detect degradation
+ * without instrumenting every call site.
  *
  * F13: Recall effectiveness metric — emits per-bank hit/miss ratios.
  */
@@ -23,9 +24,18 @@ export interface BankCounters {
   retainTotal: number;
   retainSuccess: number;
   retainFailure: number;
+  retainDeduplicated: number; // items skipped by dedup
   errorTotal: number;
   errorTransient: number;
   errorPermanent: number;
+  /** Token efficiency: total tokens consumed by recall results. */
+  recallTokensConsumed: number;
+  /** Token efficiency: total tokens stored via retain. */
+  retainTokensStored: number;
+  /** Recall latency: sum of all recall durations (for computing average). */
+  recallLatencySumMs: number;
+  /** Recall latency: max observed duration. */
+  recallLatencyMaxMs: number;
 }
 
 /** Snapshot used for monitoring hooks and log output. */
@@ -36,12 +46,18 @@ export interface TelemetrySnapshot {
   recallEffectiveness: number | null;
   /** Total memory operations since process start. */
   totalOps: number;
+  /** Token efficiency: total recall tokens consumed / total recall operations. */
+  avgRecallTokens: number | null;
+  /** Token efficiency: total retain tokens stored / total successful retains. */
+  avgRetainTokens: number | null;
+  /** Average recall latency in ms. */
+  avgRecallLatencyMs: number | null;
 }
 
 /** Monitoring hook invoked after each operation with a lightweight metric. */
 export type TelemetryEvent =
-  | { type: 'recall'; bank: string; hit: boolean; filtered: boolean; resultCount: number; durationMs: number }
-  | { type: 'retain'; bank: string; success: boolean; itemCount: number; durationMs: number }
+  | { type: 'recall'; bank: string; hit: boolean; filtered: boolean; resultCount: number; durationMs: number; tokensConsumed?: number }
+  | { type: 'retain'; bank: string; success: boolean; itemCount: number; durationMs: number; tokensStored?: number; deduplicated?: boolean }
   | { type: 'error'; bank: string; op: 'recall' | 'retain'; transient: boolean; message: string };
 
 // ── Internal state ─────────────────────────────────────────────────────────
@@ -53,8 +69,10 @@ function getOrCreate(bankId: string): BankCounters {
   if (!c) {
     c = {
       recallTotal: 0, recallHit: 0, recallMiss: 0, recallFiltered: 0,
-      retainTotal: 0, retainSuccess: 0, retainFailure: 0,
+      retainTotal: 0, retainSuccess: 0, retainFailure: 0, retainDeduplicated: 0,
       errorTotal: 0, errorTransient: 0, errorPermanent: 0,
+      recallTokensConsumed: 0, retainTokensStored: 0,
+      recallLatencySumMs: 0, recallLatencyMaxMs: 0,
     };
     banks.set(bankId, c);
   }
@@ -101,12 +119,14 @@ function emit(event: TelemetryEvent): void {
  * @param resultCount - Number of results returned after filtering.
  * @param totalFromApi - Raw count returned by the API before client filtering.
  * @param durationMs - Round-trip duration in milliseconds.
+ * @param tokensConsumed - Estimated tokens consumed by returned results.
  */
 export function recordRecall(
   bankId: string,
   resultCount: number,
   totalFromApi: number,
   durationMs: number,
+  tokensConsumed?: number,
 ): void {
   const c = getOrCreate(bankId);
   c.recallTotal++;
@@ -118,11 +138,18 @@ export function recordRecall(
   else c.recallMiss++;
   if (filtered) c.recallFiltered++;
 
-  emit({ type: 'recall', bank: bankId, hit, filtered, resultCount, durationMs });
+  // Track token consumption and latency
+  if (tokensConsumed !== undefined) c.recallTokensConsumed += tokensConsumed;
+  c.recallLatencySumMs += durationMs;
+  if (durationMs > c.recallLatencyMaxMs) c.recallLatencyMaxMs = durationMs;
+
+  emit({ type: 'recall', bank: bankId, hit, filtered, resultCount, durationMs, tokensConsumed });
 
   // Periodically log effectiveness summary at info level (every 50 recalls)
   if (c.recallTotal % 50 === 0) {
     const effectiveness = c.recallTotal > 0 ? (c.recallHit / c.recallTotal) : null;
+    const avgLatency = c.recallTotal > 0 ? (c.recallLatencySumMs / c.recallTotal) : null;
+    const avgTokens = c.recallHit > 0 ? (c.recallTokensConsumed / c.recallHit) : null;
     log.info('Memory recall effectiveness checkpoint', {
       bankId,
       total: c.recallTotal,
@@ -130,6 +157,9 @@ export function recordRecall(
       misses: c.recallMiss,
       filtered: c.recallFiltered,
       effectiveness: effectiveness !== null ? effectiveness.toFixed(3) : 'n/a',
+      avgLatencyMs: avgLatency !== null ? avgLatency.toFixed(0) : 'n/a',
+      maxLatencyMs: c.recallLatencyMaxMs,
+      avgTokensPerRecall: avgTokens !== null ? avgTokens.toFixed(0) : 'n/a',
     });
   }
 }
@@ -141,19 +171,34 @@ export function recordRecall(
  * @param success - Whether the retain succeeded.
  * @param itemCount - Number of items in the batch.
  * @param durationMs - Operation duration in milliseconds.
+ * @param tokensStored - Estimated tokens stored.
  */
 export function recordRetain(
   bankId: string,
   success: boolean,
   itemCount: number,
   durationMs: number,
+  tokensStored?: number,
 ): void {
   const c = getOrCreate(bankId);
   c.retainTotal++;
-  if (success) c.retainSuccess++;
-  else c.retainFailure++;
+  if (success) {
+    c.retainSuccess++;
+    if (tokensStored !== undefined) c.retainTokensStored += tokensStored;
+  } else {
+    c.retainFailure++;
+  }
 
-  emit({ type: 'retain', bank: bankId, success, itemCount, durationMs });
+  emit({ type: 'retain', bank: bankId, success, itemCount, durationMs, tokensStored });
+}
+
+/**
+ * Record a deduplication skip during retention.
+ */
+export function recordRetainDedup(bankId: string): void {
+  const c = getOrCreate(bankId);
+  c.retainDeduplicated++;
+  emit({ type: 'retain', bank: bankId, success: false, itemCount: 0, durationMs: 0, deduplicated: true });
 }
 
 /**
@@ -201,6 +246,37 @@ export function getBankEffectiveness(bankId: string): number | null {
   return c.recallHit / c.recallTotal;
 }
 
+/** Get average recall latency across all banks. */
+export function getAvgRecallLatency(): number | null {
+  let totalOps = 0;
+  let totalMs = 0;
+  for (const c of banks.values()) {
+    totalOps += c.recallTotal;
+    totalMs += c.recallLatencySumMs;
+  }
+  return totalOps > 0 ? totalMs / totalOps : null;
+}
+
+/** Get token efficiency: avg tokens per successful recall. */
+export function getTokenEfficiency(): { avgRecallTokens: number | null; avgRetainTokens: number | null } {
+  let totalRecallHits = 0;
+  let totalRecallTokens = 0;
+  let totalRetainSuccess = 0;
+  let totalRetainTokens = 0;
+
+  for (const c of banks.values()) {
+    totalRecallHits += c.recallHit;
+    totalRecallTokens += c.recallTokensConsumed;
+    totalRetainSuccess += c.retainSuccess;
+    totalRetainTokens += c.retainTokensStored;
+  }
+
+  return {
+    avgRecallTokens: totalRecallHits > 0 ? totalRecallTokens / totalRecallHits : null,
+    avgRetainTokens: totalRetainSuccess > 0 ? totalRetainTokens / totalRetainSuccess : null,
+  };
+}
+
 /** Full telemetry snapshot (useful for health endpoints or debug dumps). */
 export function getSnapshot(): TelemetrySnapshot {
   const bankSnapshot: Record<string, BankCounters> = {};
@@ -209,11 +285,15 @@ export function getSnapshot(): TelemetrySnapshot {
     bankSnapshot[id] = { ...c };
     totalOps += c.recallTotal + c.retainTotal;
   }
+  const tokenEff = getTokenEfficiency();
   return {
     ts: new Date().toISOString(),
     banks: bankSnapshot,
     recallEffectiveness: getRecallEffectiveness(),
     totalOps,
+    avgRecallTokens: tokenEff.avgRecallTokens,
+    avgRetainTokens: tokenEff.avgRetainTokens,
+    avgRecallLatencyMs: getAvgRecallLatency(),
   };
 }
 
@@ -231,14 +311,21 @@ export function logTelemetrySummary(): void {
         id,
         {
           recall: `${c.recallHit}/${c.recallTotal} hits (${c.recallFiltered} filtered)`,
-          retain: `${c.retainSuccess}/${c.retainTotal} ok`,
+          retain: `${c.retainSuccess}/${c.retainTotal} ok (${c.retainDeduplicated} deduped)`,
           errors: c.errorTotal,
+          recallTokens: c.recallTokensConsumed,
+          retainTokens: c.retainTokensStored,
+          avgLatencyMs: c.recallTotal > 0 ? Math.round(c.recallLatencySumMs / c.recallTotal) : 'n/a',
+          maxLatencyMs: c.recallLatencyMaxMs,
         },
       ]),
     ),
     overallEffectiveness: snap.recallEffectiveness !== null
       ? (snap.recallEffectiveness * 100).toFixed(1) + '%'
       : 'n/a',
+    avgRecallTokens: snap.avgRecallTokens !== null ? Math.round(snap.avgRecallTokens) : 'n/a',
+    avgRetainTokens: snap.avgRetainTokens !== null ? Math.round(snap.avgRetainTokens) : 'n/a',
+    avgRecallLatencyMs: snap.avgRecallLatencyMs !== null ? Math.round(snap.avgRecallLatencyMs) : 'n/a',
   });
 }
 

@@ -72,12 +72,56 @@ const AVG_TOKENS_PER_TURN: Record<CodingRole, number> = {
   'reporter':         2_000,
 };
 
-/** Approximate cost per million tokens for each model tier. */
-const MODEL_COST_PER_MILLION_TOKENS: Record<string, number> = {
-  haiku:  0.80,    // claude-haiku-4-5 blended input+output rate
-  sonnet: 3.00,    // claude-sonnet-4-6
-  opus:   15.00,   // claude-opus-4-6
+/** Per-model-tier cost rates (USD per million tokens). */
+export interface ModelCostRate {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+}
+
+/**
+ * Accurate per-model-tier pricing (as of 2026 Anthropic pricing).
+ * Separate input/output rates for precise cost calculation.
+ */
+export const MODEL_COST_RATES: Record<string, ModelCostRate> = {
+  haiku:  { input: 0.80,  output: 4.00,  cacheRead: 0.08,  cacheWrite: 1.00  },
+  sonnet: { input: 3.00,  output: 15.00, cacheRead: 0.30,  cacheWrite: 3.75  },
+  opus:   { input: 15.00, output: 75.00, cacheRead: 1.50,  cacheWrite: 18.75 },
 };
+
+/** Blended cost per million tokens for backward-compatible budget estimation. */
+const MODEL_COST_PER_MILLION_TOKENS: Record<string, number> = {
+  haiku:  1.60,    // weighted blend: 60% input + 40% output
+  sonnet: 7.80,    // weighted blend: 60% input + 40% output
+  opus:   39.00,   // weighted blend: 60% input + 40% output
+};
+
+/**
+ * Calculate precise cost from token counts using per-tier rates.
+ * @param model - Model ID string (matched to tier by keyword).
+ * @param inputTokens - Number of input tokens.
+ * @param outputTokens - Number of output tokens.
+ * @param cacheReadTokens - Number of cache read tokens.
+ * @param cacheWriteTokens - Number of cache write/creation tokens.
+ * @returns Cost in USD.
+ */
+export function calculateTokenCost(
+  model: string,
+  inputTokens: number,
+  outputTokens: number,
+  cacheReadTokens = 0,
+  cacheWriteTokens = 0,
+): number {
+  const tier = resolveModelTier(model);
+  const rates = MODEL_COST_RATES[tier] ?? MODEL_COST_RATES.sonnet;
+  return (
+    (inputTokens / 1_000_000) * rates.input +
+    (outputTokens / 1_000_000) * rates.output +
+    (cacheReadTokens / 1_000_000) * rates.cacheRead +
+    (cacheWriteTokens / 1_000_000) * rates.cacheWrite
+  );
+}
 
 // ── Template Default Budgets (USD) ────────────────────────────────────────────
 
@@ -291,10 +335,10 @@ export function estimateTokenBudget(
   if (role === 'validator') return 0;
 
   const tier = resolveModelTier(model);
-  const costPerMillion = MODEL_COST_PER_MILLION_TOKENS[tier] ?? 3.00;
+  const rates = MODEL_COST_RATES[tier] ?? MODEL_COST_RATES.sonnet;
 
-  // Estimate how many tokens the budget can cover (assuming 60/40 input/output split)
-  return Math.floor((budgetUsd / costPerMillion) * 1_000_000 * 0.6);
+  // Estimate input tokens the budget can cover using the input cost rate
+  return Math.floor((budgetUsd / rates.input) * 1_000_000 * 0.6);
 }
 
 function resolveModelTier(modelId: string): 'haiku' | 'sonnet' | 'opus' {

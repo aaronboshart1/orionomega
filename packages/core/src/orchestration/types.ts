@@ -297,6 +297,10 @@ export interface DAGProgressInfo {
   message?: string;
   progress?: number;
   layerProgress?: { completed: number; total: number };
+  /** Tool call data forwarded from the underlying WorkerEvent */
+  tool?: { name: string; action?: string; file?: string; summary?: string };
+  /** Worker ID that emitted this progress */
+  workerId?: string;
 }
 
 /** Info emitted when a DAG execution completes. */

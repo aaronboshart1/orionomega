@@ -7,9 +7,10 @@ import { ActivityFeed } from './ActivityFeed';
 import { WorkerDetail } from './WorkerDetail';
 import { WorkflowSummary } from './WorkflowSummary';
 import { MemoryFeed } from './MemoryFeed';
-import { X, Play, Pause, Square, FileText } from 'lucide-react';
+import { X, Play, Pause, Square, FileText, Wifi, WifiOff } from 'lucide-react';
 import { useGateway } from '@/lib/gateway';
 import { useFileViewerStore } from '@/stores/file-viewer';
+import { useConnectionStore } from '@/stores/connection';
 import { FileViewer } from './FileViewer';
 import type { InlineDAGStatus } from '@/stores/orchestration';
 
@@ -57,12 +58,32 @@ export function OrchestrationPane() {
   const activitySectionCollapsed = useOrchestrationStore((s) => s.activitySectionCollapsed);
   const { sendWorkflowCommand } = useGateway();
   const fileCount = useFileViewerStore((s) => s.openFiles.length);
+  const gatewayConnected = useConnectionStore((s) => s.gatewayConnected);
+  const hindsightConnected = useConnectionStore((s) => s.hindsightConnected);
 
   const workflowIds = Object.keys(workflows);
 
   return (
     <div className="flex h-full flex-col bg-[var(--background)]">
       <div role="tablist" className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-zinc-800 px-2 py-1.5">
+        {/* Connection status indicator */}
+        <div
+          className="flex items-center gap-1.5 px-2 py-1 mr-1"
+          title={`Gateway: ${gatewayConnected ? 'Connected' : 'Disconnected'}${hindsightConnected ? ' | Hindsight: Connected' : ''}`}
+        >
+          {gatewayConnected ? (
+            <Wifi size={12} className="text-green-500" />
+          ) : (
+            <WifiOff size={12} className="text-red-400 animate-pulse" />
+          )}
+          <span className={`h-1.5 w-1.5 rounded-full ${gatewayConnected ? 'bg-green-500' : 'bg-red-500 animate-pulse'}`} />
+          {hindsightConnected && (
+            <span className="h-1.5 w-1.5 rounded-full bg-violet-500" title="Hindsight connected" />
+          )}
+        </div>
+
+        <div className="h-4 w-px bg-zinc-800 mr-1" />
+
         <button
           role="tab"
           aria-selected={activeOrchTab === 'memory'}
@@ -221,8 +242,8 @@ export function OrchestrationPane() {
       ) : (
         <>
           <div className="flex-[4] min-h-0 border-b border-zinc-800 relative overflow-hidden">
-            <div className="px-3 py-1 border-b border-zinc-800/50">
-              <span className="text-xs font-semibold uppercase tracking-wider text-zinc-600">Graph</span>
+            <div className="flex items-center px-3 py-1.5 border-b border-zinc-800/60 bg-zinc-900/30">
+              <span className="text-[10px] font-semibold uppercase tracking-widest text-zinc-500">Graph</span>
             </div>
             <ErrorBoundary>
               <DAGVisualization />
@@ -236,8 +257,8 @@ export function OrchestrationPane() {
           </div>
 
           <div className="flex-[2] min-h-0">
-            <div className="px-3 py-1 border-b border-zinc-800/50">
-              <span className="text-xs font-semibold uppercase tracking-wider text-zinc-600">Summary</span>
+            <div className="flex items-center px-3 py-1.5 border-b border-zinc-800/60 bg-zinc-900/30">
+              <span className="text-[10px] font-semibold uppercase tracking-widest text-zinc-500">Summary</span>
             </div>
             <WorkflowSummary />
           </div>

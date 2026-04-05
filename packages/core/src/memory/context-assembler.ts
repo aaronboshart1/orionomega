@@ -13,13 +13,14 @@
  * - Full confidence score propagation with per-section summaries
  */
 
-import { HindsightClient } from '@orionomega/hindsight';
+import { HindsightClient, estimateTokens, smartTruncate } from '@orionomega/hindsight';
 import { createLogger } from '../logging/logger.js';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { classifyQuery, getRecallStrategy } from './query-classifier.js';
 import type { QueryType, RecallStrategy } from './query-classifier.js';
 import { DynamicSummaryGenerator } from './dynamic-summary.js';
+import { isMemoryExpired } from './retention-engine.js';
 
 const log = createLogger('context-assembler');
 
@@ -95,13 +96,8 @@ const DEFAULT_MAX_TURN_TOKENS = 60_000;
 const DEFAULT_SYSTEM_PROMPT_TOKENS = 4_000;
 const DEFAULT_OUTPUT_RESERVE = 4_096;
 
-/**
- * Rough token estimate: ~4 chars per token for English text.
- * Not precise, but good enough for budgeting.
- */
-function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4);
-}
+// Token estimation now uses the shared estimateTokens from @orionomega/hindsight
+// which accounts for content type (code vs. natural language).
 
 function computeConfidenceSummary(
   items: Array<{ relevance: number }>,
@@ -557,12 +553,16 @@ export class ContextAssembler {
       })
         .then((response) => {
           if (!response.results || response.results.length === 0) return null;
-          const items = response.results.map((r) => ({
-            content: r.content,
-            context: r.context,
-            timestamp: r.timestamp || '',
-            relevance: r.relevance,
-          }));
+          // Filter out expired memories based on retention policy
+          const items = response.results
+            .filter((r) => !r.timestamp || !isMemoryExpired(r.context, r.timestamp))
+            .map((r) => ({
+              content: r.content,
+              context: r.context,
+              timestamp: r.timestamp || '',
+              relevance: r.relevance,
+              estimatedTokens: r.estimatedTokens ?? estimateTokens(r.content),
+            }));
           items.sort((a, b) => {
             if (!a.timestamp && !b.timestamp) return 0;
             if (!a.timestamp) return 1;
@@ -587,7 +587,7 @@ export class ContextAssembler {
     const results = (await Promise.all(recallPromises)).filter(Boolean) as
       Array<{
         bank: string;
-        items: Array<{ content: string; context: string; timestamp: string; relevance: number }>;
+        items: Array<{ content: string; context: string; timestamp: string; relevance: number; estimatedTokens: number }>;
         lowConfidence: boolean;
       }>;
 
@@ -652,6 +652,16 @@ export class ContextAssembler {
 
     if (allLowConfidence) {
       output = `⚠ Low-confidence recall — results below confidence threshold; treat with caution.\n\n${output}`;
+    }
+
+    // Smart-truncate the final output if it exceeds the token budget.
+    // This ensures recalled context never blows past the available budget.
+    const outputTokens = estimateTokens(output);
+    if (outputTokens > maxTokens) {
+      log.debug('Recall output exceeds budget, applying smart truncation', {
+        outputTokens, maxTokens,
+      });
+      output = smartTruncate(output, maxTokens);
     }
 
     return { formatted: output, confidenceSummary };

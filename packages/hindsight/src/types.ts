@@ -27,6 +27,12 @@ export interface MemoryItem {
   context: string;
   /** ISO 8601 timestamp for when this memory was formed. */
   timestamp: string;
+  /** Estimated token cost of this memory. Auto-computed during retention if omitted. */
+  estimatedTokens?: number;
+  /** Optional tags for fine-grained categorization beyond context. */
+  tags?: string[];
+  /** Importance score (0-1). Higher = more critical to retain long-term. */
+  importance?: number;
 }
 
 /** Result of a retain (store) operation. */
@@ -61,6 +67,8 @@ export interface RecalledMemory {
   timestamp: string;
   /** Relevance score (0–1) indicating match quality. */
   relevance: number;
+  /** Estimated token cost of this recalled memory. */
+  estimatedTokens?: number;
 }
 
 /** Result of a recall (query) operation. */
@@ -68,6 +76,8 @@ export interface RecallResult {
   /** The API returns recalled memories under the `results` key. */
   results: RecalledMemory[];
   tokens_used: number;
+  /** Total estimated tokens across all returned results. */
+  totalEstimatedTokens?: number;
 }
 
 /** A pre-synthesized mental model derived from stored memories. */
@@ -82,4 +92,28 @@ export interface MentalModel {
 export interface HealthStatus {
   status: 'ok' | 'error';
   version?: string;
+}
+
+/** TTL/retention policy configuration per memory context category. */
+export interface RetentionPolicy {
+  /** Default TTL in days for memories. 0 = no expiry. */
+  defaultTTLDays: number;
+  /** Per-category TTL overrides in days. */
+  categoryTTL?: Record<string, number>;
+  /** Categories that should never expire regardless of TTL. */
+  pinnedCategories?: string[];
+}
+
+/** Memory importance factors used for scoring. */
+export interface ImportanceFactors {
+  /** Base quality score from content analysis (0-1). */
+  qualityScore: number;
+  /** Context category weight boost. */
+  contextBoost: number;
+  /** Recency factor — decays over time (0-1). */
+  recencyFactor: number;
+  /** Access frequency — how often this memory is recalled (0-1). */
+  accessFrequency: number;
+  /** Combined importance score (0-1). */
+  composite: number;
 }

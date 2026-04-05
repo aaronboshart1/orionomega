@@ -41,8 +41,10 @@ export {
   complexityMultiplier,
   estimateMaxTurns,
   estimateTokenBudget,
+  calculateTokenCost,
+  MODEL_COST_RATES,
 } from './coding-budget.js';
-export type { NodeDescriptor } from './coding-budget.js';
+export type { NodeDescriptor, ModelCostRate } from './coding-budget.js';
 
 // ── Model Resolver ────────────────────────────────────────────────────────────
 export { CodingModelResolver } from './coding-models.js';
