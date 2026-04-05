@@ -465,50 +465,52 @@ export function ChatInput({ onSend, disabled, modeToggle }: ChatInputProps) {
         tabIndex={-1}
       />
 
-      <div className="flex items-end gap-2 md:gap-3 rounded-xl border border-zinc-700 bg-zinc-900 px-2 md:px-3 py-2 md:py-2.5 focus-within:border-blue-600">
+      <div className="flex flex-col rounded-xl border border-zinc-700 bg-zinc-900 focus-within:border-blue-600">
         {modeToggle && (
           <>
-            <div className="flex shrink-0 items-center self-stretch py-0.5">
+            <div className="flex items-center px-2 md:px-3 pt-2 pb-1.5">
               {modeToggle}
             </div>
-            <div className="self-stretch w-px shrink-0 bg-zinc-700/70" aria-hidden="true" />
+            <div className="mx-2 md:mx-3 h-px shrink-0 bg-zinc-700/70" aria-hidden="true" />
           </>
         )}
-        <textarea
-          ref={textareaRef}
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder="Message OmegaClaw..."
-          disabled={disabled}
-          rows={1}
-          className="max-h-64 flex-1 resize-none bg-transparent pl-1 text-sm leading-relaxed text-zinc-100 placeholder-zinc-500 outline-none transition-[height] duration-150 ease-out disabled:opacity-50"
-          aria-label="Message input"
-          aria-multiline="true"
-          enterKeyHint="send"
-          autoComplete="off"
-        />
+        <div className="flex items-end gap-2 md:gap-3 px-2 md:px-3 py-2 md:py-2.5">
+          <textarea
+            ref={textareaRef}
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder="Message OmegaClaw..."
+            disabled={disabled}
+            rows={1}
+            className="max-h-64 flex-1 resize-none bg-transparent pl-1 text-sm leading-relaxed text-zinc-100 placeholder-zinc-500 outline-none transition-[height] duration-150 ease-out disabled:opacity-50"
+            aria-label="Message input"
+            aria-multiline="true"
+            enterKeyHint="send"
+            autoComplete="off"
+          />
 
-        {/* Paperclip / attach button */}
-        <button
-          type="button"
-          onClick={() => fileInputRef.current?.click()}
-          disabled={disabled}
-          className="flex h-11 w-11 md:h-8 md:w-8 shrink-0 items-center justify-center rounded-lg text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-30 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1 focus:ring-offset-zinc-900"
-          aria-label="Attach files"
-          title="Attach files"
-        >
-          <Paperclip size={16} />
-        </button>
+          {/* Paperclip / attach button */}
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={disabled}
+            className="flex h-11 w-11 md:h-8 md:w-8 shrink-0 items-center justify-center rounded-lg text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-30 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1 focus:ring-offset-zinc-900"
+            aria-label="Attach files"
+            title="Attach files"
+          >
+            <Paperclip size={16} />
+          </button>
 
-        <button
-          onClick={handleSend}
-          disabled={!canSend}
-          className="flex h-11 w-11 md:h-8 md:w-8 shrink-0 items-center justify-center rounded-lg bg-blue-600 text-white transition-colors hover:bg-blue-500 disabled:opacity-30 disabled:hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-offset-1 focus:ring-offset-zinc-900"
-          aria-label="Send message"
-        >
-          <Send size={16} />
-        </button>
+          <button
+            onClick={handleSend}
+            disabled={!canSend}
+            className="flex h-11 w-11 md:h-8 md:w-8 shrink-0 items-center justify-center rounded-lg bg-blue-600 text-white transition-colors hover:bg-blue-500 disabled:opacity-30 disabled:hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-offset-1 focus:ring-offset-zinc-900"
+            aria-label="Send message"
+          >
+            <Send size={16} />
+          </button>
+        </div>
       </div>
 
     </div>
