@@ -27,6 +27,7 @@
     "@orionomega/core": "workspace:*",
     "@orionomega/hindsight": "workspace:*",
     "@orionomega/skills-sdk": "workspace:*",
+    "drizzle-orm": "^0.45.2",
     "ws": "^8.18.0",
     "zod": "^4.3.6"
   },

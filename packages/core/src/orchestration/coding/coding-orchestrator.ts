@@ -26,7 +26,7 @@ import { codingSessions, workflowExecutions, workflowSteps, architectReviews } f
 import { eq } from 'drizzle-orm';
 import { CodingPlanner, matchCodingIntent } from './coding-planner.js';
 import { ValidationLoop, detectValidationCommands } from './validation-loop.js';
-import type { CodingModeConfig } from './coding-types.js';
+import type { CodingModeConfig, CodebaseScanOutput, ValidationConfig } from './coding-types.js';
 
 const log = createLogger('coding-orchestrator');
 
@@ -93,6 +93,37 @@ export function parseCodingRequest(task: string): { repoUrl: string; branch: str
   const repoUrl = repoMatch?.[1] ?? 'file://./';
   const branch = branchMatch?.[1] ?? 'coding-session';
   return { repoUrl, branch, taskDescription: task };
+}
+
+/**
+ * Build a stub CodebaseScanOutput from the lightweight analysis string.
+ * Used to satisfy the CodingPlanner.plan() signature before a full scan.
+ */
+function buildStubProfile(analysisText: string): CodebaseScanOutput {
+  // Try to extract file count from analysis
+  const fileCountMatch = analysisText.match(/Files found:\s*(\d+)/);
+  const fileCount = fileCountMatch ? parseInt(fileCountMatch[1], 10) : 20;
+
+  // Try to detect language from package manager hint
+  const isPython = /python|pip/.test(analysisText);
+  const language = isPython ? 'python' : 'typescript';
+
+  return {
+    language,
+    framework: null,
+    testFramework: null,
+    buildSystem: null,
+    lintCommand: null,
+    projectStructure: analysisText.slice(0, 2000),
+    relevantFiles: Array.from({ length: Math.min(fileCount, 20) }, (_, i) => ({
+      path: `file-${i}`,
+      role: 'source' as const,
+      complexity: 'medium' as const,
+      linesOfCode: 100,
+    })),
+    entryPoints: [],
+    dependencies: {},
+  };
 }
 
 // ── CodingOrchestrator ────────────────────────────────────────────────────────
@@ -261,12 +292,15 @@ export class CodingOrchestrator {
           fallbackModel: this.cfg.highPowerModel,
         });
 
-        const planOutput = await planner.plan(taskDescription, {
-          codebaseContext: codebaseAnalysis.slice(0, 4000),
-        });
+        // Build a stub profile from the analysis text for the planner
+        const stubProfile = buildStubProfile(codebaseAnalysis);
+        const selectedTemplate = planner.selectTemplate(taskDescription);
+        const planOutput = planner.plan(taskDescription, selectedTemplate, stubProfile);
 
         _emitters?.stepProgress({ nodeId: 'plan', message: 'Plan ready', percentage: 100 });
-        implementationPlan = planOutput.summary ?? taskDescription;
+        // Summarize the plan from template + node count
+        implementationPlan = `Template: ${planOutput.template}, Nodes: ${planOutput.nodes.length}, ` +
+          `Budget: $${planOutput.budgetAllocation.estimated.toFixed(2)}`;
         return implementationPlan;
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -284,19 +318,24 @@ export class CodingOrchestrator {
 
       const targetDir = repoUrl.startsWith('file://') ? repoUrl.replace('file://', '') : workspacePath;
 
-      // Detect validation commands
-      const validationCmds = detectValidationCommands(targetDir);
+      // Detect validation commands (async — must await)
+      const validationCmds = await detectValidationCommands(targetDir);
       _emitters?.stepProgress({ nodeId: 'implement', message: `Detected ${validationCmds.length} validation command(s)`, percentage: 30 });
 
       // Run validation to get baseline status
-      let validationResult = { passed: true, output: '' };
+      let validationPassed = true;
       if (validationCmds.length > 0) {
-        const validator = new ValidationLoop({ commands: validationCmds, cwd: targetDir, maxIterations: 1 });
+        const validator = new ValidationLoop();
+        const validationConfig: ValidationConfig = {
+          commands: validationCmds,
+          maxRetries: 0, // Just one run for baseline
+          timeout: 60_000,
+        };
         try {
-          const result = await validator.run();
-          validationResult = { passed: result.passed, output: result.output ?? '' };
+          const result = await validator.execute(validationConfig, targetDir, () => {});
+          validationPassed = result.finalOutput.passed;
         } catch {
-          validationResult = { passed: false, output: 'Validation command failed to run' };
+          validationPassed = false;
         }
       }
 
@@ -321,7 +360,7 @@ export class CodingOrchestrator {
         // Not a git repo or no changes — silently continue
       }
 
-      implementationOutput = `Implementation plan executed. Validation: ${validationResult.passed ? 'PASSED' : 'FAILED'}.`;
+      implementationOutput = `Implementation plan executed. Validation: ${validationPassed ? 'PASSED' : 'FAILED'}.`;
       _emitters?.stepProgress({ nodeId: 'implement', message: 'Implementation complete', percentage: 100 });
       return implementationOutput;
     });
@@ -336,16 +375,21 @@ export class CodingOrchestrator {
 
       // Determine pass/fail heuristic
       const targetDir = repoUrl.startsWith('file://') ? repoUrl.replace('file://', '') : workspacePath;
-      const validationCmds = detectValidationCommands(targetDir);
+      const validationCmds = await detectValidationCommands(targetDir);
       let buildPassed = true;
       let testsPassed = true;
 
       if (validationCmds.length > 0) {
-        const validator = new ValidationLoop({ commands: validationCmds, cwd: targetDir, maxIterations: 1 });
+        const validator = new ValidationLoop();
+        const validationConfig: ValidationConfig = {
+          commands: validationCmds,
+          maxRetries: 0, // Single validation run for review
+          timeout: 60_000,
+        };
         try {
-          const result = await validator.run();
-          buildPassed = result.passed;
-          testsPassed = result.passed;
+          const result = await validator.execute(validationConfig, targetDir, () => {});
+          buildPassed = result.finalOutput.passed;
+          testsPassed = result.finalOutput.passed;
         } catch {
           buildPassed = false;
         }

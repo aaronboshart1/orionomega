@@ -98,6 +98,9 @@ importers:
       '@orionomega/skills-sdk':
         specifier: workspace:*
         version: link:../skills-sdk
+      drizzle-orm:
+        specifier: ^0.45.2
+        version: 0.45.2(@types/better-sqlite3@7.6.13)(better-sqlite3@12.8.0)
       ws:
         specifier: ^8.18.0
         version: 8.19.0
