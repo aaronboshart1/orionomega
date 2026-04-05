@@ -148,4 +148,45 @@ export interface OrionOmegaConfig {
     /** Additional directories the agent can access beyond the working directory. */
     additionalDirectories?: string[];
   };
+
+  /** Coding Mode configuration — transforms OrionOmega into an autonomous coding system. */
+  codingMode: {
+    /** Whether Coding Mode is active. Default: true. */
+    enabled: boolean;
+    /** Maximum parallel coding agent workers. Default: 4. */
+    maxParallelAgents: number;
+    /** Enable/disable individual DAG templates. */
+    templates: {
+      'feature-implementation': boolean;
+      'bug-fix': boolean;
+      'refactor': boolean;
+      'test-suite': boolean;
+      'review-iterate': boolean;
+    };
+    /** Per-role model ID overrides (optional). Leave empty to use auto-resolved models. */
+    models: {
+      'codebase-scanner'?: string;
+      'architect'?: string;
+      'implementer'?: string;
+      'stitcher'?: string;
+      'test-writer'?: string;
+      'validator'?: string;
+      'reviewer'?: string;
+      'reporter'?: string;
+    };
+    /** Validation settings. */
+    validation: {
+      /** Automatically run tests/lint after implementation. Default: true. */
+      autoRun: boolean;
+      /**
+       * Default validation commands. Empty array = auto-detect from package.json/Makefile.
+       */
+      commands: string[];
+    };
+    /**
+     * Multiply all budget allocations by this factor.
+     * 1.0 = default budget; 2.0 = double; 0.5 = half.
+     */
+    budgetMultiplier: number;
+  };
 }

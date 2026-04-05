@@ -54,8 +54,8 @@ section('1.2 CLIENT_FALLBACK_CEILING caps threshold when client-scoring [F4]');
   const effective = allZero ? Math.min(callerMin, CLIENT_FALLBACK_CEILING) : callerMin;
   assertEq(effective, 0.15, 'CLIENT_FALLBACK_CEILING caps 0.3 → 0.15');
 
-  // When API returns real scores, caller threshold used as-is
-  const effectiveReal = false ? Math.min(callerMin, CLIENT_FALLBACK_CEILING) : callerMin;
+  // When API returns real scores, caller threshold used as-is (allZero=false path)
+  const effectiveReal = callerMin;
   assertEq(effectiveReal, 0.3, 'Real API scores use caller threshold directly');
 
   // Caller already below ceiling

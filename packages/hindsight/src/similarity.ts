@@ -11,7 +11,7 @@
  */
 const STRUCTURAL_PREFIX_RE = /^\[(user|assistant|system)\]\s*/i;
 const STRUCTURAL_LABEL_RE = /\b(Task|Workers|Decisions|Findings|Node|Workflow|Output|Result|Errors|Outputs|Artifacts):\s*/gi;
-const BRACKET_NOISE_RE = /[\[\]]/g;
+const BRACKET_NOISE_RE = /[[\]]/g;
 
 function normalize(text: string): string {
   let t = text.toLowerCase();

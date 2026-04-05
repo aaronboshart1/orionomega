@@ -418,6 +418,14 @@ export async function executeAgent(
         ? 'acceptEdits'
         : 'default';
 
+    if (permissionMode === 'bypassPermissions') {
+      log.warn(
+        '[security] bypassPermissions mode is active — all tool permission prompts will be ' +
+        'skipped for this agent. Ensure this is intentional. Review humanGates config if ' +
+        'running in autonomous mode.',
+      );
+    }
+
     const queryResult = query({
       prompt: task,
       options: {
@@ -660,18 +668,28 @@ export async function executeCodingAgent(
         )
       : undefined;
 
+    const codingPermissionMode = sdkConfig.permissionMode === 'bypassPermissions'
+      ? 'bypassPermissions'
+      : sdkConfig.permissionMode === 'acceptEdits'
+        ? 'acceptEdits'
+        : 'default';
+
+    if (codingPermissionMode === 'bypassPermissions') {
+      log.warn(
+        '[security] bypassPermissions mode is active — all tool permission prompts will be ' +
+        'skipped for this coding agent. Ensure this is intentional. Review humanGates config ' +
+        'if running in autonomous mode.',
+      );
+    }
+
     const queryResult = query({
       prompt: task,
       options: {
         model,
         cwd,
         allowedTools,
-        permissionMode: sdkConfig.permissionMode === 'bypassPermissions'
-          ? 'bypassPermissions'
-          : sdkConfig.permissionMode === 'acceptEdits'
-            ? 'acceptEdits'
-            : 'default',
-        ...(sdkConfig.permissionMode === 'bypassPermissions'
+        permissionMode: codingPermissionMode,
+        ...(codingPermissionMode === 'bypassPermissions'
           ? { allowDangerouslySkipPermissions: true }
           : {}),
         effort: sdkConfig.effort ?? 'high',

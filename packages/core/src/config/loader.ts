@@ -107,6 +107,23 @@ export function getDefaultConfig(): OrionOmegaConfig {
       effort: 'high',
       maxTurns: 50,
     },
+    codingMode: {
+      enabled: true,
+      maxParallelAgents: 4,
+      templates: {
+        'feature-implementation': true,
+        'bug-fix': true,
+        'refactor': true,
+        'test-suite': true,
+        'review-iterate': true,
+      },
+      models: {},
+      validation: {
+        autoRun: true,
+        commands: [],   // Empty = auto-detect from package.json/Makefile
+      },
+      budgetMultiplier: 1.0,
+    },
   };
 }
 

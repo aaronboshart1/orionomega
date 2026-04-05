@@ -220,7 +220,8 @@ console.log('\n=== F13: Recall Effectiveness Metric ===');
 
 {
   // Edge: 0 results from API → surface rate = 1 (not a scoring problem)
-  const surfaceRate = 0 > 0 ? 0 / 0 : 1;
+  const apiResultCount = 0;
+  const surfaceRate = apiResultCount > 0 ? apiResultCount / apiResultCount : 1;
   assert(
     surfaceRate === 1,
     'Zero API results → surfaceRate = 1 (no scoring issue)',

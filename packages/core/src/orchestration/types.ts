@@ -116,6 +116,8 @@ export interface WorkflowNode {
   retries?: number;
   fallbackNodeId?: string;
   dependsOn: string[];
+  /** Optional Coding Mode metadata overlay (added by CodingPlanner). */
+  codingConfig?: import('./coding/coding-types.js').CodingNodeConfig;
 
   // Runtime state
   status: NodeStatus;
@@ -162,6 +164,12 @@ export interface WorkerEvent {
   message?: string;
   data?: unknown;
   error?: string;
+  /** Coding Mode: file lock lifecycle event. */
+  fileLock?: {
+    action: 'acquire' | 'release' | 'conflict' | 'timeout';
+    files: string[];
+    holder?: string;
+  };
 }
 
 // ── Graph State ─────────────────────────────────────────────────────────────
@@ -258,6 +266,10 @@ export interface WorkflowCheckpoint {
   decisions: string[];
   findings: string[];
   errors: { worker: string; message: string; resolution?: string }[];
+  /** Coding Mode: persisted file lock state for resume-after-crash. */
+  fileLockState?: Record<string, { holder: string; files: string[] }>;
+  /** Coding Mode: the template that was selected for this workflow. */
+  codingModeTemplate?: import('./coding/coding-types.js').CodingDAGTemplate;
 }
 
 // ── DAG Dispatch Info ────────────────────────────────────────────────────────

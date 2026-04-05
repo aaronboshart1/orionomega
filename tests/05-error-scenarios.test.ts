@@ -420,7 +420,7 @@ section('8.1 First call always executes');
 
 {
   const DEBOUNCE_WINDOW_MS = 300_000;
-  let lastTime = 0;
+  const lastTime = 0;
   const now = Date.now();
   const shouldRun = now - lastTime >= DEBOUNCE_WINDOW_MS;
   assert(shouldRun, 'First call (lastTime=0) always executes');
