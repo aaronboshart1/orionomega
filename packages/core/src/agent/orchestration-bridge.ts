@@ -342,6 +342,7 @@ export class OrchestrationBridge {
       pushHistory({ role: 'assistant', content: `[Coding session result] ${summary}` });
 
       // Emit DAG complete event for the summary card
+      const implCost = result.implementationCostUsd ?? 0;
       const completeInfo: DAGCompleteInfo = {
         workflowId,
         status: result.status === 'completed' ? 'complete' : 'error',
@@ -349,7 +350,8 @@ export class OrchestrationBridge {
         output: summary,
         durationSec: result.durationSec,
         workerCount: 6,
-        totalCostUsd: 0,
+        totalCostUsd: implCost,
+        toolCallCount: result.implementationToolCalls,
       };
       this.callbacks.onDAGComplete?.(completeInfo);
 
