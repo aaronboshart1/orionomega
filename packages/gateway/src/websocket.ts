@@ -8,10 +8,12 @@
 
 import { WebSocketServer, WebSocket } from 'ws';
 import type { IncomingMessage } from 'node:http';
-import { auditAuthEvent } from '@orionomega/core';
+import { auditAuthEvent, readConfig } from '@orionomega/core';
 import type { Server as HTTPServer } from 'node:http';
 import { randomBytes } from 'node:crypto';
 import { URL } from 'node:url';
+import { existsSync, readFileSync, statSync, realpathSync } from 'node:fs';
+import { resolve as resolvePath, normalize } from 'node:path';
 
 import type { ClientConnection, ClientMessage, ServerMessage, GatewayConfig } from './types.js';
 import type { MainAgent } from '@orionomega/core';
@@ -293,6 +295,9 @@ export class WebSocketHandler {
           type: 'pong',
         });
         break;
+      case 'file_read':
+        this.handleFileRead(conn, msg);
+        break;
       default:
         this.send(conn.ws, {
           id: randomBytes(8).toString('hex'),
@@ -504,6 +509,67 @@ export class WebSocketHandler {
           error: err instanceof Error ? err.message : String(err),
         });
       });
+    }
+  }
+
+  private handleFileRead(conn: ClientConnection, msg: ClientMessage): void {
+    const filePath = msg.path ?? '';
+    try {
+      const cfg = readConfig();
+      const workspaceDir = cfg.workspace?.path ?? resolvePath('.');
+      let resolved = resolvePath(normalize(filePath));
+
+      const wsMarker = '/orionomega/workspace/';
+      const markerIdx = resolved.indexOf(wsMarker);
+      if (markerIdx !== -1) {
+        const relPart = resolved.slice(markerIdx + wsMarker.length);
+        const remapped = resolvePath(workspaceDir, relPart);
+        if (existsSync(remapped)) {
+          resolved = remapped;
+        } else if (!existsSync(resolved)) {
+          resolved = remapped;
+        }
+      }
+
+      if (!existsSync(resolved)) {
+        this.send(conn.ws, { id: msg.id, type: 'file_content', path: filePath, error: 'File not found' });
+        return;
+      }
+
+      let realResolved: string;
+      try {
+        realResolved = realpathSync(resolved);
+      } catch {
+        this.send(conn.ws, { id: msg.id, type: 'file_content', path: filePath, error: 'File not found' });
+        return;
+      }
+
+      let realWorkspace: string;
+      try {
+        realWorkspace = realpathSync(workspaceDir);
+      } catch {
+        realWorkspace = workspaceDir;
+      }
+      if (!realResolved.startsWith(realWorkspace + '/') && realResolved !== realWorkspace) {
+        this.send(conn.ws, { id: msg.id, type: 'file_content', path: filePath, error: 'Access denied' });
+        return;
+      }
+
+      const st = statSync(realResolved);
+      if (!st.isFile()) {
+        this.send(conn.ws, { id: msg.id, type: 'file_content', path: filePath, error: 'Not a file' });
+        return;
+      }
+      if (st.size > 5 * 1024 * 1024) {
+        this.send(conn.ws, { id: msg.id, type: 'file_content', path: filePath, error: 'File too large (>5MB)' });
+        return;
+      }
+
+      const content = readFileSync(realResolved, 'utf-8');
+      this.send(conn.ws, { id: msg.id, type: 'file_content', path: realResolved, content });
+    } catch (err) {
+      log.error('file_read error', { error: err instanceof Error ? err.message : String(err) });
+      this.send(conn.ws, { id: msg.id, type: 'file_content', path: filePath, error: 'Failed to read file' });
     }
   }
 

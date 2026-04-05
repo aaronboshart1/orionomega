@@ -47,6 +47,35 @@ const pendingMessages: QueuedMessage[] = [];
 let healthCheckTimer: ReturnType<typeof setTimeout> | null = null;
 let healthCheckId: string | null = null;
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const fileReadCallbacks = new Map<string, (msg: any) => void>();
+
+export function requestFileRead(path: string): Promise<{ path: string; content?: string; error?: string }> {
+  return new Promise((resolve) => {
+    const ws = getOrCreateWs();
+    const id = uuid();
+    const timeout = setTimeout(() => {
+      fileReadCallbacks.delete(id);
+      resolve({ path, error: 'Request timed out' });
+    }, 15000);
+    fileReadCallbacks.set(id, (msg) => {
+      clearTimeout(timeout);
+      if (msg.error) {
+        resolve({ path: msg.path ?? path, error: msg.error });
+      } else {
+        resolve({ path: msg.path ?? path, content: msg.content ?? '' });
+      }
+    });
+    try {
+      ws.send(JSON.stringify({ id, type: 'file_read', path }));
+    } catch {
+      clearTimeout(timeout);
+      fileReadCallbacks.delete(id);
+      resolve({ path, error: 'WebSocket send failed' });
+    }
+  });
+}
+
 function pruneExpiredMessages(): void {
   const now = Date.now();
   while (pendingMessages.length > 0 && now - pendingMessages[0].queuedAt > QUEUE_MAX_AGE_MS) {
@@ -643,6 +672,14 @@ function bindListeners(ws: ReconnectingWebSocket): void {
           flushPendingMessages(ws);
         }
         break;
+      case 'file_content': {
+        const cb = fileReadCallbacks.get(msg.id);
+        if (cb) {
+          fileReadCallbacks.delete(msg.id);
+          cb(msg);
+        }
+        break;
+      }
       default:
         console.debug('[gateway] unhandled message type:', msg.type, msg);
     }

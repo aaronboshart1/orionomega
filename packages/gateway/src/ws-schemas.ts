@@ -58,6 +58,12 @@ const pingSchema = z.object({
   type: z.literal('ping'),
 });
 
+const fileReadSchema = z.object({
+  id: z.string().min(1).max(128),
+  type: z.literal('file_read'),
+  path: z.string().min(1).max(4096),
+});
+
 const clientMessageSchema = z.discriminatedUnion('type', [
   chatMessageSchema,
   commandMessageSchema,
@@ -65,6 +71,7 @@ const clientMessageSchema = z.discriminatedUnion('type', [
   dagResponseSchema,
   subscribeSchema,
   pingSchema,
+  fileReadSchema,
 ]);
 
 export type ValidatedClientMessage = z.infer<typeof clientMessageSchema>;

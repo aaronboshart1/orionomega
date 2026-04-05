@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { requestFileRead } from '@/lib/gateway';
 
 export interface OpenFile {
   path: string;
@@ -41,27 +42,25 @@ export const useFileViewerStore = create<FileViewerStore>()((set, get) => ({
     }));
 
     try {
-      const res = await fetch(`/api/gateway/api/files?path=${encodeURIComponent(path)}`);
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({ error: 'Failed to load file' }));
+      const result = await requestFileRead(path);
+      if (result.error) {
         set((s) => ({
           openFiles: s.openFiles.map((f) =>
-            f.path === path ? { ...f, loading: false, error: body.error || `HTTP ${res.status}` } : f,
+            f.path === path ? { ...f, loading: false, error: result.error } : f,
           ),
         }));
         return;
       }
-      const data = await res.json();
       set((s) => ({
         openFiles: s.openFiles.map((f) =>
-          f.path === path ? { ...f, content: data.content, loading: false, error: undefined } : f,
+          f.path === path ? { ...f, content: result.content ?? '', loading: false, error: undefined } : f,
         ),
       }));
     } catch (err) {
       set((s) => ({
         openFiles: s.openFiles.map((f) =>
           f.path === path
-            ? { ...f, loading: false, error: err instanceof Error ? err.message : 'Network error' }
+            ? { ...f, loading: false, error: err instanceof Error ? err.message : 'Request failed' }
             : f,
         ),
       }));

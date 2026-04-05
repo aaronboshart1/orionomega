@@ -213,7 +213,8 @@ Chat assistant/system messages render full markdown via `react-markdown` with `r
 
 Artifact file paths produced by DAG nodes are clickable in both `WorkflowSummary` and `RunSummaryCard`. Clicking opens the file in a tabbed viewer in the orchestration pane:
 
-- **Gateway endpoint**: `GET /api/files?path=...` reads file content from disk; restricted to workspace root via `realpathSync` containment check; 5MB size limit; returns `{ path, content }` JSON
-- **Store**: `packages/web/src/stores/file-viewer.ts` — Zustand store managing `openFiles` array and `activeFilePath`; `openFile()` fetches via `/api/gateway/api/files`, deduplicates tabs, handles errors
+- **Gateway endpoint**: `GET /api/files?path=...` (HTTP) and `file_read` (WebSocket) both read file content from disk; restricted to workspace root via `realpathSync` containment check; 5MB size limit; path remapping handles cross-machine workspace paths (e.g. `/home/kali/...` → `/home/runner/...`)
+- **WebSocket file read**: File requests route through the WebSocket connection (not HTTP proxy) so they reach the actual connected gateway where files exist — critical when web UI and gateway run on different machines
+- **Store**: `packages/web/src/stores/file-viewer.ts` — Zustand store managing `openFiles` array and `activeFilePath`; `openFile()` sends `file_read` WS message via `requestFileRead()`, deduplicates tabs, handles errors
 - **Component**: `packages/web/src/components/orchestration/FileViewer.tsx` — tabbed viewer; `.md` files rendered with `MarkdownContent`, others as `<pre>` plaintext; loading/error states inline
 - **Integration**: "Files" tab appears in OrchestrationPane when files are open, with badge count; clicking artifact paths in chat or workflow summary opens the file and switches to the Files tab

@@ -24,13 +24,14 @@ export interface ClientConnection {
 /** Client → Gateway message envelope. */
 export interface ClientMessage {
   id: string;
-  type: 'chat' | 'command' | 'plan_response' | 'subscribe' | 'dag_response' | 'ping';
+  type: 'chat' | 'command' | 'plan_response' | 'subscribe' | 'dag_response' | 'ping' | 'file_read';
   content?: string;
   command?: string;
   planId?: string;
   action?: 'approve' | 'reject' | 'modify';
   modification?: string;
   workflowId?: string;
+  path?: string;
   /** DAG confirmation response fields. */
   dagAction?: 'approve' | 'reject';
   /** ID of the message being replied to (reply-to-message feature). */
@@ -52,7 +53,7 @@ export interface ServerMessage {
     | 'text' | 'thinking' | 'thinking_step' | 'plan' | 'event' | 'status'
     | 'command_result' | 'session_status' | 'error' | 'ack' | 'history'
     | 'dag_dispatched' | 'dag_progress' | 'dag_complete' | 'dag_confirm'
-    | 'pong'
+    | 'pong' | 'file_content'
     | 'hindsight_status' | 'memory_event' | 'memory_history';
   /** Identifies which workflow this message relates to (events, status updates, plans). */
   workflowId?: string;
@@ -72,6 +73,7 @@ export interface ServerMessage {
   memoryEvent?: { id: string; timestamp: string; op: string; detail: string; bank?: string; meta?: Record<string, unknown> };
   step?: { id: string; name: string; status: 'pending' | 'active' | 'done'; startedAt?: number; completedAt?: number; elapsedMs?: number; detail?: string };
   error?: string;
+  path?: string;
   history?: Array<{ id: string; role: string; content: string; timestamp: string; type?: string; metadata?: Record<string, unknown> }>;
   memoryEvents?: Array<{ id: string; timestamp: string; op: string; detail: string; bank?: string; meta?: Record<string, unknown> }>;
 
