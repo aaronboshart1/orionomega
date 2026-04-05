@@ -13,6 +13,7 @@ import { readConfig } from '../config/loader.js';
 import { createLogger } from '../logging/logger.js';
 import { isExternalAction } from '../memory/query-classifier.js';
 import { discoverModels, buildModelGuide, pickModelByTier, type DiscoveredModel } from '../models/model-discovery.js';
+import { getPortAvoidanceInstructions } from '../utils/port-restrictions.js';
 
 const log = createLogger('planner');
 
@@ -362,6 +363,8 @@ When a task involves an available skill, add \`"skillIds": ["<skill-name>"]\` in
 
 ## ${discoveredModels?.length ? buildModelGuide(discoveredModels, mainModel ?? this.config.model) : `Available models: Use "${mainModel ?? this.config.model}" for all workers.`}
 ${skillsList}${memoriesList}${filesList}${infraContext ? `\n\n## Known Context (from memory — DO NOT create discovery nodes for this)\n${infraContext}` : ''}
+
+${getPortAvoidanceInstructions()}
 
 ## Task
 ${task}

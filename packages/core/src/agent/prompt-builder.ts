@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { hostname } from 'node:os';
 import { execSync } from 'node:child_process';
 import { createLogger } from '../logging/logger.js';
+import { getPortAvoidanceInstructions } from '../utils/port-restrictions.js';
 
 const log = createLogger('prompt-builder');
 
@@ -96,6 +97,8 @@ export async function buildSystemPrompt(context: PromptContext): Promise<string>
   if (hostInfo) {
     sections.push(`\n## This Host (runtime — authoritative)\n${hostInfo}`);
   }
+
+  sections.push(`\n${getPortAvoidanceInstructions()}`);
 
   return sections.join('\n');
 }

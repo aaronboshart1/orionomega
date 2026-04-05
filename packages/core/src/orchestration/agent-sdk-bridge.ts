@@ -25,6 +25,7 @@ import { z } from 'zod/v4';
 import { readConfig } from '../config/loader.js';
 import type { WorkflowNode } from './types.js';
 import { createLogger } from '../logging/logger.js';
+import { getPortAvoidanceInstructions } from '../utils/port-restrictions.js';
 import { auditToolInvocation } from '../logging/audit.js';
 import { SkillLoader, SkillExecutor, readSkillConfig } from '@orionomega/skills-sdk';
 import type { SkillTool } from '@orionomega/skills-sdk';
@@ -641,17 +642,18 @@ export async function executeCodingAgent(
 
   try {
     // Build the system prompt
+    const portInstructions = getPortAvoidanceInstructions(config);
     let systemPrompt: string | { type: 'preset'; preset: 'claude_code'; append?: string };
     if (codingConfig.systemPrompt) {
       // Use Claude Code's system prompt with appended instructions
       systemPrompt = {
         type: 'preset',
         preset: 'claude_code',
-        append: codingConfig.systemPrompt,
+        append: `${codingConfig.systemPrompt}\n\n${portInstructions}`,
       };
     } else {
-      // Use Claude Code's default system prompt
-      systemPrompt = { type: 'preset', preset: 'claude_code' };
+      // Use Claude Code's default system prompt with port restrictions
+      systemPrompt = { type: 'preset', preset: 'claude_code', append: portInstructions };
     }
 
     // Build agents map if provided

@@ -17,6 +17,7 @@ import { executeAgent } from './agent-sdk-bridge.js';
 import { readConfig } from '../config/loader.js';
 import { SkillLoader } from '@orionomega/skills-sdk';
 import { createLogger } from '../logging/logger.js';
+import { getPortAvoidanceInstructions } from '../utils/port-restrictions.js';
 
 const log = createLogger('worker');
 
@@ -520,6 +521,8 @@ ${agentConfig.task}
 3. Be efficient — avoid unnecessary tool calls.
 4. If you encounter an error, try to recover or work around it.
 5. When done, provide a clear summary of what you accomplished and any notable findings.
+
+${getPortAvoidanceInstructions()}
 
 ## Working Directory
 All relative paths are resolved against the workspace directory.
