@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
+import { persist, createJSONStorage } from 'zustand/middleware';
 import { useEffect, useState } from 'react';
 import { uuid } from '@/lib/uuid';
 
@@ -86,6 +86,44 @@ interface ChatStore {
   clearMessages: () => void;
   setReplyTarget: (target: ReplyToData | null) => void;
 }
+
+/** Max messages to persist to localStorage to prevent quota exhaustion. */
+const MAX_PERSISTED_MESSAGES = 50;
+
+/**
+ * Safe localStorage adapter that catches QuotaExceededError.
+ * On quota failure: clears the key and retries once. If still failing, silently drops.
+ */
+const safeLocalStorage = {
+  getItem(name: string): string | null {
+    try {
+      return localStorage.getItem(name);
+    } catch {
+      return null;
+    }
+  },
+  setItem(name: string, value: string): void {
+    try {
+      localStorage.setItem(name, value);
+    } catch (e) {
+      if (e instanceof DOMException && (e.name === 'QuotaExceededError' || e.code === 22)) {
+        try {
+          localStorage.removeItem(name);
+          localStorage.setItem(name, value);
+        } catch {
+          // Still failing — silently drop the write
+        }
+      }
+    }
+  },
+  removeItem(name: string): void {
+    try {
+      localStorage.removeItem(name);
+    } catch {
+      // ignore
+    }
+  },
+};
 
 export const useChatStore = create<ChatStore>()(
   persist(
@@ -186,7 +224,19 @@ export const useChatStore = create<ChatStore>()(
     }),
     {
       name: 'orionomega-chat',
-      partialize: (state) => ({ messages: state.messages }),
+      storage: createJSONStorage(() => safeLocalStorage),
+      partialize: (state) => ({
+        messages: state.messages.slice(-MAX_PERSISTED_MESSAGES).map((m) => {
+          // Strip dataUrl from attachments to avoid persisting large base64 blobs
+          if (m.attachments?.some((a) => a.dataUrl)) {
+            return {
+              ...m,
+              attachments: m.attachments.map(({ dataUrl: _dataUrl, ...rest }) => rest),
+            };
+          }
+          return m;
+        }),
+      }),
     },
   ),
 );
