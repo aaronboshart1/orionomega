@@ -39,6 +39,8 @@ export function sleepSync(ms: number): void {
 }
 
 export function findPidOnPort(port: number): number | null {
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
+
   const commands = [
     `lsof -nP -iTCP:${port} -sTCP:LISTEN -t 2>/dev/null`,
     `ss -tlnp 2>/dev/null | grep ':${port} ' | sed -n 's/.*pid=\\([0-9]*\\).*/\\1/p'`,

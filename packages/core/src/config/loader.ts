@@ -193,7 +193,7 @@ export function readConfig(configPath?: string): OrionOmegaConfig {
 
   let yaml: typeof import('js-yaml');
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
+     
     yaml = require('js-yaml') as typeof import('js-yaml');
   } catch {
     throw new Error(
@@ -242,7 +242,7 @@ export function writeConfig(
 
   let yaml: typeof import('js-yaml');
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
+     
     yaml = require('js-yaml') as typeof import('js-yaml');
   } catch {
     throw new Error(

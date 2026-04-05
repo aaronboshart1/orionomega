@@ -308,8 +308,8 @@ export async function detectValidationCommands(cwd: string): Promise<string[]> {
       if (/^test:/m.test(makefile)) commands.push('make test');
       if (/^lint:/m.test(makefile)) commands.push('make lint');
     }
-  } catch {
-    // Non-fatal — return what we have
+  } catch (err) {
+    log.debug('detectValidationCommands: failed to read project files', { err });
   }
 
   return commands;

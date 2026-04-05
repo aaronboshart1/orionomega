@@ -165,13 +165,24 @@ export class CodingWorkerPool {
       `Draining pool: ${this.activeWorkers.size} active, ${this.queue.length} queued`,
     );
 
-    return new Promise((resolve) => {
+    const DRAIN_TIMEOUT_MS = 5 * 60 * 1000; // 5-minute safety net
+
+    return new Promise((resolve, reject) => {
       const check = setInterval(() => {
         if (this.activeWorkers.size === 0 && this.queue.length === 0) {
           clearInterval(check);
+          clearTimeout(guard);
           resolve();
         }
       }, 200);
+
+      const guard = setTimeout(() => {
+        clearInterval(check);
+        reject(new Error(
+          `CodingWorkerPool.drain() timed out after ${DRAIN_TIMEOUT_MS / 1000}s ` +
+          `(${this.activeWorkers.size} active, ${this.queue.length} queued)`,
+        ));
+      }, DRAIN_TIMEOUT_MS);
     });
   }
 

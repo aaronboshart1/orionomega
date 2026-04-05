@@ -17,7 +17,9 @@ function normalize(text: string): string {
   let t = text.toLowerCase();
   // F1: Strip structural prefixes that pollute keyword matching
   t = t.replace(STRUCTURAL_PREFIX_RE, '');
-  t = t.replace(STRUCTURAL_LABEL_RE, '');
+  // Keep the label keyword but drop the colon so "Decisions: PostgreSQL" →
+  // "decisions postgresql" — the word remains matchable for relevant queries.
+  t = t.replace(STRUCTURAL_LABEL_RE, '$1 ');
   t = t.replace(BRACKET_NOISE_RE, '');
   // Strip colons fused to any word (e.g. "context:" → "context", "mentioned_at:" → "mentioned_at")
   t = t.replace(/(\w):/g, '$1');

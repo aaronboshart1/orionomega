@@ -115,9 +115,11 @@ assert(
   'executor.ts: hardcoded /v1/default/banks removed',
 );
 
-// The URL must interpolate the defaultBank variable
+// The URL must interpolate the defaultBank variable.
+// The implementation passes defaultBank as the HindsightClient namespace;
+// client.listBanks() internally builds `/v1/${this.namespace}/banks`.
 assert(
-  executor.includes('`${hindsightUrl}/v1/${defaultBank}/banks`'),
+  executor.includes('new HindsightClient(hindsightUrl, defaultBank)'),
   'executor.ts: URL uses ${defaultBank} variable',
 );
 

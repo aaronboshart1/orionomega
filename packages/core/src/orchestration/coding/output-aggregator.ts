@@ -188,11 +188,11 @@ export class OutputAggregator {
         Array.isArray(o.filesCreated)
       ) {
         return {
-          filesModified: (o.filesModified as string[]),
-          filesCreated: (o.filesCreated as string[]),
+          filesModified: o.filesModified.filter((x): x is string => typeof x === 'string'),
+          filesCreated: o.filesCreated.filter((x): x is string => typeof x === 'string'),
           summary: typeof o.summary === 'string' ? o.summary : '',
           openQuestions: Array.isArray(o.openQuestions)
-            ? (o.openQuestions as string[])
+            ? o.openQuestions.filter((x): x is string => typeof x === 'string')
             : [],
         };
       }

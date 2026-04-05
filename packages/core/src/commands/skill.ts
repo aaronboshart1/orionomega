@@ -14,7 +14,7 @@ import {
 /** Dynamically load the skills SDK (optional dependency). */
 async function loadSDK(): Promise<Record<string, unknown> | null> {
   try {
-    return await (Function('return import("@orionomega/skills-sdk")')() as Promise<Record<string, unknown>>);
+    return await import('@orionomega/skills-sdk') as Record<string, unknown>;
   } catch {
     process.stdout.write(`${RED}✗${RESET} Skills SDK not available. Run ${BOLD}pnpm build${RESET} first.\n`);
     return null;

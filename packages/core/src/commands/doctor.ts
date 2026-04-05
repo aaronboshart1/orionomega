@@ -166,7 +166,7 @@ export async function runDoctor(): Promise<void> {
   if (existsSync(configPath)) {
     try {
       const raw = readFileSync(configPath, 'utf-8');
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
+       
       const yaml = require('js-yaml') as typeof import('js-yaml');
       yaml.load(raw);
       ok('Config file', configPath);
