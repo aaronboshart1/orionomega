@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useCallback, useRef, useEffect, useMemo, type KeyboardEvent, type DragEvent } from 'react';
-import { Send, X, Reply, Paperclip, FileText, Image } from 'lucide-react';
+import { Send, X, Reply, Paperclip, FileText } from 'lucide-react';
 import { useChatStore } from '@/stores/chat';
 import { formatBytes } from '@/utils/format';
 import { Z } from '@/lib/z-index';
@@ -36,7 +36,8 @@ function useFileCommands() {
   const [fileCommands, setFileCommands] = useState<Array<{ command: string; description: string }>>([]);
 
   useEffect(() => {
-    fetch('/api/gateway/api/commands')
+    const controller = new AbortController();
+    fetch('/api/gateway/api/commands', { signal: controller.signal })
       .then((res) => (res.ok ? res.json() : { commands: [] }))
       .then((data: { commands: Array<{ name: string; description: string }> }) => {
         setFileCommands(
@@ -46,8 +47,11 @@ function useFileCommands() {
           })),
         );
       })
-      .catch(() => {
+      .catch((err) => {
+        if (err instanceof DOMException && err.name === 'AbortError') return;
+        console.warn('[ChatInput] Failed to fetch commands:', err);
       });
+    return () => controller.abort();
   }, []);
 
   return fileCommands;

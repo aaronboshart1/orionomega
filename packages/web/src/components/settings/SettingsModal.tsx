@@ -321,19 +321,27 @@ function useAnthropicModels(modalOpen: boolean) {
   const [models, setModels] = useState<AnthropicModel[]>([]);
   const [loading, setLoading] = useState(false);
   const fetchedRef = useRef(false);
+  const controllerRef = useRef<AbortController | null>(null);
 
   const fetchModels = useCallback(async (refresh = false) => {
+    controllerRef.current?.abort();
+    const controller = new AbortController();
+    controllerRef.current = controller;
     setLoading(true);
     try {
       const url = refresh ? '/api/gateway/api/models?refresh=true' : '/api/gateway/api/models';
-      const res = await fetch(url);
+      const res = await fetch(url, {
+        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15000)]),
+      });
       if (res.ok) {
         const data = await res.json();
         setModels(data.models ?? []);
       }
-    } catch {
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
+      console.warn('[SettingsModal] Failed to fetch models:', err);
     } finally {
-      setLoading(false);
+      if (!controller.signal.aborted) setLoading(false);
     }
   }, []);
 
@@ -344,7 +352,9 @@ function useAnthropicModels(modalOpen: boolean) {
     }
     if (!modalOpen) {
       fetchedRef.current = false;
+      controllerRef.current?.abort();
     }
+    return () => controllerRef.current?.abort();
   }, [modalOpen, fetchModels]);
 
   const refetch = useCallback(() => fetchModels(true), [fetchModels]);
@@ -826,7 +836,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
     const maxRetries = 3;
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
-        const res = await fetch('/api/gateway/api/config');
+        const res = await fetch('/api/gateway/api/config', { signal: AbortSignal.timeout(10000) });
         const text = await res.text();
         if (!res.ok) {
           let message = 'Failed to fetch config';

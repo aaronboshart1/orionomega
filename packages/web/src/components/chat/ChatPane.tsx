@@ -19,6 +19,7 @@ import { BackgroundTaskIndicator } from './BackgroundTaskIndicator';
 import { ConnectionStatus } from './ConnectionStatus';
 import { SessionCostBar } from './SessionCostBar';
 import type { ChatMessage } from '@/stores/chat';
+import { ErrorBoundary } from '@/components/ErrorBoundary';
 import dynamic from 'next/dynamic';
 import Image from 'next/image';
 import { Z } from '@/lib/z-index';
@@ -214,7 +215,7 @@ export function ChatPane() {
   return (
     <div className="flex h-full flex-col bg-[var(--background)]">
       <div className="flex items-center gap-3 px-3 md:px-6 py-4">
-        <Image src="/omegaclaw-logo.png" alt="OmegaClaw" width={32} height={32} className="rounded-lg" />
+        <Image src="/omegaclaw-logo.png" alt="OmegaClaw" width={32} height={32} className="rounded-lg" priority sizes="32px" />
         <div className="flex-1">
           <h1 className="text-sm font-semibold text-zinc-100">OmegaClaw</h1>
           <p className="text-xs leading-tight text-zinc-500">
@@ -232,7 +233,9 @@ export function ChatPane() {
           <span className="hidden md:inline text-xs">Settings</span>
         </button>
       </div>
-      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <ErrorBoundary fallback={null}>
+        <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      </ErrorBoundary>
 
       <div className="relative flex-1">
         {!hydrated ? (
@@ -255,7 +258,7 @@ export function ChatPane() {
           </div>
         ) : messages.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center px-8 text-zinc-600">
-            <Image src="/omegaclaw-logo.png" alt="OmegaClaw" width={44} height={44} className="mb-4 opacity-60" />
+            <Image src="/omegaclaw-logo.png" alt="OmegaClaw" width={44} height={44} className="mb-4 opacity-60" sizes="44px" />
             <p className="text-sm font-medium text-zinc-400">Ready</p>
             <p className="mt-1 text-xs text-zinc-600">
               Ask anything — I&apos;ll handle the orchestration

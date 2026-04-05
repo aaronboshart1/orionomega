@@ -1,3 +1,5 @@
+'use client';
+
 import { useState, useEffect, useCallback } from 'react';
 import { Loader2, RefreshCw, ChevronDown, ChevronRight, AlertCircle, CheckCircle } from 'lucide-react';
 

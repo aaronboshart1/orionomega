@@ -1,5 +1,6 @@
 'use client';
 
+import dynamic from 'next/dynamic';
 import type { ChatMessage, MessageAttachment } from '@/stores/chat';
 import { useChatStore } from '@/stores/chat';
 import { useOrchestrationStore } from '@/stores/orchestration';
@@ -7,11 +8,20 @@ import { InlineDAGCard } from './InlineDAGCard';
 import { RunSummaryCard } from './RunSummaryCard';
 import { DAGConfirmationCard } from './DAGConfirmationCard';
 import { ToolCallCard } from './ToolCallCard';
-import { MarkdownContent } from './MarkdownContent';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { useGateway } from '@/lib/gateway';
 import { Reply, FileText } from 'lucide-react';
 import { formatBytes } from '@/utils/format';
+
+// Dynamically import MarkdownContent — it pulls in react-markdown, remark-gfm,
+// rehype-highlight, rehype-sanitize, and highlight.js (~150KB+ of JS/CSS).
+// Deferred loading prevents this from blocking the initial chat render.
+const MarkdownContent = dynamic(
+  () => import('./MarkdownContent').then((m) => m.MarkdownContent),
+  {
+    loading: () => <span className="text-xs text-zinc-500">Loading…</span>,
+  },
+);
 
 interface MessageBubbleProps {
   message: ChatMessage;
@@ -26,11 +36,11 @@ function truncateContent(text: string, maxLen = 80): string {
 function AttachmentDisplay({ attachments }: { attachments: MessageAttachment[] }) {
   return (
     <div className="mt-2 flex flex-wrap gap-2">
-      {attachments.map((att, i) => {
+      {attachments.map((att) => {
         const isImage = att.type.startsWith('image/');
         if (isImage && att.dataUrl) {
           return (
-            <div key={i} className="overflow-hidden rounded-lg border border-white/10">
+            <div key={`${att.name}-${att.size}`} className="overflow-hidden rounded-lg border border-white/10">
               <img
                 src={att.dataUrl}
                 alt={att.name}
@@ -48,7 +58,7 @@ function AttachmentDisplay({ attachments }: { attachments: MessageAttachment[] }
         }
         return (
           <div
-            key={i}
+            key={`${att.name}-${att.size}`}
             className="flex items-center gap-2 rounded-lg border border-white/10 bg-black/20 px-3 py-2"
           >
             <FileText size={16} className="shrink-0 text-white/50" />

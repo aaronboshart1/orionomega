@@ -8,12 +8,20 @@ import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
 import 'highlight.js/styles/github-dark.css';
 import type { Components } from 'react-markdown';
 
+// Allow className on code/span only for syntax-highlight classes (language-*, hljs-*).
+// Using a regex allowlist prevents arbitrary class injection via LLM-generated markdown.
 const sanitizeSchema = {
   ...defaultSchema,
   attributes: {
     ...defaultSchema.attributes,
-    code: [...(defaultSchema.attributes?.code || []), 'className'],
-    span: [...(defaultSchema.attributes?.span || []), 'className'],
+    code: [
+      ...(defaultSchema.attributes?.code || []),
+      ['className', /^(language-\w+|hljs(-\w+)?)$/],
+    ],
+    span: [
+      ...(defaultSchema.attributes?.span || []),
+      ['className', /^(hljs(-\w+)?)$/],
+    ],
   },
 };
 

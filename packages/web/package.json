@@ -19,7 +19,9 @@
   "scripts": {
     "dev": "node server.mjs",
     "build": "next build",
-    "start": "node server.mjs"
+    "start": "node server.mjs",
+    "lint": "next lint",
+    "analyze": "ANALYZE=true next build"
   },
   "dependencies": {
     "@tailwindcss/postcss": "^4",
@@ -41,9 +43,13 @@
     "zustand": "^5"
   },
   "devDependencies": {
+    "@eslint/eslintrc": "^3",
+    "@next/bundle-analyzer": "^15",
     "@types/node": "^22",
     "@types/react": "^18",
     "@types/react-dom": "^18",
+    "eslint": "^9",
+    "eslint-config-next": "^15",
     "postcss": "^8",
     "typescript": "^5"
   }

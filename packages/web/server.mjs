@@ -55,6 +55,29 @@ app.prepare().then(() => {
     }
   }
 
+  // Headers forwarded to the gateway for HTTP requests.
+  // Allowlist prevents leaking browser cookies or auth tokens to the backend.
+  const ALLOWED_HTTP_HEADERS = new Set([
+    'accept', 'accept-encoding', 'accept-language', 'content-type',
+    'content-length', 'transfer-encoding', 'user-agent', 'cache-control',
+    'pragma', 'x-request-id', 'x-forwarded-for',
+  ]);
+
+  // Headers required for the WebSocket upgrade handshake.
+  const ALLOWED_WS_HEADERS = new Set([
+    'upgrade', 'connection', 'sec-websocket-key', 'sec-websocket-version',
+    'sec-websocket-extensions', 'sec-websocket-protocol',
+    'user-agent', 'accept-encoding',
+  ]);
+
+  function filterHeaders(headers, allowedSet, overrides = {}) {
+    const filtered = {};
+    for (const [k, v] of Object.entries(headers)) {
+      if (allowedSet.has(k.toLowerCase())) filtered[k] = v;
+    }
+    return { ...filtered, ...overrides };
+  }
+
   function createHandler(req, res) {
     const parsedUrl = parse(req.url, true);
     if (parsedUrl.pathname.startsWith('/api/gateway/')) {
@@ -66,11 +89,33 @@ app.prepare().then(() => {
           port: gatewayPort,
           path: targetPath,
           method: req.method,
-          headers: { ...req.headers, host: `${gatewayHost}:${gatewayPort}` },
+          headers: filterHeaders(req.headers, ALLOWED_HTTP_HEADERS, {
+            host: `${gatewayHost}:${gatewayPort}`,
+          }),
         },
         (proxyRes) => {
           console.log(`[proxy] ${req.method} ${req.url} <- ${proxyRes.statusCode}`);
-          res.writeHead(proxyRes.statusCode, proxyRes.headers);
+          // Filter response headers — strip internal server headers from the gateway
+          const responseHeaders = { ...proxyRes.headers };
+          delete responseHeaders['x-powered-by'];
+          delete responseHeaders['server'];
+
+          // Add cache-control for read-only GET endpoints that are safe to cache briefly
+          if (req.method === 'GET' && proxyRes.statusCode === 200) {
+            const path = targetPath.split('?')[0];
+            if (path === '/api/models') {
+              // Model list changes rarely — cache for 5 minutes
+              responseHeaders['cache-control'] = 'private, max-age=300, stale-while-revalidate=60';
+            } else if (path === '/api/commands') {
+              // Command list is semi-static — cache for 2 minutes
+              responseHeaders['cache-control'] = 'private, max-age=120, stale-while-revalidate=30';
+            } else if (path === '/api/status' || path === '/api/health') {
+              // Health/status should always be fresh
+              responseHeaders['cache-control'] = 'no-cache, no-store, must-revalidate';
+            }
+          }
+
+          res.writeHead(proxyRes.statusCode, responseHeaders);
           proxyRes.pipe(res, { end: true });
         },
       );
@@ -93,10 +138,11 @@ app.prepare().then(() => {
       const targetPath = stripGatewayPrefix(req.url);
       const proxySocket = netConnect({ host: gatewayHost, port: gatewayPort }, () => {
         const reqLine = `GET ${targetPath} HTTP/1.1\r\n`;
-        const headers = Object.entries({
-          ...req.headers,
-          host: `${gatewayHost}:${gatewayPort}`,
-        })
+        const headers = Object.entries(
+          filterHeaders(req.headers, ALLOWED_WS_HEADERS, {
+            host: `${gatewayHost}:${gatewayPort}`,
+          }),
+        )
           .map(([k, v]) => `${k}: ${v}`)
           .join('\r\n');
         proxySocket.write(reqLine + headers + '\r\n\r\n');
