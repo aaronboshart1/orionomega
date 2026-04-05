@@ -30,6 +30,8 @@ import { rateLimitRest } from './rate-limit.js';
 import { setSecurityHeaders } from './security-headers.js';
 import { handleStartCodingSession, handleGetCodingSession, handleGetCodingSteps, handleCancelCodingSession } from './routes/coding.js';
 import { setCodingEventStreamer } from './coding-events.js';
+import { FeedService } from './feed/index.js';
+import { handleGetFeed, handleGetFeedMessage, handlePostFeedMessage, handleGetFeedCount } from './routes/feed.js';
 
 process.on('uncaughtException', (err) => {
   console.error('[gateway] Uncaught exception:', err);
@@ -85,6 +87,7 @@ try {
 // ---------------------------------------------------------------------------
 
 const sessionManager = new SessionManager();
+const feedService = new FeedService(sessionManager);
 const activityService = new ActivityService();
 const commandHandler = new CommandHandler(sessionManager);
 const eventStreamer = new EventStreamer();
@@ -629,6 +632,42 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
       return;
     }
   }
+  // --- Conversation Feed ---
+
+  // GET /api/sessions/:id/feed — paginated message feed
+  const feedMatch = pathname.match(/^\/api\/sessions\/([a-z0-9_-]+)\/feed$/);
+  if (feedMatch && method === 'GET') {
+    handleGetFeed(req, res, feedService, feedMatch[1]!);
+    return;
+  }
+
+  // GET /api/sessions/:id/feed/count — message count
+  const feedCountMatch = pathname.match(/^\/api\/sessions\/([a-z0-9_-]+)\/feed\/count$/);
+  if (feedCountMatch && method === 'GET') {
+    handleGetFeedCount(req, res, feedService, feedCountMatch[1]!);
+    return;
+  }
+
+  // POST /api/sessions/:id/feed/messages — create a message (idempotent)
+  // GET  /api/sessions/:id/feed/messages/:messageId — single message
+  const feedMsgMatch = pathname.match(/^\/api\/sessions\/([a-z0-9_-]+)\/feed\/messages(?:\/([a-z0-9_-]+))?$/);
+  if (feedMsgMatch) {
+    const fSessionId = feedMsgMatch[1]!;
+    const fMessageId = feedMsgMatch[2];
+    if (method === 'POST' && !fMessageId) {
+      handlePostFeedMessage(req, res, feedService, fSessionId).catch((err) => {
+        log.error('Feed POST error', { error: err instanceof Error ? err.message : String(err) });
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Internal server error' }));
+      });
+      return;
+    }
+    if (method === 'GET' && fMessageId) {
+      handleGetFeedMessage(req, res, feedService, fSessionId, fMessageId);
+      return;
+    }
+  }
+
 
   // --- Models ---
   if (pathname === '/api/models' && method === 'GET') {
@@ -969,6 +1008,7 @@ async function shutdown(signal: string): Promise<void> {
 
   clearInterval(hindsightHealthTimer);
   sessionManager.shutdown();
+  feedService.destroy();
   wsHandler.shutdown();
   eventStreamer.destroy();
 
