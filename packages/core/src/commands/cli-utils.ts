@@ -1,5 +1,5 @@
 import * as readline from 'node:readline';
-import { readdirSync, chmodSync, statSync, openSync } from 'node:fs';
+import { readdirSync, chmodSync, openSync } from 'node:fs';
 import { ReadStream } from 'node:tty';
 import { join } from 'node:path';
 
@@ -50,14 +50,14 @@ export function initRL(): void {
     }
   }
 
-  if ('isPaused' in input && typeof (input as any).isPaused === 'function' && (input as any).isPaused()) {
-    (input as any).resume();
+  if ('isPaused' in input && typeof (input as NodeJS.ReadStream).isPaused === 'function' && (input as NodeJS.ReadStream).isPaused()) {
+    (input as NodeJS.ReadStream).resume();
   }
 
   rl = readline.createInterface({
     input,
     output: process.stdout,
-    terminal: (input as any).isTTY ?? false,
+    terminal: (input as NodeJS.ReadStream).isTTY ?? false,
   });
 
   rl.on('close', () => {

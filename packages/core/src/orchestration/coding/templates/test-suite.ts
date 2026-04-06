@@ -6,7 +6,6 @@
  */
 
 import type { WorkflowNode } from '../../types.js';
-import type { CodingNodeConfig } from '../coding-types.js';
 
 export interface TestSuiteParams {
   task: string;

@@ -15,7 +15,7 @@ import { randomBytes } from 'node:crypto';
 import { readConfig, normalizeBindAddresses, MainAgent, CommandFileLoader, createLogger, setGlobalLogLevel, enableFileLogging, discoverModels, clearModelCache, auditApiRequest, setCodingOrchestatorEmitters } from '@orionomega/core';
 import type { MainAgentConfig, MainAgentCallbacks, LogLevel, PlannerOutput } from '@orionomega/core';
 import { setLogLevel as setHindsightLogLevel } from '@orionomega/hindsight';
-import type { GatewayConfig, ServerMessage } from './types.js';
+import type { GatewayConfig } from './types.js';
 import { SessionManager, DEFAULT_SESSION_ID } from './sessions.js';
 import { CommandHandler } from './commands.js';
 import { EventStreamer } from './events.js';

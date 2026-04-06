@@ -15,7 +15,7 @@
 import { exec as execCb } from 'node:child_process';
 import { promisify } from 'node:util';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { join, extname, relative } from 'node:path';
+import { join, extname } from 'node:path';
 import { createLogger } from '../../logging/logger.js';
 
 const execAsync = promisify(execCb);

@@ -414,7 +414,7 @@ export class MemoryBridge {
       try {
         await this.hindsightClient.getMentalModel(bankId, modelId);
         // Model exists, no seeding needed
-      } catch (err) {
+      } catch (_err) {
         // Model doesn't exist (404) — trigger refresh to create it
         try {
           await this.hindsightClient.refreshMentalModel(bankId, modelId);

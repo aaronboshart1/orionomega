@@ -11,7 +11,7 @@
  * and shared state (history, system prompt, callbacks).
  */
 
-import { execSync, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { AnthropicClient } from '../anthropic/client.js';
 import type { AnthropicMessage } from '../anthropic/client.js';
 import { buildSystemPrompt, type PromptContext } from './prompt-builder.js';
@@ -22,7 +22,7 @@ import { CommandFileLoader } from '../commands/command-file-loader.js';
 
 import type {
   PlannerOutput, WorkerEvent, GraphState, WorkflowCheckpoint,
-  DAGDispatchInfo, DAGProgressInfo, DAGCompleteInfo, DAGConfirmInfo, DirectCompleteInfo, ModelUsage,
+  DAGDispatchInfo, DAGProgressInfo, DAGCompleteInfo, DAGConfirmInfo, DirectCompleteInfo,
 } from '../orchestration/types.js';
 import { EventBus } from '../orchestration/event-bus.js';
 
@@ -928,40 +928,53 @@ export class MainAgent {
   }
 
   private async runUpdateAndRestart(): Promise<void> {
-    const { findInstallDirectory, runUpdateSteps } = await import('../commands/update.js');
-    const installDir = findInstallDirectory();
-    if (!installDir) {
-      this.callbacks.onCommandResult({ command: '/update', success: false, message: 'Cannot find OrionOmega git repository' });
-      return;
-    }
-    const ok = runUpdateSteps(installDir, {
+    const { runOrchestatedUpdate } = await import('../commands/update.js');
+
+    const result = await runOrchestatedUpdate({
       onStep: (label) => {
-        this.callbacks.onCommandResult({ command: '/update', success: true, message: `${label}…` });
+        this.callbacks.onCommandResult({ command: '/update', success: true, message: `⏳ ${label}` });
       },
-      onStepDone: (label) => {
-        log.info(`Update step complete: ${label}`);
+      onStepDone: (label, detail) => {
+        const msg = detail ? `✓ ${label} — ${detail}` : `✓ ${label}`;
+        log.info(`Update step complete: ${label}`, { detail });
+        this.callbacks.onCommandResult({ command: '/update', success: true, message: msg });
       },
       onStepFailed: (label, error) => {
-        this.callbacks.onCommandResult({ command: '/update', success: false, message: `${label} failed: ${error}` });
+        log.error(`Update step failed: ${label}`, { error });
+        this.callbacks.onCommandResult({ command: '/update', success: false, message: `✗ ${label}: ${error}` });
+      },
+      onInfo: (message) => {
+        this.callbacks.onCommandResult({ command: '/update', success: true, message });
+      },
+      onRollback: (message) => {
+        log.warn(`Update rollback: ${message}`);
+        this.callbacks.onCommandResult({ command: '/update', success: false, message: `⟳ ${message}` });
       },
     });
-    if (!ok) return;
 
-    this.callbacks.onCommandResult({ command: '/update', success: true, message: 'Restarting Web UI…' });
-    try {
-      const { restartWebUI } = await import('../commands/ui.js');
-      const uiResult = await restartWebUI();
-      if (uiResult.started) {
-        this.callbacks.onCommandResult({ command: '/update', success: true, message: `Web UI restarted (PID ${uiResult.started})` });
-      } else {
-        this.callbacks.onCommandResult({ command: '/update', success: false, message: 'Web UI could not be restarted (server.mjs not found)' });
-      }
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      this.callbacks.onCommandResult({ command: '/update', success: false, message: `Web UI restart failed: ${msg}` });
+    if (!result.success) {
+      const suffix = result.rolledBack ? ' (rolled back to previous version)' : '';
+      this.callbacks.onCommandResult({
+        command: '/update', success: false,
+        message: `Update failed: ${result.error}${suffix} [${(result.durationMs / 1000).toFixed(1)}s]`,
+      });
+      return;
     }
 
-    this.callbacks.onCommandResult({ command: '/update', success: true, message: 'Update complete — restarting gateway…' });
+    if (result.alreadyUpToDate) {
+      // No code changes — don't restart the gateway
+      return;
+    }
+
+    const shortOld = result.oldCommit ? result.oldCommit.slice(0, 7) : '?';
+    const shortNew = result.newCommit || '?';
+    this.callbacks.onCommandResult({
+      command: '/update', success: true,
+      message: `Update complete: ${shortOld} → ${shortNew} [${(result.durationMs / 1000).toFixed(1)}s] — restarting gateway…`,
+    });
+
+    // Restart gateway: spawn a replacement process and exit.
+    // The supervisor (systemd) or the spawn itself will keep the service alive.
     setTimeout(() => {
       const args = [...process.execArgv, ...process.argv.slice(1)];
       const child = spawn(process.execPath, args, {

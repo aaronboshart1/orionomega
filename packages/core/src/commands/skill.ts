@@ -83,10 +83,10 @@ async function listSkills(skillsDir: string): Promise<void> {
   process.stdout.write(`  ${'─'.repeat(60)}\n`);
 
   for (const s of skills) {
-    const cfg = readSkillConfig(skillsDir, (s as any).name ?? 'unknown');
-    const name = ((s as any).name ?? 'unknown').padEnd(18);
-    const ver = ((s as any).version ?? '-').padEnd(10);
-    const manifest = s as any;
+    const manifest = s as { name?: string; version?: string; description?: string; setup?: { required?: boolean } };
+    const cfg = readSkillConfig(skillsDir, manifest.name ?? 'unknown');
+    const name = (manifest.name ?? 'unknown').padEnd(18);
+    const ver = (manifest.version ?? '-').padEnd(10);
     let status: string;
     if (!cfg.enabled) {
       status = RED + 'disabled' + RESET;
@@ -96,7 +96,7 @@ async function listSkills(skillsDir: string): Promise<void> {
       status = GREEN + 'ready' + RESET;
     }
     const statusPad = status + ' '.repeat(Math.max(0, 14 - (cfg.enabled ? (manifest.setup?.required && !cfg.configured ? 11 : 5) : 8)));
-    const desc = (s as any).description ?? '';
+    const desc = manifest.description ?? '';
     process.stdout.write('  ' + name + ver + statusPad + desc + '\n');
   }
   process.stdout.write('\n');

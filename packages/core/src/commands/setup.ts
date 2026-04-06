@@ -14,11 +14,11 @@
  */
 
 import { scryptSync, randomBytes } from 'node:crypto';
-import { mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { execSync, execFileSync } from 'node:child_process';
-import { writeConfig, readConfig, getConfigPath, getDefaultConfig } from '../config/index.js';
+import { writeConfig, readConfig, getConfigPath } from '../config/index.js';
 import type { OrionOmegaConfig } from '../config/index.js';
 import { SkillLoader, readSkillConfig, writeSkillConfig } from '@orionomega/skills-sdk';
 import type { SkillManifest, SkillAuthMethod, SkillSetupField } from '@orionomega/skills-sdk';
@@ -1294,7 +1294,7 @@ async function handleAuthFailure(
   method: SkillAuthMethod,
   skillsDir: string,
   skillName: string,
-  allMethods: SkillAuthMethod[],
+  _allMethods: SkillAuthMethod[],
 ): Promise<AuthResult> {
   for (;;) {
     const choice = await choose('  What would you like to do?', [

@@ -17,7 +17,7 @@ import { promisify } from 'node:util';
 import type { CodebaseScanOutput } from './coding-types.js';
 import { createLogger } from '../../logging/logger.js';
 
-const execAsync = promisify(execCb);
+const _execAsync = promisify(execCb);
 const log = createLogger('codebase-analyzer');
 
 // ── Types ─────────────────────────────────────────────────────────────────────

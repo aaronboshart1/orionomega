@@ -8,7 +8,7 @@ import { existsSync } from 'node:fs';
 import { readConfig } from '../config/index.js';
 
 const RED = '\x1b[31m';
-const BOLD = '\x1b[1m';
+const _BOLD = '\x1b[1m';
 const DIM = '\x1b[2m';
 const RESET = '\x1b[0m';
 

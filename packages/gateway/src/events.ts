@@ -7,7 +7,6 @@
  *   high-priority types (done, error, finding) which fire immediately.
  */
 
-import type { WebSocket } from 'ws';
 import type { ClientConnection, ServerMessage } from './types.js';
 import type { SessionManager } from './sessions.js';
 import { randomBytes } from 'node:crypto';

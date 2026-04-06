@@ -43,7 +43,7 @@ export class FileLockManager {
   async acquire(
     workerId: string,
     files: string[],
-    timeoutMs: number,
+    _timeoutMs: number,
   ): Promise<AcquireResult> {
     if (files.length === 0) {
       return { acquired: true };

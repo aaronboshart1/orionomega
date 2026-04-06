@@ -43,15 +43,6 @@ async function getDbSafe() {
   }
 }
 
-async function getSchemasSafe() {
-  try {
-    const schema = await import('@orionomega/core');
-    return schema;
-  } catch {
-    return null;
-  }
-}
-
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
 /**

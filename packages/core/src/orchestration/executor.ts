@@ -157,6 +157,8 @@ export interface ExecutorConfig {
   task?: string;
   /** Callback for memory I/O events (forwarded to HindsightClient.onIO). */
   onMemoryIO?: (event: { op: 'retain' | 'recall'; bank: string; detail: string; meta?: Record<string, unknown> }) => void;
+  /** Default working directory for CODING_AGENT nodes (repo root). */
+  codingRepoDir?: string;
 }
 
 /**
@@ -668,7 +670,7 @@ export class GraphExecutor {
           codingAgent: {
             ...node.codingAgent,
             task: codingTask,
-            cwd: node.codingAgent?.cwd ?? codingOutputDir,
+            cwd: node.codingAgent?.cwd ?? this.config.codingRepoDir ?? codingOutputDir,
           },
         };
 

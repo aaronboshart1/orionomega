@@ -18,7 +18,6 @@ import { WorkflowState } from '../orchestration/state.js';
 import type {
   PlannerOutput,
   WorkerEvent,
-  GraphState,
   ExecutionResult,
   WorkflowCheckpoint,
   DAGDispatchInfo,
@@ -612,6 +611,7 @@ ${userTask}`;
       workerTimeout: this.config.workerTimeout,
       maxRetries: this.config.maxRetries,
       checkpointInterval: 1,
+      codingRepoDir: this.config.codingRepoDir,
       humanGateCallback: async (action: string, description: string): Promise<boolean> => {
         const gateId = randomBytes(8).toString('hex');
         return new Promise<boolean>((resolve) => {

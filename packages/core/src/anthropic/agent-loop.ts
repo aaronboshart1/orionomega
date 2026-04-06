@@ -16,7 +16,6 @@
 import type {
   AnthropicClient,
   AnthropicMessage,
-  AnthropicStreamEvent,
   ContentBlock,
   ToolDefinition,
 } from './client.js';
@@ -305,7 +304,7 @@ async function streamAssistantTurn(
   onText?: (text: string) => void,
 ): Promise<TurnResult> {
   const contentBlocks: ContentBlock[] = [];
-  let currentBlockIndex = -1;
+  let _currentBlockIndex = -1;
   let stopReason = 'end_turn';
   let inputTokens = 0;
   let outputTokens = 0;
@@ -343,7 +342,7 @@ async function streamAssistantTurn(
       case 'content_block_start': {
         const index = event.index as number;
         const block = event.content_block as Record<string, unknown>;
-        currentBlockIndex = index;
+        _currentBlockIndex = index;
         blockAccumulators.set(index, {
           type: String(block?.type ?? 'text'),
           text: String(block?.text ?? ''),

@@ -201,7 +201,7 @@ Fix the minimum set of code changes required to make the above commands pass.
         });
 
         const durationMs = Date.now() - start;
-        const exitCode = 0;
+        const _exitCode = 0;
 
         // Check success pattern if configured
         let passed = true;

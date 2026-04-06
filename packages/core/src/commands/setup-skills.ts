@@ -20,8 +20,8 @@ import { SkillLoader, readSkillConfig, writeSkillConfig } from '@orionomega/skil
 import type { SkillManifest, SkillAuthMethod, SkillSetupField, SkillConfig } from '@orionomega/skills-sdk';
 import { githubDeviceFlowAuth, isGhWebAuthCommand, extractGitProtocol } from './github-device-auth.js';
 import {
-  GREEN, RED, YELLOW, BLUE, CYAN, BOLD, DIM, RESET,
-  print, println, success, fail, warn, heading,
+  GREEN, RED, YELLOW, BLUE, BOLD, DIM, RESET,
+  print, println, success, fail, warn,
   initRL, closeRL, ask, choose, confirm,
   chmodJsFiles,
 } from './cli-utils.js';
@@ -246,7 +246,7 @@ async function handleAuthFailure(
   method: SkillAuthMethod,
   skillsDir: string,
   skillName: string,
-  allMethods: SkillAuthMethod[],
+  _allMethods: SkillAuthMethod[],
 ): Promise<AuthResult> {
   for (;;) {
     const choice = await choose('  What would you like to do?', [

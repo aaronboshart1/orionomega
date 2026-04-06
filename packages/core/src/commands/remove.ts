@@ -44,7 +44,7 @@ function unlinkGlobalCli(): boolean {
       execSync(`${mgr} unlink -g @orionomega/core 2>/dev/null`, {
         timeout: 15_000,
         stdio: 'pipe',
-        shell: '/bin/sh' as any,
+        shell: '/bin/sh' as string,
       });
       removed = true;
     } catch {
@@ -57,7 +57,7 @@ function unlinkGlobalCli(): boolean {
       execSync('sudo rm -f /usr/local/bin/orionomega 2>/dev/null || rm -f /usr/local/bin/orionomega 2>/dev/null', {
         timeout: 10_000,
         stdio: 'pipe',
-        shell: '/bin/sh' as any,
+        shell: '/bin/sh' as string,
       });
       removed = true;
     } catch {
