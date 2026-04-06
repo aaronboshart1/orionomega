@@ -20,8 +20,9 @@ import { SessionManager, DEFAULT_SESSION_ID } from './sessions.js';
 import { CommandHandler } from './commands.js';
 import { EventStreamer } from './events.js';
 import { WebSocketHandler } from './websocket.js';
-import { handleHealth } from './routes/health.js';
-import { handleListSessions, handleGetSession, handleCreateSession } from './routes/sessions.js';
+import { ServerSessionStore } from './state-store.js';
+import { handleHealth, handleMetrics } from './routes/health.js';
+import { handleListSessions, handleGetSession, handleCreateSession, handleDeleteSession, handleGetSessionActivityPaginated } from './routes/sessions.js';
 import { handleLogActivity, handleGetActivity } from './routes/activity.js';
 import { ActivityService } from './activity.js';
 import { handleStatus } from './routes/status.js';
@@ -88,11 +89,13 @@ try {
 // ---------------------------------------------------------------------------
 
 const sessionManager = new SessionManager();
+const stateStore = new ServerSessionStore();
 const feedService = new FeedService(sessionManager);
 const activityService = new ActivityService();
 const commandHandler = new CommandHandler(sessionManager);
 const eventStreamer = new EventStreamer();
-const wsHandler = new WebSocketHandler(config, sessionManager, commandHandler, eventStreamer, activityService);
+eventStreamer.setSessionManager(sessionManager, DEFAULT_SESSION_ID);
+const wsHandler = new WebSocketHandler(config, sessionManager, commandHandler, eventStreamer, activityService, stateStore);
 
 // Wire the EventStreamer into the coding-events emitter module so that
 // emitCoding* functions can broadcast to all connected WebSocket clients.
@@ -205,6 +208,19 @@ async function initMainAgent(): Promise<void> {
           bgStreamState.set(workflowId, state);
         }
 
+        // Store to state store BEFORE broadcasting
+        if (done || !streaming) {
+          const fullContent = getFullContent(state.buffer, text, streaming);
+          stateStore.appendEvent({
+            id: state.textId,
+            sessionId: DEFAULT_SESSION_ID,
+            type: 'message',
+            timestamp: new Date().toISOString(),
+            data: { role: 'assistant', content: fullContent, workflowId, background: true },
+            workflowId,
+          });
+        }
+
         wsHandler.broadcast({
           id: state.textId,
           type: 'text',
@@ -236,6 +252,20 @@ async function initMainAgent(): Promise<void> {
           bgStreamState.delete(workflowId);
         }
         return;
+      }
+
+      // Store completed messages to state store BEFORE broadcasting
+      if (done || !streaming) {
+        const fullContent = getFullContent(streamBuffer, text, streaming);
+        if (fullContent) {
+          stateStore.appendEvent({
+            id: currentTextId,
+            sessionId: DEFAULT_SESSION_ID,
+            type: 'message',
+            timestamp: new Date().toISOString(),
+            data: { role: 'assistant', content: fullContent },
+          });
+        }
       }
 
       wsHandler.broadcast({
@@ -272,6 +302,18 @@ async function initMainAgent(): Promise<void> {
       }
     },
     onThinking(text, streaming, done, workflowId) {
+      // Store thinking content to state store (only on completion to avoid noise)
+      if (done || !streaming) {
+        stateStore.appendEvent({
+          id: currentThinkingId,
+          sessionId: DEFAULT_SESSION_ID,
+          type: 'thinking',
+          timestamp: new Date().toISOString(),
+          data: { thinking: text, streaming, done },
+          workflowId,
+        });
+      }
+
       wsHandler.broadcast({
         id: currentThinkingId,
         type: 'thinking',
@@ -285,8 +327,20 @@ async function initMainAgent(): Promise<void> {
       }
     },
     onThinkingStep(step: { id: string; name: string; status: 'pending' | 'active' | 'done'; startedAt?: number; completedAt?: number; elapsedMs?: number; detail?: string }, workflowId?: string) {
+      const evtId = randomBytes(8).toString('hex');
+
+      // Store thinking steps to state store
+      stateStore.appendEvent({
+        id: evtId,
+        sessionId: DEFAULT_SESSION_ID,
+        type: 'thinking_step',
+        timestamp: new Date().toISOString(),
+        data: { step },
+        workflowId,
+      });
+
       wsHandler.broadcast({
-        id: randomBytes(8).toString('hex'),
+        id: evtId,
         type: 'thinking_step',
         step,
         workflowId,
@@ -304,6 +358,27 @@ async function initMainAgent(): Promise<void> {
         value instanceof Map ? Object.fromEntries(value) : value,
       ));
 
+      const now = new Date().toISOString();
+
+      // Store plan to state store BEFORE broadcasting
+      stateStore.appendEvent({
+        id: planId,
+        sessionId: DEFAULT_SESSION_ID,
+        type: 'plan',
+        timestamp: now,
+        data: { plan: transportPlan },
+      });
+
+      // Track as pending action awaiting approval
+      stateStore.addPendingAction({
+        id: planId,
+        sessionId: DEFAULT_SESSION_ID,
+        type: 'plan',
+        data: transportPlan as Record<string, unknown>,
+        status: 'pending',
+        createdAt: now,
+      });
+
       // Store plan in session history
       const sessionId = DEFAULT_SESSION_ID;
       if (sessionId) {
@@ -311,7 +386,7 @@ async function initMainAgent(): Promise<void> {
           id: planId,
           role: 'assistant',
           content: JSON.stringify(transportPlan),
-          timestamp: new Date().toISOString(),
+          timestamp: now,
           type: 'plan',
         });
       }
@@ -324,25 +399,89 @@ async function initMainAgent(): Promise<void> {
     },
     onEvent(event) {
       const workerEvent = event as { workflowId?: string; type?: string };
+
+      // Store orchestration events to state store
+      stateStore.appendEvent({
+        id: randomBytes(8).toString('hex'),
+        sessionId: DEFAULT_SESSION_ID,
+        type: 'event',
+        timestamp: new Date().toISOString(),
+        data: event as unknown as Record<string, unknown>,
+        workflowId: workerEvent.workflowId,
+      });
+
       eventStreamer.emit(event, workerEvent.type, workerEvent.workflowId);
     },
     onGraphState(state) {
+      const evtId = randomBytes(8).toString('hex');
+
+      // Store graph state snapshots
+      stateStore.appendEvent({
+        id: evtId,
+        sessionId: DEFAULT_SESSION_ID,
+        type: 'graph_state',
+        timestamp: new Date().toISOString(),
+        data: state as unknown as Record<string, unknown>,
+        workflowId: (state as { workflowId?: string }).workflowId,
+      });
+
       wsHandler.broadcast({
-        id: randomBytes(8).toString('hex'),
+        id: evtId,
         type: 'status',
         workflowId: state.workflowId,
         graphState: state,
       });
     },
     onSessionStatus(status) {
+      const evtId = randomBytes(8).toString("hex");
+
+      // Store session status and accumulate costs
+      stateStore.appendEvent({
+        id: evtId,
+        sessionId: DEFAULT_SESSION_ID,
+        type: 'session_status',
+        timestamp: new Date().toISOString(),
+        data: status as Record<string, unknown>,
+      });
+
+      // Accumulate token costs from session status updates
+      const s = status as { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheCreationTokens?: number; sessionCostUsd?: number };
+      if (s.inputTokens || s.outputTokens || s.sessionCostUsd) {
+        stateStore.accumulateCosts(DEFAULT_SESSION_ID, {
+          inputTokens: s.inputTokens ?? 0,
+          outputTokens: s.outputTokens ?? 0,
+          cacheReadTokens: s.cacheReadTokens ?? 0,
+          cacheCreationTokens: s.cacheCreationTokens ?? 0,
+          costUsd: s.sessionCostUsd ?? 0,
+        });
+      }
+
       wsHandler.broadcast({
-        id: randomBytes(8).toString("hex"),
+        id: evtId,
         type: "session_status",
         sessionStatus: status,
       });
     },
     onDirectComplete(info) {
       const msgId = randomBytes(8).toString("hex");
+      const now = new Date().toISOString();
+
+      // Store to state store BEFORE broadcasting
+      stateStore.appendEvent({
+        id: msgId,
+        sessionId: DEFAULT_SESSION_ID,
+        type: 'direct_complete',
+        timestamp: now,
+        data: { directComplete: info },
+      });
+
+      // Accumulate costs from direct completion
+      if (info.totalCostUsd) {
+        stateStore.accumulateCosts(DEFAULT_SESSION_ID, {
+          costUsd: info.totalCostUsd,
+        });
+      }
+
       wsHandler.broadcast({
         id: msgId,
         type: "direct_complete",
@@ -354,7 +493,7 @@ async function initMainAgent(): Promise<void> {
           id: msgId,
           role: "assistant",
           content: "",
-          timestamp: new Date().toISOString(),
+          timestamp: now,
           type: "direct-complete",
           metadata: {
             runId: info.runId,
@@ -365,29 +504,84 @@ async function initMainAgent(): Promise<void> {
     },
     onWorkflowStart(workflowId, _workflowName) {
       const sessionId = DEFAULT_SESSION_ID;
+
+      // Store workflow start event
+      stateStore.appendEvent({
+        id: randomBytes(8).toString('hex'),
+        sessionId,
+        type: 'event',
+        timestamp: new Date().toISOString(),
+        data: { type: 'workflow_start', workflowId, workflowName: _workflowName },
+        workflowId,
+      });
+
       if (sessionId) sessionManager.addActiveWorkflow(sessionId, workflowId);
     },
     onWorkflowEnd(workflowId) {
       const sessionId = DEFAULT_SESSION_ID;
+
+      // Store workflow end event
+      stateStore.appendEvent({
+        id: randomBytes(8).toString('hex'),
+        sessionId,
+        type: 'event',
+        timestamp: new Date().toISOString(),
+        data: { type: 'workflow_end', workflowId },
+        workflowId,
+      });
+
       if (sessionId) sessionManager.removeActiveWorkflow(sessionId, workflowId);
     },
     onCommandResult(result) {
+      const evtId = randomBytes(8).toString('hex');
+
+      // Store command results
+      stateStore.appendEvent({
+        id: evtId,
+        sessionId: DEFAULT_SESSION_ID,
+        type: 'command_result',
+        timestamp: new Date().toISOString(),
+        data: { commandResult: result },
+      });
+
       wsHandler.broadcast({
-        id: randomBytes(8).toString('hex'),
+        id: evtId,
         type: 'command_result',
         commandResult: result,
       });
     },
     onHindsightActivity(status) {
+      const evtId = randomBytes(8).toString('hex');
+
+      // Store hindsight status changes
+      stateStore.appendEvent({
+        id: evtId,
+        sessionId: DEFAULT_SESSION_ID,
+        type: 'hindsight_status',
+        timestamp: new Date().toISOString(),
+        data: { hindsightStatus: status },
+      });
+
       wsHandler.broadcast({
-        id: randomBytes(8).toString('hex'),
+        id: evtId,
         type: 'hindsight_status',
         hindsightStatus: status,
       });
     },
     onMemoryEvent(event) {
+      const evtId = randomBytes(8).toString('hex');
+
+      // Store memory events to state store BEFORE broadcasting
+      stateStore.appendEvent({
+        id: evtId,
+        sessionId: DEFAULT_SESSION_ID,
+        type: 'memory_event',
+        timestamp: new Date().toISOString(),
+        data: { memoryEvent: event },
+      });
+
       wsHandler.broadcast({
-        id: randomBytes(8).toString('hex'),
+        id: evtId,
         type: 'memory_event',
         memoryEvent: event,
       });
@@ -397,6 +591,29 @@ async function initMainAgent(): Promise<void> {
     // DAG lifecycle callbacks — route through EventStreamer for subscription filtering
     onDAGDispatched(dispatch) {
       const msgId = randomBytes(8).toString('hex');
+      const now = new Date().toISOString();
+
+      // Store DAG dispatch to state store BEFORE broadcasting
+      stateStore.appendEvent({
+        id: msgId,
+        sessionId: DEFAULT_SESSION_ID,
+        type: 'dag_dispatched',
+        timestamp: now,
+        data: { dagDispatch: dispatch },
+        workflowId: dispatch.workflowId,
+      });
+
+      // Record materialized DAG state
+      stateStore.recordDAGDispatched(DEFAULT_SESSION_ID, dispatch.workflowId, {
+        workflowId: dispatch.workflowId,
+        workflowName: dispatch.workflowName,
+        nodeCount: dispatch.nodeCount,
+        estimatedTime: dispatch.estimatedTime,
+        estimatedCost: dispatch.estimatedCost,
+        summary: dispatch.summary,
+        nodes: dispatch.nodes,
+      });
+
       eventStreamer.emitDAGMessage({
         id: msgId,
         type: 'dag_dispatched',
@@ -409,7 +626,7 @@ async function initMainAgent(): Promise<void> {
           id: msgId,
           role: 'assistant',
           content: dispatch.summary || 'Working on it...',
-          timestamp: new Date().toISOString(),
+          timestamp: now,
           type: 'dag-dispatched',
           metadata: {
             workflowId: dispatch.workflowId,
@@ -424,8 +641,31 @@ async function initMainAgent(): Promise<void> {
       }
     },
     onDAGProgress(progress) {
+      const evtId = randomBytes(8).toString('hex');
+
+      // Store DAG progress to state store BEFORE broadcasting
+      stateStore.appendEvent({
+        id: evtId,
+        sessionId: DEFAULT_SESSION_ID,
+        type: 'dag_progress',
+        timestamp: new Date().toISOString(),
+        data: { dagProgress: progress },
+        workflowId: progress.workflowId,
+      });
+
+      // Update materialized DAG node state
+      stateStore.recordDAGProgress(progress.workflowId, {
+        nodeId: progress.nodeId,
+        nodeLabel: progress.nodeLabel,
+        status: progress.status,
+        message: progress.message,
+        progress: progress.progress,
+        tool: progress.tool as Record<string, unknown> | undefined,
+        workerId: progress.workerId,
+      });
+
       eventStreamer.emitDAGMessage({
-        id: randomBytes(8).toString('hex'),
+        id: evtId,
         type: 'dag_progress',
         workflowId: progress.workflowId,
         dagProgress: progress,
@@ -433,6 +673,39 @@ async function initMainAgent(): Promise<void> {
     },
     onDAGComplete(result) {
       const msgId = randomBytes(8).toString('hex');
+      const now = new Date().toISOString();
+
+      // Store DAG completion to state store BEFORE broadcasting
+      stateStore.appendEvent({
+        id: msgId,
+        sessionId: DEFAULT_SESSION_ID,
+        type: 'dag_complete',
+        timestamp: now,
+        data: { dagComplete: result },
+        workflowId: result.workflowId,
+      });
+
+      // Update materialized DAG state
+      stateStore.recordDAGComplete(result.workflowId, {
+        workflowId: result.workflowId,
+        status: result.status,
+        summary: result.summary,
+        output: result.output,
+        durationSec: result.durationSec,
+        workerCount: result.workerCount,
+        totalCostUsd: result.totalCostUsd,
+        toolCallCount: result.toolCallCount,
+        modelUsage: result.modelUsage as unknown as Array<Record<string, unknown>> | undefined,
+        nodeOutputPaths: result.nodeOutputPaths,
+      });
+
+      // Accumulate DAG costs
+      if (result.totalCostUsd) {
+        stateStore.accumulateCosts(DEFAULT_SESSION_ID, {
+          costUsd: result.totalCostUsd,
+        });
+      }
+
       eventStreamer.emitDAGMessage({
         id: msgId,
         type: 'dag_complete',
@@ -447,7 +720,7 @@ async function initMainAgent(): Promise<void> {
           content: result.status === 'error'
             ? `Something went wrong: ${result.summary}`
             : result.output || result.summary || 'Done.',
-          timestamp: new Date().toISOString(),
+          timestamp: now,
           type: 'dag-complete',
           metadata: {
             workflowId: result.workflowId,
@@ -469,6 +742,44 @@ async function initMainAgent(): Promise<void> {
     },
     onDAGConfirm(confirm) {
       const msgId = randomBytes(8).toString('hex');
+      const now = new Date().toISOString();
+
+      // Store DAG confirmation to state store BEFORE broadcasting
+      stateStore.appendEvent({
+        id: msgId,
+        sessionId: DEFAULT_SESSION_ID,
+        type: 'dag_confirm',
+        timestamp: now,
+        data: { dagConfirm: confirm },
+        workflowId: confirm.workflowId,
+      });
+
+      // Record as materialized DAG state
+      stateStore.recordDAGConfirm(confirm.workflowId, DEFAULT_SESSION_ID, {
+        workflowId: confirm.workflowId,
+        summary: confirm.summary,
+        reasoning: confirm.reasoning,
+        estimatedCost: confirm.estimatedCost,
+        estimatedTime: confirm.estimatedTime,
+        nodes: confirm.nodes,
+        guardedActions: confirm.guardedActions,
+      });
+
+      // Track as pending action awaiting user approval
+      stateStore.addPendingAction({
+        id: confirm.workflowId,
+        sessionId: DEFAULT_SESSION_ID,
+        type: 'dag_confirm',
+        data: {
+          workflowId: confirm.workflowId,
+          summary: confirm.summary,
+          reasoning: confirm.reasoning,
+          guardedActions: confirm.guardedActions,
+        },
+        status: 'pending',
+        createdAt: now,
+      });
+
       eventStreamer.emitDAGMessage({
         id: msgId,
         type: 'dag_confirm',
@@ -481,7 +792,7 @@ async function initMainAgent(): Promise<void> {
           id: msgId,
           role: 'assistant',
           content: confirm.summary,
-          timestamp: new Date().toISOString(),
+          timestamp: now,
           type: 'dag-confirmation',
           metadata: {
             workflowId: confirm.workflowId,
@@ -625,6 +936,12 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
     return;
   }
 
+  // --- Metrics (detailed observability) ---
+  if (pathname === '/api/metrics' && method === 'GET') {
+    handleMetrics(req, res, startTime, sessionManager, stateStore, wsHandler.connectionCount);
+    return;
+  }
+
   // --- Status ---
   if (pathname === '/api/status' && method === 'GET') {
     handleStatus(req, res, sessionManager, startTime, hindsightUrl).catch((err) => {
@@ -646,16 +963,22 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
     return;
   }
 
-  // GET /api/sessions/:id
+  // GET /api/sessions/:id  |  DELETE /api/sessions/:id
   const sessionMatch = pathname.match(/^\/api\/sessions\/([a-z0-9_-]+)$/);
-  if (sessionMatch && method === 'GET') {
-    handleGetSession(req, res, sessionManager, sessionMatch[1]!);
-    return;
+  if (sessionMatch) {
+    if (method === 'GET') {
+      handleGetSession(req, res, sessionManager, sessionMatch[1]!);
+      return;
+    }
+    if (method === 'DELETE') {
+      handleDeleteSession(req, res, sessionManager, stateStore, sessionMatch[1]!);
+      return;
+    }
   }
 
   // --- Activity log ---
   // POST /api/sessions/:id/activity — log a custom action
-  // GET  /api/sessions/:id/activity — fetch activity history
+  // GET  /api/sessions/:id/activity — fetch activity history (paginated from state store)
   const activityMatch = pathname.match(/^\/api\/sessions\/([a-z0-9_-]+)\/activity$/);
   if (activityMatch) {
     if (method === 'POST') {
@@ -667,7 +990,14 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
       return;
     }
     if (method === 'GET') {
-      handleGetActivity(req, res, sessionManager, activityService, activityMatch[1]!);
+      // Use paginated state store activity if limit/offset params are present
+      const qs = rawUrl.split('?')[1] ?? '';
+      const qp = new URLSearchParams(qs);
+      if (qp.has('limit') || qp.has('offset') || qp.has('types')) {
+        handleGetSessionActivityPaginated(req, res, sessionManager, stateStore, activityMatch[1]!);
+      } else {
+        handleGetActivity(req, res, sessionManager, activityService, activityMatch[1]!);
+      }
       return;
     }
   }
@@ -1047,6 +1377,7 @@ async function shutdown(signal: string): Promise<void> {
 
   clearInterval(hindsightHealthTimer);
   sessionManager.shutdown();
+  stateStore.shutdown();
   feedService.destroy();
   wsHandler.shutdown();
   eventStreamer.destroy();
@@ -1071,4 +1402,4 @@ async function shutdown(signal: string): Promise<void> {
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
 
-export { server, servers, sessionManager, activityService, commandHandler, eventStreamer, wsHandler };
+export { server, servers, sessionManager, stateStore, activityService, commandHandler, eventStreamer, wsHandler };

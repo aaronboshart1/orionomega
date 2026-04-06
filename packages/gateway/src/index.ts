@@ -57,3 +57,18 @@ export { CommandHandler } from './commands.js';
 
 // WebSocket
 export { WebSocketHandler } from './websocket.js';
+
+// Server-side state store (SQLite-backed)
+export { ServerSessionStore } from './state-store.js';
+export type {
+  StateEvent,
+  StateEventType,
+  StateEventQuery,
+  PaginatedResult,
+  DAGState,
+  DAGNodeState,
+  SessionCosts,
+  PendingAction,
+  CodingSessionState,
+  StateSnapshot,
+} from './state-types.js';

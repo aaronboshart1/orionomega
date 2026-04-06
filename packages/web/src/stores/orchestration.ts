@@ -1,6 +1,5 @@
 import { create } from 'zustand';
-import { persist, createJSONStorage } from 'zustand/middleware';
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo } from 'react';
 
 export type WorkerEventType =
   | 'thinking'
@@ -225,48 +224,16 @@ interface OrchestrationStore {
   resumeDAG: (dagId: string) => void;
   stopDAG: (dagId: string) => void;
   reset: () => void;
+  /** Rehydrate store from a server state snapshot (replaces localStorage persistence). */
+  hydrateFromSnapshot: (snapshot: {
+    inlineDAGs?: Record<string, InlineDAG>;
+    workflows?: Record<string, WorkflowData>;
+    memoryEvents?: MemoryEvent[];
+    activePlan?: PlanData | null;
+    pendingConfirmation?: DAGConfirmation | null;
+    orchestrationEvents?: Array<{ workflowId?: string; event: unknown }>;
+  }) => void;
 }
-
-/** Max entries to persist for each collection to prevent localStorage bloat. */
-const MAX_PERSISTED_WORKFLOWS = 20;
-const MAX_PERSISTED_EVENTS = 200;
-const MAX_PERSISTED_MEMORY_EVENTS = 200;
-const MAX_PERSISTED_INLINE_DAGS = 50;
-
-/**
- * Safe localStorage adapter that catches QuotaExceededError.
- * On quota exceeded, clears the existing entry and retries once.
- */
-const safeLocalStorage = {
-  getItem: (name: string): string | null => {
-    try {
-      return localStorage.getItem(name);
-    } catch {
-      return null;
-    }
-  },
-  setItem: (name: string, value: string): void => {
-    try {
-      localStorage.setItem(name, value);
-    } catch (e) {
-      if (e instanceof DOMException && (e.name === 'QuotaExceededError' || e.code === 22)) {
-        try {
-          localStorage.removeItem(name);
-          localStorage.setItem(name, value);
-        } catch {
-          // Still failing after clearing — give up gracefully
-        }
-      }
-    }
-  },
-  removeItem: (name: string): void => {
-    try {
-      localStorage.removeItem(name);
-    } catch {
-      // ignore
-    }
-  },
-};
 
 function deriveActive(workflows: Record<string, WorkflowData>, activeWorkflowId: string | null) {
   const data = activeWorkflowId ? workflows[activeWorkflowId] : undefined;
@@ -276,9 +243,7 @@ function deriveActive(workflows: Record<string, WorkflowData>, activeWorkflowId:
   };
 }
 
-export const useOrchestrationStore = create<OrchestrationStore>()(
-  persist(
-  (set) => ({
+export const useOrchestrationStore = create<OrchestrationStore>()((set) => ({
   workflows: {},
   activeWorkflowId: null,
   activePlan: null,
@@ -578,60 +543,27 @@ export const useOrchestrationStore = create<OrchestrationStore>()(
       memoryFilter: { ops: null, bank: null, searchText: '' },
       activeOrchTab: 'memory',
     }),
-  }),
-  {
-    name: 'orionomega-orchestration',
-    storage: createJSONStorage(() => safeLocalStorage),
-    partialize: (state) => {
-      // Cap collections to prevent localStorage bloat
-      const workflowKeys = Object.keys(state.workflows);
-      const cappedWorkflows: Record<string, WorkflowData> = {};
-      for (const key of workflowKeys.slice(-MAX_PERSISTED_WORKFLOWS)) {
-        const wf = state.workflows[key];
-        cappedWorkflows[key] = {
-          graphState: wf.graphState,
-          events: wf.events.slice(-MAX_PERSISTED_EVENTS),
-        };
-      }
 
-      const dagKeys = Object.keys(state.inlineDAGs);
-      const cappedDAGs: Record<string, InlineDAG> = {};
-      for (const key of dagKeys.slice(-MAX_PERSISTED_INLINE_DAGS)) {
-        cappedDAGs[key] = state.inlineDAGs[key];
-      }
-
+  hydrateFromSnapshot: (snapshot) =>
+    set((s) => {
+      const workflows = snapshot.workflows ?? {};
+      const inlineDAGs = snapshot.inlineDAGs ?? {};
+      const memoryEvents = (snapshot.memoryEvents ?? []) as MemoryEvent[];
+      const hasWorkflows = Object.keys(workflows).length > 0;
+      const activeWorkflowId = hasWorkflows ? Object.keys(workflows)[0] : null;
       return {
-        inlineDAGs: cappedDAGs,
-        workflows: cappedWorkflows,
-        activeWorkflowId: state.activeWorkflowId,
-        orchPaneOpen: state.orchPaneOpen,
-        activeOrchTab: state.activeOrchTab,
-        graphState: state.graphState,
-        events: state.events.slice(-MAX_PERSISTED_EVENTS),
-        activePlan: state.activePlan,
-        selectedWorker: state.selectedWorker,
-        memoryEvents: state.memoryEvents.slice(-MAX_PERSISTED_MEMORY_EVENTS),
+        workflows,
+        inlineDAGs,
+        memoryEvents,
+        activePlan: (snapshot.activePlan ?? null) as PlanData | null,
+        pendingConfirmation: (snapshot.pendingConfirmation ?? null) as DAGConfirmation | null,
+        activeWorkflowId,
+        activeOrchTab: hasWorkflows ? 'workflow' : 'memory',
+        orchPaneOpen: s.orchPaneOpen,
+        ...deriveActive(workflows, activeWorkflowId),
       };
-    },
-    onRehydrateStorage: () => (state) => {
-      if (state) {
-        const hasWorkflows = Object.keys(state.workflows).length > 0;
-        if ((state.activeOrchTab as string) === 'activity') {
-          state.activeOrchTab = hasWorkflows ? 'workflow' : 'memory';
-        }
-        if (state.activeOrchTab === 'workflow' && !hasWorkflows) {
-          state.activeOrchTab = 'memory';
-        }
-        if (hasWorkflows && !state.activeWorkflowId) {
-          state.activeWorkflowId = Object.keys(state.workflows)[0];
-        }
-        const derived = deriveActive(state.workflows, state.activeWorkflowId);
-        state.graphState = derived.graphState;
-        state.events = derived.events;
-      }
-    },
-  },
-));
+    }),
+}));
 
 export function useFilteredMemoryEvents(): MemoryEvent[] {
   const events = useOrchestrationStore((s) => s.memoryEvents);
@@ -652,12 +584,10 @@ export function useFilteredMemoryEvents(): MemoryEvent[] {
   }, [events, filter]);
 }
 
+/**
+ * Hydration is now server-authoritative — always returns true.
+ * Kept for backward compatibility with components that check it.
+ */
 export function useOrchHydrated(): boolean {
-  const [hydrated, setHydrated] = useState(false);
-  useEffect(() => {
-    const unsub = useOrchestrationStore.persist.onFinishHydration(() => setHydrated(true));
-    if (useOrchestrationStore.persist.hasHydrated()) setHydrated(true);
-    return unsub;
-  }, []);
-  return hydrated;
+  return true;
 }

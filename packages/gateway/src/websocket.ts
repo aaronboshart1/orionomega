@@ -2,15 +2,38 @@
  * @module websocket
  * WebSocket connection handler for the gateway.
  *
- * Manages client lifecycle: authentication, session binding, message routing,
- * and graceful disconnect with ping/pong keep-alive.
+ * Architecture overview:
+ * ─────────────────────
+ * Manages the full client lifecycle: authentication, session binding,
+ * message routing, state tracking for reconnection, and graceful disconnect
+ * with ping/pong keep-alive.
+ *
+ * Connection flow:
+ * 1. Client connects to /ws with optional ?session= parameter
+ * 2. Rate limiting and authentication are applied
+ * 3. Client joins the default session (single-user system)
+ * 4. Full state snapshot is sent for UI rehydration
+ * 5. Legacy history/memory_history sent for backward compatibility
+ * 6. Bidirectional message routing begins
+ *
+ * State tracking:
+ * - All broadcast messages are tracked server-side (trackMessageState)
+ * - DAG lifecycle, costs, plans, coding sessions are materialized
+ * - Events are buffered when no clients are connected
+ * - On reconnect, buffered events are drained and delivered
+ *
+ * Large message optimization:
+ * - State snapshots are paginated (only recent messages sent over WS)
+ * - Messages >64KB are compressed with zlib before sending
+ * - Virtual scrolling hints included for large activity logs
  */
 
 import { WebSocketServer, WebSocket } from 'ws';
 import type { IncomingMessage } from 'node:http';
 import { auditAuthEvent, readConfig } from '@orionomega/core';
 import type { Server as HTTPServer } from 'node:http';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { deflateSync } from 'node:zlib';
 import { URL } from 'node:url';
 import { existsSync, readFileSync, statSync, realpathSync } from 'node:fs';
 import { resolve as resolvePath, normalize } from 'node:path';
@@ -26,10 +49,26 @@ import { EventStreamer } from './events.js';
 import { rateLimitWsConnection } from './rate-limit.js';
 import { validateClientMessage, sanitizeChatInput } from './ws-schemas.js';
 import type { ActivityService } from './activity.js';
+import type { ServerSessionStore } from './state-store.js';
 
 const log = createLogger('websocket');
 
 const PING_INTERVAL_MS = 30_000;
+
+/**
+ * Threshold (bytes) above which outgoing WS messages are compressed.
+ * Only applies to JSON-serialized messages sent via the `send()` method.
+ */
+const COMPRESS_THRESHOLD_BYTES = 64 * 1024;
+
+/**
+ * Maximum messages to include in WebSocket state snapshots.
+ * Older messages are available via the REST paginated activity API.
+ */
+const SNAPSHOT_MAX_MESSAGES = 200;
+
+/** Regex for validating session IDs to prevent injection attacks. */
+const VALID_SESSION_ID_RE = /^[a-z0-9_-]{1,128}$/;
 
 /**
  * Manages WebSocket connections, routing messages between clients and internal handlers.
@@ -48,6 +87,7 @@ export class WebSocketHandler {
     private commandHandler: CommandHandler,
     private eventStreamer: EventStreamer,
     private activityService?: ActivityService,
+    private stateStore?: ServerSessionStore,
   ) {
     this.wss = new WebSocketServer({ noServer: true, maxPayload: 10 * 1024 * 1024 });
   }
@@ -130,14 +170,26 @@ export class WebSocketHandler {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
     const token = url.searchParams.get('token') ?? '';
     const clientType = (url.searchParams.get('client') ?? 'web') as 'tui' | 'web';
-    const sessionId = url.searchParams.get('session') ?? '';
+    const rawSessionId = url.searchParams.get('session') ?? '';
+
+    // Validate session ID format to prevent injection attacks
+    if (rawSessionId && !VALID_SESSION_ID_RE.test(rawSessionId)) {
+      log.warn('[ws:rejected] Invalid session ID format', {
+        from: req.socket.remoteAddress ?? 'unknown',
+        sessionIdLength: rawSessionId.length,
+      });
+      ws.close(4002, 'Invalid session ID format');
+      return;
+    }
 
     // Authenticate if auth mode is api-key
     if (this.config.auth.mode === 'api-key' && this.config.auth.keyHash) {
       const result = validateToken(token, this.config.auth.keyHash);
       if (!result.valid) {
         ws.close(4001, 'Authentication failed');
-        log.warn('WebSocket auth failed', { from: req.socket.remoteAddress ?? 'unknown' });
+        log.warn('[ws:auth:failed] WebSocket authentication rejected', {
+          from: req.socket.remoteAddress ?? 'unknown',
+        });
         auditAuthEvent('ws_auth_failed', 'Invalid token', req.socket.remoteAddress ?? 'unknown');
         return;
       }
@@ -147,7 +199,8 @@ export class WebSocketHandler {
     // Always join the default session — single-user system shares one persistent session
     const session = this.sessionManager.getDefaultSession();
 
-    const clientId = randomBytes(12).toString('hex');
+    // Use cryptographically random UUID for client IDs (RFC 4122 v4)
+    const clientId = randomUUID();
     const conn: ClientConnection = {
       id: clientId,
       clientType,
@@ -162,7 +215,12 @@ export class WebSocketHandler {
     this.sessionManager.addClient(session.id, clientId);
     this.eventStreamer.addClient(conn);
 
-    log.info(` Client connected: ${clientId} (${clientType}) → session ${session.id}`);
+    log.info(`[ws:connected] Client ${clientId} (${clientType}) → session ${session.id}`, {
+      sessionId: session.id,
+      clientType,
+      clientCount: session.clients.size,
+      remoteAddress: req.socket.remoteAddress ?? 'unknown',
+    });
 
     this.activityService?.log(session.id, 'client_connect', {
       clientType,
@@ -180,7 +238,42 @@ export class WebSocketHandler {
       }),
     });
 
-    // Send message history if rejoining an existing session
+    // Send full state snapshot from SQLite store for comprehensive rehydration.
+    // This includes DAG states, costs, pending actions, orchestration events,
+    // and everything else the UI needs — making the browser a true thin console.
+    if (this.stateStore) {
+      try {
+        const snapshot = this.stateStore.getSnapshot(session.id, {
+          id: session.id,
+          createdAt: session.createdAt,
+          updatedAt: session.updatedAt,
+          agentMode: session.agentMode,
+          messages: session.messages.map((m) => ({
+            id: m.id,
+            role: m.role,
+            content: m.content,
+            timestamp: m.timestamp,
+            type: m.type,
+            metadata: m.metadata,
+          })),
+          memoryEvents: session.memoryEvents as unknown as Array<Record<string, unknown>>,
+          runHistory: session.runHistory as unknown as Array<Record<string, unknown>>,
+          activeWorkflows: [...session.activeWorkflows],
+        });
+
+        this.send(ws, {
+          id: randomBytes(8).toString('hex'),
+          type: 'state_snapshot' as ServerMessage['type'],
+          content: JSON.stringify(snapshot),
+        } as ServerMessage);
+      } catch (err) {
+        log.warn('Failed to build SQLite state snapshot', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    // Legacy replay: always send history + memory events for backward compatibility
     if (session.messages.length > 0) {
       this.send(ws, {
         id: randomBytes(8).toString('hex'),
@@ -196,7 +289,6 @@ export class WebSocketHandler {
       });
     }
 
-    // Send persisted memory events so new browsers get full memory activity
     if (session.memoryEvents.length > 0) {
       this.send(ws, {
         id: randomBytes(8).toString('hex'),
@@ -218,8 +310,8 @@ export class WebSocketHandler {
       this.handleMessage(clientId, data);
     });
 
-    ws.on('close', (code, reason) => {
-      log.info(` Client disconnected: ${clientId} (code=${code})`);
+    ws.on('close', (code, _reason) => {
+      log.info(`[session:disconnected] Client ${clientId} (code=${code})`, { sessionId: session.id });
       this.handleDisconnect(clientId);
     });
 
@@ -289,6 +381,9 @@ export class WebSocketHandler {
       case 'subscribe':
         this.handleSubscribe(conn, msg);
         break;
+      case 'init':
+        this.handleInit(conn, msg);
+        break;
       case 'ping':
         this.send(conn.ws, {
           id: msg.id,
@@ -323,6 +418,17 @@ export class WebSocketHandler {
       type: 'text',
       replyToId: msg.replyToId,
     });
+
+    // Also persist to SQLite state store for full history
+    if (this.stateStore) {
+      this.stateStore.appendEvent({
+        id: msg.id,
+        sessionId: conn.sessionId,
+        type: 'message',
+        timestamp: new Date().toISOString(),
+        data: { role: 'user', content, replyToId: msg.replyToId },
+      });
+    }
 
     // Acknowledge receipt
     this.send(conn.ws, {
@@ -429,6 +535,21 @@ export class WebSocketHandler {
 
   /** Handle a plan approval/rejection/modification — route to MainAgent. */
   private handlePlanResponse(conn: ClientConnection, _session: object, msg: ClientMessage): void {
+    // Record plan response in state store
+    if (this.stateStore && msg.planId && msg.action) {
+      this.stateStore.appendEvent({
+        id: randomBytes(8).toString('hex'),
+        sessionId: conn.sessionId,
+        type: 'plan_response',
+        timestamp: new Date().toISOString(),
+        data: { planId: msg.planId, action: msg.action, modification: msg.modification },
+      });
+      const resolveStatus = msg.action === 'approve' ? 'approved' as const
+        : msg.action === 'reject' ? 'rejected' as const
+        : 'modified' as const;
+      this.stateStore.resolvePendingAction(msg.planId, resolveStatus);
+    }
+
     if (this.mainAgent && msg.planId && msg.action) {
       this.mainAgent
         .handlePlanResponse(msg.planId, msg.action, msg.modification)
@@ -451,6 +572,20 @@ export class WebSocketHandler {
 
   /** Handle a DAG confirmation response (approve/reject for guarded operations). */
   private handleDAGResponse(conn: ClientConnection, msg: ClientMessage): void {
+    // Record DAG response in state store
+    if (this.stateStore && msg.workflowId && msg.dagAction) {
+      this.stateStore.appendEvent({
+        id: randomBytes(8).toString('hex'),
+        sessionId: conn.sessionId,
+        type: 'dag_response',
+        timestamp: new Date().toISOString(),
+        data: { workflowId: msg.workflowId, action: msg.dagAction },
+        workflowId: msg.workflowId,
+      });
+      const resolveStatus = msg.dagAction === 'approve' ? 'approved' as const : 'rejected' as const;
+      this.stateStore.resolvePendingAction(msg.workflowId, resolveStatus);
+    }
+
     if (this.mainAgent && msg.workflowId && msg.dagAction) {
       this.mainAgent
         .handleDAGResponse(msg.workflowId, msg.dagAction)
@@ -494,22 +629,86 @@ export class WebSocketHandler {
     }
   }
 
-  /** Clean up after a client disconnects and summarize session if last client. */
+  /**
+   * Handle an `init` message — the reconnection protocol entry point.
+   *
+   * Sends a paginated state snapshot so the client can rehydrate. Only the
+   * most recent SNAPSHOT_MAX_MESSAGES are included; the snapshot includes
+   * pagination hints so the client can lazy-load older messages via the
+   * REST API (GET /api/sessions/:id/activity) for virtual scrolling.
+   */
+  private handleInit(conn: ClientConnection, msg: ClientMessage): void {
+    const rehydrateStart = Date.now();
+    const session = this.sessionManager.getSession(conn.sessionId);
+    if (!session) {
+      this.send(conn.ws, {
+        id: randomBytes(8).toString('hex'),
+        type: 'error',
+        error: 'Session not found',
+      });
+      return;
+    }
+
+    const hindsightStatus = this.getHindsightStatus ? this.getHindsightStatus() : null;
+    const snapshot = this.sessionManager.buildSnapshot(
+      conn.sessionId,
+      hindsightStatus,
+      SNAPSHOT_MAX_MESSAGES,
+    );
+
+    // Drain any events that were buffered while no clients were connected
+    const buffered = this.sessionManager.drainEventBuffer(conn.sessionId);
+    const bufferedMessages = buffered.map((b) => b.message);
+
+    this.send(conn.ws, {
+      id: msg.id,
+      type: 'session',
+      sessionId: session.id,
+      snapshot: snapshot ?? undefined,
+      bufferedEvents: bufferedMessages,
+    });
+
+    const rehydrateMs = Date.now() - rehydrateStart;
+    log.info(`[ws:rehydrated] Sent state snapshot to ${conn.id}`, {
+      sessionId: session.id,
+      totalMessages: session.messages.length,
+      sentMessages: Math.min(session.messages.length, SNAPSHOT_MAX_MESSAGES),
+      bufferedEventCount: bufferedMessages.length,
+      dagCount: Object.keys(session.inlineDAGs).length,
+      rehydrateMs,
+    });
+  }
+
+  /**
+   * Clean up after a client disconnects and summarize session if last client.
+   * Handles rapid disconnect/reconnect by checking connection state before cleanup.
+   */
   private handleDisconnect(clientId: string): void {
     const conn = this.connections.get(clientId);
-    if (!conn) return;
+    if (!conn) return; // Already cleaned up (e.g. rapid disconnect/reconnect race)
 
     const sessionId = conn.sessionId;
+    const connectionDuration = Date.now() - new Date(conn.connectedAt).getTime();
+
     this.sessionManager.removeClient(sessionId, clientId);
     this.eventStreamer.removeClient(clientId);
     this.connections.delete(clientId);
 
-    // When the last client disconnects from a session, summarize to persistent memory
     const session = this.sessionManager.getSession(sessionId);
-    if (session && session.clients.size === 0 && this.mainAgent) {
-      log.info('Last client disconnected — summarizing session', { sessionId });
+    const remainingClients = session?.clients.size ?? 0;
+
+    log.info(`[ws:disconnected] Client ${clientId} disconnected`, {
+      sessionId,
+      clientType: conn.clientType,
+      connectionDurationMs: connectionDuration,
+      remainingClients,
+    });
+
+    // When the last client disconnects from a session, summarize to persistent memory
+    if (session && remainingClients === 0 && this.mainAgent) {
+      log.info('[ws:summarize] Last client disconnected — summarizing session', { sessionId });
       this.mainAgent.summarizeSession().catch((err) => {
-        log.warn('Session summarization failed on disconnect', {
+        log.warn('[ws:summarize:error] Session summarization failed on disconnect', {
           error: err instanceof Error ? err.message : String(err),
         });
       });
@@ -590,28 +789,199 @@ export class WebSocketHandler {
 
   /**
    * Broadcast a ServerMessage to all connected clients.
+   * Also tracks state server-side for reconnection snapshots and buffers
+   * events when no clients are connected.
    *
    * @param message - The message to send.
    */
   broadcast(message: ServerMessage): void {
+    // Track state server-side for reconnection snapshots
+    const defaultSession = this.sessionManager.getDefaultSession();
+    if (defaultSession) {
+      this.trackMessageState(defaultSession.id, message);
+    }
+
+    // If no clients are connected, buffer the event for later delivery
+    if (this.connections.size === 0 && defaultSession) {
+      this.sessionManager.bufferEvent(defaultSession.id, message);
+      return;
+    }
+
     for (const conn of this.connections.values()) {
       this.send(conn.ws, message);
     }
   }
 
-  /** Safely send a ServerMessage over a WebSocket. */
+  /**
+   * Track state changes from broadcast messages server-side.
+   * This enables full state snapshots on reconnection.
+   */
+  private trackMessageState(sessionId: string, message: ServerMessage): void {
+    switch (message.type) {
+      case 'dag_dispatched': {
+        const d = message.dagDispatch;
+        if (!d) break;
+        this.sessionManager.upsertInlineDAG(sessionId, {
+          dagId: d.workflowId,
+          summary: d.summary,
+          status: 'dispatched',
+          nodes: d.nodes.map((n) => ({ ...n, status: 'pending' as const })),
+          completedCount: 0,
+          totalCount: d.nodeCount,
+          elapsed: 0,
+        });
+        break;
+      }
+      case 'dag_progress': {
+        const p = message.dagProgress;
+        if (!p) break;
+        const statusMap: Record<string, 'pending' | 'running' | 'done' | 'error'> = {
+          started: 'running', progress: 'running', done: 'done', error: 'error',
+        };
+        this.sessionManager.updateInlineDAGNode(sessionId, p.workflowId, p.nodeId, {
+          status: statusMap[p.status] ?? 'running',
+          progress: p.progress,
+        });
+        break;
+      }
+      case 'dag_complete': {
+        const c = message.dagComplete;
+        if (!c) break;
+        this.sessionManager.completeInlineDAG(sessionId, c.workflowId, c.output ?? c.summary, c.status === 'error' ? c.summary : undefined, {
+          durationSec: c.durationSec,
+          workerCount: c.workerCount,
+          totalCostUsd: c.totalCostUsd,
+          toolCallCount: c.toolCallCount,
+          modelUsage: c.modelUsage,
+          nodeOutputPaths: c.nodeOutputPaths,
+          stopped: c.status === 'stopped',
+        });
+        break;
+      }
+      case 'dag_confirm': {
+        const cf = message.dagConfirm;
+        if (cf) {
+          this.sessionManager.setPendingConfirmation(sessionId, cf);
+        }
+        break;
+      }
+      case 'plan':
+        this.sessionManager.setActivePlan(sessionId, message.plan ?? null);
+        break;
+      case 'event':
+        if (message.event) {
+          this.sessionManager.addOrchestrationEvent(sessionId, message.event, message.workflowId);
+        }
+        break;
+      case 'text': {
+        // Track session totals from completed text messages with metadata
+        const meta = (message as unknown as Record<string, unknown>).metadata as { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; costUsd?: number } | undefined;
+        if (meta && !message.streaming && message.done && (meta.inputTokens || meta.outputTokens)) {
+          this.sessionManager.accumulateSessionTotals(sessionId, meta);
+        }
+        break;
+      }
+      case 'coding_event': {
+        const ce = message.codingEvent;
+        if (ce) {
+          // Store the raw coding event — the client rebuilds the full session from these
+          const session = this.sessionManager.getSession(sessionId);
+          if (session) {
+            // Track simplified coding session state server-side
+            if (ce.type === 'coding:session:started') {
+              this.sessionManager.setCodingSession(sessionId, {
+                sessionId: ce.payload.sessionId,
+                repoUrl: ce.payload.repoUrl,
+                branch: ce.payload.branch,
+                status: 'running',
+                steps: [],
+                reviews: [],
+                currentIteration: 0,
+              });
+            } else if (ce.type === 'coding:session:completed') {
+              const existing = session.codingSession as Record<string, unknown> | null;
+              if (existing) {
+                this.sessionManager.setCodingSession(sessionId, {
+                  ...existing,
+                  status: 'completed',
+                });
+              }
+            }
+          }
+        }
+        break;
+      }
+      case 'direct_complete': {
+        const dc = message.directComplete;
+        if (!dc) break;
+        // Create an InlineDAG entry like the client does
+        this.sessionManager.upsertInlineDAG(sessionId, {
+          dagId: dc.runId,
+          summary: 'Direct response',
+          status: 'dispatched',
+          nodes: [],
+          completedCount: 0,
+          totalCount: 1,
+          elapsed: 0,
+        });
+        this.sessionManager.completeInlineDAG(sessionId, dc.runId, undefined, undefined, {
+          durationSec: dc.durationSec,
+          workerCount: 1,
+          totalCostUsd: dc.totalCostUsd,
+          modelUsage: dc.modelUsage,
+        });
+        break;
+      }
+      // Other message types don't need server-side state tracking
+    }
+  }
+
+  /**
+   * Safely send a ServerMessage over a WebSocket.
+   *
+   * Large messages (>COMPRESS_THRESHOLD_BYTES) are compressed using zlib deflate
+   * before sending to reduce bandwidth usage on reconnection snapshots and
+   * large history payloads. The message is wrapped with a `compressed: true`
+   * flag so the client knows to decompress.
+   */
   private send(ws: WebSocket, message: ServerMessage): void {
     try {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify(message));
-      } else {
-        log.warn('Message dropped — WebSocket not open', {
+      if (ws.readyState !== WebSocket.OPEN) {
+        log.warn('[ws:send:dropped] Message dropped — WebSocket not open', {
           readyState: ws.readyState,
           messageType: message.type,
         });
+        return;
       }
+
+      const json = JSON.stringify(message);
+
+      // Compress large messages to reduce bandwidth (state snapshots, large histories)
+      if (json.length > COMPRESS_THRESHOLD_BYTES) {
+        try {
+          const compressed = deflateSync(Buffer.from(json, 'utf-8'));
+          // Send as binary frame with a 4-byte 'ZLIB' magic prefix so client can detect
+          const prefix = Buffer.from('ZLIB');
+          const frame = Buffer.concat([prefix, compressed]);
+          ws.send(frame);
+          log.verbose('[ws:send:compressed] Sent compressed message', {
+            type: message.type,
+            originalSize: json.length,
+            compressedSize: frame.length,
+            ratio: ((1 - frame.length / json.length) * 100).toFixed(1) + '%',
+          });
+          return;
+        } catch {
+          // Compression failed — fall through to uncompressed send
+        }
+      }
+
+      ws.send(json);
     } catch (err) {
-      log.error('Send error', { error: err instanceof Error ? err.message : String(err) });
+      log.error('[ws:send:error] Send failed', {
+        error: err instanceof Error ? err.message : String(err),
+        messageType: message.type,
+      });
     }
   }
 }

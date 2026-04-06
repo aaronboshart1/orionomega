@@ -9,6 +9,7 @@
 
 import type { WebSocket } from 'ws';
 import type { ClientConnection, ServerMessage } from './types.js';
+import type { SessionManager } from './sessions.js';
 import { randomBytes } from 'node:crypto';
 
 /** Event types that bypass batching and fire immediately for TUI clients. */
@@ -39,6 +40,18 @@ export class EventStreamer {
   private batchTimers: Map<string, ReturnType<typeof setInterval>> = new Map();
   private snapshotTimer: ReturnType<typeof setInterval> | null = null;
   private graphStateProvider: (() => unknown) | null = null;
+  private sessionManager: SessionManager | null = null;
+  private defaultSessionId: string = 'default';
+
+  /**
+   * Set the SessionManager reference for event buffering when no clients are connected.
+   * @param sm - The SessionManager instance.
+   * @param defaultSessionId - The default session ID to buffer events for.
+   */
+  setSessionManager(sm: SessionManager, defaultSessionId: string = 'default'): void {
+    this.sessionManager = sm;
+    this.defaultSessionId = defaultSessionId;
+  }
 
   /**
    * Register a client connection for event delivery.
@@ -119,6 +132,17 @@ export class EventStreamer {
    * @param workflowId - Optional workflow ID to scope event delivery.
    */
   emit(event: unknown, eventType?: string, workflowId?: string): void {
+    // Buffer events when no clients are connected
+    if (this.clients.size === 0 && this.sessionManager) {
+      this.sessionManager.bufferEvent(this.defaultSessionId, {
+        id: randomBytes(8).toString('hex'),
+        type: 'event',
+        workflowId,
+        event,
+      });
+      return;
+    }
+
     for (const [clientId, client] of this.clients) {
       // Apply per-client workflow subscription filter
       if (
@@ -163,6 +187,12 @@ export class EventStreamer {
    * @param message - The DAG message to broadcast.
    */
   emitDAGMessage(message: ServerMessage): void {
+    // Buffer DAG messages when no clients are connected
+    if (this.clients.size === 0 && this.sessionManager) {
+      this.sessionManager.bufferEvent(this.defaultSessionId, message);
+      return;
+    }
+
     for (const [, client] of this.clients) {
       // Apply per-client workflow subscription filter
       if (

@@ -194,31 +194,8 @@ interface HistoryMessage {
 }
 
 function waitForHydration(): Promise<void> {
-  const chatHydrated = useChatStore.persist.hasHydrated();
-  const orchHydrated = useOrchestrationStore.persist.hasHydrated();
-  if (chatHydrated && orchHydrated) return Promise.resolve();
-
-  return new Promise<void>((resolve) => {
-    let chatDone = chatHydrated;
-    let orchDone = orchHydrated;
-    let unsub1: (() => void) | null = null;
-    let unsub2: (() => void) | null = null;
-
-    const check = () => {
-      if (chatDone && orchDone) {
-        unsub1?.();
-        unsub2?.();
-        resolve();
-      }
-    };
-
-    if (!chatDone) {
-      unsub1 = useChatStore.persist.onFinishHydration(() => { chatDone = true; check(); });
-    }
-    if (!orchDone) {
-      unsub2 = useOrchestrationStore.persist.onFinishHydration(() => { orchDone = true; check(); });
-    }
-  });
+  // Both stores are non-persisted (no localStorage), so they are always hydrated.
+  return Promise.resolve();
 }
 
 function processHistoryWhenHydrated(history: HistoryMessage[]): void {
@@ -350,11 +327,255 @@ function processHistoryWhenHydrated(history: HistoryMessage[]): void {
   });
 }
 
+/** Track reconnect attempts for exponential backoff status reporting. */
+let reconnectAttemptCount = 0;
+/** Whether we've received a session snapshot (init protocol completed). */
+let initAcked = false;
+
+/**
+ * Rehydrate all client stores from a full server-side state snapshot.
+ *
+ * This is the core of the reconnection protocol — the client becomes a pure
+ * view layer driven entirely by the server's authoritative state.
+ *
+ * Error boundary: each rehydration step is wrapped in try-catch so that a
+ * failure in one section (e.g. corrupt DAG data) doesn't prevent other
+ * sections from rehydrating. Errors are logged but the UI remains functional.
+ *
+ * The snapshot may include pagination hints (snapshot.pagination) when the
+ * server has truncated the message history. The client can use the REST API
+ * (GET /api/sessions/:id/activity) to lazy-load older messages.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function rehydrateFromSnapshot(snapshot: any, bufferedEvents?: unknown[]): void {
+  waitForHydration().then(() => {
+    const rehydrateStart = performance.now();
+    let sectionsOk = 0;
+    let sectionsFailed = 0;
+
+    const chat = useChatStore.getState();
+    const orch = useOrchestrationStore.getState();
+
+    // ── 1. Rehydrate chat messages ──────────────────────────────────────
+    try {
+      if (snapshot.messages && Array.isArray(snapshot.messages)) {
+        processHistoryWhenHydrated(snapshot.messages);
+      }
+      sectionsOk++;
+    } catch (err) {
+      sectionsFailed++;
+      console.error('[gateway] Failed to rehydrate chat messages', err);
+    }
+
+    // ── 2. Rehydrate memory events ──────────────────────────────────────
+    try {
+      if (snapshot.memoryEvents && Array.isArray(snapshot.memoryEvents)) {
+        const existingIds = new Set(orch.memoryEvents.map((e: { id: string }) => e.id));
+        const newEvents = snapshot.memoryEvents.filter((e: { id: string }) => !existingIds.has(e.id));
+        for (const e of newEvents) {
+          orch.addMemoryEvent(e);
+        }
+      }
+      sectionsOk++;
+    } catch (err) {
+      sectionsFailed++;
+      console.error('[gateway] Failed to rehydrate memory events', err);
+    }
+
+    // ── 3. Rehydrate inline DAGs ────────────────────────────────────────
+    try {
+      if (snapshot.inlineDAGs && typeof snapshot.inlineDAGs === 'object') {
+        for (const [dagId, dagData] of Object.entries(snapshot.inlineDAGs)) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const dag = dagData as any;
+          const existing = orch.inlineDAGs[dagId];
+          // Only overwrite if server has newer/more complete data
+          if (!existing || (existing.status !== 'complete' && existing.status !== 'error' && existing.status !== 'stopped')) {
+            orch.upsertInlineDAG({
+              dagId: dag.dagId,
+              summary: dag.summary,
+              status: dag.status,
+              nodes: dag.nodes || [],
+              completedCount: dag.completedCount ?? 0,
+              totalCount: dag.totalCount ?? 0,
+              elapsed: dag.elapsed ?? 0,
+            });
+            // If the server says it's complete, apply completion stats
+            if (dag.status === 'complete' || dag.status === 'error' || dag.status === 'stopped') {
+              orch.completeDAG(dagId, dag.result, dag.error, {
+                durationSec: dag.durationSec,
+                workerCount: dag.workerCount,
+                totalCostUsd: dag.totalCostUsd,
+                toolCallCount: dag.toolCallCount,
+                modelUsage: dag.modelUsage,
+                nodeOutputPaths: dag.nodeOutputPaths,
+                stopped: dag.status === 'stopped',
+              });
+            }
+          }
+        }
+      }
+      sectionsOk++;
+    } catch (err) {
+      sectionsFailed++;
+      console.error('[gateway] Failed to rehydrate inline DAGs', err);
+    }
+
+    // ── 4. Rehydrate session totals ─────────────────────────────────────
+    try {
+      if (snapshot.sessionTotals) {
+        const totals = snapshot.sessionTotals;
+        // Server totals are authoritative — replace client-side totals
+        chat.setMessages(chat.messages); // no-op to trigger re-render
+        // We need to set the session totals directly via the store
+        useChatStore.setState({
+          sessionTotals: {
+            inputTokens: totals.inputTokens ?? 0,
+            outputTokens: totals.outputTokens ?? 0,
+            cacheReadTokens: totals.cacheReadTokens ?? 0,
+            totalCostUsd: totals.totalCostUsd ?? 0,
+            messageCount: totals.messageCount ?? 0,
+          },
+        });
+      }
+      sectionsOk++;
+    } catch (err) {
+      sectionsFailed++;
+      console.error('[gateway] Failed to rehydrate session totals', err);
+    }
+
+    // ── 5. Rehydrate active plan ────────────────────────────────────────
+    try {
+      if (snapshot.activePlan !== undefined) {
+        orch.setActivePlan(snapshot.activePlan);
+      }
+      sectionsOk++;
+    } catch (err) {
+      sectionsFailed++;
+      console.error('[gateway] Failed to rehydrate active plan', err);
+    }
+
+    // ── 6. Rehydrate pending confirmation ───────────────────────────────
+    try {
+      if (snapshot.pendingConfirmation !== undefined) {
+        if (snapshot.pendingConfirmation) {
+          const cf = snapshot.pendingConfirmation;
+          orch.setPendingConfirmation({
+            dagId: cf.workflowId,
+            summary: cf.summary,
+            reason: cf.reasoning,
+            guardedNodes: (cf.guardedActions ?? []).map((a: string, i: number) => ({
+              id: `guard-${i}`, label: a, risk: 'high',
+            })),
+          });
+        } else {
+          orch.setPendingConfirmation(null);
+        }
+      }
+      sectionsOk++;
+    } catch (err) {
+      sectionsFailed++;
+      console.error('[gateway] Failed to rehydrate pending confirmation', err);
+    }
+
+    // ── 7. Rehydrate agent mode ─────────────────────────────────────────
+    try {
+      if (snapshot.agentMode) {
+        const validModes = new Set(['orchestrate', 'direct', 'code']);
+        if (validModes.has(snapshot.agentMode)) {
+          useAgentModeStore.getState().setMode(snapshot.agentMode);
+        }
+      }
+      sectionsOk++;
+    } catch (err) {
+      sectionsFailed++;
+      console.error('[gateway] Failed to rehydrate agent mode', err);
+    }
+
+    // ── 8. Rehydrate coding session ─────────────────────────────────────
+    try {
+      if (snapshot.codingSession) {
+        const cs = snapshot.codingSession;
+        useCodingModeStore.getState().setSession({
+          sessionId: cs.sessionId ?? '',
+          taskDescription: cs.taskDescription ?? '',
+          repoUrl: cs.repoUrl ?? '',
+          branch: cs.branch ?? '',
+          status: cs.status ?? 'running',
+          steps: cs.steps ?? [],
+          reviews: cs.reviews ?? [],
+          currentIteration: cs.currentIteration ?? 0,
+        });
+      }
+      sectionsOk++;
+    } catch (err) {
+      sectionsFailed++;
+      console.error('[gateway] Failed to rehydrate coding session', err);
+    }
+
+    // ── 9. Rehydrate hindsight status ───────────────────────────────────
+    try {
+      if (snapshot.hindsightStatus) {
+        useConnectionStore.getState().setHindsightStatus(
+          !!snapshot.hindsightStatus.connected,
+          !!snapshot.hindsightStatus.busy,
+        );
+      }
+      sectionsOk++;
+    } catch (err) {
+      sectionsFailed++;
+      console.error('[gateway] Failed to rehydrate hindsight status', err);
+    }
+
+    // ── 10. Replay buffered events (events that happened while disconnected) ──
+    if (bufferedEvents && Array.isArray(bufferedEvents)) {
+      for (const rawEvt of bufferedEvents) {
+        // Each buffered event is a ServerMessage — replay it through the normal handler
+        try {
+          const synthetic = new MessageEvent('message', {
+            data: JSON.stringify(rawEvt),
+          });
+          if (singletonWs?.onmessage) {
+            singletonWs.onmessage(synthetic);
+          }
+        } catch (err) {
+          console.warn('[gateway] Failed to replay buffered event', err);
+        }
+      }
+    }
+
+    const rehydrateMs = Math.round(performance.now() - rehydrateStart);
+    const _pagination = snapshot.pagination;
+    // Use console.warn (allowed by lint) instead of console.info for rehydration diagnostics
+    if (sectionsFailed > 0 || rehydrateMs > 500) {
+      console.warn('[gateway] State rehydrated from server snapshot', {
+        messages: snapshot.messages?.length ?? 0,
+        dags: Object.keys(snapshot.inlineDAGs ?? {}).length,
+        sectionsOk,
+        sectionsFailed,
+        rehydrateMs,
+        hasOlderMessages: _pagination?.hasOlderMessages ?? false,
+      });
+    }
+
+    // If rehydration had failures, show a non-blocking warning to the user
+    if (sectionsFailed > 0) {
+      console.warn(`[gateway] Rehydration completed with ${sectionsFailed} error(s) — some UI state may be incomplete`);
+    }
+  });
+}
+
 function getOrCreateWs(): ReconnectingWebSocket {
   if (!singletonWs || singletonWs.readyState === WebSocket.CLOSED) {
     boundWs = null;
+    reconnectAttemptCount = 0;
+    initAcked = false;
     singletonWs = new ReconnectingWebSocket(getGatewayUrl, undefined, {
       maxRetries: Infinity,
+      // Exponential backoff: 1s, 2s, 4s, 8s, 16s, capped at 30s
+      minReconnectionDelay: 1000,
+      maxReconnectionDelay: 30000,
+      reconnectionDelayGrowFactor: 2,
     });
   }
   return singletonWs;
@@ -371,6 +592,55 @@ function bindListeners(ws: ReconnectingWebSocket): void {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let msg: any;
     try {
+      // Handle compressed messages (binary frames with 'ZLIB' magic prefix).
+      // The gateway compresses messages >64KB to reduce bandwidth.
+      if (raw.data instanceof ArrayBuffer || raw.data instanceof Blob) {
+        // Binary frame — check for ZLIB compression prefix
+        const handleBinary = async (data: ArrayBuffer | Blob) => {
+          const buffer = data instanceof Blob ? await data.arrayBuffer() : data;
+          const bytes = new Uint8Array(buffer);
+          // Check for 'ZLIB' magic prefix (0x5A 0x4C 0x49 0x42)
+          if (bytes.length > 4 && bytes[0] === 0x5A && bytes[1] === 0x4C && bytes[2] === 0x49 && bytes[3] === 0x42) {
+            // Decompress using DecompressionStream (standard Web API)
+            const compressed = bytes.slice(4);
+            const ds = new DecompressionStream('deflate');
+            const writer = ds.writable.getWriter();
+            writer.write(compressed);
+            writer.close();
+            const reader = ds.readable.getReader();
+            const chunks: Uint8Array[] = [];
+            for (;;) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              chunks.push(value);
+            }
+            const totalLength = chunks.reduce((sum, c) => sum + c.length, 0);
+            const result = new Uint8Array(totalLength);
+            let offset = 0;
+            for (const chunk of chunks) {
+              result.set(chunk, offset);
+              offset += chunk.length;
+            }
+            const json = new TextDecoder().decode(result);
+            // Validate the decompressed data is valid JSON before re-dispatching
+            JSON.parse(json);
+            // Re-dispatch as a synthetic text message event
+            const synthetic = new MessageEvent('message', { data: json });
+            if (ws.onmessage) ws.onmessage(synthetic);
+            return;
+          }
+          // Not compressed — try parsing as UTF-8 JSON
+          const text = new TextDecoder().decode(bytes);
+          JSON.parse(text); // Validate JSON
+          const synthetic = new MessageEvent('message', { data: text });
+          if (ws.onmessage) ws.onmessage(synthetic);
+        };
+        handleBinary(raw.data).catch((err) => {
+          console.warn('[gateway] Failed to handle binary WebSocket message', err);
+        });
+        return;
+      }
+
       msg = JSON.parse(raw.data as string);
     } catch {
       console.warn('[gateway] Received non-JSON WebSocket message, ignoring');
@@ -679,6 +949,26 @@ function bindListeners(ws: ReconnectingWebSocket): void {
           type: 'error',
         });
         break;
+      case 'session': {
+        // Full state snapshot from the init protocol — rehydrate everything
+        if (msg.sessionId) {
+          try { localStorage.setItem(SESSION_KEY, msg.sessionId); } catch { /* ignore */ }
+        }
+        initAcked = true;
+        if (msg.snapshot) {
+          rehydrateFromSnapshot(msg.snapshot, msg.bufferedEvents);
+        }
+        // Mark gateway as connected now that we have full state
+        wsReady = true;
+        healthCheckId = null;
+        if (healthCheckTimer) { clearTimeout(healthCheckTimer); healthCheckTimer = null; }
+        reconnectAttemptCount = 0;
+        useConnectionStore.getState().setGatewayConnected(true);
+        useConnectionStore.getState().setConnectionStatus('connected');
+        useConnectionStore.getState().setReconnectAttempt(0);
+        flushPendingMessages(ws);
+        break;
+      }
       case 'ack':
         try {
           const ackData = msg.content ? JSON.parse(msg.content) : null;
@@ -877,7 +1167,29 @@ function bindListeners(ws: ReconnectingWebSocket): void {
       chat.setStreamingStatus('');
     }
 
+    // Reset reconnect tracking
+    reconnectAttemptCount = 0;
+    initAcked = false;
     wsReady = false;
+
+    // Update connection status — we're connected but awaiting init ack
+    useConnectionStore.getState().setReconnectAttempt(0);
+
+    // Send init message with saved session ID for full state rehydration
+    let savedSession: string | null = null;
+    try { savedSession = localStorage.getItem(SESSION_KEY); } catch { /* ignore */ }
+    const initId = uuid();
+    try {
+      ws.send(JSON.stringify({
+        id: initId,
+        type: 'init',
+        ...(savedSession ? { sessionId: savedSession } : {}),
+      }));
+    } catch {
+      /* will retry on next reconnect */
+    }
+
+    // Also send a ping for backward compat health check
     if (healthCheckTimer) clearTimeout(healthCheckTimer);
     healthCheckId = uuid();
     const pingId = healthCheckId;
@@ -911,12 +1223,20 @@ function bindListeners(ws: ReconnectingWebSocket): void {
 
   ws.onclose = () => {
     wsReady = false;
+    initAcked = false;
     if (healthCheckTimer) { clearTimeout(healthCheckTimer); healthCheckTimer = null; }
     healthCheckId = null;
     if (statusFetchController) { statusFetchController.abort(); statusFetchController = null; }
     const connStore = useConnectionStore.getState();
     connStore.setGatewayConnected(false);
     connStore.setHindsightStatus(false, false);
+
+    // Track reconnect attempts and set appropriate status
+    reconnectAttemptCount++;
+    connStore.setReconnectAttempt(reconnectAttemptCount);
+    // First disconnect → 'reconnecting', sustained → stays 'reconnecting'
+    // Only set 'disconnected' if we've never connected or after many failures
+    connStore.setConnectionStatus(reconnectAttemptCount > 10 ? 'disconnected' : 'reconnecting');
 
     useChatStore.getState().markLastInterrupted();
     useOrchestrationStore.getState().markAllInterrupted();

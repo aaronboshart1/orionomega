@@ -4,8 +4,9 @@
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { SessionManager } from '../sessions.js';
+import { SessionManager, DEFAULT_SESSION_ID } from '../sessions.js';
 import { TtlCache, STATE_TTL_MS, ACTIVITY_TTL_MS } from './cache.js';
+import type { ServerSessionStore } from '../state-store.js';
 
 /** Module-scoped caches — one per endpoint family. */
 const stateCache = new TtlCache<string>();
@@ -186,5 +187,101 @@ export function handleGetSessionActivity(
 
   activityCache.set(cacheKey, body, ACTIVITY_TTL_MS);
   res.writeHead(200, { 'Content-Type': 'application/json', 'X-Cache': 'MISS' });
+  res.end(body);
+}
+
+/**
+ * Handle DELETE /api/sessions/:id — delete/cleanup a session.
+ *
+ * The default session cannot be deleted — returns 400 with an explanation.
+ * For other sessions, removes from both SessionManager and StateStore.
+ */
+export function handleDeleteSession(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  sessionManager: SessionManager,
+  stateStore: ServerSessionStore | undefined,
+  sessionId: string,
+): void {
+  if (sessionId === DEFAULT_SESSION_ID) {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Cannot delete the default session — use /reset to clear it' }));
+    return;
+  }
+
+  const session = sessionManager.getSession(sessionId);
+  if (!session) {
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Session not found' }));
+    return;
+  }
+
+  sessionManager.deleteSession(sessionId);
+  stateStore?.clearSession(sessionId);
+
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ deleted: true, sessionId }));
+}
+
+/**
+ * Handle GET /api/sessions/:id/activity — paginated activity log from the state store.
+ *
+ * Query parameters:
+ *   limit  (optional) — max items per page (default 100, max 500)
+ *   offset (optional) — number of items to skip (default 0)
+ *   types  (optional) — comma-separated event type filter (e.g. "message,dag_dispatched")
+ *   since  (optional) — ISO-8601 timestamp; only events after this time
+ *   before (optional) — ISO-8601 timestamp; only events before this time
+ *   workflowId (optional) — filter to a specific workflow
+ *
+ * Response shape:
+ * {
+ *   items: StateEvent[],
+ *   total: number,
+ *   offset: number,
+ *   limit: number,
+ *   hasMore: boolean,
+ *   sessionId: string
+ * }
+ */
+export function handleGetSessionActivityPaginated(
+  req: IncomingMessage,
+  res: ServerResponse,
+  sessionManager: SessionManager,
+  stateStore: ServerSessionStore | undefined,
+  sessionId: string,
+): void {
+  const session = sessionManager.getSession(sessionId);
+  if (!session) {
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Session not found' }));
+    return;
+  }
+
+  if (!stateStore) {
+    res.writeHead(503, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'State store not available' }));
+    return;
+  }
+
+  const rawUrl = req.url ?? '/';
+  const queryStr = rawUrl.split('?')[1] ?? '';
+  const params = new URLSearchParams(queryStr);
+
+  const typesParam = params.get('types');
+  const types = typesParam ? typesParam.split(',').filter(Boolean) : undefined;
+
+  const result = stateStore.queryEvents({
+    sessionId,
+    types: types as import('../state-types.js').StateEventType[] | undefined,
+    workflowId: params.get('workflowId') ?? undefined,
+    since: params.get('since') ?? undefined,
+    before: params.get('before') ?? undefined,
+    limit: params.has('limit') ? parseInt(params.get('limit')!, 10) : undefined,
+    offset: params.has('offset') ? parseInt(params.get('offset')!, 10) : undefined,
+  });
+
+  const body = JSON.stringify({ ...result, sessionId });
+  res.writeHead(200, { 'Content-Type': 'application/json' });
   res.end(body);
 }

@@ -1,6 +1,4 @@
 import { create } from 'zustand';
-import { persist, createJSONStorage } from 'zustand/middleware';
-import { useEffect, useState } from 'react';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -89,33 +87,13 @@ interface CodingModeStore {
   }) => void;
   failSession: (error: string) => void;
   clearSession: () => void;
+  /** Rehydrate store from a server state snapshot (replaces localStorage persistence). */
+  hydrateFromSnapshot: (snapshot: { session?: CodingSession | null }) => void;
 }
-
-// ── Safe localStorage ──────────────────────────────────────────────────────────
-
-const safeLocalStorage = {
-  getItem: (name: string): string | null => {
-    try { return localStorage.getItem(name); } catch { return null; }
-  },
-  setItem: (name: string, value: string): void => {
-    try {
-      localStorage.setItem(name, value);
-    } catch (e) {
-      if (e instanceof DOMException && (e.name === 'QuotaExceededError' || e.code === 22)) {
-        try { localStorage.removeItem(name); localStorage.setItem(name, value); } catch { /* ignore */ }
-      }
-    }
-  },
-  removeItem: (name: string): void => {
-    try { localStorage.removeItem(name); } catch { /* ignore */ }
-  },
-};
 
 // ── Store ──────────────────────────────────────────────────────────────────────
 
-export const useCodingModeStore = create<CodingModeStore>()(
-  persist(
-    (set) => ({
+export const useCodingModeStore = create<CodingModeStore>()((set) => ({
       session: null,
       pendingStart: null,
 
@@ -202,23 +180,10 @@ export const useCodingModeStore = create<CodingModeStore>()(
         }),
 
       clearSession: () => set({ session: null, pendingStart: null }),
-    }),
-    {
-      name: 'orionomega-coding-mode',
-      storage: createJSONStorage(() => safeLocalStorage),
-      partialize: (state) => ({ session: state.session }),
-    },
-  ),
-);
 
-// ── Hydration hook ─────────────────────────────────────────────────────────────
-
-export function useCodingModeHydrated(): boolean {
-  const [hydrated, setHydrated] = useState(false);
-  useEffect(() => {
-    const unsub = useCodingModeStore.persist.onFinishHydration(() => setHydrated(true));
-    if (useCodingModeStore.persist.hasHydrated()) setHydrated(true);
-    return unsub;
-  }, []);
-  return hydrated;
-}
+      hydrateFromSnapshot: (snapshot) =>
+        set({
+          session: snapshot.session ?? null,
+          pendingStart: null,
+        }),
+}));

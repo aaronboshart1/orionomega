@@ -24,7 +24,9 @@ export interface ClientConnection {
 /** Client → Gateway message envelope. */
 export interface ClientMessage {
   id: string;
-  type: 'chat' | 'command' | 'plan_response' | 'subscribe' | 'dag_response' | 'ping' | 'file_read';
+  type: 'chat' | 'command' | 'plan_response' | 'subscribe' | 'dag_response' | 'ping' | 'file_read' | 'init';
+  /** Session ID for reconnection — sent with 'init' message. */
+  sessionId?: string;
   content?: string;
   command?: string;
   planId?: string;
@@ -165,7 +167,8 @@ export interface ServerMessage {
     | 'pong' | 'file_content'
     | 'hindsight_status' | 'memory_event' | 'memory_history'
     | 'coding_event'
-    | 'direct_complete';
+    | 'direct_complete'
+    | 'session';
   /** Identifies which workflow this message relates to (events, status updates, plans). */
   workflowId?: string;
   /** The user message ID this response is answering (set by handleChat). */
@@ -245,6 +248,13 @@ export interface ServerMessage {
 
   /** Coding Mode lifecycle event. Present when `type === 'coding_event'`. */
   codingEvent?: CodingEventPayload;
+  /** Full state snapshot for reconnection. Present when `type === 'session'`. */
+  snapshot?: Record<string, unknown>;
+  /** Session ID. Present when `type === 'session'`. */
+  sessionId?: string;
+  /** Buffered events that occurred while client was disconnected. Present when `type === 'session'`. */
+  bufferedEvents?: unknown[];
+
   /** Per-run stats for direct (non-DAG) conversation turns. Present when `type === 'direct_complete'`. */
   directComplete?: {
     runId: string;

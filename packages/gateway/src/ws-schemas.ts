@@ -65,6 +65,12 @@ const fileReadSchema = z.object({
   path: z.string().min(1).max(4096),
 });
 
+const initSchema = z.object({
+  id: z.string().min(1).max(128),
+  type: z.literal('init'),
+  sessionId: z.string().max(128).optional(),
+});
+
 const clientMessageSchema = z.discriminatedUnion('type', [
   chatMessageSchema,
   commandMessageSchema,
@@ -73,6 +79,7 @@ const clientMessageSchema = z.discriminatedUnion('type', [
   subscribeSchema,
   pingSchema,
   fileReadSchema,
+  initSchema,
 ]);
 
 export type ValidatedClientMessage = z.infer<typeof clientMessageSchema>;

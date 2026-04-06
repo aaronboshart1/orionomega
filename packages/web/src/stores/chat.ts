@@ -1,6 +1,4 @@
 import { create } from 'zustand';
-import { persist, createJSONStorage } from 'zustand/middleware';
-import { useEffect, useState } from 'react';
 import { uuid } from '@/lib/uuid';
 
 export interface ThinkingStep {
@@ -112,49 +110,11 @@ interface ChatStore {
   clearMessages: () => void;
   setReplyTarget: (target: ReplyToData | null) => void;
   accumulateTokens: (meta: MessageMetadata) => void;
+  /** Rehydrate store from a server state snapshot (replaces localStorage persistence). */
+  hydrateFromSnapshot: (snapshot: { messages?: ChatMessage[]; sessionTotals?: SessionTokenTotals }) => void;
 }
 
-/** Max messages to persist to localStorage to prevent quota exhaustion. */
-const MAX_PERSISTED_MESSAGES = 200;
-
-/**
- * Safe localStorage adapter that catches QuotaExceededError.
- * On quota failure: clears the key and retries once. If still failing, silently drops.
- */
-const safeLocalStorage = {
-  getItem(name: string): string | null {
-    try {
-      return localStorage.getItem(name);
-    } catch {
-      return null;
-    }
-  },
-  setItem(name: string, value: string): void {
-    try {
-      localStorage.setItem(name, value);
-    } catch (e) {
-      if (e instanceof DOMException && (e.name === 'QuotaExceededError' || e.code === 22)) {
-        try {
-          localStorage.removeItem(name);
-          localStorage.setItem(name, value);
-        } catch {
-          // Still failing — silently drop the write
-        }
-      }
-    }
-  },
-  removeItem(name: string): void {
-    try {
-      localStorage.removeItem(name);
-    } catch {
-      // ignore
-    }
-  },
-};
-
-export const useChatStore = create<ChatStore>()(
-  persist(
-    (set) => ({
+export const useChatStore = create<ChatStore>()((set) => ({
       messages: [],
       isStreaming: false,
       thinkingContent: '',
@@ -259,33 +219,42 @@ export const useChatStore = create<ChatStore>()(
             messageCount: s.sessionTotals.messageCount + 1,
           },
         })),
-    }),
-    {
-      name: 'orionomega-chat',
-      storage: createJSONStorage(() => safeLocalStorage),
-      partialize: (state) => ({
-        messages: state.messages.slice(-MAX_PERSISTED_MESSAGES).map((m) => {
-          // Strip dataUrl from attachments to avoid persisting large base64 blobs
-          if (m.attachments?.some((a) => a.dataUrl)) {
-            return {
-              ...m,
-              attachments: m.attachments.map(({ dataUrl: _dataUrl, ...rest }) => rest),
-            };
-          }
-          return m;
-        }),
-        sessionTotals: state.sessionTotals,
-      }),
-    },
-  ),
-);
+      /**
+       * Rehydrate from a server state snapshot with error resilience.
+       * If the snapshot data is malformed, falls back to safe defaults.
+       */
+      hydrateFromSnapshot: (snapshot) => {
+        try {
+          const messages = Array.isArray(snapshot.messages) ? snapshot.messages : [];
+          const totals = snapshot.sessionTotals ?? { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, totalCostUsd: 0, messageCount: 0 };
+          set({
+            messages,
+            sessionTotals: {
+              inputTokens: typeof totals.inputTokens === 'number' ? totals.inputTokens : 0,
+              outputTokens: typeof totals.outputTokens === 'number' ? totals.outputTokens : 0,
+              cacheReadTokens: typeof totals.cacheReadTokens === 'number' ? totals.cacheReadTokens : 0,
+              totalCostUsd: typeof totals.totalCostUsd === 'number' ? totals.totalCostUsd : 0,
+              messageCount: typeof totals.messageCount === 'number' ? totals.messageCount : 0,
+            },
+            isStreaming: false,
+            thinkingContent: '',
+            streamingStatus: '',
+            thinkingSteps: [],
+          });
+        } catch {
+          // Graceful degradation: reset to empty state on corrupt snapshot
+          set({
+            messages: [],
+            sessionTotals: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, totalCostUsd: 0, messageCount: 0 },
+            isStreaming: false,
+            thinkingContent: '',
+            streamingStatus: '',
+            thinkingSteps: [],
+          });
+        }
+      },
+}));
 
 export function useChatHydrated(): boolean {
-  const [hydrated, setHydrated] = useState(false);
-  useEffect(() => {
-    const unsub = useChatStore.persist.onFinishHydration(() => setHydrated(true));
-    if (useChatStore.persist.hasHydrated()) setHydrated(true);
-    return unsub;
-  }, []);
-  return hydrated;
+  return true;
 }

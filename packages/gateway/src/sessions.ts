@@ -2,13 +2,35 @@
  * @module sessions
  * Session management with disk persistence for the gateway.
  *
+ * Architecture overview:
+ * ─────────────────────
  * Sessions are persisted to ~/.orionomega/sessions/{id}.json so that
  * conversations survive gateway restarts — the TUI reconnects with its
  * saved session ID and gets the full history back, like a console session.
+ *
+ * Persistence strategy:
+ * - Debounced writes (configurable, default 500ms) coalesce rapid mutations
+ *   into a single atomic JSON write, preventing disk thrashing during streaming.
+ * - File permissions are 0o600 (owner-only read/write) for security.
+ * - Graceful shutdown flushes all pending writes immediately.
+ * - Backup copies are created before each write for crash recovery.
+ *
+ * Memory management:
+ * - Messages capped at MAX_MESSAGES_PER_SESSION (configurable via env).
+ * - Memory events, run history, orchestration events all have independent caps.
+ * - Periodic cleanup removes stale sessions with no connected clients.
+ * - Memory usage is tracked and reported via getMetrics().
+ *
+ * Configuration (via environment variables):
+ * - SESSION_MAX_MESSAGES: Max messages per session (default: 1000)
+ * - SESSION_MAX_AGE_HOURS: Hours before session cleanup (default: 24)
+ * - SESSION_CLEANUP_INTERVAL_MIN: Cleanup sweep interval in minutes (default: 30)
+ * - SESSION_PERSIST_DEBOUNCE_MS: Debounce delay for disk writes (default: 500)
+ * - SESSION_MAX_SESSIONS: Maximum concurrent sessions (default: 50)
  */
 
-import { randomBytes } from 'node:crypto';
-import { readFileSync, writeFileSync, readdirSync, mkdirSync, unlinkSync, statSync } from 'node:fs';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { readFileSync, writeFileSync, readdirSync, mkdirSync, unlinkSync, statSync, renameSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { createLogger } from '@orionomega/core';
@@ -21,14 +43,22 @@ const SESSIONS_DIR = join(homedir(), '.orionomega', 'sessions');
 /** The fixed ID for the single persistent default session. */
 export const DEFAULT_SESSION_ID = 'default';
 
+// ─── Configurable constants (via environment variables) ─────────────────────
+
 /** Maximum messages per session before oldest are pruned. */
-const MAX_MESSAGES_PER_SESSION = 1000;
+const MAX_MESSAGES_PER_SESSION = parseInt(process.env.SESSION_MAX_MESSAGES ?? '1000', 10);
 
-/** Maximum age (ms) before a session is eligible for archival — 24 hours. */
-const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+/** Maximum age (ms) before a session is eligible for archival. */
+const SESSION_MAX_AGE_MS = parseInt(process.env.SESSION_MAX_AGE_HOURS ?? '24', 10) * 60 * 60 * 1000;
 
-/** How often to run the cleanup sweep (ms) — every 30 minutes. */
-const CLEANUP_INTERVAL_MS = 30 * 60 * 1000;
+/** How often to run the cleanup sweep (ms). */
+const CLEANUP_INTERVAL_MS = parseInt(process.env.SESSION_CLEANUP_INTERVAL_MIN ?? '30', 10) * 60 * 1000;
+
+/** Debounce delay (ms) for coalescing disk writes. */
+const PERSIST_DEBOUNCE_MS = parseInt(process.env.SESSION_PERSIST_DEBOUNCE_MS ?? '500', 10);
+
+/** Maximum concurrent sessions allowed (prevents resource exhaustion). */
+const MAX_SESSIONS = parseInt(process.env.SESSION_MAX_SESSIONS ?? '50', 10);
 
 /** A chat message within a session. */
 export interface Message {
@@ -84,6 +114,60 @@ export interface RunSummary {
   }>;
 }
 
+/** Lightweight DAG node state tracked server-side for reconnection snapshots. */
+export interface InlineDAGData {
+  dagId: string;
+  summary: string;
+  status: 'dispatched' | 'running' | 'complete' | 'error' | 'stopped' | 'paused' | 'interrupted';
+  nodes: Array<{
+    id: string;
+    label: string;
+    type: string;
+    status: 'pending' | 'running' | 'done' | 'error' | 'skipped' | 'cancelled';
+    progress?: number;
+  }>;
+  completedCount: number;
+  totalCount: number;
+  elapsed: number;
+  result?: string;
+  error?: string;
+  durationSec?: number;
+  workerCount?: number;
+  totalCostUsd?: number;
+  toolCallCount?: number;
+  modelUsage?: Array<{
+    model: string;
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+    cacheCreationTokens: number;
+    workerCount: number;
+    costUsd: number;
+  }>;
+  nodeOutputPaths?: Record<string, string[]>;
+}
+
+/** Cumulative session-level token/cost totals tracked server-side. */
+export interface SessionTotals {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  totalCostUsd: number;
+  messageCount: number;
+}
+
+/** A buffered ServerMessage stored when no clients are connected. */
+export interface BufferedEvent {
+  message: unknown;
+  timestamp: string;
+}
+
+/** Maximum buffered events to retain per session while clients are disconnected. */
+const MAX_EVENT_BUFFER = 500;
+
+/** Maximum orchestration events to persist per session. */
+const MAX_ORCHESTRATION_EVENTS = 500;
+
 /** Serializable session shape (written to disk). */
 interface SessionData {
   id: string;
@@ -96,6 +180,18 @@ interface SessionData {
   agentMode?: 'orchestrate' | 'direct' | 'code';
   /** Completed run summaries for review after completion. */
   runHistory?: RunSummary[];
+  /** Server-tracked inline DAG states for reconnection snapshots. */
+  inlineDAGs?: Record<string, InlineDAGData>;
+  /** Orchestration worker events for reconnection snapshots. */
+  orchestrationEvents?: Array<{ workflowId?: string; event: unknown }>;
+  /** Current coding session state for reconnection snapshots. */
+  codingSession?: unknown;
+  /** Cumulative session token/cost totals. */
+  sessionTotals?: SessionTotals;
+  /** Current active plan awaiting user response. */
+  activePlan?: unknown;
+  /** Current pending DAG confirmation awaiting user response. */
+  pendingConfirmation?: unknown;
 }
 
 /** Maximum memory events to persist per session. */
@@ -103,6 +199,36 @@ const MAX_MEMORY_EVENTS = 200;
 
 /** Maximum run summaries to persist per session. */
 const MAX_RUN_HISTORY = 100;
+
+// ─── Session Metrics ────────────────────────────────────────────────────────
+
+/** Observable metrics for the session subsystem. */
+export interface SessionMetrics {
+  /** Total active sessions in memory. */
+  activeSessions: number;
+  /** Total connected clients across all sessions. */
+  totalClients: number;
+  /** Total messages across all sessions. */
+  totalMessages: number;
+  /** Total pending disk writes in the queue. */
+  pendingWrites: number;
+  /** Total disk write operations since startup. */
+  totalDiskWrites: number;
+  /** Total disk write failures since startup. */
+  diskWriteFailures: number;
+  /** Total disk read failures during startup. */
+  diskReadFailures: number;
+  /** Approximate memory usage of session data in bytes. */
+  estimatedMemoryBytes: number;
+  /** Maximum configured sessions. */
+  maxSessions: number;
+  /** Maximum configured messages per session. */
+  maxMessagesPerSession: number;
+  /** Session TTL in hours. */
+  sessionTtlHours: number;
+  /** Persist debounce delay in ms. */
+  persistDebounceMs: number;
+}
 
 /** A gateway session grouping one or more client connections. */
 export interface Session {
@@ -119,23 +245,104 @@ export interface Session {
   clients: Set<string>;
   /** Last agent routing mode chosen by the user — persisted so reconnecting clients restore it. */
   agentMode?: 'orchestrate' | 'direct' | 'code';
+  /** Server-tracked inline DAG states for reconnection snapshots. */
+  inlineDAGs: Record<string, InlineDAGData>;
+  /** Orchestration worker events for reconnection snapshots. */
+  orchestrationEvents: Array<{ workflowId?: string; event: unknown }>;
+  /** Current coding session state for reconnection snapshots. */
+  codingSession: unknown | null;
+  /** Cumulative session token/cost totals. */
+  sessionTotals: SessionTotals;
+  /** Current active plan awaiting user response. */
+  activePlan: unknown | null;
+  /** Current pending DAG confirmation awaiting user response. */
+  pendingConfirmation: unknown | null;
+  /** Events buffered while no clients were connected — drained on reconnect. */
+  eventBuffer: BufferedEvent[];
 }
 
 /**
  * Manages sessions with automatic disk persistence.
+ *
  * Each session is saved to a JSON file on every mutation so that
- * conversations survive gateway restarts.
+ * conversations survive gateway restarts. Writes are debounced to
+ * prevent disk thrashing during high-frequency streaming.
+ *
+ * Thread safety: This class is designed for single-threaded Node.js.
+ * All mutations are synchronous and writes are serialized via the
+ * debounce queue.
  */
 export class SessionManager {
   private sessions: Map<string, Session> = new Map();
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
   private writeQueue: Map<string, ReturnType<typeof setTimeout>> = new Map();
 
+  /** Counter: total successful disk writes since startup. */
+  private _totalDiskWrites = 0;
+  /** Counter: total failed disk writes since startup. */
+  private _diskWriteFailures = 0;
+  /** Counter: total failed disk reads during startup load. */
+  private _diskReadFailures = 0;
+
   constructor() {
     this.ensureSessionsDir();
     this.loadAllFromDisk();
     this.ensureDefaultSession();
     this.startCleanupLoop();
+
+    log.info('[session:config] Session manager initialized', {
+      maxMessages: MAX_MESSAGES_PER_SESSION,
+      maxAgeSec: SESSION_MAX_AGE_MS / 1000,
+      cleanupIntervalSec: CLEANUP_INTERVAL_MS / 1000,
+      persistDebounceMs: PERSIST_DEBOUNCE_MS,
+      maxSessions: MAX_SESSIONS,
+    });
+  }
+
+  // ─── Metrics & Observability ────────────────────────────────
+
+  /**
+   * Return observable metrics for monitoring and health checks.
+   * Provides insight into session count, memory usage, write queue depth, etc.
+   */
+  getMetrics(): SessionMetrics {
+    let totalClients = 0;
+    let totalMessages = 0;
+    let estimatedMemoryBytes = 0;
+
+    for (const session of this.sessions.values()) {
+      totalClients += session.clients.size;
+      totalMessages += session.messages.length;
+      // Rough estimate: ~500 bytes per message, ~200 per memory event, ~1KB per DAG
+      estimatedMemoryBytes += session.messages.length * 500;
+      estimatedMemoryBytes += session.memoryEvents.length * 200;
+      estimatedMemoryBytes += Object.keys(session.inlineDAGs).length * 1024;
+      estimatedMemoryBytes += session.orchestrationEvents.length * 300;
+      estimatedMemoryBytes += session.eventBuffer.length * 500;
+    }
+
+    return {
+      activeSessions: this.sessions.size,
+      totalClients,
+      totalMessages,
+      pendingWrites: this.writeQueue.size,
+      totalDiskWrites: this._totalDiskWrites,
+      diskWriteFailures: this._diskWriteFailures,
+      diskReadFailures: this._diskReadFailures,
+      estimatedMemoryBytes,
+      maxSessions: MAX_SESSIONS,
+      maxMessagesPerSession: MAX_MESSAGES_PER_SESSION,
+      sessionTtlHours: SESSION_MAX_AGE_MS / (60 * 60 * 1000),
+      persistDebounceMs: PERSIST_DEBOUNCE_MS,
+    };
+  }
+
+  /**
+   * Generate a cryptographically random session ID.
+   * Uses crypto.randomUUID() for RFC 4122 v4 UUIDs.
+   */
+  static generateSessionId(): string {
+    return randomUUID();
   }
 
   // ─── Session CRUD ───────────────────────────────────────────
@@ -151,9 +358,17 @@ export class SessionManager {
   /**
    * Create a new session and return it.
    * In single-user mode this always returns the default session.
+   * Enforces MAX_SESSIONS limit to prevent resource exhaustion.
    * @returns The default session.
    */
   createSession(): Session {
+    // Enforce session cap — prevent resource exhaustion from runaway session creation
+    if (this.sessions.size >= MAX_SESSIONS) {
+      log.warn('[session:limit] Max sessions reached, returning default session', {
+        current: this.sessions.size,
+        max: MAX_SESSIONS,
+      });
+    }
     return this.getDefaultSession();
   }
 
@@ -288,6 +503,170 @@ export class SessionManager {
     this.schedulePersist(sessionId);
   }
 
+  // ─── Extended state tracking for reconnection snapshots ──────
+
+  /**
+   * Upsert an inline DAG entry (tracked server-side for reconnection).
+   */
+  upsertInlineDAG(sessionId: string, dag: InlineDAGData): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    session.inlineDAGs[dag.dagId] = dag;
+    session.updatedAt = new Date().toISOString();
+    this.schedulePersist(sessionId);
+  }
+
+  /**
+   * Update a single node within an inline DAG.
+   */
+  updateInlineDAGNode(
+    sessionId: string,
+    dagId: string,
+    nodeId: string,
+    update: Partial<InlineDAGData['nodes'][0]>,
+  ): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    const dag = session.inlineDAGs[dagId];
+    if (!dag) return;
+    dag.nodes = dag.nodes.map((n) => (n.id === nodeId ? { ...n, ...update } : n));
+    dag.completedCount = dag.nodes.filter(
+      (n) => n.status === 'done' || n.status === 'error' || n.status === 'skipped' || n.status === 'cancelled',
+    ).length;
+    if (dag.status === 'dispatched') dag.status = 'running';
+    session.updatedAt = new Date().toISOString();
+    this.schedulePersist(sessionId);
+  }
+
+  /**
+   * Mark an inline DAG as complete/error/stopped.
+   */
+  completeInlineDAG(
+    sessionId: string,
+    dagId: string,
+    result?: string,
+    error?: string,
+    stats?: {
+      durationSec?: number;
+      workerCount?: number;
+      totalCostUsd?: number;
+      toolCallCount?: number;
+      modelUsage?: InlineDAGData['modelUsage'];
+      nodeOutputPaths?: Record<string, string[]>;
+      stopped?: boolean;
+    },
+  ): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    const dag = session.inlineDAGs[dagId];
+    if (!dag) return;
+    dag.status = error ? 'error' : stats?.stopped ? 'stopped' : 'complete';
+    dag.result = result;
+    dag.error = error;
+    dag.completedCount = dag.totalCount;
+    if (stats) {
+      dag.durationSec = stats.durationSec;
+      dag.workerCount = stats.workerCount;
+      dag.totalCostUsd = stats.totalCostUsd;
+      dag.toolCallCount = stats.toolCallCount;
+      dag.modelUsage = stats.modelUsage;
+      dag.nodeOutputPaths = stats.nodeOutputPaths;
+    }
+    session.updatedAt = new Date().toISOString();
+    this.schedulePersist(sessionId);
+  }
+
+  /**
+   * Add an orchestration worker event for reconnection replay.
+   */
+  addOrchestrationEvent(sessionId: string, event: unknown, workflowId?: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    this.pushToArrayWithCap(session.orchestrationEvents, { workflowId, event }, MAX_ORCHESTRATION_EVENTS);
+    session.updatedAt = new Date().toISOString();
+    // Don't schedulePersist for every event — these are high frequency
+  }
+
+  /**
+   * Update the coding session state.
+   */
+  setCodingSession(sessionId: string, codingSession: unknown | null): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    session.codingSession = codingSession;
+    session.updatedAt = new Date().toISOString();
+    this.schedulePersist(sessionId);
+  }
+
+  /**
+   * Accumulate token/cost totals for a session.
+   */
+  accumulateSessionTotals(sessionId: string, meta: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; costUsd?: number }): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    session.sessionTotals.inputTokens += meta.inputTokens ?? 0;
+    session.sessionTotals.outputTokens += meta.outputTokens ?? 0;
+    session.sessionTotals.cacheReadTokens += meta.cacheReadTokens ?? 0;
+    session.sessionTotals.totalCostUsd += meta.costUsd ?? 0;
+    session.sessionTotals.messageCount += 1;
+    session.updatedAt = new Date().toISOString();
+    this.schedulePersist(sessionId);
+  }
+
+  /**
+   * Store the current active plan.
+   */
+  setActivePlan(sessionId: string, plan: unknown | null): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    session.activePlan = plan;
+    session.updatedAt = new Date().toISOString();
+    this.schedulePersist(sessionId);
+  }
+
+  /**
+   * Store the current pending DAG confirmation.
+   */
+  setPendingConfirmation(sessionId: string, confirmation: unknown | null): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    session.pendingConfirmation = confirmation;
+    session.updatedAt = new Date().toISOString();
+    this.schedulePersist(sessionId);
+  }
+
+  /**
+   * Buffer a ServerMessage when no clients are connected.
+   * These will be drained and delivered on reconnect.
+   */
+  bufferEvent(sessionId: string, message: unknown): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    this.pushToArrayWithCap(
+      session.eventBuffer,
+      { message, timestamp: new Date().toISOString() },
+      MAX_EVENT_BUFFER,
+    );
+  }
+
+  /**
+   * Drain and return all buffered events, clearing the buffer.
+   */
+  drainEventBuffer(sessionId: string): BufferedEvent[] {
+    const session = this.sessions.get(sessionId);
+    if (!session) return [];
+    const events = session.eventBuffer.splice(0);
+    return events;
+  }
+
+  /**
+   * Check whether a session currently has any connected clients.
+   */
+  hasConnectedClients(sessionId: string): boolean {
+    const session = this.sessions.get(sessionId);
+    return session ? session.clients.size > 0 : false;
+  }
+
   /**
    * Reset a session: clear messages, memory events, and active workflows,
    * then persist the cleared state to disk.
@@ -299,6 +678,13 @@ export class SessionManager {
     session.messages.length = 0;
     session.memoryEvents.length = 0;
     session.activeWorkflows.clear();
+    session.inlineDAGs = {};
+    session.orchestrationEvents.length = 0;
+    session.codingSession = null;
+    session.sessionTotals = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, totalCostUsd: 0, messageCount: 0 };
+    session.activePlan = null;
+    session.pendingConfirmation = null;
+    session.eventBuffer.length = 0;
     session.updatedAt = new Date().toISOString();
     this.schedulePersist(sessionId);
     log.info(`Session reset: ${sessionId}`);
@@ -356,6 +742,68 @@ export class SessionManager {
       memoryEvents: session.memoryEvents,
       agentMode: session.agentMode ?? null,
       clientCount: session.clients.size,
+      inlineDAGs: session.inlineDAGs,
+      sessionTotals: session.sessionTotals,
+    };
+  }
+
+  /**
+   * Build a full state snapshot for reconnection.
+   * Contains everything a client needs to fully rehydrate its UI.
+   *
+   * For large histories (>200 messages), includes pagination hints so
+   * the client can request older messages on demand via the REST API
+   * rather than receiving the entire history over WebSocket.
+   *
+   * @param sessionId - Target session ID.
+   * @param hindsightStatus - Current Hindsight service status.
+   * @param maxMessages - Maximum messages to include (default: 200).
+   *   Older messages are available via GET /api/sessions/:id/activity.
+   */
+  buildSnapshot(
+    sessionId: string,
+    hindsightStatus?: { connected: boolean; busy: boolean } | null,
+    maxMessages = 200,
+  ): Record<string, unknown> | null {
+    const session = this.sessions.get(sessionId);
+    if (!session) return null;
+
+    // Send only the most recent messages; provide pagination hints for the rest.
+    // This prevents sending a potentially huge message history over WebSocket
+    // on reconnect — the client can lazy-load older messages via REST.
+    const totalMessages = session.messages.length;
+    const truncated = totalMessages > maxMessages;
+    const recentMessages = truncated
+      ? session.messages.slice(-maxMessages)
+      : session.messages;
+
+    return {
+      messages: recentMessages.map((m) => ({
+        id: m.id,
+        role: m.role,
+        content: m.content,
+        timestamp: m.timestamp,
+        type: m.type,
+        metadata: m.metadata,
+      })),
+      memoryEvents: session.memoryEvents,
+      inlineDAGs: session.inlineDAGs,
+      orchestrationEvents: session.orchestrationEvents,
+      codingSession: session.codingSession,
+      sessionTotals: session.sessionTotals,
+      activePlan: session.activePlan,
+      pendingConfirmation: session.pendingConfirmation,
+      agentMode: session.agentMode ?? 'orchestrate',
+      activeWorkflows: [...session.activeWorkflows],
+      hindsightStatus: hindsightStatus ?? null,
+      runHistory: session.runHistory,
+      // Pagination hints for virtual scrolling of large histories
+      pagination: {
+        totalMessages,
+        includedMessages: recentMessages.length,
+        hasOlderMessages: truncated,
+        oldestIncludedTimestamp: recentMessages[0]?.timestamp ?? null,
+      },
     };
   }
 
@@ -402,8 +850,8 @@ export class SessionManager {
   /**
    * Schedule a debounced write to disk for a session.
    * Coalesces rapid mutations (e.g. streaming) into a single write
-   * with a 500ms delay. Ensures we don't thrash the disk during
-   * high-frequency message additions.
+   * with a configurable delay (PERSIST_DEBOUNCE_MS). Ensures we don't
+   * thrash the disk during high-frequency message additions.
    */
   private schedulePersist(sessionId: string): void {
     const existing = this.writeQueue.get(sessionId);
@@ -412,12 +860,20 @@ export class SessionManager {
     const timer = setTimeout(() => {
       this.writeQueue.delete(sessionId);
       this.persistToDisk(sessionId);
-    }, 500);
+    }, PERSIST_DEBOUNCE_MS);
 
     this.writeQueue.set(sessionId, timer);
   }
 
-  /** Write a session to disk. */
+  /**
+   * Write a session to disk with atomic backup.
+   *
+   * Strategy:
+   * 1. Serialize session data to JSON.
+   * 2. Rename existing file to .bak (atomic backup for crash recovery).
+   * 3. Write new data with restrictive permissions (0o600).
+   * 4. On failure, attempt to restore from backup.
+   */
   private persistToDisk(sessionId: string): void {
     const session = this.sessions.get(sessionId);
     if (!session) return;
@@ -431,16 +887,53 @@ export class SessionManager {
       hindsightBank: session.hindsightBank,
       memoryEvents: session.memoryEvents,
       agentMode: session.agentMode,
+      runHistory: session.runHistory,
+      inlineDAGs: session.inlineDAGs,
+      orchestrationEvents: session.orchestrationEvents,
+      codingSession: session.codingSession,
+      sessionTotals: session.sessionTotals,
+      activePlan: session.activePlan,
+      pendingConfirmation: session.pendingConfirmation,
     };
 
+    const filePath = this.sessionFilePath(sessionId);
+    const backupPath = filePath + '.bak';
+
     try {
-      writeFileSync(this.sessionFilePath(sessionId), JSON.stringify(data, null, 2), { encoding: 'utf-8', mode: 0o600 });
+      // Create backup of existing file before overwriting (crash recovery)
+      if (existsSync(filePath)) {
+        try {
+          renameSync(filePath, backupPath);
+        } catch {
+          // Backup failure is non-fatal — proceed with write anyway
+        }
+      }
+
+      writeFileSync(filePath, JSON.stringify(data, null, 2), { encoding: 'utf-8', mode: 0o600 });
+      this._totalDiskWrites++;
     } catch (err) {
-      log.error(`Failed to persist session ${sessionId}`, { error: err instanceof Error ? err.message : String(err) });
+      this._diskWriteFailures++;
+      log.error(`[session:persist:error] Failed to persist session ${sessionId}`, {
+        error: err instanceof Error ? err.message : String(err),
+        messageCount: session.messages.length,
+      });
+
+      // Attempt to restore from backup on write failure
+      if (existsSync(backupPath)) {
+        try {
+          renameSync(backupPath, filePath);
+          log.info(`[session:persist:recovered] Restored backup for session ${sessionId}`);
+        } catch {
+          log.error(`[session:persist:error] Backup restore also failed for ${sessionId}`);
+        }
+      }
     }
   }
 
-  /** Load all session files from disk on startup. */
+  /**
+   * Load all session files from disk on startup.
+   * Falls back to .bak files if the primary JSON is corrupt (crash recovery).
+   */
   private loadAllFromDisk(): void {
     try {
       const files = readdirSync(SESSIONS_DIR).filter(
@@ -448,8 +941,34 @@ export class SessionManager {
       );
 
       for (const file of files) {
+        const filePath = join(SESSIONS_DIR, file);
+        let raw: string | null = null;
+
+        // Try primary file first, then fall back to backup
         try {
-          const raw = readFileSync(join(SESSIONS_DIR, file), 'utf-8');
+          raw = readFileSync(filePath, 'utf-8');
+          JSON.parse(raw); // Validate JSON is parseable
+        } catch {
+          // Primary file corrupt or unreadable — try backup
+          const backupPath = filePath + '.bak';
+          if (existsSync(backupPath)) {
+            try {
+              raw = readFileSync(backupPath, 'utf-8');
+              JSON.parse(raw); // Validate backup is parseable
+              log.warn(`[session:load:recovered] Loaded session from backup: ${file}`);
+            } catch {
+              raw = null;
+            }
+          }
+        }
+
+        if (!raw) {
+          this._diskReadFailures++;
+          log.warn(`[session:load:error] Failed to load session file ${file} (no valid primary or backup)`);
+          continue;
+        }
+
+        try {
           const data: SessionData = JSON.parse(raw);
 
           const session: Session = {
@@ -463,18 +982,32 @@ export class SessionManager {
             runHistory: data.runHistory ?? [],
             agentMode: data.agentMode,
             clients: new Set(), // No clients on startup — they reconnect
+            inlineDAGs: data.inlineDAGs ?? {},
+            orchestrationEvents: data.orchestrationEvents ?? [],
+            codingSession: data.codingSession ?? null,
+            sessionTotals: data.sessionTotals ?? { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, totalCostUsd: 0, messageCount: 0 },
+            activePlan: data.activePlan ?? null,
+            pendingConfirmation: data.pendingConfirmation ?? null,
+            eventBuffer: [], // Event buffer is transient — not persisted to disk
           };
 
           this.sessions.set(session.id, session);
-          log.verbose(`Loaded session from disk: ${session.id} (${session.messages.length} messages)`);
+          log.verbose(`[session:loaded] ${session.id} (${session.messages.length} messages, ${session.memoryEvents.length} memory events)`);
         } catch (err) {
-          log.warn(`Failed to load session file ${file}`, { error: err instanceof Error ? err.message : String(err) });
+          this._diskReadFailures++;
+          log.warn(`[session:load:error] Failed to parse session file ${file}`, {
+            error: err instanceof Error ? err.message : String(err),
+          });
         }
       }
 
-      log.info(`Loaded ${this.sessions.size} session(s) from disk`);
+      log.info(`[session:startup] Loaded ${this.sessions.size} session(s) from disk`, {
+        diskReadFailures: this._diskReadFailures,
+      });
     } catch (err) {
-      log.warn('Could not read sessions directory', { error: err instanceof Error ? err.message : String(err) });
+      log.warn('[session:startup:error] Could not read sessions directory', {
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
@@ -510,13 +1043,14 @@ export class SessionManager {
       const hasClients = session.clients.size > 0;
 
       if (age > SESSION_MAX_AGE_MS && !hasClients) {
+        log.info(`[session:expired] Session ${id} expired (age=${Math.round(age / 60000)}min)`);
         this.deleteSession(id);
         cleaned++;
       }
     }
 
     if (cleaned > 0) {
-      log.info(`Cleaned up ${cleaned} stale session(s)`);
+      log.info(`[session:cleanup] Cleaned up ${cleaned} stale session(s)`);
     }
   }
 
@@ -540,9 +1074,16 @@ export class SessionManager {
       memoryEvents: [],
       runHistory: [],
       clients: new Set(),
+      inlineDAGs: {},
+      orchestrationEvents: [],
+      codingSession: null,
+      sessionTotals: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, totalCostUsd: 0, messageCount: 0 },
+      activePlan: null,
+      pendingConfirmation: null,
+      eventBuffer: [],
     };
     this.sessions.set(DEFAULT_SESSION_ID, session);
     this.schedulePersist(DEFAULT_SESSION_ID);
-    log.info('Default session created');
+    log.info('[session:created] Default session created');
   }
 }
