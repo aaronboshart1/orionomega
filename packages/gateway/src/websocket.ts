@@ -43,7 +43,7 @@ import type { MainAgent } from '@orionomega/core';
 import { createLogger } from '@orionomega/core';
 import { validateToken } from './auth.js';
 import { SessionManager } from './sessions.js';
-import type { Message } from './sessions.js';
+import type { Message, Session } from './sessions.js';
 import { CommandHandler } from './commands.js';
 import { EventStreamer } from './events.js';
 import { rateLimitWsConnection } from './rate-limit.js';
@@ -516,7 +516,7 @@ export class WebSocketHandler {
     }
 
     // Fallback to gateway-level CommandHandler
-    const result = await this.commandHandler.handle(command, session as any);
+    const result = await this.commandHandler.handle(command, session as Session);
 
     this.storeSessionMessage(conn.sessionId, {
       id: randomBytes(8).toString('hex'),

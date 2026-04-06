@@ -50,7 +50,7 @@ export class LayerGroup extends Container {
     this.nodeDisplays = nodes;
 
     if (!this._collapsed) {
-      (this as any).children = [this.headerText, ...nodes];
+      (this as unknown as { children: unknown[] }).children = [this.headerText, ...nodes];
     }
   }
 
@@ -77,7 +77,7 @@ export class LayerGroup extends Container {
   collapse(): void {
     if (this._collapsed) return;
     this._collapsed = true;
-    (this as any).children = [this.headerText];
+    (this as unknown as { children: unknown[] }).children = [this.headerText];
     this.updateHeader();
   }
 
@@ -85,7 +85,7 @@ export class LayerGroup extends Container {
   expand(): void {
     if (!this._collapsed) return;
     this._collapsed = false;
-    (this as any).children = [this.headerText, ...this.nodeDisplays];
+    (this as unknown as { children: unknown[] }).children = [this.headerText, ...this.nodeDisplays];
     this.updateHeader();
   }
 

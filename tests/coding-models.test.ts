@@ -70,7 +70,7 @@ const lowProfile = makeProfile('low', 5, 50);
 
 const medCtx = { profile: mediumProfile };
 const highCtx = { profile: highProfile };
-const lowCtx = { profile: lowProfile };
+const _lowCtx = { profile: lowProfile };
 
 // ── Section 1: Config overrides ───────────────────────────────────────────────
 

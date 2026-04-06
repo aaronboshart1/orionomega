@@ -14,14 +14,12 @@ import {
 import {
   classifyQuery,
   getRecallStrategy,
-  isExternalAction,
 } from '/tmp/orionomega-fix/packages/core/src/memory/query-classifier.js';
 
 import {
-  suite, section, assert, assertEq, assertApprox, assertGt, assertLt,
-  assertThrows, assertThrowsAsync, resetResults, printSummary,
-  createMockFn, createMockHindsightClient,
-  tmpDir, tmpFile, cleanupTmp,
+  suite, section, assert, assertEq,
+  resetResults, printSummary,
+  tmpDir, cleanupTmp,
 } from './test-harness.js';
 import { writeFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -279,8 +277,8 @@ section('4.3 Malformed API response handling');
   ];
 
   for (const raw of malformed) {
-    const results = ((raw as any).results ?? []) as unknown[];
-    const mapped = (Array.isArray(results) ? results : []).map((r: any) => ({
+    const results = ((raw as Record<string, unknown>).results ?? []) as unknown[];
+    const mapped = (Array.isArray(results) ? results : []).map((r: Record<string, unknown>) => ({
       content: (r?.text as string) ?? (r?.content as string) ?? '',
       relevance: (r?.relevance as number) ?? 0,
     }));

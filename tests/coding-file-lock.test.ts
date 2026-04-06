@@ -6,7 +6,7 @@
  */
 
 import {
-  suite, section, assert, assertEq, assertDeepEq, printSummary,
+  suite, section, assert, assertEq, printSummary,
 } from './test-harness.js';
 import { FileLockManager } from '../packages/core/src/orchestration/coding/file-lock-manager.js';
 

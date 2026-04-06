@@ -19,7 +19,7 @@ import {
 } from '/tmp/orionomega-fix/packages/core/src/memory/query-classifier.js';
 
 import {
-  suite, section, assert, assertGt, assertLt,
+  suite, section, assertGt, assertLt,
   resetResults, printSummary, bench,
 } from './test-harness.js';
 

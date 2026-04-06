@@ -4,7 +4,7 @@
  * No floating overlays — plans render in the chat flow.
  */
 
-import type { PlannerOutput } from '@orionomega/core';
+import type { PlannerOutput, WorkflowNode } from '@orionomega/core';
 import chalk from 'chalk';
 import { palette, box, icons } from '../theme.js';
 import { wrapText, shortenModel, formatDuration, formatCost } from '../utils/format.js';
@@ -41,7 +41,7 @@ export function formatPlan(plan: PlannerOutput): string {
   // Nodes grouped by layer
   const nodes = graph.nodes instanceof Map
     ? graph.nodes
-    : new Map(Object.entries(graph.nodes as Record<string, any>));
+    : new Map(Object.entries(graph.nodes as Record<string, WorkflowNode>));
   const layers = graph.layers ?? [];
   let taskNum = 0;
 
@@ -56,7 +56,7 @@ export function formatPlan(plan: PlannerOutput): string {
 
     for (const nodeId of layerNodes) {
       taskNum++;
-      const node = nodes.get(nodeId) as any;
+      const node = nodes.get(nodeId);
       if (!node) continue;
 
       const label = node.label ?? nodeId;
@@ -83,7 +83,7 @@ export function formatPlan(plan: PlannerOutput): string {
   for (const [nodeId, nodeVal] of nodes) {
     if (!layerNodeIds.has(nodeId)) {
       taskNum++;
-      const n = nodeVal as any;
+      const n = nodeVal;
       const nLabel = n.label ?? nodeId;
       const nModel = shortenModel(n.agent?.model ?? n.codingAgent?.model ?? '');
       const taskText = ` ${taskNum}. ${icons.agentNode} ${nLabel}${nModel ? ` [${nModel}]` : ''}`;

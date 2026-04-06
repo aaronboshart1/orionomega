@@ -13,7 +13,7 @@ import { Container, Text } from '@mariozechner/pi-tui';
 import type { WorkerEvent } from '@orionomega/core';
 import chalk from 'chalk';
 import { palette, spacing, icons } from '../theme.js';
-import { truncate, formatDuration, renderProgressBar } from '../utils/format.js';
+import { truncate, formatDuration } from '../utils/format.js';
 import { omegaSpinner } from './omega-spinner.js';
 
 // ── Types ────────────────────────────────────────────────────────────
@@ -35,6 +35,15 @@ export interface NodeState {
   duration?: number;
   errorMessage?: string;
   resultSummary?: string;
+}
+
+/** Minimal shape of a runtime graph node as received from the server. */
+export interface GraphNodeSnapshot {
+  status?: string;
+  startedAt?: string;
+  completedAt?: string;
+  progress?: number;
+  error?: string;
 }
 
 export function mapNodeStatus(status: string | undefined): NodeStatusType {
@@ -167,7 +176,7 @@ export class NodeDisplay extends Container {
     this.rebuild();
   }
 
-  updateFromGraphNode(node: any): void {
+  updateFromGraphNode(node: GraphNodeSnapshot): void {
     const newStatus = mapNodeStatus(node.status);
     if (newStatus === 'running' && !this.state.startedAt) {
       this.state.startedAt = node.startedAt ? new Date(node.startedAt).getTime() : Date.now();

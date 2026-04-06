@@ -64,7 +64,7 @@ try {
 } catch {}
 
 /** Client-side commands that don't go to the gateway. */
-const CLIENT_COMMANDS = new Set(['/exit', '/quit', '/q', '/focus', '/hindsight']);
+const _CLIENT_COMMANDS = new Set(['/exit', '/quit', '/q', '/focus', '/hindsight']);
 
 /**
  * Build the default gateway WebSocket URL from config.
@@ -245,7 +245,7 @@ export async function start(): Promise<void> {
 
   client.on('history', (messages) => {
     for (const msg of messages) {
-      const m = msg as any;
+      const m = msg as { id: string; role: string; content: string; timestamp: string; type?: string };
       if (m.type === 'plan' && m.content) {
         try {
           const plan = JSON.parse(m.content);

@@ -29,8 +29,8 @@
  * - SESSION_MAX_SESSIONS: Maximum concurrent sessions (default: 50)
  */
 
-import { randomBytes, randomUUID } from 'node:crypto';
-import { readFileSync, writeFileSync, readdirSync, mkdirSync, unlinkSync, statSync, renameSync, existsSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { readFileSync, writeFileSync, readdirSync, mkdirSync, unlinkSync, renameSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { createLogger } from '@orionomega/core';

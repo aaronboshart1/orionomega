@@ -66,7 +66,7 @@ section('1.2 Structural label stripping [F1]');
 section('1.3 Bracket noise removal [F1]');
 
 {
-  const clean = computeClientRelevance('deploy service', 'deploy the service');
+  const _clean = computeClientRelevance('deploy service', 'deploy the service');
   const bracketed = computeClientRelevance('deploy service', '[deploy] the [service]');
   assertGt(bracketed, 0, 'Bracket noise removed — content still matches');
 }

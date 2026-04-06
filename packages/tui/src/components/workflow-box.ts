@@ -14,12 +14,12 @@
  */
 
 import { Container, Text, Spacer } from '@mariozechner/pi-tui';
-import type { GraphState, WorkerEvent } from '@orionomega/core';
+import type { GraphState, WorkerEvent, WorkflowNode } from '@orionomega/core';
 import chalk from 'chalk';
 import { palette, spacing, icons, box } from '../theme.js';
 import { shortenModel, formatDuration, formatCost, visibleLength } from '../utils/format.js';
 import { omegaSpinner } from './omega-spinner.js';
-import { NodeDisplay, mapNodeStatus, type NodeState, type NodeStatusType } from './node-display.js';
+import { NodeDisplay, mapNodeStatus, type NodeState, type GraphNodeSnapshot } from './node-display.js';
 import { LayerGroup, type LayerStatus } from './layer-group.js';
 
 /** Compute display width for the workflow box. */
@@ -31,7 +31,7 @@ function getBoxWidth(): number {
  * Compute execution layers from node dependency data.
  * Returns a map from nodeId to layer index.
  */
-function computeNodeLayers(nodes: Record<string, any>): Map<string, number> {
+function computeNodeLayers(nodes: Record<string, WorkflowNode & { layer?: number }>): Map<string, number> {
   const layers = new Map<string, number>();
   const entries = Object.entries(nodes);
 
@@ -141,7 +141,7 @@ export class WorkflowBox extends Container {
 
     // Build node displays
     for (const [id, node] of Object.entries(nodes)) {
-      const n = node as any;
+      const n = node as WorkflowNode;
       const nodeState: NodeState = {
         id,
         label: n.label ?? id,
@@ -195,10 +195,10 @@ export class WorkflowBox extends Container {
 
     let hasNewNodes = false;
     for (const [id, node] of Object.entries(nodes)) {
-      const n = node as any;
+      const n = node as WorkflowNode;
       const existing = this.nodeDisplays.get(id);
       if (existing) {
-        existing.updateFromGraphNode(n);
+        existing.updateFromGraphNode(n as GraphNodeSnapshot);
       } else {
         hasNewNodes = true;
         const nodeState: NodeState = {
@@ -531,7 +531,7 @@ export class WorkflowBox extends Container {
       return;
     }
 
-    (this as any).children = [...desired];
+    (this as unknown as { children: unknown[] }).children = [...desired];
     this.attachedChildren = [...desired];
   }
 
@@ -668,7 +668,7 @@ export class WorkflowBox extends Container {
 
   // ── Helpers ────────────────────────────────────────────────────
 
-  private resolveDependencyLabels(depIds: string[], nodes: Record<string, any>): string[] {
+  private resolveDependencyLabels(depIds: string[], nodes: Record<string, WorkflowNode & { layer?: number }>): string[] {
     return depIds.map(id => {
       const node = nodes[id];
       return node?.label ?? id;

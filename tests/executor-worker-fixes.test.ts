@@ -222,7 +222,7 @@ section('Fix C: buildWorkerSystemPrompt behavioural simulation');
 
 {
   // Context must not bleed through when systemPrompt is absent (normal path)
-  const thisContext = 'PostgreSQL decision stored';
+  const _thisContext = 'PostgreSQL decision stored';
   // Without systemPrompt the branch is not entered; context flows via other means.
   const systemPrompt: string | undefined = undefined;
   const tookBranch = systemPrompt !== undefined;

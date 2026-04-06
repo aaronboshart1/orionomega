@@ -7,23 +7,20 @@
 
 import {
   computeClientRelevance,
-  trigramSimilarity,
   deduplicateByContent,
 } from '/tmp/orionomega-fix/packages/hindsight/src/similarity.js';
 
 import {
   classifyQuery,
   getRecallStrategy,
-  isExternalAction,
 } from '/tmp/orionomega-fix/packages/core/src/memory/query-classifier.js';
 
 import {
-  suite, section, assert, assertEq, assertApprox, assertGt, assertLt,
+  suite, section, assert, assertEq, assertGt, assertLt,
   assertDeepEq, resetResults, printSummary, createMockFn, createMockHindsightClient,
-  tmpDir, tmpFile, cleanupTmp,
+  cleanupTmp,
+  type MockFn,
 } from './test-harness.js';
-import { writeFileSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
 
 resetResults();
 suite('04 — Integration: End-to-End Memory Operations');
@@ -216,16 +213,16 @@ section('4.1 Mental model seed-on-404 flow');
   let refreshCount = 0;
   for (const { bankId, modelId } of models) {
     try {
-      await (mockHs.getMentalModel as Function)(bankId, modelId);
+      await (mockHs.getMentalModel as (...args: unknown[]) => unknown)(bankId, modelId);
     } catch {
-      await (mockHs.refreshMentalModel as Function)(bankId, modelId);
+      await (mockHs.refreshMentalModel as (...args: unknown[]) => unknown)(bankId, modelId);
       refreshCount++;
     }
   }
 
   assertEq(refreshCount, 3, 'All 3 models seeded after 404');
-  assertEq((mockHs.getMentalModel as any).callCount, 3, 'GET called for each model');
-  assertEq((mockHs.refreshMentalModel as any).callCount, 3, 'Refresh called for each missing model');
+  assertEq((mockHs.getMentalModel as MockFn).callCount, 3, 'GET called for each model');
+  assertEq((mockHs.refreshMentalModel as MockFn).callCount, 3, 'Refresh called for each missing model');
 }
 
 section('4.2 Existing models not re-seeded');
@@ -244,10 +241,10 @@ section('4.2 Existing models not re-seeded');
   let refreshCount = 0;
   for (const { bankId, modelId } of models) {
     try {
-      await (mockHs.getMentalModel as Function)(bankId, modelId);
+      await (mockHs.getMentalModel as (...args: unknown[]) => unknown)(bankId, modelId);
       // Model exists, skip
     } catch {
-      await (mockHs.refreshMentalModel as Function)(bankId, modelId);
+      await (mockHs.refreshMentalModel as (...args: unknown[]) => unknown)(bankId, modelId);
       refreshCount++;
     }
   }

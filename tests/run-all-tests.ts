@@ -10,6 +10,7 @@
  */
 
 import { execSync } from 'node:child_process';
+import { writeFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -126,8 +127,7 @@ const report = results.map(r => {
 }).join('\n');
 
 try {
-  const fs = require('node:fs');
-  fs.writeFileSync(reportPath, report, 'utf-8');
+  writeFileSync(reportPath, report, 'utf-8');
   console.log(`Detailed results written to: ${reportPath}`);
 } catch {
   // Non-critical

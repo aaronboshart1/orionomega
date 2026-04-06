@@ -13,11 +13,11 @@ import {
 } from '/tmp/orionomega-fix/packages/core/src/memory/query-classifier.js';
 
 import {
-  suite, section, assert, assertEq, assertApprox, assertGt, assertLt,
+  suite, section, assert, assertEq, assertApprox, assertGt,
   assertDeepEq, resetResults, printSummary,
-  tmpDir, tmpFile, cleanupTmp,
+  tmpDir, cleanupTmp,
 } from './test-harness.js';
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 resetResults();

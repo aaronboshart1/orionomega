@@ -8,8 +8,8 @@
  */
 
 import {
-  suite, section, assert, assertEq, assertApprox, assertGt, assertLt,
-  assertDeepEq, resetResults, printSummary, createMockFn,
+  suite, section, assert, assertEq, assertApprox, assertGt,
+  resetResults, printSummary, createMockFn,
 } from './test-harness.js';
 
 resetResults();
