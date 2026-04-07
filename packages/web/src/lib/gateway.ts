@@ -1204,7 +1204,7 @@ function bindListeners(ws: ReconnectingWebSocket): void {
         healthCheckId = null;
         ws.reconnect();
       }
-    }, 3000);
+    }, 10000);
 
     if (statusFetchController) statusFetchController.abort();
     statusFetchController = new AbortController();

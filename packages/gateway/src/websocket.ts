@@ -12,9 +12,10 @@
  * 1. Client connects to /ws with optional ?session= parameter
  * 2. Rate limiting and authentication are applied
  * 3. Client joins the default session (single-user system)
- * 4. Full state snapshot is sent for UI rehydration
- * 5. Legacy history/memory_history sent for backward compatibility
- * 6. Bidirectional message routing begins
+ * 4. Server sends 'ack' with client/session IDs
+ * 5. Client sends 'init' message to request full state
+ * 6. Server responds with 'session' containing paginated state snapshot
+ * 7. Bidirectional message routing begins
  *
  * State tracking:
  * - All broadcast messages are tracked server-side (trackMessageState)
@@ -238,73 +239,10 @@ export class WebSocketHandler {
       }),
     });
 
-    // Send full state snapshot from SQLite store for comprehensive rehydration.
-    // This includes DAG states, costs, pending actions, orchestration events,
-    // and everything else the UI needs — making the browser a true thin console.
-    if (this.stateStore) {
-      try {
-        const snapshot = this.stateStore.getSnapshot(session.id, {
-          id: session.id,
-          createdAt: session.createdAt,
-          updatedAt: session.updatedAt,
-          agentMode: session.agentMode,
-          messages: session.messages.map((m) => ({
-            id: m.id,
-            role: m.role,
-            content: m.content,
-            timestamp: m.timestamp,
-            type: m.type,
-            metadata: m.metadata,
-          })),
-          memoryEvents: session.memoryEvents as unknown as Array<Record<string, unknown>>,
-          runHistory: session.runHistory as unknown as Array<Record<string, unknown>>,
-          activeWorkflows: [...session.activeWorkflows],
-        });
-
-        this.send(ws, {
-          id: randomBytes(8).toString('hex'),
-          type: 'state_snapshot' as ServerMessage['type'],
-          content: JSON.stringify(snapshot),
-        } as ServerMessage);
-      } catch (err) {
-        log.warn('Failed to build SQLite state snapshot', {
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-    }
-
-    // Legacy replay: always send history + memory events for backward compatibility
-    if (session.messages.length > 0) {
-      this.send(ws, {
-        id: randomBytes(8).toString('hex'),
-        type: 'history',
-        history: session.messages.map((m) => ({
-          id: m.id,
-          role: m.role,
-          content: m.content,
-          timestamp: m.timestamp,
-          type: m.type,
-          metadata: m.metadata,
-        })),
-      });
-    }
-
-    if (session.memoryEvents.length > 0) {
-      this.send(ws, {
-        id: randomBytes(8).toString('hex'),
-        type: 'memory_history',
-        memoryEvents: session.memoryEvents,
-      });
-    }
-
-    if (this.getHindsightStatus) {
-      const status = this.getHindsightStatus();
-      this.send(ws, {
-        id: randomBytes(8).toString('hex'),
-        type: 'hindsight_status',
-        hindsightStatus: status,
-      });
-    }
+    // State rehydration is deferred to the 'init' message handler (handleInit).
+    // The client sends 'init' immediately after connecting and receives a full
+    // 'session' response with paginated state, buffered events, and hindsight
+    // status. Sending state here would be redundant and doubles bandwidth.
 
     ws.on('message', (data) => {
       this.handleMessage(clientId, data);
@@ -667,6 +605,15 @@ export class WebSocketHandler {
       snapshot: snapshot ?? undefined,
       bufferedEvents: bufferedMessages,
     });
+
+    // Also send standalone hindsight status so the connection indicator updates
+    if (hindsightStatus) {
+      this.send(conn.ws, {
+        id: randomBytes(8).toString('hex'),
+        type: 'hindsight_status',
+        hindsightStatus,
+      });
+    }
 
     const rehydrateMs = Date.now() - rehydrateStart;
     log.info(`[ws:rehydrated] Sent state snapshot to ${conn.id}`, {
