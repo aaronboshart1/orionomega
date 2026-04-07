@@ -260,9 +260,10 @@ export const useOrchestrationStore = create<OrchestrationStore>()((set) => ({
   events: [],
 
   addMemoryEvent: (e) =>
-    set((s) => ({
-      memoryEvents: [...s.memoryEvents.slice(-199), e],
-    })),
+    set((s) => {
+      if (s.memoryEvents.some((existing) => existing.id === e.id)) return s;
+      return { memoryEvents: [...s.memoryEvents.slice(-199), e] };
+    }),
 
   setMemoryFilter: (filter) =>
     set((s) => ({

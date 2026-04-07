@@ -273,11 +273,21 @@ function processHistoryWhenHydrated(history: HistoryMessage[]): void {
       }
     }
 
+    // Collect workflow IDs that have a dag-complete in history. Only these
+    // should be recreated from messages — active runs are already in the store
+    // from the server snapshot, and orphan dag-dispatched entries (ghost runs)
+    // must not be resurrected.
+    const completedWorkflowIds = new Set(
+      history
+        .filter((m) => m.type === 'dag-complete' && m.metadata?.dagComplete)
+        .map((m) => m.metadata!.dagComplete!.workflowId as string),
+    );
+
     const orch = useOrchestrationStore.getState();
     for (const m of history) {
       if (m.type === 'dag-dispatched' && m.metadata?.dagDispatch) {
         const d = m.metadata.dagDispatch;
-        if (!orch.inlineDAGs[d.workflowId]) {
+        if (!orch.inlineDAGs[d.workflowId] && completedWorkflowIds.has(d.workflowId)) {
           orch.upsertInlineDAG({
             dagId: d.workflowId,
             summary: d.summary,
@@ -999,7 +1009,10 @@ function bindListeners(ws: ReconnectingWebSocket): void {
       case 'memory_event': {
         const me = msg.memoryEvent;
         if (me) {
-          useOrchestrationStore.getState().addMemoryEvent(me);
+          const store = useOrchestrationStore.getState();
+          if (!store.memoryEvents.some((e: { id: string }) => e.id === me.id)) {
+            store.addMemoryEvent(me);
+          }
         }
         break;
       }
