@@ -481,7 +481,7 @@ function rehydrateFromSnapshot(snapshot: any, bufferedEvents?: unknown[]): void 
               id: n.id,
               type: n.type || 'agent',
               label: n.label || n.id,
-              status: n.status === 'done' ? 'complete' : (n.status || 'pending'),
+              status: n.status || 'pending',
               dependsOn: Array.isArray(n.dependsOn) ? n.dependsOn : [],
             };
           }
@@ -501,6 +501,20 @@ function rehydrateFromSnapshot(snapshot: any, bufferedEvents?: unknown[]): void 
     } catch (err) {
       sectionsFailed++;
       console.error('[gateway] Failed to reconstruct graphState for past runs', err);
+    }
+
+    // ── 3d. Switch to workflow tab if historical runs were rehydrated ────
+    // Mirrors the old hydrateFromSnapshot behaviour: show the workflow view
+    // by default when there is at least one run to display.
+    try {
+      const orchForTab = useOrchestrationStore.getState();
+      if (Object.keys(orchForTab.workflows).length > 0) {
+        orchForTab.setActiveOrchTab('workflow');
+      }
+      sectionsOk++;
+    } catch (err) {
+      sectionsFailed++;
+      console.error('[gateway] Failed to switch to workflow tab', err);
     }
 
     // ── 4. Rehydrate session totals ─────────────────────────────────────

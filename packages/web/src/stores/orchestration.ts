@@ -425,6 +425,7 @@ export const useOrchestrationStore = create<OrchestrationStore>()((set) => ({
     set((s) => ({
       orchPaneOpen: true,
       activeWorkflowId: dagId,
+      activeOrchTab: 'workflow' as const,
       selectedWorker: null,
       ...deriveActive(s.workflows, dagId),
     })),
