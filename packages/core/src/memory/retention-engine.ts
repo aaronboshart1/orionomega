@@ -72,10 +72,12 @@ const DEFAULT_CATEGORY_TTL: Record<string, number> = {
   lesson: 0,          // Lessons never expire
   infrastructure: 0,   // Infrastructure never expires
   session_summary: 180, // Session summaries expire after 6 months
+  run_artifact: 0,     // Run artifacts never expire — full run detail for recall
+  run_manifest: 0,     // Run manifests never expire — index of all run artifacts
 };
 
 /** Categories that should never expire regardless of default TTL. */
-const DEFAULT_PINNED_CATEGORIES = ['decision', 'preference', 'architecture', 'lesson', 'infrastructure'];
+const DEFAULT_PINNED_CATEGORIES = ['decision', 'preference', 'architecture', 'lesson', 'infrastructure', 'run_artifact', 'run_manifest'];
 
 const HIGH_SIGNAL_PATTERNS: Array<{ pattern: RegExp; weight: number; label: string }> = [
   { pattern: /\b(decided|decision|chose|chosen|agreed|ruling)\b/i, weight: 0.3, label: 'decision' },

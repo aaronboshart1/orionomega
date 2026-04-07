@@ -14,6 +14,10 @@ export type { RetentionConfig, WorkflowOutcome } from './retention-engine.js';
 export { RetentionEngine, scoreMemoryQuality, computeImportance, isMemoryExpired, consolidateMemories } from './retention-engine.js';
 export type { QualityScore } from './retention-engine.js';
 
+// Run Artifact Collector — stores all .md files from completed runs to Hindsight
+export { RunArtifactCollector, collectRunArtifacts } from './run-artifact-collector.js';
+export type { RunArtifactCollectorConfig, CollectionResult } from './run-artifact-collector.js';
+
 // Compaction Flush (stays in core — needs AnthropicClient)
 export type { FlushResult } from './compaction-flush.js';
 export { CompactionFlush } from './compaction-flush.js';

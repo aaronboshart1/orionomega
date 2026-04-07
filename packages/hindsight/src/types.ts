@@ -23,7 +23,7 @@ export interface BankInfo {
 export interface MemoryItem {
   /** The memory content text. */
   content: string;
-  /** Category: preference, decision, lesson, project_update, infrastructure, architecture, codebase, relationship, session_summary, node_output, artifact. */
+  /** Category: preference, decision, lesson, project_update, infrastructure, architecture, codebase, relationship, session_summary, node_output, artifact, run_artifact, run_manifest. */
   context: string;
   /** ISO 8601 timestamp for when this memory was formed. */
   timestamp: string;

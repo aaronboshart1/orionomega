@@ -28,6 +28,7 @@ import type { MemoryBridge } from './memory-bridge.js';
 import type { MainAgentCallbacks, ThinkingStep, ThinkingStepStatus, MemoryEvent } from './main-agent.js';
 import { createLogger } from '../logging/logger.js';
 import { randomBytes } from 'node:crypto';
+import { collectRunArtifacts } from '../memory/run-artifact-collector.js';
 
 const log = createLogger('orchestration-bridge');
 
@@ -768,6 +769,36 @@ ${userTask}`;
         errors: result.errors,
         infraChanges: result.infraChanges,
       }).catch(() => {});
+    }
+
+    // ── Collect and store all .md artifacts from the run to Hindsight ──
+    // This ensures the memory system retains the full detail of every run,
+    // not just the summary. When a user replies to a run or asks about past
+    // work, the system can recall complete findings, analysis, and reports.
+    if (this.memory.client && this.memory.projectBank) {
+      const runDir = `${this.config.workspaceDir}/output/${result.workflowId}`;
+      collectRunArtifacts(
+        this.memory.client,
+        this.memory.projectBank,
+        result.workflowId,
+        runDir,
+        result.taskSummary,
+      ).then((collectionResult) => {
+        if (collectionResult.itemsStored > 0) {
+          log.info('Run artifacts stored to memory', {
+            workflowId: result.workflowId,
+            filesFound: collectionResult.filesFound,
+            itemsStored: collectionResult.itemsStored,
+            totalTokens: collectionResult.totalTokens,
+            budgetExhausted: collectionResult.budgetExhausted,
+          });
+        }
+      }).catch((err) => {
+        log.warn('Failed to collect run artifacts', {
+          workflowId: result.workflowId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
     }
 
     const { status, findings, errors, taskSummary, decisions, nodeOutputPaths } = result;
