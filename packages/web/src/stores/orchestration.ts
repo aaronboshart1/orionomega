@@ -552,8 +552,10 @@ export const useOrchestrationStore = create<OrchestrationStore>()((set) => ({
       const workflows = snapshot.workflows ?? {};
       const inlineDAGs = snapshot.inlineDAGs ?? {};
       const memoryEvents = (snapshot.memoryEvents ?? []) as MemoryEvent[];
-      const hasWorkflows = Object.keys(workflows).length > 0;
-      const activeWorkflowId = hasWorkflows ? Object.keys(workflows)[0] : null;
+      const workflowKeys = Object.keys(workflows);
+      const hasWorkflows = workflowKeys.length > 0;
+      // Pick the last workflow (most recently inserted) as active — better than first
+      const activeWorkflowId = hasWorkflows ? workflowKeys[workflowKeys.length - 1] : null;
       return {
         workflows,
         inlineDAGs,

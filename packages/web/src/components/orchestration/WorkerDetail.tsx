@@ -148,7 +148,26 @@ export function WorkerDetail() {
   const activeWorkflowId = useOrchestrationStore((s) => s.activeWorkflowId);
   const inlineDAGs = useOrchestrationStore((s) => s.inlineDAGs);
 
-  const node = selectedWorker && graphState ? graphState.nodes[selectedWorker] : null;
+  // Fall back to building a GraphNode from inlineDAG data when graphState is missing
+  // (e.g. historical runs where graphState hasn't been reconstructed yet)
+  const node = useMemo(() => {
+    if (!selectedWorker) return null;
+    if (graphState?.nodes[selectedWorker]) return graphState.nodes[selectedWorker];
+    // Fall back to inlineDAG node data
+    const dag = activeWorkflowId ? inlineDAGs[activeWorkflowId] : null;
+    if (!dag) return null;
+    const inlineNode = dag.nodes.find((n) => n.id === selectedWorker);
+    if (!inlineNode) return null;
+    return {
+      id: inlineNode.id,
+      type: inlineNode.type || 'agent',
+      label: inlineNode.label || inlineNode.id,
+      status: inlineNode.status,
+      progress: inlineNode.progress,
+      dependsOn: inlineNode.dependsOn ?? [],
+      output: inlineNode.output,
+    };
+  }, [selectedWorker, graphState, activeWorkflowId, inlineDAGs]);
 
   const workflowLabel = activeWorkflowId
     ? inlineDAGs[activeWorkflowId]?.summary || graphState?.name || activeWorkflowId.slice(0, 8)
@@ -413,7 +432,8 @@ export function WorkerDetail() {
                 <h4 className="font-semibold text-zinc-300 mb-2">Dependencies</h4>
                 <div className="space-y-1">
                   {node.dependsOn.map((depId) => {
-                    const depNode = graphState?.nodes[depId];
+                    const depNode = graphState?.nodes[depId]
+                      ?? (activeWorkflowId ? (() => { const d = inlineDAGs[activeWorkflowId]?.nodes.find((n) => n.id === depId); return d ? { label: d.label, status: d.status } : undefined; })() : undefined);
                     return (
                       <button
                         key={depId}

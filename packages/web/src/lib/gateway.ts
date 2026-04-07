@@ -503,13 +503,26 @@ function rehydrateFromSnapshot(snapshot: any, bufferedEvents?: unknown[]): void 
       console.error('[gateway] Failed to reconstruct graphState for past runs', err);
     }
 
-    // ── 3d. Switch to workflow tab if historical runs were rehydrated ────
+    // ── 3d. Switch to workflow tab and select the most recent workflow ────
     // Mirrors the old hydrateFromSnapshot behaviour: show the workflow view
-    // by default when there is at least one run to display.
+    // by default when there is at least one run to display. Selects the most
+    // recently updated workflow (by InlineDAG elapsed/durationSec) as active.
     try {
       const orchForTab = useOrchestrationStore.getState();
-      if (Object.keys(orchForTab.workflows).length > 0) {
+      const workflowIds = Object.keys(orchForTab.workflows);
+      if (workflowIds.length > 0) {
         orchForTab.setActiveOrchTab('workflow');
+        // Pick the most recently active workflow — prefer running over completed,
+        // and among completed prefer the one with the longest duration (likely most recent)
+        const dagEntries = Object.entries(snapshot.inlineDAGs ?? {});
+        if (dagEntries.length > 0) {
+          // Sort: running first, then by most recent (reverse insertion order as proxy)
+          const running = dagEntries.find(([, d]: [string, any]) => d.status === 'running' || d.status === 'dispatched');
+          const bestId = running ? running[0] : dagEntries[dagEntries.length - 1][0];
+          if (orchForTab.workflows[bestId]) {
+            orchForTab.setActiveWorkflowId(bestId);
+          }
+        }
       }
       sectionsOk++;
     } catch (err) {
@@ -820,7 +833,7 @@ function bindListeners(ws: ReconnectingWebSocket): void {
           dagId: d.workflowId,
           summary: d.summary,
           status: 'dispatched',
-          nodes: d.nodes.map((n: { id: string; label: string; type: string }) => ({
+          nodes: d.nodes.map((n: { id: string; label: string; type: string; dependsOn?: string[] }) => ({
             ...n, status: 'pending' as const,
           })),
           completedCount: 0,

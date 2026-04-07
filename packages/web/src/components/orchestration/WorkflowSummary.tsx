@@ -74,11 +74,7 @@ export function WorkflowSummary() {
     const dagId = activeWorkflowId;
     if (dagId) {
       const dag = inlineDAGs[dagId];
-      if (
-        dag &&
-        (dag.status === 'complete' || dag.status === 'error' || dag.status === 'stopped') &&
-        (dag.modelUsage || dag.totalCostUsd !== undefined || (dag.result && dag.result.trim().length > 0) || (dag.nodeOutputPaths && Object.keys(dag.nodeOutputPaths).length > 0))
-      ) {
+      if (dag && (dag.status === 'complete' || dag.status === 'error' || dag.status === 'stopped')) {
         return dag;
       }
     }
@@ -107,6 +103,7 @@ export function WorkflowSummary() {
 
   const isGraphTerminal = !graphState || graphState.status === 'complete' || graphState.status === 'error' || graphState.status === 'stopped';
   if (completedDAG && isGraphTerminal) {
+    const hasDetailedStats = !!(completedDAG.modelUsage || completedDAG.totalCostUsd !== undefined || (completedDAG.result && completedDAG.result.trim().length > 0) || (completedDAG.nodeOutputPaths && Object.keys(completedDAG.nodeOutputPaths).length > 0));
     const badge = statusBadge[completedDAG.status] || statusBadge.complete;
     return (
       <div className="h-full overflow-y-auto px-6 py-3">
@@ -126,6 +123,12 @@ export function WorkflowSummary() {
           )}
         </div>
         <div className="text-[10px] font-mono text-zinc-600 mb-2">{completedDAG.dagId}</div>
+        {!hasDetailedStats && (
+          <div className="mt-2 text-xs text-zinc-500">
+            Run completed{completedDAG.status === 'error' ? ' with errors' : completedDAG.status === 'stopped' ? ' (stopped)' : ''}.
+            {completedDAG.nodes.length > 0 && ` ${completedDAG.nodes.length} node${completedDAG.nodes.length !== 1 ? 's' : ''} executed.`}
+          </div>
+        )}
         {completedDAG.modelUsage && completedDAG.modelUsage.length > 0 && (
           <ModelUsageTable models={completedDAG.modelUsage} totalCostUsd={completedDAG.totalCostUsd} />
         )}
