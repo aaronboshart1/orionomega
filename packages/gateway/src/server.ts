@@ -1364,9 +1364,39 @@ async function shutdown(signal: string): Promise<void> {
     commandResult: { command: 'restart', success: true, message: 'Gateway restarting…' },
   });
 
+  clearInterval(hindsightHealthTimer);
+  wsHandler.shutdown();
+  eventStreamer.destroy();
+
+  const serversClosed = new Promise<void>((resolve) => {
+    let closed = 0;
+    const total = servers.length;
+    if (total === 0) { resolve(); return; }
+    for (const srv of servers) {
+      srv.close(() => {
+        closed++;
+        if (closed >= total) {
+          log.info(' All servers closed — port released.');
+          resolve();
+        }
+      });
+    }
+  });
+
+  await Promise.race([
+    serversClosed,
+    new Promise<void>((resolve) => setTimeout(() => {
+      log.warn(' Server close timed out after 3 s — port may still be held.');
+      resolve();
+    }, 3000)),
+  ]);
+
   if (mainAgent) {
     try {
-      await mainAgent.summarizeSession();
+      await Promise.race([
+        mainAgent.summarizeSession(),
+        new Promise<void>((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000)),
+      ]);
       log.info('Session summarized during shutdown');
     } catch (err) {
       log.warn('Session summarization failed during shutdown', {
@@ -1375,28 +1405,12 @@ async function shutdown(signal: string): Promise<void> {
     }
   }
 
-  clearInterval(hindsightHealthTimer);
   sessionManager.shutdown();
   stateStore.shutdown();
   feedService.destroy();
-  wsHandler.shutdown();
-  eventStreamer.destroy();
 
-  let closed = 0;
-  const total = servers.length;
-  for (const srv of servers) {
-    srv.close(() => {
-      closed++;
-      if (closed >= total) {
-        log.info(' All servers closed.');
-        process.exit(0);
-      }
-    });
-  }
-  setTimeout(() => {
-    log.warn(' Forced exit after timeout.');
-    process.exit(1);
-  }, 5000);
+  log.info(' Shutdown complete.');
+  process.exit(0);
 }
 
 process.on('SIGTERM', () => shutdown('SIGTERM'));

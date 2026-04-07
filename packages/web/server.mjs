@@ -1,6 +1,7 @@
 import { createServer, request as httpRequest } from 'http';
 import { connect as netConnect } from 'net';
 import { parse } from 'url';
+import { createHmac, randomBytes } from 'crypto';
 import next from 'next';
 
 const dev = process.env.NODE_ENV !== 'production';
@@ -32,6 +33,15 @@ const hosts = normalizeHosts(cliArgs.host || process.env.HOST || '0.0.0.0');
 const port = cliArgs.port || parseInt(process.env.PORT || '5000', 10);
 const gatewayHost = process.env.GATEWAY_HOST || 'localhost';
 const gatewayPort = parseInt(process.env.GATEWAY_PORT || '8000', 10);
+const gatewayAuthSecret = process.env.GATEWAY_AUTH_SECRET || '';
+
+function generateGatewayToken(secret) {
+  if (!secret) return '';
+  const payload = { v: 1, exp: Date.now() + 24 * 60 * 60 * 1000, jti: randomBytes(16).toString('hex'), data: { client: 'web-proxy' } };
+  const payloadB64 = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const signature = createHmac('sha256', secret).update(payloadB64).digest('base64url');
+  return `${payloadB64}.${signature}`;
+}
 
 const app = next({ dev, port, hostname: '0.0.0.0' });
 const handle = app.getRequestHandler();
@@ -99,6 +109,7 @@ app.prepare().then(() => {
           const responseHeaders = { ...proxyRes.headers };
           delete responseHeaders['x-powered-by'];
           delete responseHeaders['server'];
+          delete responseHeaders['content-security-policy'];
 
           // Add cache-control for read-only GET endpoints that are safe to cache briefly
           if (req.method === 'GET' && proxyRes.statusCode === 200) {
@@ -135,7 +146,12 @@ app.prepare().then(() => {
   function createUpgradeHandler(req, socket, head) {
     const parsedUrl = parse(req.url, true);
     if (parsedUrl.pathname === '/api/gateway/ws') {
-      const targetPath = stripGatewayPrefix(req.url);
+      let targetPath = stripGatewayPrefix(req.url);
+      if (gatewayAuthSecret) {
+        const token = generateGatewayToken(gatewayAuthSecret);
+        const sep = targetPath.includes('?') ? '&' : '?';
+        targetPath = targetPath + sep + 'token=' + encodeURIComponent(token);
+      }
       const proxySocket = netConnect({ host: gatewayHost, port: gatewayPort }, () => {
         const reqLine = `GET ${targetPath} HTTP/1.1\r\n`;
         const headers = Object.entries(
