@@ -199,7 +199,7 @@ export interface ServerMessage {
     estimatedTime: number;
     estimatedCost: number;
     summary: string;
-    nodes: Array<{ id: string; label: string; type: string }>;
+    nodes: Array<{ id: string; label: string; type: string; dependsOn?: string[] }>;
   };
   dagProgress?: {
     workflowId: string;

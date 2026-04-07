@@ -203,7 +203,7 @@ export class OrchestrationBridge {
           reasoning: plan.reasoning,
           estimatedCost: plan.estimatedCost,
           estimatedTime: plan.estimatedTime,
-          nodes: [...plan.graph.nodes.values()].map((n) => ({ id: n.id, label: n.label, type: n.type })),
+          nodes: [...plan.graph.nodes.values()].map((n) => ({ id: n.id, label: n.label, type: n.type, dependsOn: n.dependsOn })),
           guardedActions: [],
         };
         this.callbacks.onDAGConfirm?.(confirmInfo);
@@ -346,7 +346,7 @@ ${userTask}`;
       estimatedTime: plan.estimatedTime,
       estimatedCost: plan.estimatedCost,
       summary: plan.summary,
-      nodes: [...plan.graph.nodes.values()].map((n) => ({ id: n.id, label: n.label, type: n.type })),
+      nodes: [...plan.graph.nodes.values()].map((n) => ({ id: n.id, label: n.label, type: n.type, dependsOn: n.dependsOn })),
     };
     this.callbacks.onDAGDispatched?.(dispatchInfo);
     pushHistory({ role: 'assistant', content: `[Dispatched] ${plan.summary}` });

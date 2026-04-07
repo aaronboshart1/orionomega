@@ -80,6 +80,7 @@ export interface InlineDAGNode {
   status: 'pending' | 'running' | 'done' | 'error' | 'skipped' | 'cancelled';
   progress?: number;
   output?: string;
+  dependsOn?: string[];
 }
 
 export interface ModelUsageEntry {

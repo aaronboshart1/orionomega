@@ -431,6 +431,78 @@ function rehydrateFromSnapshot(snapshot: any, bufferedEvents?: unknown[]): void 
       console.error('[gateway] Failed to rehydrate inline DAGs', err);
     }
 
+    // ── 3b. Replay orchestration events into workflow activity feeds ────
+    // These may be partial after a crash (bounded by server-side throttle interval).
+    // Events are appended to the workflow's activity feed so the ActivityFeed component
+    // renders them. Missing events degrade gracefully — the summary stats (from InlineDAGs)
+    // are always available even if the activity stream is incomplete.
+    try {
+      if (snapshot.orchestrationEvents && Array.isArray(snapshot.orchestrationEvents)) {
+        let replayedCount = 0;
+        for (const entry of snapshot.orchestrationEvents) {
+          // Defensive: skip malformed entries
+          if (!entry || typeof entry !== 'object' || !entry.event) continue;
+          const evt = entry.event;
+          // Validate minimum event shape (must have at least a type and nodeId)
+          if (typeof evt !== 'object' || !evt.type || !evt.nodeId) continue;
+          orch.addEvent(evt, entry.workflowId);
+          replayedCount++;
+        }
+        if (replayedCount > 0) {
+          console.warn(`[gateway] Rehydrated ${replayedCount} orchestration events`);
+        }
+      }
+      sectionsOk++;
+    } catch (err) {
+      sectionsFailed++;
+      console.error('[gateway] Failed to rehydrate orchestration events', err);
+    }
+
+    // ── 3c. Reconstruct graphState from InlineDAG node data for past runs ──
+    // For completed (or crashed) workflows the live graphState is gone, but InlineDAG
+    // nodes carry enough info to reconstruct the graph visualization. For legacy data
+    // that lacks dependsOn, we fall back to an empty array (renders nodes without edges).
+    try {
+      const currentOrch = useOrchestrationStore.getState();
+      if (snapshot.inlineDAGs && typeof snapshot.inlineDAGs === 'object') {
+        for (const [dagId, dagData] of Object.entries(snapshot.inlineDAGs)) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const dag = dagData as any;
+          const nodes = dag.nodes || [];
+          // Only synthesize graphState for workflows that have real nodes but no live graphState
+          // (direct-mode runs have 0 nodes and don't need a graph)
+          if (nodes.length === 0) continue;
+          const wf = currentOrch.workflows[dagId];
+          if (wf?.graphState) continue; // live graphState takes precedence
+          const graphNodes: Record<string, any> = {};
+          for (const n of nodes) {
+            if (!n || !n.id) continue; // skip malformed nodes
+            graphNodes[n.id] = {
+              id: n.id,
+              type: n.type || 'agent',
+              label: n.label || n.id,
+              status: n.status === 'done' ? 'complete' : (n.status || 'pending'),
+              dependsOn: Array.isArray(n.dependsOn) ? n.dependsOn : [],
+            };
+          }
+          orch.setGraphState({
+            workflowId: dagId,
+            name: dag.summary || 'Workflow',
+            status: dag.status === 'complete' ? 'complete' : dag.status === 'error' ? 'error' : (dag.status || 'complete'),
+            elapsed: dag.durationSec ?? dag.elapsed ?? 0,
+            nodes: graphNodes,
+            recentEvents: [],
+            completedLayers: dag.completedCount ?? nodes.length,
+            totalLayers: dag.totalCount ?? nodes.length,
+          });
+        }
+      }
+      sectionsOk++;
+    } catch (err) {
+      sectionsFailed++;
+      console.error('[gateway] Failed to reconstruct graphState for past runs', err);
+    }
+
     // ── 4. Rehydrate session totals ─────────────────────────────────────
     try {
       if (snapshot.sessionTotals) {

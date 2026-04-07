@@ -125,6 +125,7 @@ export interface InlineDAGData {
     type: string;
     status: 'pending' | 'running' | 'done' | 'error' | 'skipped' | 'cancelled';
     progress?: number;
+    dependsOn?: string[];
   }>;
   completedCount: number;
   totalCount: number;
@@ -167,6 +168,13 @@ const MAX_EVENT_BUFFER = 500;
 
 /** Maximum orchestration events to persist per session. */
 const MAX_ORCHESTRATION_EVENTS = 500;
+
+/**
+ * Throttle interval for persisting orchestration events.
+ * Every ORCH_EVENT_PERSIST_INTERVAL events, a disk persist is scheduled.
+ * This bounds data loss to at most this many events on an unclean crash.
+ */
+const ORCH_EVENT_PERSIST_INTERVAL = 50;
 
 /** Serializable session shape (written to disk). */
 interface SessionData {
@@ -281,6 +289,8 @@ export class SessionManager {
   private _totalDiskWrites = 0;
   /** Counter: total failed disk writes since startup. */
   private _diskWriteFailures = 0;
+  /** Counter: orchestration events since last persist, per session. */
+  private _orchEventCountSinceFlush: Map<string, number> = new Map();
   /** Counter: total failed disk reads during startup load. */
   private _diskReadFailures = 0;
 
@@ -573,18 +583,37 @@ export class SessionManager {
       dag.nodeOutputPaths = stats.nodeOutputPaths;
     }
     session.updatedAt = new Date().toISOString();
-    this.schedulePersist(sessionId);
+    // Immediate persist on DAG completion: this is the terminal state for a workflow,
+    // so we bypass debounce to ensure orchestration events + final stats are on disk.
+    this._orchEventCountSinceFlush.set(sessionId, 0);
+    const existingTimer = this.writeQueue.get(sessionId);
+    if (existingTimer) clearTimeout(existingTimer);
+    this.writeQueue.delete(sessionId);
+    this.persistToDisk(sessionId);
   }
 
   /**
    * Add an orchestration worker event for reconnection replay.
+   *
+   * Events are high-frequency, so we don't persist on every call.
+   * Instead we throttle: persist every ORCH_EVENT_PERSIST_INTERVAL events.
+   * This bounds data loss on crash to at most ORCH_EVENT_PERSIST_INTERVAL events.
+   * A final flush also happens on DAG completion and graceful shutdown.
    */
   addOrchestrationEvent(sessionId: string, event: unknown, workflowId?: string): void {
     const session = this.sessions.get(sessionId);
     if (!session) return;
     this.pushToArrayWithCap(session.orchestrationEvents, { workflowId, event }, MAX_ORCHESTRATION_EVENTS);
     session.updatedAt = new Date().toISOString();
-    // Don't schedulePersist for every event — these are high frequency
+
+    // Throttled persist: flush every N events to bound crash data loss
+    const count = (this._orchEventCountSinceFlush.get(sessionId) ?? 0) + 1;
+    if (count >= ORCH_EVENT_PERSIST_INTERVAL) {
+      this._orchEventCountSinceFlush.set(sessionId, 0);
+      this.schedulePersist(sessionId);
+    } else {
+      this._orchEventCountSinceFlush.set(sessionId, count);
+    }
   }
 
   /**
@@ -818,6 +847,15 @@ export class SessionManager {
       this.persistToDisk(sessionId);
     }
     this.writeQueue.clear();
+
+    // Also persist any sessions with un-flushed orchestration events
+    // (below the throttle threshold, so not yet in the write queue)
+    for (const [sessionId, count] of this._orchEventCountSinceFlush) {
+      if (count > 0 && !this.writeQueue.has(sessionId)) {
+        this.persistToDisk(sessionId);
+      }
+    }
+    this._orchEventCountSinceFlush.clear();
 
     if (this.cleanupTimer) {
       clearInterval(this.cleanupTimer);

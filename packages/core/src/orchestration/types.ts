@@ -285,7 +285,7 @@ export interface DAGDispatchInfo {
   estimatedTime: number;
   estimatedCost: number;
   summary: string;
-  nodes: Array<{ id: string; label: string; type: string }>;
+  nodes: Array<{ id: string; label: string; type: string; dependsOn?: string[] }>;
 }
 
 /** Info emitted for inline DAG progress updates. */
