@@ -400,7 +400,7 @@ async function initMainAgent(): Promise<void> {
     onEvent(event) {
       const workerEvent = event as { workflowId?: string; type?: string };
 
-      // Store orchestration events to state store
+      // Store orchestration events to state store (in-memory, for paginated API)
       stateStore.appendEvent({
         id: randomBytes(8).toString('hex'),
         sessionId: DEFAULT_SESSION_ID,
@@ -409,6 +409,9 @@ async function initMainAgent(): Promise<void> {
         data: event as unknown as Record<string, unknown>,
         workflowId: workerEvent.workflowId,
       });
+
+      // Persist to session for snapshot inclusion — enables activity feed replay on reconnect
+      sessionManager.addOrchestrationEvent(DEFAULT_SESSION_ID, event, workerEvent.workflowId);
 
       eventStreamer.emit(event, workerEvent.type, workerEvent.workflowId);
     },

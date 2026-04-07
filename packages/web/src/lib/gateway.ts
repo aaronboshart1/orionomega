@@ -443,8 +443,8 @@ function rehydrateFromSnapshot(snapshot: any, bufferedEvents?: unknown[]): void 
           // Defensive: skip malformed entries
           if (!entry || typeof entry !== 'object' || !entry.event) continue;
           const evt = entry.event;
-          // Validate minimum event shape (must have at least a type and nodeId)
-          if (typeof evt !== 'object' || !evt.type || !evt.nodeId) continue;
+          // Validate minimum event shape (must have at least a type)
+          if (typeof evt !== 'object' || !evt.type) continue;
           orch.addEvent(evt, entry.workflowId);
           replayedCount++;
         }
