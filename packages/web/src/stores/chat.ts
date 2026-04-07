@@ -103,6 +103,7 @@ interface ChatStore {
   appendThinking: (t: string) => void;
   upsertThinkingStep: (step: ThinkingStep) => void;
   clearThinkingSteps: () => void;
+  markThinkingStepsDone: () => void;
   updateToolCallStatus: (messageId: string, status: 'running' | 'done' | 'error') => void;
   setStreamingStatus: (status: string) => void;
   markLastInterrupted: () => void;
@@ -182,6 +183,10 @@ export const useChatStore = create<ChatStore>()((set) => ({
           return { thinkingSteps: [...s.thinkingSteps, step] };
         }),
       clearThinkingSteps: () => set({ thinkingSteps: [] }),
+      markThinkingStepsDone: () =>
+        set((s) => ({
+          thinkingSteps: s.thinkingSteps.map((step) => ({ ...step, status: 'done' as const })),
+        })),
       updateToolCallStatus: (messageId, status) =>
         set((s) => ({
           messages: s.messages.map((m) =>

@@ -12,7 +12,7 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 
-import { useOrchestrationStore, type GraphNode } from '@/stores/orchestration';
+import { useOrchestrationStore, type GraphNode, type InlineDAGNode } from '@/stores/orchestration';
 import { WorkerNode } from './WorkerNode';
 
 const nodeTypes = { worker: WorkerNode };
@@ -81,14 +81,39 @@ function computeLayout(nodes: Record<string, GraphNode>) {
   return { rfNodes, rfEdges };
 }
 
+function inlineNodesToGraphNodes(nodes: InlineDAGNode[]): Record<string, GraphNode> {
+  const result: Record<string, GraphNode> = {};
+  for (const n of nodes) {
+    result[n.id] = {
+      id: n.id,
+      type: n.type || 'agent',
+      label: n.label || n.id,
+      status: n.status,
+      progress: n.progress,
+      dependsOn: n.dependsOn ?? [],
+      output: n.output,
+    };
+  }
+  return result;
+}
+
 export function DAGVisualization() {
   const graphState = useOrchestrationStore((s) => s.graphState);
+  const activeWorkflowId = useOrchestrationStore((s) => s.activeWorkflowId);
+  const inlineDAGs = useOrchestrationStore((s) => s.inlineDAGs);
   const selectWorker = useOrchestrationStore((s) => s.selectWorker);
 
   const { rfNodes, rfEdges } = useMemo(() => {
-    if (!graphState) return { rfNodes: [], rfEdges: [] };
-    return computeLayout(graphState.nodes);
-  }, [graphState]);
+    if (graphState) {
+      return computeLayout(graphState.nodes);
+    }
+    // Fall back to InlineDAG nodes for live runs (graphState arrives only in event/status msgs)
+    const activeDag = activeWorkflowId ? inlineDAGs[activeWorkflowId] : null;
+    if (!activeDag || activeDag.nodes.length === 0) {
+      return { rfNodes: [], rfEdges: [] };
+    }
+    return computeLayout(inlineNodesToGraphNodes(activeDag.nodes));
+  }, [graphState, activeWorkflowId, inlineDAGs]);
 
   const [, , onNodesChange] = useNodesState(rfNodes);
   const [, , onEdgesChange] = useEdgesState(rfEdges);
@@ -100,7 +125,7 @@ export function DAGVisualization() {
     [selectWorker],
   );
 
-  if (!graphState) {
+  if (rfNodes.length === 0) {
     return (
       <div className="flex h-full items-center justify-center text-xs text-zinc-600">
         No active workflow

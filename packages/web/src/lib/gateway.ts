@@ -795,19 +795,13 @@ function bindListeners(ws: ReconnectingWebSocket): void {
         break;
       }
       case 'thinking':
-        if (msg.workflowId && msg.workflowId.startsWith('conv-')) {
-          break;
-        }
         if (msg.streaming) chat.appendThinking(msg.thinking || '');
         if (msg.done) {
           chat.setThinking('');
-          chat.clearThinkingSteps();
+          chat.markThinkingStepsDone();
         }
         break;
       case 'thinking_step':
-        if (msg.workflowId && msg.workflowId.startsWith('conv-')) {
-          break;
-        }
         if (msg.step) chat.upsertThinkingStep(msg.step);
         break;
       case 'tool_call':

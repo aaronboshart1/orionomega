@@ -189,7 +189,7 @@ async function testChunking() {
     minContentChars: 20,
   });
 
-  const result = await collector.collectAndStore(RUN_ID, TEST_DIR, 'Test chunking');
+  await collector.collectAndStore(RUN_ID, TEST_DIR, 'Test chunking');
 
   const artifacts = mock.storedItems.filter(i => i.context === 'run_artifact');
   console.assert(artifacts.length > 1, `Expected multiple chunks, got ${artifacts.length}`);

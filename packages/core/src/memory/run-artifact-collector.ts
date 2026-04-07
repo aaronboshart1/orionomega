@@ -17,7 +17,7 @@
  */
 
 import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
-import { join, relative, basename, dirname } from 'node:path';
+import { join, relative, basename } from 'node:path';
 import { HindsightClient } from '@orionomega/hindsight';
 import { estimateTokens, smartTruncate, compressMemoryContent } from '@orionomega/hindsight';
 import { createLogger } from '../logging/logger.js';
@@ -141,8 +141,6 @@ export class RunArtifactCollector {
     const prioritized = this.prioritizeFiles(mdFiles, runDir);
 
     // 3. Process each file: read, chunk, store
-    const now = new Date().toISOString();
-
     for (const filePath of prioritized) {
       if (result.budgetExhausted) {
         result.filesSkipped++;
