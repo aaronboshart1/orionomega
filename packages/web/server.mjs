@@ -2,6 +2,9 @@ import { createServer, request as httpRequest } from 'http';
 import { connect as netConnect } from 'net';
 import { parse } from 'url';
 import { createHmac, randomBytes } from 'crypto';
+import { readFileSync } from 'fs';
+import { join } from 'path';
+import { homedir } from 'os';
 import next from 'next';
 
 const dev = process.env.NODE_ENV !== 'production';
@@ -28,12 +31,29 @@ function normalizeHosts(raw) {
   return [...new Set(addrs.length > 0 ? addrs : ['0.0.0.0'])];
 }
 
+async function loadGatewayAuthSecret() {
+  if (process.env.GATEWAY_AUTH_SECRET) return process.env.GATEWAY_AUTH_SECRET;
+  try {
+    const configPath = process.env.CONFIG_PATH ||
+      join(process.env.REPL_ID ? process.cwd() : homedir(), '.orionomega', 'config.yaml');
+    const raw = readFileSync(configPath, 'utf-8');
+    let yaml;
+    try { yaml = (await import('js-yaml')).default; } catch { return ''; }
+    const cfg = yaml.load(raw);
+    if (cfg?.gateway?.auth?.mode === 'api-key' && cfg?.gateway?.auth?.keyHash) {
+      console.log('[auth] Loaded gateway keyHash from config');
+      return cfg.gateway.auth.keyHash;
+    }
+  } catch { /* config not found or unparseable — no auth needed */ }
+  return '';
+}
+
 const cliArgs = parseArgs();
 const hosts = normalizeHosts(cliArgs.host || process.env.HOST || '0.0.0.0');
 const port = cliArgs.port || parseInt(process.env.PORT || '5000', 10);
 const gatewayHost = process.env.GATEWAY_HOST || 'localhost';
 const gatewayPort = parseInt(process.env.GATEWAY_PORT || '8000', 10);
-const gatewayAuthSecret = process.env.GATEWAY_AUTH_SECRET || '';
+const gatewayAuthSecret = await loadGatewayAuthSecret();
 
 function generateGatewayToken(secret) {
   if (!secret) return '';
