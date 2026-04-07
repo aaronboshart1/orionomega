@@ -94,6 +94,25 @@ body {
 }
 
 /* ============================================================
+   Mobile input fix
+   Ensure textarea/input elements are always interactable on
+   mobile. Overrides any inherited touch-action or user-select
+   that could prevent tap-to-focus / text entry on iOS/Android.
+   ============================================================ */
+
+textarea,
+input[type='text'],
+input[type='search'],
+input[type='email'],
+input[type='password'],
+input[type='number'],
+input:not([type]) {
+  touch-action: auto;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+/* ============================================================
    Accessibility
    ============================================================ */
 

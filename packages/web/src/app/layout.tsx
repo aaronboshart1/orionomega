@@ -49,7 +49,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" className={`dark ${inter.variable}`}>
-      <body className="font-[family-name:var(--font-inter)] bg-[var(--background)] text-[var(--foreground)] antialiased overflow-hidden">
+      <body className="font-[family-name:var(--font-inter)] bg-[var(--background)] text-[var(--foreground)] antialiased">
         {/* Skip-to-content link — invisible until focused via keyboard */}
         <a
           href="#main-content"
