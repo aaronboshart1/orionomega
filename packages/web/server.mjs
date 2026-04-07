@@ -40,9 +40,12 @@ async function loadGatewayAuthSecret() {
     let yaml;
     try { yaml = (await import('js-yaml')).default; } catch { return ''; }
     const cfg = yaml.load(raw);
-    if (cfg?.gateway?.auth?.mode === 'api-key' && cfg?.gateway?.auth?.keyHash) {
-      console.log('[auth] Loaded gateway keyHash from config');
-      return cfg.gateway.auth.keyHash;
+    if (cfg?.gateway?.auth?.mode === 'api-key') {
+      if (cfg.gateway.auth.keyHash) {
+        console.log('[auth] Loaded gateway keyHash from config');
+        return cfg.gateway.auth.keyHash;
+      }
+      console.warn('[auth] Gateway config has auth.mode=api-key but no keyHash — WebSocket auth tokens will not be injected');
     }
   } catch { /* config not found or unparseable — no auth needed */ }
   return '';
