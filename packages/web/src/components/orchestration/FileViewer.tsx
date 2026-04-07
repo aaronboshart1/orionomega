@@ -1,9 +1,10 @@
 'use client';
 
-import { X, Loader2, AlertCircle } from 'lucide-react';
+import { X, Loader2, AlertCircle, Download } from 'lucide-react';
 import { useFileViewerStore } from '@/stores/file-viewer';
 import { MarkdownContent } from '../chat/MarkdownContent';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
+import { downloadFile } from '@/lib/download';
 
 export function FileViewer() {
   const openFiles = useFileViewerStore((s) => s.openFiles);
@@ -26,6 +27,7 @@ export function FileViewer() {
   return (
     <div className="flex h-full flex-col">
       <div className="flex shrink-0 items-center gap-0.5 overflow-x-auto border-b border-zinc-800 px-1 py-1">
+        <div className="flex flex-1 items-center gap-0.5 overflow-x-auto">
         {openFiles.map((file) => (
           <div
             key={file.path}
@@ -51,6 +53,21 @@ export function FileViewer() {
             </button>
           </div>
         ))}
+        </div>
+        <button
+          type="button"
+          disabled={!activeFile || activeFile.loading || !!activeFile.error}
+          onClick={() => {
+            if (!activeFile || activeFile.loading || activeFile.error) return;
+            const filename = activeFile.path.split('/').pop() ?? activeFile.label;
+            downloadFile(filename, activeFile.content);
+          }}
+          className="ml-1 shrink-0 rounded p-1 text-zinc-500 transition-colors hover:bg-zinc-800 hover:text-zinc-300 disabled:cursor-not-allowed disabled:opacity-30"
+          title="Download file"
+          aria-label="Download file"
+        >
+          <Download size={13} />
+        </button>
       </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto">
