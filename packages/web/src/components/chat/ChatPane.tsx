@@ -48,6 +48,16 @@ function buildRenderItems(messages: ChatMessage[]): RenderItem[] {
       continue;
     }
 
+    // Skip DAG-typed messages that have no dagId — these are orphaned references
+    // that would render as empty/broken bubbles (missing InlineDAG in the store).
+    if (
+      (msg.type === 'dag-dispatched' || msg.type === 'dag-complete' || msg.type === 'dag-confirmation') &&
+      !msg.dagId
+    ) {
+      i++;
+      continue;
+    }
+
     if (msg.type === 'tool-call' && msg.toolCall) {
       const groupNodeId = msg.toolCall.nodeId;
       const groupLabel = msg.toolCall.nodeLabel || groupNodeId || 'Worker';

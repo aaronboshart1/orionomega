@@ -113,11 +113,11 @@ export function MessageBubble({ message, onScrollToMessage }: MessageBubbleProps
         <div className="relative max-w-[95%] md:max-w-[85%]">
           {dag ? (
             <InlineDAGCard dag={dag} />
-          ) : (
+          ) : content ? (
             <div className="rounded-2xl bg-zinc-800 px-4 py-3 text-sm text-zinc-100">
               <ErrorBoundary><MarkdownContent content={content} /></ErrorBoundary>
             </div>
-          )}
+          ) : null}
           <ReplyButton onClick={handleReply} />
         </div>
       </div>
@@ -144,11 +144,11 @@ export function MessageBubble({ message, onScrollToMessage }: MessageBubbleProps
         <div className="relative max-w-[95%] md:max-w-[85%]">
           {dag ? (
             <RunSummaryCard dag={dag} />
-          ) : (
+          ) : content ? (
             <div className="rounded-2xl bg-zinc-800 px-4 py-3 text-sm leading-relaxed text-zinc-100">
               <ErrorBoundary><MarkdownContent content={content} /></ErrorBoundary>
             </div>
-          )}
+          ) : null}
           <ReplyButton onClick={handleReply} />
         </div>
       </div>

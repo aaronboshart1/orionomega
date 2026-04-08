@@ -211,10 +211,10 @@ function processHistoryWhenHydrated(history: HistoryMessage[]): void {
         return {
           id: m.id,
           role: m.role as 'user' | 'assistant',
-          content: m.content,
+          content: m.content ?? '',
           timestamp: m.timestamp,
           type: m.type as ChatMessage['type'],
-          dagId: m.dagId || wfId,
+          dagId: m.dagId || wfId || undefined,
           workflowId: m.metadata?.workflowId,
           isBackground: m.metadata?.background,
         };
@@ -931,7 +931,7 @@ function bindListeners(ws: ReconnectingWebSocket): void {
         break;
       case 'dag_dispatched': {
         const d = msg.dagDispatch;
-        if (!d) break;
+        if (!d || !d.workflowId) break;
         orch.upsertInlineDAG({
           dagId: d.workflowId,
           summary: d.summary,
@@ -1028,7 +1028,7 @@ function bindListeners(ws: ReconnectingWebSocket): void {
       }
       case 'dag_complete': {
         const c = msg.dagComplete;
-        if (!c) break;
+        if (!c || !c.workflowId) break;
         orch.completeDAG(
           c.workflowId,
           c.output ?? c.summary,
