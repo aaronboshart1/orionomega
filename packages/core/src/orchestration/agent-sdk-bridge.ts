@@ -129,6 +129,8 @@ export interface AgentExecutionConfig {
   onProgress?: (event: { type: string; message: string; progress?: number }) => void;
   /** Optional structured output format. When provided, the SDK will return parsed JSON. */
   outputFormat?: { type: 'json_schema'; schema: Record<string, unknown> };
+  /** Run output directory for this workflow. Injected as ORIONOMEGA_RUN_DIR env var. */
+  runDir?: string;
 }
 
 /** Result of an AGENT node execution via the Agent SDK. */
@@ -609,6 +611,7 @@ export async function executeCodingAgent(
   workspaceDir: string,
   onProgress?: (event: { type: string; message: string; progress?: number; thinking?: string }) => void,
   abortSignal?: AbortSignal,
+  runDir?: string,
 ): Promise<CodingAgentResult> {
   const config = readConfig();
   const sdkConfig = config.agentSdk;
@@ -659,17 +662,20 @@ export async function executeCodingAgent(
   try {
     // Build the system prompt
     const portInstructions = getPortAvoidanceInstructions(config);
+    const runDirInstruction = runDir
+      ? `\n\n## Output Directory\nAll deliverable files (reports, artifacts, generated code, data) should be written to the run output directory: \`${runDir}\`\nThis directory is the canonical location for this workflow run's artifacts. Use it instead of /tmp/ for any output files.\nThe run directory is also available via the ORIONOMEGA_RUN_DIR environment variable.`
+      : '';
     let systemPrompt: string | { type: 'preset'; preset: 'claude_code'; append?: string };
     if (codingConfig.systemPrompt) {
       // Use Claude Code's system prompt with appended instructions
       systemPrompt = {
         type: 'preset',
         preset: 'claude_code',
-        append: `${codingConfig.systemPrompt}\n\n${portInstructions}`,
+        append: `${codingConfig.systemPrompt}\n\n${portInstructions}${runDirInstruction}`,
       };
     } else {
       // Use Claude Code's default system prompt with port restrictions
-      systemPrompt = { type: 'preset', preset: 'claude_code', append: portInstructions };
+      systemPrompt = { type: 'preset', preset: 'claude_code', append: `${portInstructions}${runDirInstruction}` };
     }
 
     // Build agents map if provided
@@ -727,6 +733,7 @@ export async function executeCodingAgent(
           LANG: process.env.LANG || 'en_US.UTF-8',
           ANTHROPIC_API_KEY: apiKey,
           CLAUDE_AGENT_SDK_CLIENT_APP: 'orionomega-orchestrator',
+          ...(runDir ? { ORIONOMEGA_RUN_DIR: runDir } : {}),
         },
         additionalDirectories: codingConfig.additionalDirectories ?? sdkConfig.additionalDirectories,
         ...(agents ? { agents } : {}),

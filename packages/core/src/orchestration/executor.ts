@@ -159,6 +159,8 @@ export interface ExecutorConfig {
   onMemoryIO?: (event: { op: 'retain' | 'recall'; bank: string; detail: string; meta?: Record<string, unknown> }) => void;
   /** Default working directory for CODING_AGENT nodes (repo root). */
   codingRepoDir?: string;
+  /** Dedicated directory for storing run artifacts. When set, run output goes to {runsDir}/{workflowId}/ instead of {workspaceDir}/output/{workflowId}/. */
+  runsDir?: string;
 }
 
 /**
@@ -207,6 +209,23 @@ export class GraphExecutor {
     this.startedAt = new Date().toISOString();
     this.state = existingState ?? new WorkflowState(graph.id, config.checkpointDir);
     this.checkpointMgr = new CheckpointManager(config.checkpointDir);
+  }
+
+  /**
+   * Resolves the base directory for this workflow run's artifacts.
+   * Uses the dedicated runsDir if configured, otherwise falls back to
+   * the legacy {workspaceDir}/output/{workflowId} path.
+   */
+  private getRunDir(): string {
+    const base = this.config.runsDir ?? `${this.config.workspaceDir}/output`;
+    return `${base}/${this.graph.id}`;
+  }
+
+  /**
+   * Resolves the output directory for a specific node within this run.
+   */
+  private getNodeOutputDir(nodeId: string): string {
+    return `${this.getRunDir()}/${nodeId}`;
   }
 
   /**
@@ -329,7 +348,7 @@ export class GraphExecutor {
               this.errors.push({ worker: nodeId, message: errorMsg });
               log.warn(`Node '${nodeId}' failed: ${errorMsg}`);
 
-              const failedOutputDir = `${this.config.workspaceDir}/output/${this.graph.id}/${nodeId}`;
+              const failedOutputDir = this.getNodeOutputDir(nodeId);
               const failedArtifacts = scanForUntrackedFiles(failedOutputDir, []);
               if (failedArtifacts.length > 0) {
                 this.outputPaths.push(...failedArtifacts);
@@ -620,7 +639,7 @@ export class GraphExecutor {
         }
 
         // Each worker gets its own output directory to prevent file pollution
-        const workerOutputDir = `${this.config.workspaceDir}/output/${this.graph.id}/${node.id}`;
+        const workerOutputDir = `${this.getRunDir()}/${node.id}`;
         try { mkdirSync(workerOutputDir, { recursive: true }); } catch { /* may exist */ }
 
         const worker = new WorkerProcess(node, this.eventBus, {
@@ -628,6 +647,7 @@ export class GraphExecutor {
           timeout: node.timeout ?? this.config.workerTimeout,
           context: injectedContext,
           workflowId: this.graph.id,
+          runDir: this.getRunDir(),
         });
         this.activeWorkers.set(node.id, worker);
 
@@ -661,7 +681,7 @@ export class GraphExecutor {
           : node.codingAgent?.task ?? node.agent?.task ?? '';
 
         // Create output directory for the coding agent
-        const codingOutputDir = `${this.config.workspaceDir}/output/${this.graph.id}/${node.id}`;
+        const codingOutputDir = `${this.getRunDir()}/${node.id}`;
         try { mkdirSync(codingOutputDir, { recursive: true }); } catch { /* may exist */ }
 
         // Override the task with context-enriched version
@@ -786,7 +806,7 @@ export class GraphExecutor {
         return this.executeRouter(node);
 
       case 'PARALLEL': {
-        const parallelOutputDir = `${this.config.workspaceDir}/output/${this.graph.id}/${node.id}`;
+        const parallelOutputDir = `${this.getRunDir()}/${node.id}`;
         try { mkdirSync(parallelOutputDir, { recursive: true }); } catch { /* may exist */ }
         const parallelArtifact = join(parallelOutputDir, 'output.json');
         const parallelData = { type: 'PARALLEL', label: node.label, dependsOn: node.dependsOn };
@@ -904,7 +924,7 @@ export class GraphExecutor {
       this.decisions.push(`Loop '${node.label}' forced exit at max iterations (${maxIter})`);
     }
 
-    const loopOutputDir = `${this.config.workspaceDir}/output/${this.graph.id}/${node.id}`;
+    const loopOutputDir = `${this.getRunDir()}/${node.id}`;
     try { mkdirSync(loopOutputDir, { recursive: true }); } catch { /* may exist */ }
     const loopOutputPaths: string[] = [];
     const loopArtifact = join(loopOutputDir, 'output.json');
@@ -1033,7 +1053,7 @@ export class GraphExecutor {
       `Router '${node.label}': selected route '${selectedRoute}' → ${targetNodeId ?? 'none'}`,
     );
 
-    const routerOutputDir = `${this.config.workspaceDir}/output/${this.graph.id}/${node.id}`;
+    const routerOutputDir = `${this.getRunDir()}/${node.id}`;
     try { mkdirSync(routerOutputDir, { recursive: true }); } catch { /* may exist */ }
     const routerArtifact = join(routerOutputDir, 'output.json');
     const routerData = { type: 'ROUTER', label: node.label, route: selectedRoute, target: targetNodeId };
@@ -1059,7 +1079,7 @@ export class GraphExecutor {
       upstreamOutputs.push(output);
     }
 
-    const joinOutputDir = `${this.config.workspaceDir}/output/${this.graph.id}/${node.id}`;
+    const joinOutputDir = `${this.getRunDir()}/${node.id}`;
     try { mkdirSync(joinOutputDir, { recursive: true }); } catch { /* may exist */ }
     const joinArtifact = join(joinOutputDir, 'output.json');
     const joinData = { type: 'JOIN', label: node.label, upstreamCount: upstreamOutputs.length, upstreamNodes: node.dependsOn };
@@ -1323,7 +1343,7 @@ export class GraphExecutor {
 
   /** Builds the final ExecutionResult. */
   private writeRunSummaryArtifacts(result: ExecutionResult): void {
-    const runDir = `${this.config.workspaceDir}/output/${this.graph.id}`;
+    const runDir = this.getRunDir();
     try {
       try { mkdirSync(runDir, { recursive: true }); } catch { /* may exist */ }
 

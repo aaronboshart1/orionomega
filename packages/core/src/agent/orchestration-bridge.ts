@@ -40,6 +40,8 @@ export interface OrchestrationConfig {
   maxRetries: number;
   /** Path to the source repo for coding mode (default working directory). */
   codingRepoDir?: string;
+  /** Dedicated directory for storing run artifacts. Defaults to ~/.orionomega/runs. */
+  runsDir?: string;
 }
 
 /** An active, running workflow. */

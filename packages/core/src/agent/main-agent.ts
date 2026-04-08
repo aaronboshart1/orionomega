@@ -59,6 +59,8 @@ export interface MainAgentConfig {
   autoResume?: boolean;
   /** Path to the source repo for coding mode. */
   codingRepoDir?: string;
+  /** Dedicated directory for storing run artifacts. Defaults to ~/.orionomega/runs. */
+  runsDir?: string;
 }
 
 // ── Callbacks ──────────────────────────────────────────────────────────────

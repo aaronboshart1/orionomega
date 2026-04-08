@@ -120,11 +120,13 @@ export class WorkerProcess {
   private readonly events: WorkerEvent[] = [];
   private readonly context: string | undefined;
   private readonly workflowId: string | undefined;
+  /** The run-level output directory (e.g. ~/.orionomega/runs/{workflowId}). */
+  private readonly runDir: string | undefined;
 
   constructor(
     node: WorkflowNode,
     eventBus: EventBus,
-    options: { workspaceDir: string; timeout: number; context?: string; workflowId?: string },
+    options: { workspaceDir: string; timeout: number; context?: string; workflowId?: string; runDir?: string },
   ) {
     this.node = node;
     this.eventBus = eventBus;
@@ -132,6 +134,7 @@ export class WorkerProcess {
     this.timeout = options.timeout;
     this.context = options.context;
     this.workflowId = options.workflowId;
+    this.runDir = options.runDir;
   }
 
   /**
