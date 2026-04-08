@@ -15,14 +15,30 @@
  */
 
 import type Database from 'better-sqlite3';
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-const MIGRATIONS_DIR = resolve(__dirname, 'migrations');
+/**
+ * Resolve the migrations directory. When running from dist/ the SQL files
+ * should have been copied there by the build script. As a fallback (e.g.
+ * dev mode via tsx, or build script not yet updated) look in the original
+ * src/ tree relative to the compiled output location.
+ */
+function resolveMigrationsDir(): string | null {
+  // Primary: co-located with compiled JS (dist/db/migrations)
+  const primary = resolve(__dirname, 'migrations');
+  if (existsSync(primary)) return primary;
+
+  // Fallback: source tree — __dirname is dist/db, so ../../src/db/migrations
+  const fallback = resolve(__dirname, '..', '..', 'src', 'db', 'migrations');
+  if (existsSync(fallback)) return fallback;
+
+  return null;
+}
 
 /**
  * Runs all pending SQL migrations against the provided better-sqlite3
@@ -52,16 +68,24 @@ export function runMigrations(db: Database.Database): void {
   );
 
   // Discover migration files sorted by name (lexicographic = numeric order).
+  const migrationsDir = resolveMigrationsDir();
+  if (!migrationsDir) {
+    console.error(
+      '[db/migrate] migrations directory not found in dist/ or src/ — ' +
+      'database tables may be missing. Searched: ' + resolve(__dirname, 'migrations'),
+    );
+    return;
+  }
+
   let files: string[];
   try {
-    files = readdirSync(MIGRATIONS_DIR)
+    files = readdirSync(migrationsDir)
       .filter((f) => f.endsWith('.sql'))
       .sort();
-  } catch {
-    // Migrations directory missing at runtime (e.g. running from dist without
-    // copying SQL files). Warn and skip — schema must already be present.
-    console.warn(
-      '[db/migrate] migrations directory not found, skipping: ' + MIGRATIONS_DIR,
+  } catch (err) {
+    console.error(
+      '[db/migrate] failed to read migrations directory: ' + migrationsDir,
+      err instanceof Error ? err.message : String(err),
     );
     return;
   }
@@ -78,7 +102,7 @@ export function runMigrations(db: Database.Database): void {
       continue; // Already applied.
     }
 
-    const sql = readFileSync(resolve(MIGRATIONS_DIR, file), 'utf8');
+    const sql = readFileSync(resolve(migrationsDir, file), 'utf8');
 
     // Run the entire file in a transaction so a partial failure rolls back.
     const applyMigration = db.transaction(() => {

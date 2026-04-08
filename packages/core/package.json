@@ -23,7 +23,7 @@
     "orionomega": "dist/cli.js"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && cp -r src/db/migrations dist/db/migrations",
     "clean": "rm -rf dist"
   },
   "dependencies": {
