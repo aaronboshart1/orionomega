@@ -22,7 +22,7 @@ export function SessionSwitcher() {
 
   const fetchSessions = useCallback(async () => {
     try {
-      const resp = await fetch('/api/sessions');
+      const resp = await fetch('/api/gateway/api/sessions');
       if (resp.ok) {
         const data = await resp.json() as { sessions?: Session[] };
         setSessions(data.sessions ?? []);
@@ -45,7 +45,7 @@ export function SessionSwitcher() {
   const createSession = useCallback(async () => {
     setLoading(true);
     try {
-      const resp = await fetch('/api/sessions', {
+      const resp = await fetch('/api/gateway/api/sessions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: `Session ${new Date().toLocaleString()}` }),
@@ -64,7 +64,7 @@ export function SessionSwitcher() {
   const deleteSession = useCallback(async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
     try {
-      await fetch(`/api/sessions/${id}`, { method: 'DELETE' });
+      await fetch(`/api/gateway/api/sessions/${id}`, { method: 'DELETE' });
       if (id === sessionId) {
         await createSession();
       } else {
@@ -81,7 +81,7 @@ export function SessionSwitcher() {
 
   const submitRename = useCallback(async (id: string) => {
     try {
-      await fetch(`/api/sessions/${id}`, {
+      await fetch(`/api/gateway/api/sessions/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: renameValue }),
