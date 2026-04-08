@@ -623,6 +623,18 @@ async function initMainAgent(): Promise<void> {
         nodes: dispatch.nodes,
       });
 
+      // Persist DAG structure to durable session storage
+      // (emitDAGMessage bypasses wsHandler.broadcast/trackMessageState)
+      sessionManager.upsertInlineDAG(DEFAULT_SESSION_ID, {
+        dagId: dispatch.workflowId,
+        summary: dispatch.summary,
+        status: 'dispatched',
+        nodes: dispatch.nodes.map((n: { id: string; label: string; type: string; dependsOn?: string[] }) => ({ ...n, status: 'pending' as const })),
+        completedCount: 0,
+        totalCount: dispatch.nodeCount,
+        elapsed: 0,
+      });
+
       eventStreamer.emitDAGMessage({
         id: msgId,
         type: 'dag_dispatched',
@@ -673,6 +685,15 @@ async function initMainAgent(): Promise<void> {
         workerId: progress.workerId,
       });
 
+      // Persist node progress to durable session storage
+      const dagProgressStatusMap: Record<string, 'pending' | 'running' | 'done' | 'error'> = {
+        started: 'running', progress: 'running', done: 'done', error: 'error',
+      };
+      sessionManager.updateInlineDAGNode(DEFAULT_SESSION_ID, progress.workflowId, progress.nodeId, {
+        status: dagProgressStatusMap[progress.status] ?? 'running',
+        progress: progress.progress,
+      });
+
       eventStreamer.emitDAGMessage({
         id: evtId,
         type: 'dag_progress',
@@ -714,6 +735,27 @@ async function initMainAgent(): Promise<void> {
           costUsd: result.totalCostUsd,
         });
       }
+
+      // Persist DAG completion to durable session storage
+      sessionManager.completeInlineDAG(
+        DEFAULT_SESSION_ID,
+        result.workflowId,
+        result.output ?? result.summary,
+        result.status === 'error' ? result.summary : undefined,
+        {
+          durationSec: result.durationSec,
+          workerCount: result.workerCount,
+          totalCostUsd: result.totalCostUsd,
+          toolCallCount: result.toolCallCount,
+          modelUsage: result.modelUsage as unknown as Array<{
+            model: string; inputTokens: number; outputTokens: number;
+            cacheReadTokens: number; cacheCreationTokens: number;
+            workerCount: number; costUsd: number;
+          }> | undefined,
+          nodeOutputPaths: result.nodeOutputPaths,
+          stopped: result.status === 'stopped',
+        },
+      );
 
       eventStreamer.emitDAGMessage({
         id: msgId,
