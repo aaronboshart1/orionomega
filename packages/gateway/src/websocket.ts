@@ -362,6 +362,9 @@ export class WebSocketHandler {
       replyToId: msg.replyToId,
     });
 
+    // Track this message ID so onDAGDispatched can link the DAG back to it
+    this.sessionManager.setLastUserMessageId(conn.sessionId, msg.id);
+
     // Also persist to SQLite state store for full history
     if (this.stateStore) {
       this.stateStore.appendEvent({

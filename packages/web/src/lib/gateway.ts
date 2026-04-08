@@ -18,7 +18,11 @@ function getGatewayUrl(): string {
   if (typeof window !== 'undefined') {
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     let savedSession: string | null = null;
-    try { savedSession = localStorage.getItem(SESSION_KEY); } catch { /* ignore */ }
+    try {
+      // URL params take priority — enables bookmarkable session links
+      const urlParams = new URLSearchParams(window.location.search);
+      savedSession = urlParams.get('session') ?? localStorage.getItem(SESSION_KEY);
+    } catch { /* ignore */ }
     const sessionParam = savedSession ? `&session=${savedSession}` : '';
     return `${proto}//${window.location.host}/api/gateway/ws?client=web${sessionParam}`;
   }
@@ -1159,6 +1163,14 @@ function bindListeners(ws: ReconnectingWebSocket): void {
         // Full state snapshot from the init protocol — rehydrate everything
         if (msg.sessionId) {
           try { localStorage.setItem(SESSION_KEY, msg.sessionId); } catch { /* ignore */ }
+          // Reflect the server-assigned session ID in the URL (replaceState — no back-nav entry)
+          try {
+            const url = new URL(window.location.href);
+            if (url.searchParams.get('session') !== msg.sessionId) {
+              url.searchParams.set('session', msg.sessionId);
+              history.replaceState(null, '', url.toString());
+            }
+          } catch { /* ignore */ }
           useConnectionStore.getState().setSessionId(msg.sessionId);
         }
         initAcked = true;
@@ -1497,6 +1509,21 @@ export function useGateway() {
     bindListeners(ws);
   }, []);
 
+  // Handle browser back/forward navigation — switch session when URL ?session param changes
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handlePopState = () => {
+      const urlParams = new URLSearchParams(window.location.search);
+      const sessionFromUrl = urlParams.get('session');
+      const currentSession = useConnectionStore.getState().sessionId;
+      if (sessionFromUrl && sessionFromUrl !== currentSession) {
+        switchToSession(sessionFromUrl);
+      }
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
   const send = useCallback((data: object) => {
     const ws = getOrCreateWs();
     bindListeners(ws);
@@ -1641,6 +1668,12 @@ export function switchToSession(newSessionId: string): void {
   useAgentModeStore.getState().setMode('orchestrate');
   // Update the stored session and reset seq tracking
   try { localStorage.setItem(SESSION_KEY, newSessionId); } catch { /* ignore */ }
+  // Reflect the session in the URL so it's bookmarkable
+  try {
+    const url = new URL(window.location.href);
+    url.searchParams.set('session', newSessionId);
+    history.pushState(null, '', url.toString());
+  } catch { /* ignore */ }
   useConnectionStore.getState().setSessionId(newSessionId);
   useConnectionStore.getState().setLastSeenSeq(0);
   useConnectionStore.getState().setHasOlderMessages(false);

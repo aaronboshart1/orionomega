@@ -22,7 +22,8 @@ import { EventStreamer } from './events.js';
 import { WebSocketHandler } from './websocket.js';
 import { ServerSessionStore } from './state-store.js';
 import { handleHealth, handleMetrics } from './routes/health.js';
-import { handleListSessions, handleGetSession, handleCreateSession, handleRenameSession, handleDeleteSession, handleGetSessionActivityPaginated } from './routes/sessions.js';
+import { handleListSessions, handleGetSession, handleCreateSession, handleRenameSession, handleDeleteSession, handleGetSessionActivityPaginated, handleGetSessionMessages } from './routes/sessions.js';
+import { PersistenceService } from './persistence.js';
 import { handleLogActivity, handleGetActivity } from './routes/activity.js';
 import { ActivityService } from './activity.js';
 import { handleStatus } from './routes/status.js';
@@ -90,6 +91,7 @@ try {
 
 const sessionManager = new SessionManager();
 const stateStore = new ServerSessionStore();
+const persistenceService = new PersistenceService();
 const feedService = new FeedService(sessionManager);
 const activityService = new ActivityService();
 const commandHandler = new CommandHandler(sessionManager);
@@ -625,6 +627,7 @@ async function initMainAgent(): Promise<void> {
 
       // Persist DAG structure to durable session storage
       // (emitDAGMessage bypasses wsHandler.broadcast/trackMessageState)
+      const triggeringMessageId = sessionManager.getLastUserMessageId(DEFAULT_SESSION_ID);
       sessionManager.upsertInlineDAG(DEFAULT_SESSION_ID, {
         dagId: dispatch.workflowId,
         summary: dispatch.summary,
@@ -633,6 +636,7 @@ async function initMainAgent(): Promise<void> {
         completedCount: 0,
         totalCount: dispatch.nodeCount,
         elapsed: 0,
+        triggeringMessageId,
       });
 
       eventStreamer.emitDAGMessage({
@@ -1037,6 +1041,14 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
       handleDeleteSession(req, res, sessionManager, stateStore, sessionMatch[1]!);
       return;
     }
+  }
+
+  // --- Messages ---
+  // GET /api/sessions/:id/messages — paginated message list (for "load older" in the UI)
+  const sessionMessagesMatch = pathname.match(/^\/api\/sessions\/([a-z0-9_-]+)\/messages$/);
+  if (sessionMessagesMatch && method === 'GET') {
+    handleGetSessionMessages(req, res, persistenceService, sessionMessagesMatch[1]!);
+    return;
   }
 
   // --- Activity log ---

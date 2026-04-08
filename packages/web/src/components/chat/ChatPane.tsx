@@ -147,7 +147,7 @@ export function ChatPane() {
     setLoadingOlder(true);
     try {
       const resp = await fetch(
-        `/api/sessions/${encodeURIComponent(sessionId)}/messages?before_seq=${oldestSeq}&limit=50`,
+        `/api/gateway/api/sessions/${encodeURIComponent(sessionId)}/messages?beforeSeq=${oldestSeq}&limit=50`,
       );
       if (resp.ok) {
         const { messages: olderMessages } = await resp.json() as { messages?: import('@/stores/chat').ChatMessage[] };

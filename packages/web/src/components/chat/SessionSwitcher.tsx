@@ -30,6 +30,16 @@ export function SessionSwitcher() {
     } catch { /* ignore */ }
   }, []);
 
+  // Fetch on mount so the current session name shows immediately
+  useEffect(() => {
+    fetchSessions();
+  }, [fetchSessions]);
+
+  // Re-fetch when sessionId changes (e.g., after switching sessions)
+  useEffect(() => {
+    if (sessionId) fetchSessions();
+  }, [sessionId, fetchSessions]);
+
   useEffect(() => {
     if (open) fetchSessions();
   }, [open, fetchSessions]);

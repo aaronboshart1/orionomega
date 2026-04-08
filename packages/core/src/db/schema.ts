@@ -243,6 +243,8 @@ export const workflows = sqliteTable('workflows', {
   costUsd: real('cost_usd'),
   summary: text('summary'),
   graphState: text('graph_state'), // JSON
+  /** ID of the chat message that triggered this workflow run. */
+  triggeringMessageId: text('triggering_message_id'),
 });
 
 /** Per-node events emitted during a workflow run. */

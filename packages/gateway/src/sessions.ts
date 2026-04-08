@@ -162,6 +162,8 @@ export interface InlineDAGData {
     costUsd: number;
   }>;
   nodeOutputPaths?: Record<string, string[]>;
+  /** ID of the chat message that triggered this workflow run. */
+  triggeringMessageId?: string;
 }
 
 /** Cumulative session-level token/cost totals tracked server-side. */
@@ -304,6 +306,9 @@ export class SessionManager {
   private writeQueue: Map<string, ReturnType<typeof setTimeout>> = new Map();
   private persistence: PersistenceService | null = null;
 
+  /** Tracks the most recent user message ID per session for DAG dispatch linking. */
+  private lastUserMessageIds: Map<string, string> = new Map();
+
   /** Counter: total successful disk writes since startup. */
   private _totalDiskWrites = 0;
   /** Counter: total failed disk writes since startup. */
@@ -341,6 +346,24 @@ export class SessionManager {
   /** Whether JSON writes are enabled (dual or json mode). */
   private get jsonEnabled(): boolean {
     return PERSISTENCE_MODE !== 'sqlite';
+  }
+
+  // ─── Triggering Message ID Tracking ─────────────────────────
+
+  /**
+   * Record the most recent user message ID for a session.
+   * Called by the WebSocket handler whenever a chat message is received,
+   * so that the subsequent DAG dispatch can be linked back to it.
+   */
+  setLastUserMessageId(sessionId: string, messageId: string): void {
+    this.lastUserMessageIds.set(sessionId, messageId);
+  }
+
+  /**
+   * Return the most recent user message ID for a session, or undefined if none.
+   */
+  getLastUserMessageId(sessionId: string): string | undefined {
+    return this.lastUserMessageIds.get(sessionId);
   }
 
   // ─── Metrics & Observability ────────────────────────────────

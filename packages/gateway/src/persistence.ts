@@ -80,6 +80,8 @@ export interface WorkflowInput {
   costUsd?: number;
   summary?: string;
   graphState?: Record<string, unknown>;
+  /** ID of the chat message that triggered this workflow run. */
+  triggeringMessageId?: string;
 }
 
 /** Input shape for appendWorkflowEvent. */
@@ -532,6 +534,7 @@ export class PersistenceService {
         costUsd: workflow.costUsd ?? null,
         summary: workflow.summary ?? null,
         graphState: workflow.graphState ? JSON.stringify(workflow.graphState) : null,
+        triggeringMessageId: workflow.triggeringMessageId ?? null,
       };
 
       this.db
@@ -550,6 +553,7 @@ export class PersistenceService {
             costUsd: row.costUsd,
             summary: row.summary,
             graphState: row.graphState,
+            // triggeringMessageId is intentionally excluded: preserve initial value on updates
           },
         })
         .run();
@@ -882,6 +886,7 @@ export class PersistenceService {
           durationSec: wf.durationSec,
           costUsd: wf.costUsd,
           summary: wf.summary,
+          triggeringMessageId: wf.triggeringMessageId ?? undefined,
         };
       }
 
