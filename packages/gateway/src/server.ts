@@ -22,7 +22,7 @@ import { EventStreamer } from './events.js';
 import { WebSocketHandler } from './websocket.js';
 import { ServerSessionStore } from './state-store.js';
 import { handleHealth, handleMetrics } from './routes/health.js';
-import { handleListSessions, handleGetSession, handleCreateSession, handleDeleteSession, handleGetSessionActivityPaginated } from './routes/sessions.js';
+import { handleListSessions, handleGetSession, handleCreateSession, handleRenameSession, handleDeleteSession, handleGetSessionActivityPaginated } from './routes/sessions.js';
 import { handleLogActivity, handleGetActivity } from './routes/activity.js';
 import { ActivityService } from './activity.js';
 import { handleStatus } from './routes/status.js';
@@ -1010,15 +1010,27 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
   }
 
   if (pathname === '/api/sessions' && method === 'POST') {
-    handleCreateSession(req, res, sessionManager);
+    handleCreateSession(req, res, sessionManager).catch((err) => {
+      log.error('Create session route error', { error: err instanceof Error ? err.message : String(err) });
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Internal server error' }));
+    });
     return;
   }
 
-  // GET /api/sessions/:id  |  DELETE /api/sessions/:id
+  // GET /api/sessions/:id  |  PATCH /api/sessions/:id  |  DELETE /api/sessions/:id
   const sessionMatch = pathname.match(/^\/api\/sessions\/([a-z0-9_-]+)$/);
   if (sessionMatch) {
     if (method === 'GET') {
       handleGetSession(req, res, sessionManager, sessionMatch[1]!);
+      return;
+    }
+    if (method === 'PATCH') {
+      handleRenameSession(req, res, sessionManager, sessionMatch[1]!).catch((err) => {
+        log.error('Rename session route error', { error: err instanceof Error ? err.message : String(err) });
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Internal server error' }));
+      });
       return;
     }
     if (method === 'DELETE') {

@@ -11,6 +11,7 @@ import { SessionManager, DEFAULT_SESSION_ID } from '../sessions.js';
 import { TtlCache, STATE_TTL_MS, ACTIVITY_TTL_MS } from './cache.js';
 import type { ServerSessionStore } from '../state-store.js';
 import type { PersistenceService } from '../persistence.js';
+import { readBody } from './utils.js';
 
 /** Module-scoped caches — one per endpoint family. */
 const stateCache = new TtlCache<string>();
@@ -54,15 +55,77 @@ export function handleGetSession(
 /**
  * Handle POST /api/sessions — create a new session.
  */
-export function handleCreateSession(
-  _req: IncomingMessage,
+export async function handleCreateSession(
+  req: IncomingMessage,
   res: ServerResponse,
   sessionManager: SessionManager,
-): void {
-  const session = sessionManager.createSession();
+): Promise<void> {
+  let name: string | undefined;
+  try {
+    const raw = await readBody(req, 4096);
+    if (raw) {
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      if (typeof parsed.name === 'string' && parsed.name.trim()) {
+        name = parsed.name.trim();
+      }
+    }
+  } catch { /* ignore — name is optional */ }
+
+  const session = sessionManager.createSession(name);
   const body = JSON.stringify(sessionManager.toJSON(session));
   res.writeHead(201, { 'Content-Type': 'application/json' });
   res.end(body);
+}
+
+/**
+ * Handle PATCH /api/sessions/:id — rename a session.
+ */
+export async function handleRenameSession(
+  req: IncomingMessage,
+  res: ServerResponse,
+  sessionManager: SessionManager,
+  sessionId: string,
+): Promise<void> {
+  let raw: string;
+  try {
+    raw = await readBody(req, 4096);
+  } catch {
+    res.writeHead(413, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Request body too large' }));
+    return;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+    return;
+  }
+
+  if (typeof parsed !== 'object' || parsed === null || typeof (parsed as Record<string, unknown>).name !== 'string') {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Body must include a "name" string field' }));
+    return;
+  }
+
+  const name = ((parsed as Record<string, unknown>).name as string).trim();
+  if (!name) {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Name must not be empty' }));
+    return;
+  }
+
+  const ok = sessionManager.renameSession(sessionId, name);
+  if (!ok) {
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Session not found' }));
+    return;
+  }
+
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ ok: true, sessionId, name }));
 }
 
 /**

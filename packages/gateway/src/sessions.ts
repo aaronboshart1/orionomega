@@ -195,6 +195,7 @@ const ORCH_EVENT_PERSIST_INTERVAL = 50;
 /** Serializable session shape (written to disk). */
 interface SessionData {
   id: string;
+  name?: string;
   createdAt: string;
   updatedAt: string;
   messages: Message[];
@@ -257,6 +258,7 @@ export interface SessionMetrics {
 /** A gateway session grouping one or more client connections. */
 export interface Session {
   id: string;
+  name?: string;
   createdAt: string;
   updatedAt: string;
   messages: Message[];
@@ -398,20 +400,59 @@ export class SessionManager {
   }
 
   /**
-   * Create a new session and return it.
-   * In single-user mode this always returns the default session.
+   * Create a new session with a unique ID and return it.
    * Enforces MAX_SESSIONS limit to prevent resource exhaustion.
-   * @returns The default session.
+   * @param name - Optional display name for the session.
+   * @returns The newly created session.
    */
-  createSession(): Session {
-    // Enforce session cap — prevent resource exhaustion from runaway session creation
+  createSession(name?: string): Session {
     if (this.sessions.size >= MAX_SESSIONS) {
       log.warn('[session:limit] Max sessions reached, returning default session', {
         current: this.sessions.size,
         max: MAX_SESSIONS,
       });
+      return this.getDefaultSession();
     }
-    return this.getDefaultSession();
+
+    const id = SessionManager.generateSessionId();
+    const now = new Date().toISOString();
+    const session: Session = {
+      id,
+      name: name ?? `Session ${new Date().toLocaleString()}`,
+      createdAt: now,
+      updatedAt: now,
+      messages: [],
+      activeWorkflows: new Set(),
+      memoryEvents: [],
+      runHistory: [],
+      clients: new Set(),
+      inlineDAGs: {},
+      orchestrationEvents: [],
+      codingSession: null,
+      sessionTotals: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, totalCostUsd: 0, messageCount: 0 },
+      activePlan: null,
+      pendingConfirmation: null,
+      eventBuffer: [],
+    };
+    this.sessions.set(id, session);
+    this.schedulePersist(id);
+    log.info(`[session:created] New session created: ${id}`);
+    return session;
+  }
+
+  /**
+   * Rename an existing session.
+   * @param id - Session ID.
+   * @param name - New display name.
+   * @returns True if renamed, false if session not found.
+   */
+  renameSession(id: string, name: string): boolean {
+    const session = this.sessions.get(id);
+    if (!session) return false;
+    session.name = name;
+    session.updatedAt = new Date().toISOString();
+    this.schedulePersist(id);
+    return true;
   }
 
   /**
@@ -931,6 +972,7 @@ export class SessionManager {
   toJSON(session: Session): Record<string, unknown> {
     return {
       id: session.id,
+      name: session.name ?? session.id,
       createdAt: session.createdAt,
       updatedAt: session.updatedAt,
       messages: session.messages,
@@ -1142,6 +1184,7 @@ export class SessionManager {
 
     const data: SessionData = {
       id: session.id,
+      name: session.name,
       createdAt: session.createdAt,
       updatedAt: session.updatedAt,
       messages: session.messages,
@@ -1235,6 +1278,7 @@ export class SessionManager {
 
           const session: Session = {
             id: data.id,
+            name: data.name,
             createdAt: data.createdAt,
             updatedAt: data.updatedAt,
             messages: data.messages ?? [],
@@ -1423,6 +1467,7 @@ export class SessionManager {
     const now = new Date().toISOString();
     const session: Session = {
       id: DEFAULT_SESSION_ID,
+      name: 'Default',
       createdAt: now,
       updatedAt: now,
       messages: [],
