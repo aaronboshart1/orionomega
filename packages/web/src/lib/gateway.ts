@@ -48,6 +48,7 @@ interface QueuedMessage { data: string; queuedAt: number; }
 const pendingMessages: QueuedMessage[] = [];
 let healthCheckTimer: ReturnType<typeof setTimeout> | null = null;
 let healthCheckId: string | null = null;
+let clientStateInterval: ReturnType<typeof setInterval> | null = null;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const fileReadCallbacks = new Map<string, (msg: any) => void>();
@@ -636,7 +637,36 @@ function rehydrateFromSnapshot(snapshot: any, bufferedEvents?: unknown[]): void 
       console.error('[gateway] Failed to rehydrate hindsight status', err);
     }
 
-    // ── 10. Replay buffered events (events that happened while disconnected) ──
+    // ── 10. Restore persisted client state ─────────────────────────────
+    try {
+      if (snapshot.clientState) {
+        const cs = snapshot.clientState;
+        // Restore agent mode from persisted client state (overrides section 7 only
+        // if present here — section 7 handles snapshot.agentMode from server runs)
+        if (cs.agentMode) {
+          const validModes = new Set(['orchestrate', 'direct', 'code']);
+          if (validModes.has(cs.agentMode)) {
+            useAgentModeStore.getState().setMode(cs.agentMode);
+          }
+        }
+        // Restore orch pane state if present
+        if (typeof cs.orchPaneOpen === 'boolean') {
+          useOrchestrationStore.getState().setOrchPaneOpen(cs.orchPaneOpen);
+        }
+        if (cs.activePanel) {
+          const validTabs = new Set(['memory', 'workflow', 'files']);
+          if (validTabs.has(cs.activePanel)) {
+            useOrchestrationStore.getState().setActiveOrchTab(cs.activePanel);
+          }
+        }
+      }
+      sectionsOk++;
+    } catch (err) {
+      sectionsFailed++;
+      console.error('[gateway] Failed to restore client state', err);
+    }
+
+    // ── 11. Replay buffered events (events that happened while disconnected) ──
     if (bufferedEvents && Array.isArray(bufferedEvents)) {
       for (const rawEvt of bufferedEvents) {
         // Each buffered event is a ServerMessage — replay it through the normal handler
@@ -655,6 +685,8 @@ function rehydrateFromSnapshot(snapshot: any, bufferedEvents?: unknown[]): void 
 
     const rehydrateMs = Math.round(performance.now() - rehydrateStart);
     const _pagination = snapshot.pagination;
+    // Propagate server pagination hint so the chat pane can offer "load older" UI
+    useConnectionStore.getState().setHasOlderMessages(_pagination?.hasOlderMessages ?? false);
     // Use console.warn (allowed by lint) instead of console.info for rehydration diagnostics
     if (sectionsFailed > 0 || rehydrateMs > 500) {
       console.warn('[gateway] State rehydrated from server snapshot', {
@@ -672,6 +704,64 @@ function rehydrateFromSnapshot(snapshot: any, bufferedEvents?: unknown[]): void 
       console.warn(`[gateway] Rehydration completed with ${sectionsFailed} error(s) — some UI state may be incomplete`);
     }
   });
+}
+
+/**
+ * Dispatch a single persisted event (from REST gap-recovery) to the
+ * appropriate Zustand store.  Events use the same shape the server stores
+ * in the events table: { seq, event_type, data }.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function applyEvent(event: any): void {
+  if (!event) return;
+  const eventType: string = event.event_type || event.type || '';
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const data: any = event.data ?? event;
+
+  switch (eventType) {
+    case 'message':
+    case 'chat_message': {
+      const chat = useChatStore.getState();
+      if (data?.id && (data.role === 'user' || data.role === 'assistant')) {
+        if (!chat.messages.some((m) => m.id === data.id)) {
+          chat.addMessage(data as import('@/stores/chat').ChatMessage);
+        }
+      }
+      break;
+    }
+    case 'memory_event': {
+      const orch = useOrchestrationStore.getState();
+      if (data?.id && !orch.memoryEvents.some((e: { id: string }) => e.id === data.id)) {
+        orch.addMemoryEvent(data);
+      }
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+/** Fetch events between afterSeq and upToSeq from the REST API and apply them. */
+async function recoverGap(afterSeq: number, upToSeq: number): Promise<void> {
+  const connStore = useConnectionStore.getState();
+  const sessionId = connStore.sessionId;
+  if (!sessionId) return;
+  try {
+    const resp = await fetch(
+      `/api/events?session_id=${encodeURIComponent(sessionId)}&after_seq=${afterSeq}&limit=500`,
+    );
+    if (resp.ok) {
+      const { events } = (await resp.json()) as { events?: unknown[] };
+      if (Array.isArray(events)) {
+        for (const event of events) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          if ((event as any)?.seq <= upToSeq) applyEvent(event);
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[gateway] Gap recovery failed:', err);
+  }
 }
 
 function getOrCreateWs(): ReconnectingWebSocket {
@@ -757,6 +847,19 @@ function bindListeners(ws: ReconnectingWebSocket): void {
     }
     const chat = chatStore();
     const orch = orchStore();
+
+    // ── Sequence tracking & gap detection ──────────────────────────────
+    if (msg.seq !== undefined) {
+      const connStore = useConnectionStore.getState();
+      const prevSeq = connStore.lastSeenSeq;
+      if (msg.seq > prevSeq + 1) {
+        // Gap detected — fetch and apply missing events asynchronously
+        void recoverGap(prevSeq, msg.seq);
+      }
+      if (msg.seq > prevSeq) {
+        connStore.setLastSeenSeq(msg.seq);
+      }
+    }
 
     switch (msg.type) {
       case 'text': {
@@ -1056,9 +1159,17 @@ function bindListeners(ws: ReconnectingWebSocket): void {
         // Full state snapshot from the init protocol — rehydrate everything
         if (msg.sessionId) {
           try { localStorage.setItem(SESSION_KEY, msg.sessionId); } catch { /* ignore */ }
+          useConnectionStore.getState().setSessionId(msg.sessionId);
         }
         initAcked = true;
         if (msg.snapshot) {
+          // Update lastSeenSeq from the snapshot's authoritative sequence number
+          if (msg.snapshot.lastSeq) {
+            const connStore = useConnectionStore.getState();
+            if (msg.snapshot.lastSeq > connStore.lastSeenSeq) {
+              connStore.setLastSeenSeq(msg.snapshot.lastSeq);
+            }
+          }
           rehydrateFromSnapshot(msg.snapshot, msg.bufferedEvents);
         }
         // Mark gateway as connected now that we have full state
@@ -1256,6 +1367,12 @@ function bindListeners(ws: ReconnectingWebSocket): void {
         }
         break;
       }
+      case 'presence': {
+        if (typeof msg.count === 'number') {
+          useConnectionStore.getState().setPresenceCount(msg.count);
+        }
+        break;
+      }
       default:
         console.debug('[gateway] unhandled message type:', msg.type, msg);
     }
@@ -1290,10 +1407,27 @@ function bindListeners(ws: ReconnectingWebSocket): void {
         id: initId,
         type: 'init',
         ...(savedSession ? { sessionId: savedSession } : {}),
+        lastSeenSeq: useConnectionStore.getState().lastSeenSeq,
       }));
     } catch {
       /* will retry on next reconnect */
     }
+
+    // Set up periodic client state sync (every 5 seconds)
+    if (clientStateInterval) clearInterval(clientStateInterval);
+    clientStateInterval = setInterval(() => {
+      if (ws.readyState === WebSocket.OPEN) {
+        try {
+          ws.send(JSON.stringify({
+            type: 'client_state',
+            agentMode: useAgentModeStore.getState().mode,
+            lastSeenSeq: useConnectionStore.getState().lastSeenSeq,
+            activePanel: useOrchestrationStore.getState().activeOrchTab,
+            orchPaneOpen: useOrchestrationStore.getState().orchPaneOpen,
+          }));
+        } catch { /* ignore */ }
+      }
+    }, 5000);
 
     // Also send a ping for backward compat health check
     if (healthCheckTimer) clearTimeout(healthCheckTimer);
@@ -1332,6 +1466,7 @@ function bindListeners(ws: ReconnectingWebSocket): void {
     initAcked = false;
     if (healthCheckTimer) { clearTimeout(healthCheckTimer); healthCheckTimer = null; }
     healthCheckId = null;
+    if (clientStateInterval) { clearInterval(clientStateInterval); clientStateInterval = null; }
     if (statusFetchController) { statusFetchController.abort(); statusFetchController = null; }
     const connStore = useConnectionStore.getState();
     connStore.setGatewayConnected(false);
@@ -1490,4 +1625,27 @@ export function useGateway() {
   );
 
   return { send, sendChat, sendCommand, sendWorkflowCommand, respondToPlan, respondToDAG, respondToConfirmation };
+}
+
+/**
+ * Switch to a different session without a full page reload.
+ * Clears all client stores, updates the stored session ID, and forces a
+ * WebSocket reconnect so the server sends a fresh state snapshot.
+ */
+export function switchToSession(newSessionId: string): void {
+  // Clear all stores
+  useChatStore.getState().clearMessages();
+  useOrchestrationStore.getState().reset();
+  useAgentModeStore.getState().setMode('orchestrate');
+  // Update the stored session and reset seq tracking
+  try { localStorage.setItem(SESSION_KEY, newSessionId); } catch { /* ignore */ }
+  useConnectionStore.getState().setSessionId(newSessionId);
+  useConnectionStore.getState().setLastSeenSeq(0);
+  useConnectionStore.getState().setHasOlderMessages(false);
+  // Reconnect — onopen will send init with the new sessionId
+  wsReady = false;
+  initAcked = false;
+  if (singletonWs) {
+    singletonWs.reconnect();
+  }
 }

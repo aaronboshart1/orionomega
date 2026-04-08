@@ -34,8 +34,24 @@ import { readFileSync, writeFileSync, readdirSync, mkdirSync, unlinkSync, rename
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { createLogger } from '@orionomega/core';
+import type { PersistenceService } from './persistence.js';
 
 const log = createLogger('sessions');
+
+/**
+ * Persistence mode for the SessionManager.
+ * - 'dual' (default): Write to both JSON files and SQLite via PersistenceService.
+ * - 'sqlite': Write only to SQLite; JSON reads for legacy migration only.
+ * - 'json': Legacy mode — JSON files only, no SQLite writes.
+ */
+type PersistenceMode = 'dual' | 'sqlite' | 'json';
+
+const PERSISTENCE_MODE: PersistenceMode = (() => {
+  const raw = process.env.PERSISTENCE_MODE ?? 'dual';
+  if (raw === 'dual' || raw === 'sqlite' || raw === 'json') return raw;
+  log.warn(`[session:config] Invalid PERSISTENCE_MODE "${raw}", falling back to "dual"`);
+  return 'dual';
+})();
 
 /** Directory where session files are persisted. */
 const SESSIONS_DIR = join(homedir(), '.orionomega', 'sessions');
@@ -55,7 +71,7 @@ const SESSION_MAX_AGE_MS = parseInt(process.env.SESSION_MAX_AGE_HOURS ?? '24', 1
 const CLEANUP_INTERVAL_MS = parseInt(process.env.SESSION_CLEANUP_INTERVAL_MIN ?? '30', 10) * 60 * 1000;
 
 /** Debounce delay (ms) for coalescing disk writes. */
-const PERSIST_DEBOUNCE_MS = parseInt(process.env.SESSION_PERSIST_DEBOUNCE_MS ?? '500', 10);
+const PERSIST_DEBOUNCE_MS = parseInt(process.env.SESSION_PERSIST_DEBOUNCE_MS ?? '100', 10);
 
 /** Maximum concurrent sessions allowed (prevents resource exhaustion). */
 const MAX_SESSIONS = parseInt(process.env.SESSION_MAX_SESSIONS ?? '50', 10);
@@ -284,6 +300,7 @@ export class SessionManager {
   private sessions: Map<string, Session> = new Map();
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
   private writeQueue: Map<string, ReturnType<typeof setTimeout>> = new Map();
+  private persistence: PersistenceService | null = null;
 
   /** Counter: total successful disk writes since startup. */
   private _totalDiskWrites = 0;
@@ -294,7 +311,10 @@ export class SessionManager {
   /** Counter: total failed disk reads during startup load. */
   private _diskReadFailures = 0;
 
-  constructor() {
+  constructor(persistenceService?: PersistenceService) {
+    if (persistenceService) {
+      this.persistence = persistenceService;
+    }
     this.ensureSessionsDir();
     this.loadAllFromDisk();
     this.ensureDefaultSession();
@@ -306,7 +326,19 @@ export class SessionManager {
       cleanupIntervalSec: CLEANUP_INTERVAL_MS / 1000,
       persistDebounceMs: PERSIST_DEBOUNCE_MS,
       maxSessions: MAX_SESSIONS,
+      persistenceMode: PERSISTENCE_MODE,
+      hasPersistenceService: !!persistenceService,
     });
+  }
+
+  /** Whether SQLite writes are enabled (dual or sqlite mode). */
+  private get sqliteEnabled(): boolean {
+    return this.persistence !== null && PERSISTENCE_MODE !== 'json';
+  }
+
+  /** Whether JSON writes are enabled (dual or json mode). */
+  private get jsonEnabled(): boolean {
+    return PERSISTENCE_MODE !== 'sqlite';
   }
 
   // ─── Metrics & Observability ────────────────────────────────
@@ -410,7 +442,35 @@ export class SessionManager {
     if (!session) return;
     this.pushToArrayWithCap(session.messages, message, MAX_MESSAGES_PER_SESSION);
     session.updatedAt = new Date().toISOString();
-    this.schedulePersist(sessionId);
+
+    // SQLite dual-write: persist message and event
+    if (this.sqliteEnabled) {
+      try {
+        this.persistence!.appendMessage(sessionId, {
+          id: message.id,
+          role: message.role,
+          content: message.content,
+          metadata: message.metadata,
+          replyToId: message.replyToId,
+          status: message.type,
+        });
+        this.persistence!.appendEvent(sessionId, 'message', {
+          role: message.role,
+          content: message.content,
+          messageId: message.id,
+          type: message.type,
+          ...(message.metadata ? { metadata: message.metadata } : {}),
+        });
+      } catch (err) {
+        log.warn('[session:sqlite:write] Failed to write message to SQLite', {
+          sessionId, messageId: message.id, error: (err as Error).message,
+        });
+      }
+    }
+
+    if (this.jsonEnabled) {
+      this.schedulePersist(sessionId);
+    }
   }
 
   /**
@@ -424,7 +484,28 @@ export class SessionManager {
     if (!session) return;
     this.pushToArrayWithCap(session.memoryEvents, event, MAX_MEMORY_EVENTS);
     session.updatedAt = new Date().toISOString();
-    this.schedulePersist(sessionId);
+
+    // SQLite dual-write: persist memory event
+    if (this.sqliteEnabled) {
+      try {
+        this.persistence!.appendMemoryEvent({
+          id: event.id,
+          sessionId,
+          op: event.op,
+          detail: event.detail,
+          bank: event.bank,
+          meta: event.meta,
+        });
+      } catch (err) {
+        log.warn('[session:sqlite:write] Failed to write memory event to SQLite', {
+          sessionId, eventId: event.id, error: (err as Error).message,
+        });
+      }
+    }
+
+    if (this.jsonEnabled) {
+      this.schedulePersist(sessionId);
+    }
   }
 
   /**
@@ -438,7 +519,30 @@ export class SessionManager {
     if (!session) return;
     this.pushToArrayWithCap(session.runHistory, run, MAX_RUN_HISTORY);
     session.updatedAt = new Date().toISOString();
-    this.schedulePersist(sessionId);
+
+    // SQLite dual-write: persist run history
+    if (this.sqliteEnabled) {
+      try {
+        this.persistence!.appendRunHistory({
+          id: run.runId,
+          sessionId,
+          model: run.modelUsage?.[0]?.model,
+          durationSec: run.durationSec,
+          costUsd: run.totalCostUsd,
+          workerCount: run.workerCount,
+          modelUsage: run.modelUsage,
+          toolCallCount: run.toolCallCount,
+        });
+      } catch (err) {
+        log.warn('[session:sqlite:write] Failed to write run summary to SQLite', {
+          sessionId, runId: run.runId, error: (err as Error).message,
+        });
+      }
+    }
+
+    if (this.jsonEnabled) {
+      this.schedulePersist(sessionId);
+    }
   }
 
   private pushToArrayWithCap<T>(arr: T[], item: T, cap: number): void {
@@ -639,7 +743,25 @@ export class SessionManager {
     session.sessionTotals.totalCostUsd += meta.costUsd ?? 0;
     session.sessionTotals.messageCount += 1;
     session.updatedAt = new Date().toISOString();
-    this.schedulePersist(sessionId);
+
+    // SQLite dual-write: update cost columns
+    if (this.sqliteEnabled) {
+      try {
+        this.persistence!.updateSession(sessionId, {
+          totalCostUsd: session.sessionTotals.totalCostUsd,
+          totalInputTokens: session.sessionTotals.inputTokens,
+          totalOutputTokens: session.sessionTotals.outputTokens,
+        });
+      } catch (err) {
+        log.warn('[session:sqlite:write] Failed to update session totals', {
+          sessionId, error: (err as Error).message,
+        });
+      }
+    }
+
+    if (this.jsonEnabled) {
+      this.schedulePersist(sessionId);
+    }
   }
 
   /**
@@ -745,6 +867,52 @@ export class SessionManager {
     sessionId: string,
     since: Date,
   ): { messages: Message[]; memoryEvents: MemoryEventData[]; activeWorkflows: string[] } | null {
+    // In sqlite/dual mode, query PersistenceService for events since a timestamp
+    if (this.sqliteEnabled) {
+      try {
+        const events = this.persistence!.getEventsSince(sessionId, 0, 1000);
+        const sinceMs = since.getTime();
+        const filtered = events.filter((e) => new Date(e.timestamp).getTime() > sinceMs);
+        const messages: Message[] = filtered
+          .filter((e) => e.eventType === 'message')
+          .map((e) => {
+            const payload = e.payload ? JSON.parse(e.payload) : {};
+            return {
+              id: payload.messageId ?? e.seq.toString(),
+              role: payload.role ?? 'system',
+              content: payload.content ?? '',
+              timestamp: e.timestamp,
+              type: payload.type,
+              metadata: payload.metadata,
+            };
+          });
+        const memoryEvents: MemoryEventData[] = filtered
+          .filter((e) => e.eventType === 'memory_event')
+          .map((e) => {
+            const payload = e.payload ? JSON.parse(e.payload) : {};
+            const me = payload.memoryEvent ?? payload;
+            return {
+              id: me.id ?? e.seq.toString(),
+              timestamp: e.timestamp,
+              op: me.op ?? '',
+              detail: me.detail ?? '',
+              bank: me.bank,
+              meta: me.meta,
+            };
+          });
+        const session = this.sessions.get(sessionId);
+        return {
+          messages,
+          memoryEvents,
+          activeWorkflows: session ? [...session.activeWorkflows] : [],
+        };
+      } catch (err) {
+        log.warn('[session:sqlite:read] getActivitySince fallback to in-memory', {
+          sessionId, error: (err as Error).message,
+        });
+      }
+    }
+
     const session = this.sessions.get(sessionId);
     if (!session) return null;
     const sinceMs = since.getTime();
@@ -794,6 +962,22 @@ export class SessionManager {
     hindsightStatus?: { connected: boolean; busy: boolean } | null,
     maxMessages = 200,
   ): Record<string, unknown> | null {
+    // In sqlite mode, delegate full snapshot to PersistenceService
+    if (PERSISTENCE_MODE === 'sqlite' && this.sqliteEnabled) {
+      const dbSnapshot = this.persistence!.buildSnapshot(sessionId, maxMessages);
+      if (dbSnapshot) {
+        return {
+          ...dbSnapshot,
+          hindsightStatus: hindsightStatus ?? null,
+          // Overlay in-memory-only fields not yet migrated to SQLite
+          orchestrationEvents: this.sessions.get(sessionId)?.orchestrationEvents ?? [],
+          codingSession: this.sessions.get(sessionId)?.codingSession ?? null,
+          activePlan: this.sessions.get(sessionId)?.activePlan ?? null,
+          pendingConfirmation: this.sessions.get(sessionId)?.pendingConfirmation ?? null,
+        };
+      }
+    }
+
     const session = this.sessions.get(sessionId);
     if (!session) return null;
 
@@ -861,6 +1045,12 @@ export class SessionManager {
       clearInterval(this.cleanupTimer);
       this.cleanupTimer = null;
     }
+
+    // Shut down PersistenceService
+    if (this.persistence) {
+      this.persistence.shutdown();
+    }
+
     log.info('SessionManager shut down — all sessions persisted');
   }
 
@@ -1042,10 +1232,104 @@ export class SessionManager {
       log.info(`[session:startup] Loaded ${this.sessions.size} session(s) from disk`, {
         diskReadFailures: this._diskReadFailures,
       });
+
+      // One-time idempotent migration: import JSON sessions into SQLite
+      if (this.sqliteEnabled && this.sessions.size > 0) {
+        this.migrateJsonToSqlite();
+      }
     } catch (err) {
       log.warn('[session:startup:error] Could not read sessions directory', {
         error: err instanceof Error ? err.message : String(err),
       });
+    }
+  }
+
+  /**
+   * One-time idempotent migration: Import JSON session data into SQLite.
+   * Skips sessions that already exist in the database. Safe to call multiple times.
+   */
+  private migrateJsonToSqlite(): void {
+    if (!this.persistence) return;
+
+    let migrated = 0;
+    for (const [sessionId, session] of this.sessions) {
+      // Check if session already exists in SQLite — idempotent guard
+      const existing = this.persistence.getSession(sessionId);
+      if (existing) continue;
+
+      try {
+        // Create session in SQLite
+        this.persistence.createSession(sessionId, undefined, session.agentMode);
+
+        // Batch-import messages, memory events, and run history
+        this.persistence.batch(() => {
+          for (const msg of session.messages) {
+            try {
+              this.persistence!.appendMessage(sessionId, {
+                id: msg.id,
+                role: msg.role,
+                content: msg.content,
+                metadata: msg.metadata,
+                replyToId: msg.replyToId,
+                status: msg.type,
+              });
+            } catch {
+              // Skip duplicate messages (idempotent)
+            }
+          }
+
+          for (const me of session.memoryEvents) {
+            try {
+              this.persistence!.appendMemoryEvent({
+                id: me.id,
+                sessionId,
+                op: me.op,
+                detail: me.detail,
+                bank: me.bank,
+                meta: me.meta,
+              });
+            } catch {
+              // Skip duplicates
+            }
+          }
+
+          for (const run of session.runHistory) {
+            try {
+              this.persistence!.appendRunHistory({
+                id: run.runId,
+                sessionId,
+                model: run.modelUsage?.[0]?.model,
+                durationSec: run.durationSec,
+                costUsd: run.totalCostUsd,
+                workerCount: run.workerCount,
+                modelUsage: run.modelUsage,
+                toolCallCount: run.toolCallCount,
+              });
+            } catch {
+              // Skip duplicates
+            }
+          }
+
+          // Update session totals
+          if (session.sessionTotals.totalCostUsd > 0 || session.sessionTotals.inputTokens > 0) {
+            this.persistence!.updateSession(sessionId, {
+              totalCostUsd: session.sessionTotals.totalCostUsd,
+              totalInputTokens: session.sessionTotals.inputTokens,
+              totalOutputTokens: session.sessionTotals.outputTokens,
+            });
+          }
+        });
+
+        migrated++;
+      } catch (err) {
+        log.warn(`[session:migration] Failed to migrate session ${sessionId} to SQLite`, {
+          error: (err as Error).message,
+        });
+      }
+    }
+
+    if (migrated > 0) {
+      log.info(`[session:migration] Migrated ${migrated} session(s) from JSON to SQLite`);
     }
   }
 

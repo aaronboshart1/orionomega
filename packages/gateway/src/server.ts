@@ -12,7 +12,7 @@ import { resolve as resolvePath, normalize } from 'node:path';
 import { homedir } from 'node:os';
 import { spawn as spawnProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { readConfig, normalizeBindAddresses, MainAgent, CommandFileLoader, createLogger, setGlobalLogLevel, enableFileLogging, discoverModels, clearModelCache, auditApiRequest, setCodingOrchestatorEmitters } from '@orionomega/core';
+import { readConfig, normalizeBindAddresses, MainAgent, CommandFileLoader, createLogger, setGlobalLogLevel, enableFileLogging, discoverModels, clearModelCache, auditApiRequest, setCodingOrchestatorEmitters, closeDb } from '@orionomega/core';
 import type { MainAgentConfig, MainAgentCallbacks, LogLevel, PlannerOutput } from '@orionomega/core';
 import { setLogLevel as setHindsightLogLevel } from '@orionomega/hindsight';
 import type { GatewayConfig } from './types.js';
@@ -34,6 +34,8 @@ import { handleStartCodingSession, handleGetCodingSession, handleGetCodingSteps,
 import { setCodingEventStreamer, emitCodingSessionStarted, emitCodingWorkflowStarted, emitCodingStepStarted, emitCodingStepProgress, emitCodingStepCompleted, emitCodingStepFailed, emitCodingReviewStarted, emitCodingReviewCompleted, emitCodingCommitCompleted, emitCodingSessionCompleted } from './coding-events.js';
 import { FeedService } from './feed/index.js';
 import { handleGetFeed, handleGetFeedMessage, handlePostFeedMessage, handleGetFeedCount } from './routes/feed.js';
+import { PersistenceService } from './persistence.js';
+import { handleGetEvents, handleGetSessionMessages, handleGetSessionEvents, handleExportSession, handleBackupDb } from './routes/sessions.js';
 
 process.on('uncaughtException', (err) => {
   console.error('[gateway] Uncaught exception:', err);
@@ -88,14 +90,17 @@ try {
 // Shared Services
 // ---------------------------------------------------------------------------
 
-const sessionManager = new SessionManager();
+const persistenceService = new PersistenceService();
+const sessionManager = new SessionManager(persistenceService);
+/** @deprecated ServerSessionStore is being replaced by PersistenceService. Kept for backward compatibility during migration. */
 const stateStore = new ServerSessionStore();
 const feedService = new FeedService(sessionManager);
 const activityService = new ActivityService();
 const commandHandler = new CommandHandler(sessionManager);
 const eventStreamer = new EventStreamer();
 eventStreamer.setSessionManager(sessionManager, DEFAULT_SESSION_ID);
-const wsHandler = new WebSocketHandler(config, sessionManager, commandHandler, eventStreamer, activityService, stateStore);
+eventStreamer.setPersistenceService(persistenceService);
+const wsHandler = new WebSocketHandler(config, sessionManager, commandHandler, eventStreamer, activityService, stateStore, persistenceService);
 
 // Wire the EventStreamer into the coding-events emitter module so that
 // emitCoding* functions can broadcast to all connected WebSocket clients.
@@ -461,6 +466,12 @@ async function initMainAgent(): Promise<void> {
           cacheCreationTokens: s.cacheCreationTokens ?? 0,
           costUsd: s.sessionCostUsd ?? 0,
         });
+        sessionManager.accumulateSessionTotals(DEFAULT_SESSION_ID, {
+          inputTokens: s.inputTokens ?? 0,
+          outputTokens: s.outputTokens ?? 0,
+          cacheReadTokens: s.cacheReadTokens ?? 0,
+          costUsd: s.sessionCostUsd ?? 0,
+        });
       }
 
       wsHandler.broadcast({
@@ -486,6 +497,9 @@ async function initMainAgent(): Promise<void> {
         // Accumulate costs from direct completion
         if (info.totalCostUsd) {
           stateStore.accumulateCosts(DEFAULT_SESSION_ID, {
+            costUsd: info.totalCostUsd,
+          });
+          sessionManager.accumulateSessionTotals(DEFAULT_SESSION_ID, {
             costUsd: info.totalCostUsd,
           });
         }
@@ -628,7 +642,7 @@ async function initMainAgent(): Promise<void> {
           workflowId: dispatch.workflowId,
         });
 
-        // Record materialized DAG state
+        // Record materialized DAG state (legacy)
         stateStore.recordDAGDispatched(DEFAULT_SESSION_ID, dispatch.workflowId, {
           workflowId: dispatch.workflowId,
           workflowName: dispatch.workflowName,
@@ -638,6 +652,30 @@ async function initMainAgent(): Promise<void> {
           summary: dispatch.summary,
           nodes: dispatch.nodes,
         });
+
+        // Persist workflow to SQLite
+        try {
+          persistenceService.upsertWorkflow({
+            id: dispatch.workflowId,
+            sessionId: DEFAULT_SESSION_ID,
+            name: dispatch.workflowName,
+            status: 'dispatched',
+            nodeCount: dispatch.nodeCount,
+            startedAt: now,
+            summary: dispatch.summary,
+            graphState: { nodes: dispatch.nodes, estimatedTime: dispatch.estimatedTime, estimatedCost: dispatch.estimatedCost },
+          });
+          persistenceService.appendWorkflowEvent({
+            id: msgId,
+            workflowId: dispatch.workflowId,
+            sessionId: DEFAULT_SESSION_ID,
+            seq: 0,
+            eventType: 'dispatched',
+            payload: { summary: dispatch.summary, nodeCount: dispatch.nodeCount },
+          });
+        } catch (err) {
+          log.warn('Failed to persist DAG dispatch to SQLite', { error: (err as Error).message });
+        }
 
         eventStreamer.emitDAGMessage({
           id: msgId,
@@ -682,7 +720,7 @@ async function initMainAgent(): Promise<void> {
           workflowId: progress.workflowId,
         });
 
-        // Update materialized DAG node state
+        // Update materialized DAG node state (legacy)
         stateStore.recordDAGProgress(progress.workflowId, {
           nodeId: progress.nodeId,
           nodeLabel: progress.nodeLabel,
@@ -692,6 +730,27 @@ async function initMainAgent(): Promise<void> {
           tool: progress.tool as Record<string, unknown> | undefined,
           workerId: progress.workerId,
         });
+
+        // Persist progress to SQLite
+        try {
+          persistenceService.appendWorkflowEvent({
+            id: evtId,
+            workflowId: progress.workflowId,
+            sessionId: DEFAULT_SESSION_ID,
+            seq: 0,
+            eventType: 'progress',
+            nodeId: progress.nodeId,
+            payload: {
+              status: progress.status,
+              message: progress.message,
+              progress: progress.progress,
+              tool: progress.tool,
+              workerId: progress.workerId,
+            },
+          });
+        } catch (err) {
+          log.warn('Failed to persist DAG progress to SQLite', { error: (err as Error).message });
+        }
 
         eventStreamer.emitDAGMessage({
           id: evtId,
@@ -718,7 +777,7 @@ async function initMainAgent(): Promise<void> {
           workflowId: result.workflowId,
         });
 
-        // Update materialized DAG state
+        // Update materialized DAG state (legacy)
         stateStore.recordDAGComplete(result.workflowId, {
           workflowId: result.workflowId,
           status: result.status,
@@ -732,9 +791,42 @@ async function initMainAgent(): Promise<void> {
           nodeOutputPaths: result.nodeOutputPaths,
         });
 
+        // Persist DAG completion to SQLite
+        try {
+          const dagStatus = result.status === 'error' ? 'error' : result.status === 'stopped' ? 'stopped' : 'complete';
+          persistenceService.upsertWorkflow({
+            id: result.workflowId,
+            sessionId: DEFAULT_SESSION_ID,
+            status: dagStatus,
+            completedAt: now,
+            durationSec: result.durationSec,
+            costUsd: result.totalCostUsd,
+            summary: result.summary,
+          });
+          persistenceService.appendWorkflowEvent({
+            id: msgId,
+            workflowId: result.workflowId,
+            sessionId: DEFAULT_SESSION_ID,
+            seq: 0,
+            eventType: 'complete',
+            payload: {
+              status: result.status,
+              summary: result.summary,
+              durationSec: result.durationSec,
+              totalCostUsd: result.totalCostUsd,
+              toolCallCount: result.toolCallCount,
+            },
+          });
+        } catch (err) {
+          log.warn('Failed to persist DAG completion to SQLite', { error: (err as Error).message });
+        }
+
         // Accumulate DAG costs
         if (result.totalCostUsd) {
           stateStore.accumulateCosts(DEFAULT_SESSION_ID, {
+            costUsd: result.totalCostUsd,
+          });
+          sessionManager.accumulateSessionTotals(DEFAULT_SESSION_ID, {
             costUsd: result.totalCostUsd,
           });
         }
@@ -806,7 +898,7 @@ async function initMainAgent(): Promise<void> {
           workflowId: confirm.workflowId,
         });
 
-        // Record as materialized DAG state
+        // Record as materialized DAG state (legacy)
         stateStore.recordDAGConfirm(confirm.workflowId, DEFAULT_SESSION_ID, {
           workflowId: confirm.workflowId,
           summary: confirm.summary,
@@ -817,7 +909,7 @@ async function initMainAgent(): Promise<void> {
           guardedActions: confirm.guardedActions,
         });
 
-        // Track as pending action awaiting user approval
+        // Track as pending action awaiting user approval (legacy)
         stateStore.addPendingAction({
           id: confirm.workflowId,
           sessionId: DEFAULT_SESSION_ID,
@@ -831,6 +923,28 @@ async function initMainAgent(): Promise<void> {
           status: 'pending',
           createdAt: now,
         });
+
+        // Persist confirmation as pending_action event + workflow state
+        try {
+          persistenceService.upsertWorkflow({
+            id: confirm.workflowId,
+            sessionId: DEFAULT_SESSION_ID,
+            name: confirm.summary,
+            status: 'confirming',
+            nodeCount: confirm.nodes.length,
+            summary: confirm.summary,
+            graphState: { nodes: confirm.nodes, reasoning: confirm.reasoning, guardedActions: confirm.guardedActions },
+          });
+          persistenceService.appendEvent(DEFAULT_SESSION_ID, 'pending_action', {
+            actionId: confirm.workflowId,
+            actionType: 'dag_confirm',
+            summary: confirm.summary,
+            reasoning: confirm.reasoning,
+            guardedActions: confirm.guardedActions,
+          }, confirm.workflowId);
+        } catch (err) {
+          log.warn('Failed to persist DAG confirm to SQLite', { error: (err as Error).message });
+        }
 
         eventStreamer.emitDAGMessage({
           id: msgId,
@@ -1092,6 +1206,39 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
     }
   }
 
+
+  // --- Gap Recovery: GET /api/events ---
+  if (pathname === '/api/events' && method === 'GET') {
+    handleGetEvents(req, res, persistenceService);
+    return;
+  }
+
+  // --- Session Messages: GET /api/sessions/:id/messages ---
+  const sessionMsgsMatch = pathname.match(/^\/api\/sessions\/([a-z0-9_-]+)\/messages$/);
+  if (sessionMsgsMatch && method === 'GET') {
+    handleGetSessionMessages(req, res, persistenceService, sessionMsgsMatch[1]!);
+    return;
+  }
+
+  // --- Session Events: GET /api/sessions/:id/events ---
+  const sessionEvtsMatch = pathname.match(/^\/api\/sessions\/([a-z0-9_-]+)\/events$/);
+  if (sessionEvtsMatch && method === 'GET') {
+    handleGetSessionEvents(req, res, persistenceService, sessionEvtsMatch[1]!);
+    return;
+  }
+
+  // --- Session Export: GET /api/sessions/:id/export ---
+  const sessionExportMatch = pathname.match(/^\/api\/sessions\/([a-z0-9_-]+)\/export$/);
+  if (sessionExportMatch && method === 'GET') {
+    handleExportSession(req, res, persistenceService, sessionManager, sessionExportMatch[1]!);
+    return;
+  }
+
+  // --- Database Backup: GET /api/backup ---
+  if (pathname === '/api/backup' && method === 'GET') {
+    handleBackupDb(req, res);
+    return;
+  }
 
   // --- Models ---
   if (pathname === '/api/models' && method === 'GET') {
@@ -1460,8 +1607,10 @@ async function shutdown(signal: string): Promise<void> {
     }
   }
 
-  sessionManager.shutdown();
   stateStore.shutdown();
+  persistenceService.shutdown();
+  sessionManager.shutdown();
+  closeDb();
   feedService.destroy();
 
   log.info(' Shutdown complete.');
@@ -1471,4 +1620,4 @@ async function shutdown(signal: string): Promise<void> {
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
 
-export { server, servers, sessionManager, stateStore, activityService, commandHandler, eventStreamer, wsHandler };
+export { server, servers, sessionManager, stateStore, persistenceService, activityService, commandHandler, eventStreamer, wsHandler };

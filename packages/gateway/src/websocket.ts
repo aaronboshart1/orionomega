@@ -51,6 +51,7 @@ import { rateLimitWsConnection } from './rate-limit.js';
 import { validateClientMessage, sanitizeChatInput } from './ws-schemas.js';
 import type { ActivityService } from './activity.js';
 import type { ServerSessionStore } from './state-store.js';
+import type { PersistenceService } from './persistence.js';
 
 const log = createLogger('websocket');
 
@@ -89,6 +90,7 @@ export class WebSocketHandler {
     private eventStreamer: EventStreamer,
     private activityService?: ActivityService,
     private stateStore?: ServerSessionStore,
+    private persistenceService?: PersistenceService,
   ) {
     this.wss = new WebSocketServer({ noServer: true, maxPayload: 10 * 1024 * 1024 });
   }
@@ -330,6 +332,9 @@ export class WebSocketHandler {
         break;
       case 'file_read':
         this.handleFileRead(conn, msg);
+        break;
+      case 'client_state':
+        this.handleClientState(conn, msg);
         break;
       default:
         this.send(conn.ws, {
@@ -588,23 +593,75 @@ export class WebSocketHandler {
     }
 
     const hindsightStatus = this.getHindsightStatus ? this.getHindsightStatus() : null;
-    const snapshot = this.sessionManager.buildSnapshot(
-      conn.sessionId,
-      hindsightStatus,
-      SNAPSHOT_MAX_MESSAGES,
-    );
+    const lastSeenSeq = msg.lastSeenSeq ?? 0;
 
-    // Drain any events that were buffered while no clients were connected
-    const buffered = this.sessionManager.drainEventBuffer(conn.sessionId);
-    const bufferedMessages = buffered.map((b) => b.message);
+    // Delta sync: if client provides lastSeenSeq > 0, send snapshot + missed events
+    if (lastSeenSeq > 0 && this.persistenceService) {
+      const snapshot = this.persistenceService.buildSnapshot(conn.sessionId, SNAPSHOT_MAX_MESSAGES);
+      const missedEvents = this.persistenceService.getEventsSince(conn.sessionId, lastSeenSeq, 500);
 
-    this.send(conn.ws, {
-      id: msg.id,
-      type: 'session',
-      sessionId: session.id,
-      snapshot: snapshot ?? undefined,
-      bufferedEvents: bufferedMessages,
-    });
+      // Overlay in-memory-only fields
+      const inMemSession = this.sessionManager.getSession(conn.sessionId);
+      const enrichedSnapshot = snapshot ? {
+        ...snapshot,
+        hindsightStatus: hindsightStatus ?? null,
+        orchestrationEvents: inMemSession?.orchestrationEvents ?? [],
+        codingSession: inMemSession?.codingSession ?? null,
+        activePlan: inMemSession?.activePlan ?? null,
+        pendingConfirmation: inMemSession?.pendingConfirmation ?? null,
+      } : undefined;
+
+      this.send(conn.ws, {
+        id: msg.id,
+        type: 'session',
+        sessionId: session.id,
+        snapshot: enrichedSnapshot,
+        bufferedEvents: missedEvents.map((e) => ({
+          seq: e.seq,
+          type: e.eventType,
+          timestamp: e.timestamp,
+          payload: e.payload ? JSON.parse(e.payload) : null,
+          workflowId: e.workflowId,
+        })),
+      });
+
+      const rehydrateMs = Date.now() - rehydrateStart;
+      log.info(`[ws:rehydrated:delta] Sent delta sync to ${conn.id}`, {
+        sessionId: session.id,
+        lastSeenSeq,
+        missedEventCount: missedEvents.length,
+        rehydrateMs,
+      });
+    } else {
+      // Full sync: no lastSeenSeq or no persistence service
+      const snapshot = this.sessionManager.buildSnapshot(
+        conn.sessionId,
+        hindsightStatus,
+        SNAPSHOT_MAX_MESSAGES,
+      );
+
+      // Drain any events that were buffered while no clients were connected
+      const buffered = this.sessionManager.drainEventBuffer(conn.sessionId);
+      const bufferedMessages = buffered.map((b) => b.message);
+
+      this.send(conn.ws, {
+        id: msg.id,
+        type: 'session',
+        sessionId: session.id,
+        snapshot: snapshot ?? undefined,
+        bufferedEvents: bufferedMessages,
+      });
+
+      const rehydrateMs = Date.now() - rehydrateStart;
+      log.info(`[ws:rehydrated] Sent state snapshot to ${conn.id}`, {
+        sessionId: session.id,
+        totalMessages: session.messages.length,
+        sentMessages: Math.min(session.messages.length, SNAPSHOT_MAX_MESSAGES),
+        bufferedEventCount: bufferedMessages.length,
+        dagCount: Object.keys(session.inlineDAGs).length,
+        rehydrateMs,
+      });
+    }
 
     // Also send standalone hindsight status so the connection indicator updates
     if (hindsightStatus) {
@@ -614,16 +671,6 @@ export class WebSocketHandler {
         hindsightStatus,
       });
     }
-
-    const rehydrateMs = Date.now() - rehydrateStart;
-    log.info(`[ws:rehydrated] Sent state snapshot to ${conn.id}`, {
-      sessionId: session.id,
-      totalMessages: session.messages.length,
-      sentMessages: Math.min(session.messages.length, SNAPSHOT_MAX_MESSAGES),
-      bufferedEventCount: bufferedMessages.length,
-      dagCount: Object.keys(session.inlineDAGs).length,
-      rehydrateMs,
-    });
   }
 
   /**
@@ -721,6 +768,31 @@ export class WebSocketHandler {
       log.error('file_read error', { error: err instanceof Error ? err.message : String(err) });
       this.send(conn.ws, { id: msg.id, type: 'file_content', path: filePath, error: 'Failed to read file' });
     }
+  }
+
+  /** Handle a client_state message — persist UI state to DB. */
+  private handleClientState(conn: ClientConnection, msg: ClientMessage): void {
+    if (!this.persistenceService || !msg.clientState) return;
+
+    try {
+      this.persistenceService.updateClientState(conn.id, conn.sessionId, {
+        agentMode: msg.clientState.agentMode,
+        scrollPosition: msg.clientState.scrollPosition,
+        activePanel: msg.clientState.activePanel,
+        lastSeenSeq: msg.clientState.lastSeenSeq,
+      });
+    } catch (err) {
+      log.warn('[ws:client_state] Failed to persist client state', {
+        clientId: conn.id, error: (err as Error).message,
+      });
+    }
+
+    // Acknowledge
+    this.send(conn.ws, {
+      id: msg.id,
+      type: 'ack',
+      content: 'client_state_saved',
+    });
   }
 
   /** Start the ping/pong keep-alive loop. */

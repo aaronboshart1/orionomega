@@ -11,7 +11,7 @@
 
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
-import { mkdirSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import * as schema from './schema.js';
@@ -32,24 +32,35 @@ let _dbPath: string | undefined;
  *
  * On first call:
  *   1. Creates `~/.orionomega/` if it does not exist.
- *   2. Opens (or creates) `~/.orionomega/coding.db`.
- *   3. Enables WAL mode for better read concurrency.
- *   4. Runs all pending SQL migrations.
+ *   2. If `omega.db` does not exist but `coding.db` does, copies `coding.db`
+ *      to `omega.db` for backward compatibility.
+ *   3. Opens (or creates) `~/.orionomega/omega.db`.
+ *   4. Enables WAL mode for better read concurrency.
+ *   5. Runs all pending SQL migrations.
  *
  * Subsequent calls return the cached instance.
  *
  * @param dbPath Override the database file path (useful in tests).
  */
 export function getDb(dbPath?: string): CodingDb {
-  const targetPath = dbPath ?? resolve(homedir(), '.orionomega', 'coding.db');
+  const dir = resolve(homedir(), '.orionomega');
+  const targetPath = dbPath ?? resolve(dir, 'omega.db');
+
+  // Backward compatibility: migrate coding.db → omega.db on first run.
+  if (!dbPath) {
+    const legacyPath = resolve(dir, 'coding.db');
+    if (!existsSync(targetPath) && existsSync(legacyPath)) {
+      mkdirSync(dir, { recursive: true });
+      copyFileSync(legacyPath, targetPath);
+    }
+  }
 
   // Return cached instance if path hasn't changed.
   if (_db && _dbPath === targetPath) {
     return _db;
   }
 
-  const dir = resolve(targetPath, '..');
-  mkdirSync(dir, { recursive: true });
+  mkdirSync(resolve(targetPath, '..'), { recursive: true });
 
   const sqlite = new Database(targetPath);
 

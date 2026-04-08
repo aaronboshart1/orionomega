@@ -4,9 +4,13 @@
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { copyFileSync, existsSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { resolve } from 'node:path';
 import { SessionManager, DEFAULT_SESSION_ID } from '../sessions.js';
 import { TtlCache, STATE_TTL_MS, ACTIVITY_TTL_MS } from './cache.js';
 import type { ServerSessionStore } from '../state-store.js';
+import type { PersistenceService } from '../persistence.js';
 
 /** Module-scoped caches — one per endpoint family. */
 const stateCache = new TtlCache<string>();
@@ -284,4 +288,154 @@ export function handleGetSessionActivityPaginated(
   const body = JSON.stringify({ ...result, sessionId });
   res.writeHead(200, { 'Content-Type': 'application/json' });
   res.end(body);
+}
+
+/**
+ * Handle GET /api/events — gap recovery endpoint.
+ *
+ * Query parameters:
+ *   sessionId (required) — session to query
+ *   afterSeq  (optional) — return events with seq > this value (default 0)
+ *   limit     (optional) — max events to return (default 500, max 500)
+ */
+export function handleGetEvents(
+  req: IncomingMessage,
+  res: ServerResponse,
+  persistence: PersistenceService,
+): void {
+  const rawUrl = req.url ?? '/';
+  const queryStr = rawUrl.split('?')[1] ?? '';
+  const params = new URLSearchParams(queryStr);
+
+  const sessionId = params.get('sessionId');
+  if (!sessionId) {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Missing required query parameter: sessionId' }));
+    return;
+  }
+
+  const afterSeq = parseInt(params.get('afterSeq') ?? '0', 10);
+  const limit = Math.min(parseInt(params.get('limit') ?? '500', 10), 500);
+
+  const evts = persistence.getEventsSince(sessionId, isNaN(afterSeq) ? 0 : afterSeq, limit);
+  const latestSeq = persistence.getLatestSeq(sessionId);
+
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ events: evts, latestSeq, sessionId, afterSeq }));
+}
+
+/**
+ * Handle GET /api/sessions/:id/messages — paginated message list.
+ *
+ * Query parameters:
+ *   afterSeq  (optional) — only messages with seq > this value
+ *   beforeSeq (optional) — only messages with seq < this value
+ *   limit     (optional) — max messages (default 200, max 500)
+ */
+export function handleGetSessionMessages(
+  req: IncomingMessage,
+  res: ServerResponse,
+  persistence: PersistenceService,
+  sessionId: string,
+): void {
+  const rawUrl = req.url ?? '/';
+  const queryStr = rawUrl.split('?')[1] ?? '';
+  const params = new URLSearchParams(queryStr);
+
+  const afterSeq = params.has('afterSeq') ? parseInt(params.get('afterSeq')!, 10) : undefined;
+  const beforeSeq = params.has('beforeSeq') ? parseInt(params.get('beforeSeq')!, 10) : undefined;
+  const limit = Math.min(parseInt(params.get('limit') ?? '200', 10), 500);
+
+  const msgs = persistence.getMessages(sessionId, {
+    afterSeq: afterSeq !== undefined && !isNaN(afterSeq) ? afterSeq : undefined,
+    beforeSeq: beforeSeq !== undefined && !isNaN(beforeSeq) ? beforeSeq : undefined,
+    limit,
+  });
+  const total = persistence.getMessageCount(sessionId);
+
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ messages: msgs, total, sessionId }));
+}
+
+/**
+ * Handle GET /api/sessions/:id/events — session event log.
+ *
+ * Query parameters:
+ *   afterSeq (optional) — return events with seq > this value (default 0)
+ *   limit    (optional) — max events (default 500, max 500)
+ */
+export function handleGetSessionEvents(
+  req: IncomingMessage,
+  res: ServerResponse,
+  persistence: PersistenceService,
+  sessionId: string,
+): void {
+  const rawUrl = req.url ?? '/';
+  const queryStr = rawUrl.split('?')[1] ?? '';
+  const params = new URLSearchParams(queryStr);
+
+  const afterSeq = parseInt(params.get('afterSeq') ?? '0', 10);
+  const limit = Math.min(parseInt(params.get('limit') ?? '500', 10), 500);
+
+  const evts = persistence.getEventsSince(sessionId, isNaN(afterSeq) ? 0 : afterSeq, limit);
+  const latestSeq = persistence.getLatestSeq(sessionId);
+
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ events: evts, latestSeq, sessionId }));
+}
+
+/**
+ * Handle GET /api/sessions/:id/export — full session snapshot export.
+ *
+ * Returns the complete persisted state for a session, suitable for
+ * external archiving or client rehydration.
+ */
+export function handleExportSession(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  persistence: PersistenceService,
+  _sessionManager: SessionManager,
+  sessionId: string,
+): void {
+  const snapshot = persistence.buildSnapshot(sessionId);
+  if (!snapshot) {
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Session not found' }));
+    return;
+  }
+
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ sessionId, ...snapshot, exportedAt: new Date().toISOString() }));
+}
+
+/**
+ * Handle GET /api/backup — create a point-in-time copy of the database.
+ *
+ * Copies `~/.orionomega/omega.db` to a timestamped backup file in the
+ * same directory and returns the backup path.
+ */
+export function handleBackupDb(
+  _req: IncomingMessage,
+  res: ServerResponse,
+): void {
+  const dir = resolve(homedir(), '.orionomega');
+  const dbPath = resolve(dir, 'omega.db');
+
+  if (!existsSync(dbPath)) {
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Database file not found' }));
+    return;
+  }
+
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const backupPath = resolve(dir, `omega-backup-${timestamp}.db`);
+
+  try {
+    copyFileSync(dbPath, backupPath);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true, backupPath }));
+  } catch (err) {
+    res.writeHead(500, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: (err as Error).message }));
+  }
 }

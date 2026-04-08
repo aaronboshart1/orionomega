@@ -9,7 +9,7 @@
  *   architect_reviews     → review gate result after each validation cycle
  */
 
-import { integer, real, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { integer, primaryKey, real, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 
 // ── CodingSession ─────────────────────────────────────────────────────────────
 
@@ -184,3 +184,122 @@ export const architectReviews = sqliteTable('architect_reviews', {
   /** ISO 8601 timestamp when the review was recorded. */
   reviewedAt: text('reviewed_at').notNull(),
 });
+
+// ── Unified Persistence Tables ─────────────────────────────────────────────────
+
+/** Gateway session (one per user conversation). */
+export const sessions = sqliteTable('sessions', {
+  id: text('id').primaryKey(),
+  name: text('name'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+  model: text('model'),
+  agentMode: text('agent_mode').$type<'orchestrate' | 'direct' | 'code'>(),
+  totalCostUsd: real('total_cost_usd'),
+  totalInputTokens: integer('total_input_tokens'),
+  totalOutputTokens: integer('total_output_tokens'),
+});
+
+/** Ordered event log for a session. seq is auto-incremented by SQLite. */
+export const events = sqliteTable('events', {
+  seq: integer('seq').primaryKey({ autoIncrement: true }),
+  sessionId: text('session_id')
+    .notNull()
+    .references(() => sessions.id, { onDelete: 'cascade' }),
+  timestamp: text('timestamp').notNull(),
+  eventType: text('event_type').notNull(),
+  workflowId: text('workflow_id'),
+  payload: text('payload'), // JSON
+});
+
+/** Chat messages within a session. */
+export const messages = sqliteTable('messages', {
+  id: text('id').primaryKey(),
+  sessionId: text('session_id')
+    .notNull()
+    .references(() => sessions.id, { onDelete: 'cascade' }),
+  seq: integer('seq').notNull(),
+  role: text('role').notNull(),
+  content: text('content').notNull(),
+  metadata: text('metadata'), // JSON
+  replyToId: text('reply_to_id'),
+  attachments: text('attachments'), // JSON
+  status: text('status'),
+});
+
+/** DAG workflow runs within a session. */
+export const workflows = sqliteTable('workflows', {
+  id: text('id').primaryKey(),
+  sessionId: text('session_id')
+    .notNull()
+    .references(() => sessions.id, { onDelete: 'cascade' }),
+  name: text('name'),
+  status: text('status'),
+  template: text('template'),
+  nodeCount: integer('node_count'),
+  startedAt: text('started_at'),
+  completedAt: text('completed_at'),
+  durationSec: real('duration_sec'),
+  costUsd: real('cost_usd'),
+  summary: text('summary'),
+  graphState: text('graph_state'), // JSON
+});
+
+/** Per-node events emitted during a workflow run. */
+export const workflowEvents = sqliteTable('workflow_events', {
+  id: text('id').primaryKey(),
+  workflowId: text('workflow_id')
+    .notNull()
+    .references(() => workflows.id, { onDelete: 'cascade' }),
+  sessionId: text('session_id')
+    .notNull()
+    .references(() => sessions.id, { onDelete: 'cascade' }),
+  seq: integer('seq').notNull(),
+  eventType: text('event_type').notNull(),
+  nodeId: text('node_id'),
+  payload: text('payload'), // JSON
+});
+
+/** Memory bank operations recorded during a session. */
+export const memoryEvents = sqliteTable('memory_events', {
+  id: text('id').primaryKey(),
+  sessionId: text('session_id')
+    .notNull()
+    .references(() => sessions.id, { onDelete: 'cascade' }),
+  seq: integer('seq').notNull(),
+  op: text('op').notNull(),
+  detail: text('detail'),
+  bank: text('bank'),
+  meta: text('meta'), // JSON
+});
+
+/** Summary of each agent run (workflow or direct). */
+export const runHistory = sqliteTable('run_history', {
+  id: text('id').primaryKey(),
+  sessionId: text('session_id')
+    .notNull()
+    .references(() => sessions.id, { onDelete: 'cascade' }),
+  workflowId: text('workflow_id').references(() => workflows.id, { onDelete: 'cascade' }),
+  model: text('model'),
+  durationSec: real('duration_sec'),
+  costUsd: real('cost_usd'),
+  workerCount: integer('worker_count'),
+  modelUsage: text('model_usage'), // JSON
+  toolCallCount: integer('tool_call_count'),
+});
+
+/** Per-client UI state that survives reconnects. */
+export const clientState = sqliteTable(
+  'client_state',
+  {
+    clientId: text('client_id').notNull(),
+    sessionId: text('session_id')
+      .notNull()
+      .references(() => sessions.id, { onDelete: 'cascade' }),
+    agentMode: text('agent_mode').$type<'orchestrate' | 'direct' | 'code'>(),
+    scrollPosition: integer('scroll_position'),
+    activePanel: text('active_panel'),
+    lastSeenSeq: integer('last_seen_seq'),
+  },
+  (table) => [primaryKey({ columns: [table.clientId, table.sessionId] })],
+);

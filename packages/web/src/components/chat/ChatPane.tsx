@@ -2,10 +2,12 @@
 
 import { useRef, useState, useCallback, useMemo, useEffect } from 'react';
 import { Virtuoso, VirtuosoHandle } from 'react-virtuoso';
-import { Settings2, ArrowDown, AlertOctagon, Settings } from 'lucide-react';
+import { Settings2, ArrowDown, AlertOctagon, Settings, Users } from 'lucide-react';
 import { useChatStore, useChatHydrated } from '@/stores/chat';
 import { useOrchestrationStore, useOrchHydrated } from '@/stores/orchestration';
+import { useConnectionStore } from '@/stores/connection';
 import { useGateway } from '@/lib/gateway';
+import { SessionSwitcher } from './SessionSwitcher';
 import { MessageBubble } from './MessageBubble';
 import { ToolCallGroup } from './ToolCallCard';
 import { ChatInput } from './ChatInput';
@@ -86,11 +88,15 @@ export function ChatPane() {
   const streamingStatus = useChatStore((s) => s.streamingStatus);
   const thinkingSteps = useChatStore((s) => s.thinkingSteps);
   const activePlan = useOrchestrationStore((s) => s.activePlan);
+  const hasOlderMessages = useConnectionStore((s) => s.hasOlderMessages);
+  const setHasOlderMessages = useConnectionStore((s) => s.setHasOlderMessages);
+  const presenceCount = useConnectionStore((s) => s.presenceCount);
   const { sendChat, sendCommand, respondToPlan } = useGateway();
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const [showAdvancedPlan, setShowAdvancedPlan] = useState(false);
   const [atBottom, setAtBottom] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
   const hydrated = chatHydrated && orchHydrated;
 
 
@@ -120,6 +126,29 @@ export function ChatPane() {
       align: 'end',
     });
   }, []);
+
+  const loadOlderMessages = useCallback(async () => {
+    if (loadingOlder || !hasOlderMessages) return;
+    const sessionId = useConnectionStore.getState().sessionId;
+    if (!sessionId) return;
+    const currentMessages = useChatStore.getState().messages;
+    const oldestSeq = (currentMessages[0] as { seq?: number })?.seq ?? 0;
+    setLoadingOlder(true);
+    try {
+      const resp = await fetch(
+        `/api/sessions/${encodeURIComponent(sessionId)}/messages?before_seq=${oldestSeq}&limit=50`,
+      );
+      if (resp.ok) {
+        const { messages: olderMessages } = await resp.json() as { messages?: import('@/stores/chat').ChatMessage[] };
+        if (olderMessages && olderMessages.length > 0) {
+          useChatStore.getState().prependMessages(olderMessages);
+        } else {
+          setHasOlderMessages(false);
+        }
+      }
+    } catch { /* ignore */ }
+    finally { setLoadingOlder(false); }
+  }, [loadingOlder, hasOlderMessages, setHasOlderMessages]);
 
   const scrollToDagId = useOrchestrationStore((s) => s.scrollToDagId);
   const clearScrollToDagId = useOrchestrationStore((s) => s.clearScrollToDagId);
@@ -216,12 +245,21 @@ export function ChatPane() {
     <div className="flex h-full flex-col bg-[var(--background)]">
       <div className="flex items-center gap-3 px-3 md:px-6 py-4">
         <Image src="/omegaclaw-logo.png" alt="OmegaClaw" width={32} height={32} className="rounded-lg" priority sizes="32px" />
-        <div className="flex-1">
+        <div className="flex-1 min-w-0">
           <h1 className="text-sm font-semibold text-zinc-100">OmegaClaw</h1>
-          <p className="text-xs leading-tight text-zinc-500">
-            v{process.env.NEXT_PUBLIC_APP_VERSION} ({process.env.NEXT_PUBLIC_GIT_HASH})
-          </p>
+          <div className="flex items-center gap-2">
+            <p className="text-xs leading-tight text-zinc-500">
+              v{process.env.NEXT_PUBLIC_APP_VERSION} ({process.env.NEXT_PUBLIC_GIT_HASH})
+            </p>
+            <SessionSwitcher />
+          </div>
         </div>
+        {presenceCount > 1 && (
+          <div className="flex items-center gap-1 text-[11px] text-zinc-600" title={`${presenceCount} active viewers`}>
+            <Users size={11} />
+            <span>{presenceCount}</span>
+          </div>
+        )}
         <ConnectionStatus />
         <BackgroundTaskIndicator />
         <button
@@ -290,9 +328,27 @@ export function ChatPane() {
             overscan={400}
             className="h-full"
             style={{ height: '100%', overscrollBehavior: 'none' }}
+            startReached={hasOlderMessages ? () => { void loadOlderMessages(); } : undefined}
             components={{
               Footer,
-              Header: () => <div className="pt-4" />,
+              Header: () => (
+                <div className="pt-4">
+                  {hasOlderMessages && (
+                    <div className="flex justify-center py-2">
+                      {loadingOlder ? (
+                        <div className="h-4 w-4 animate-spin rounded-full border border-zinc-700 border-t-zinc-400" />
+                      ) : (
+                        <button
+                          onClick={() => { void loadOlderMessages(); }}
+                          className="text-[11px] text-zinc-600 hover:text-zinc-400 transition-colors"
+                        >
+                          Load older messages
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              ),
             }}
           />
         )}

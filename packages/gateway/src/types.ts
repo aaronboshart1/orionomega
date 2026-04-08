@@ -24,9 +24,18 @@ export interface ClientConnection {
 /** Client → Gateway message envelope. */
 export interface ClientMessage {
   id: string;
-  type: 'chat' | 'command' | 'plan_response' | 'subscribe' | 'dag_response' | 'ping' | 'file_read' | 'init';
+  type: 'chat' | 'command' | 'plan_response' | 'subscribe' | 'dag_response' | 'ping' | 'file_read' | 'init' | 'client_state';
   /** Session ID for reconnection — sent with 'init' message. */
   sessionId?: string;
+  /** Last event sequence number seen by this client (sent with 'init' for delta sync). */
+  lastSeenSeq?: number;
+  /** Client UI state to persist (sent with 'client_state' message). */
+  clientState?: {
+    agentMode?: 'orchestrate' | 'direct' | 'code';
+    scrollPosition?: number;
+    activePanel?: string;
+    lastSeenSeq?: number;
+  };
   content?: string;
   command?: string;
   planId?: string;
@@ -171,6 +180,8 @@ export interface ServerMessage {
     | 'session';
   /** Identifies which workflow this message relates to (events, status updates, plans). */
   workflowId?: string;
+  /** Monotonically increasing event sequence number from PersistenceService. */
+  seq?: number;
   /** The user message ID this response is answering (set by handleChat). */
   replyTo?: string;
   content?: string;

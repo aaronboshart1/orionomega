@@ -5,10 +5,16 @@
  * - **web** clients receive every event immediately.
  * - **tui** clients receive batched events on an interval, except for
  *   high-priority types (done, error, finding) which fire immediately.
+ *
+ * When a PersistenceService is provided, every emitted event is first
+ * persisted to SQLite and the resulting seq number is attached to the
+ * outgoing ServerMessage. This enables clients to perform gap recovery
+ * via GET /api/events?after_seq=N.
  */
 
 import type { ClientConnection, ServerMessage } from './types.js';
 import type { SessionManager } from './sessions.js';
+import type { PersistenceService } from './persistence.js';
 import { randomBytes } from 'node:crypto';
 
 /** Event types that bypass batching and fire immediately for TUI clients. */
@@ -40,7 +46,16 @@ export class EventStreamer {
   private snapshotTimer: ReturnType<typeof setInterval> | null = null;
   private graphStateProvider: (() => unknown) | null = null;
   private sessionManager: SessionManager | null = null;
+  private persistence: PersistenceService | null = null;
   private defaultSessionId: string = 'default';
+
+  /**
+   * Set the PersistenceService for seq-stamped event persistence.
+   * @param ps - The PersistenceService instance.
+   */
+  setPersistenceService(ps: PersistenceService): void {
+    this.persistence = ps;
+  }
 
   /**
    * Set the SessionManager reference for event buffering when no clients are connected.
@@ -121,22 +136,44 @@ export class EventStreamer {
   }
 
   /**
+   * Persist an event to SQLite and return the seq number.
+   * Returns undefined if persistence is not available.
+   */
+  private persistEvent(eventType: string, payload: Record<string, unknown>, workflowId?: string): number | undefined {
+    if (!this.persistence) return undefined;
+    try {
+      return this.persistence.appendEvent(this.defaultSessionId, eventType, payload, workflowId);
+    } catch {
+      // Non-fatal — event delivery continues even if persistence fails
+      return undefined;
+    }
+  }
+
+  /**
    * Emit an event to all connected clients, respecting delivery modes and subscriptions.
    *
-   * If a client has workflow subscriptions, events tagged with a non-matching `workflowId`
-   * are dropped. Events without a `workflowId` (e.g. system events) always pass through.
+   * If a PersistenceService is configured, the event is first persisted to SQLite
+   * and the resulting seq number is attached to each outgoing message.
    *
    * @param event - The raw event payload.
    * @param eventType - Optional event type string (e.g. 'done', 'error', 'finding').
    * @param workflowId - Optional workflow ID to scope event delivery.
    */
   emit(event: unknown, eventType?: string, workflowId?: string): void {
+    // Persist to SQLite first, get seq
+    const seq = this.persistEvent(
+      eventType ?? 'event',
+      event as Record<string, unknown>,
+      workflowId,
+    );
+
     // Buffer events when no clients are connected
     if (this.clients.size === 0 && this.sessionManager) {
       this.sessionManager.bufferEvent(this.defaultSessionId, {
         id: randomBytes(8).toString('hex'),
         type: 'event',
         workflowId,
+        seq,
         event,
       });
       return;
@@ -157,6 +194,7 @@ export class EventStreamer {
           id: randomBytes(8).toString('hex'),
           type: 'event',
           workflowId,
+          seq,
           event,
         });
       } else {
@@ -166,6 +204,7 @@ export class EventStreamer {
             id: randomBytes(8).toString('hex'),
             type: 'event',
             workflowId,
+            seq,
             event,
           });
         } else {
@@ -183,12 +222,29 @@ export class EventStreamer {
    * DAG messages always fire immediately (never batched) since they represent
    * inline conversational progress updates.
    *
+   * If a PersistenceService is configured, the event is persisted and
+   * the seq number is attached to the outgoing message.
+   *
    * @param message - The DAG message to broadcast.
    */
   emitDAGMessage(message: ServerMessage): void {
+    // Persist DAG message to SQLite, get seq
+    const seq = this.persistEvent(
+      message.type,
+      {
+        dagDispatch: message.dagDispatch,
+        dagProgress: message.dagProgress,
+        dagComplete: message.dagComplete,
+        dagConfirm: message.dagConfirm,
+      },
+      message.workflowId,
+    );
+
+    const msgWithSeq: ServerMessage = { ...message, seq };
+
     // Buffer DAG messages when no clients are connected
     if (this.clients.size === 0 && this.sessionManager) {
-      this.sessionManager.bufferEvent(this.defaultSessionId, message);
+      this.sessionManager.bufferEvent(this.defaultSessionId, msgWithSeq);
       return;
     }
 
@@ -201,7 +257,7 @@ export class EventStreamer {
       ) {
         continue;
       }
-      this.sendToClient(client, message);
+      this.sendToClient(client, msgWithSeq);
     }
   }
 

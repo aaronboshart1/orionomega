@@ -54,6 +54,8 @@ export interface ChatMessage {
   role: 'user' | 'assistant' | 'system';
   content: string;
   timestamp: string;
+  /** Server-assigned sequence number (used for pagination/gap recovery). */
+  seq?: number;
   type?:
     | 'text'
     | 'plan'
@@ -96,6 +98,7 @@ interface ChatStore {
   sessionTotals: SessionTokenTotals;
   addMessage: (msg: ChatMessage) => void;
   setMessages: (msgs: ChatMessage[]) => void;
+  prependMessages: (msgs: ChatMessage[]) => void;
   appendToLast: (content: string, messageId?: string) => void;
   appendToBackground: (workflowId: string, content: string, messageId?: string) => void;
   setStreaming: (s: boolean) => void;
@@ -125,6 +128,13 @@ export const useChatStore = create<ChatStore>()((set) => ({
       sessionTotals: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, totalCostUsd: 0, messageCount: 0 },
       addMessage: (msg) => set((s) => ({ messages: [...s.messages, msg] })),
       setMessages: (messages) => set({ messages }),
+      prependMessages: (msgs) =>
+        set((s) => {
+          const existingIds = new Set(s.messages.map((m) => m.id));
+          const newMsgs = msgs.filter((m) => !existingIds.has(m.id));
+          if (newMsgs.length === 0) return s;
+          return { messages: [...newMsgs, ...s.messages] };
+        }),
       appendToLast: (content, messageId) =>
         set((s) => {
           const msgs = [...s.messages];

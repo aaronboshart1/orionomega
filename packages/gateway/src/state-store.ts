@@ -68,9 +68,14 @@ export interface StateStoreMetrics {
  *
  * Memory is bounded by per-session caps (MAX_EVENTS_PER_SESSION, MAX_DAGS_PER_SESSION).
  */
+/** Maximum event IDs to retain in the deduplication set per session. */
+const MAX_EVENT_ID_SET = 1000;
+
 export class ServerSessionStore {
   /** Event log per session. */
   private events: Map<string, StateEvent[]> = new Map();
+  /** Recent event IDs per session for deduplication. */
+  private seenEventIds: Map<string, Set<string>> = new Map();
   /** Materialized DAG states per workflow. */
   private dags: Map<string, DAGState> = new Map();
   /** Session cost accumulators. */
@@ -127,7 +132,22 @@ export class ServerSessionStore {
    * Events are capped at MAX_EVENTS_PER_SESSION per session.
    */
   appendEvent(event: StateEvent): void {
-    const { sessionId } = event;
+    const { sessionId, id } = event;
+
+    // Deduplicate: skip if we've already seen this event ID for this session
+    let seen = this.seenEventIds.get(sessionId);
+    if (!seen) {
+      seen = new Set();
+      this.seenEventIds.set(sessionId, seen);
+    }
+    if (seen.has(id)) return;
+    seen.add(id);
+    if (seen.size > MAX_EVENT_ID_SET) {
+      const arr = Array.from(seen);
+      const trimmed = arr.slice(arr.length - MAX_EVENT_ID_SET);
+      this.seenEventIds.set(sessionId, new Set(trimmed));
+    }
+
     let list = this.events.get(sessionId);
     if (!list) {
       list = [];
@@ -532,6 +552,7 @@ export class ServerSessionStore {
    */
   clearSession(sessionId: string): void {
     this.events.delete(sessionId);
+    this.seenEventIds.delete(sessionId);
     this.costs.delete(sessionId);
     this.codingSessions.delete(sessionId);
 

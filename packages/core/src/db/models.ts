@@ -12,8 +12,16 @@
 import type { InferInsertModel, InferSelectModel } from 'drizzle-orm';
 import type {
   architectReviews,
+  clientState,
   codingSessions,
+  events,
+  memoryEvents,
+  messages,
+  runHistory,
+  sessions,
+  workflowEvents,
   workflowExecutions,
+  workflows,
   workflowSteps,
 } from './schema.js';
 
@@ -63,6 +71,32 @@ export type BuildTestStatus = 'pass' | 'fail' | 'skip';
 
 /** Valid values for ArchitectReview.decision. */
 export type ReviewDecision = 'approve' | 'retask';
+
+// ── Unified Persistence Tables ────────────────────────────────────────────────
+
+export type Session = InferSelectModel<typeof sessions>;
+export type NewSession = InferInsertModel<typeof sessions>;
+
+export type Event = InferSelectModel<typeof events>;
+export type NewEvent = InferInsertModel<typeof events>;
+
+export type Message = InferSelectModel<typeof messages>;
+export type NewMessage = InferInsertModel<typeof messages>;
+
+export type Workflow = InferSelectModel<typeof workflows>;
+export type NewWorkflow = InferInsertModel<typeof workflows>;
+
+export type WorkflowEvent = InferSelectModel<typeof workflowEvents>;
+export type NewWorkflowEvent = InferInsertModel<typeof workflowEvents>;
+
+export type MemoryEvent = InferSelectModel<typeof memoryEvents>;
+export type NewMemoryEvent = InferInsertModel<typeof memoryEvents>;
+
+export type RunHistory = InferSelectModel<typeof runHistory>;
+export type NewRunHistory = InferInsertModel<typeof runHistory>;
+
+export type ClientState = InferSelectModel<typeof clientState>;
+export type NewClientState = InferInsertModel<typeof clientState>;
 
 // ── Composite helpers ─────────────────────────────────────────────────────────
 
