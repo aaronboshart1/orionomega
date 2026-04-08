@@ -7,9 +7,11 @@ import rehypeHighlight from 'rehype-highlight';
 import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
 import 'highlight.js/styles/github-dark.css';
 import type { Components } from 'react-markdown';
+import { useFileViewerStore } from '@/stores/file-viewer';
+import { useOrchestrationStore } from '@/stores/orchestration';
 
 // Allow className on code/span only for syntax-highlight classes (language-*, hljs-*).
-// Using a regex allowlist prevents arbitrary class injection via LLM-generated markdown.
+// Also allow the fileviewer: protocol so clickable file paths survive sanitization.
 const sanitizeSchema = {
   ...defaultSchema,
   attributes: {
@@ -23,7 +25,73 @@ const sanitizeSchema = {
       ['className', /^(hljs(-\w+)?)$/],
     ],
   },
+  protocols: {
+    ...(defaultSchema.protocols ?? {}),
+    href: [...(defaultSchema.protocols?.href ?? []), 'fileviewer'],
+  },
 };
+
+// Match absolute (/path/to/file.ext) and relative (./path or ../path) file paths.
+// Requires an extension so bare directories and URLs aren't falsely detected.
+const FILE_PATH_RE = /((?:\/|\.\.?\/)[\w/.\-]+\.[a-zA-Z0-9]{1,10})/g;
+
+// Remark plugin: finds file-path-like text in non-code, non-link nodes and converts
+// them to remark link nodes with a fileviewer: URL scheme so the a{} component can
+// render them as clickable file-opener buttons.
+function remarkClickableFilePaths() {
+  return (tree: any) => {
+    function visitChildren(node: any) {
+      if (!node.children) return;
+
+      // Reverse iteration so splice indices stay valid after replacement
+      for (let i = node.children.length - 1; i >= 0; i--) {
+        const child = node.children[i];
+
+        if (child.type !== 'text') {
+          // Don't recurse into code blocks or existing links
+          if (child.type !== 'code' && child.type !== 'inlineCode' && child.type !== 'link') {
+            visitChildren(child);
+          }
+          continue;
+        }
+
+        const { value } = child;
+        const matches = [...value.matchAll(FILE_PATH_RE)];
+        if (matches.length === 0) continue;
+
+        const newNodes: any[] = [];
+        let lastIndex = 0;
+
+        for (const match of matches) {
+          const start = match.index!;
+          const filePath = match[1];
+          const end = start + filePath.length;
+
+          if (start > lastIndex) {
+            newNodes.push({ type: 'text', value: value.slice(lastIndex, start) });
+          }
+
+          newNodes.push({
+            type: 'link',
+            url: `fileviewer:${filePath}`,
+            title: null,
+            children: [{ type: 'text', value: filePath }],
+          });
+
+          lastIndex = end;
+        }
+
+        if (lastIndex < value.length) {
+          newNodes.push({ type: 'text', value: value.slice(lastIndex) });
+        }
+
+        node.children.splice(i, 1, ...newNodes);
+      }
+    }
+
+    visitChildren(tree);
+  };
+}
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
@@ -108,6 +176,22 @@ const components: Components = {
     );
   },
   a({ href, children, ...props }) {
+    if (href?.startsWith('fileviewer:')) {
+      const filePath = href.slice('fileviewer:'.length);
+      return (
+        <button
+          type="button"
+          onClick={() => {
+            useFileViewerStore.getState().openFile(filePath);
+            useOrchestrationStore.getState().setActiveOrchTab('files');
+            useOrchestrationStore.getState().setOrchPaneOpen(true);
+          }}
+          className="font-mono text-blue-400/80 hover:text-blue-300 hover:underline cursor-pointer"
+        >
+          {children}
+        </button>
+      );
+    }
     return (
       <a
         href={href}
@@ -230,7 +314,7 @@ function MarkdownContentInner({ content, isStreaming }: MarkdownContentProps) {
 
   return (
     <ReactMarkdown
-      remarkPlugins={[remarkGfm]}
+      remarkPlugins={[remarkGfm, remarkClickableFilePaths]}
       rehypePlugins={[rehypeHighlight, [rehypeSanitize, sanitizeSchema]]}
       components={components}
     >
