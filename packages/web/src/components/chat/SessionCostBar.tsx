@@ -38,19 +38,23 @@ export function SessionCostBar() {
   if (totalInput === 0 && totalOutput === 0 && totalCost === 0) return null;
 
   return (
-    <div className="flex items-center gap-3 px-3 py-1 text-[10px] text-zinc-600 border-t border-zinc-800/50 select-none">
+    <div className="flex items-center gap-2 text-[10px] text-zinc-600 select-none">
       <span title="Total input tokens">
         <span className="text-zinc-500">{formatTokens(totalInput)}</span> in
       </span>
+      <span className="text-zinc-700">·</span>
       <span title="Total output tokens">
         <span className="text-zinc-500">{formatTokens(totalOutput)}</span> out
       </span>
       {dagTotals.runs > 0 && (
-        <span title="Completed runs">
-          {dagTotals.runs} run{dagTotals.runs !== 1 ? 's' : ''}
-        </span>
+        <>
+          <span className="text-zinc-700">·</span>
+          <span title="Completed runs">
+            {dagTotals.runs} run{dagTotals.runs !== 1 ? 's' : ''}
+          </span>
+        </>
       )}
-      <span className="ml-auto font-medium text-green-500/70" title="Estimated total cost">
+      <span className="ml-2 font-medium text-green-500/70" title="Estimated total cost">
         {formatCost(totalCost)}
       </span>
     </div>

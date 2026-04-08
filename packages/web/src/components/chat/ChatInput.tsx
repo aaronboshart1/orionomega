@@ -21,6 +21,8 @@ interface ChatInputProps {
   disabled?: boolean;
   /** Optional element rendered as a prefix inside the input container (e.g. mode toggle) */
   modeToggle?: React.ReactNode;
+  /** Optional element rendered on the right side of the mode toggle row (e.g. token/cost info) */
+  costBar?: React.ReactNode;
 }
 
 const BUILTIN_COMMANDS = [
@@ -80,7 +82,7 @@ function isImageType(type: string): boolean {
   return type.startsWith('image/');
 }
 
-export function ChatInput({ onSend, disabled, modeToggle }: ChatInputProps) {
+export function ChatInput({ onSend, disabled, modeToggle, costBar }: ChatInputProps) {
   const [input, setInput] = useState('');
   const [showPalette, setShowPalette] = useState(false);
   const [attachments, setAttachments] = useState<FileAttachment[]>([]);
@@ -470,10 +472,11 @@ export function ChatInput({ onSend, disabled, modeToggle }: ChatInputProps) {
       />
 
       <div className="flex flex-col rounded-xl border border-zinc-700 bg-zinc-900 focus-within:border-blue-600">
-        {modeToggle && (
+        {(modeToggle || costBar) && (
           <>
             <div className="flex items-center px-2 md:px-3 pt-2 pb-1.5">
               {modeToggle}
+              {costBar && <div className="ml-auto">{costBar}</div>}
             </div>
             <div className="mx-2 md:mx-3 h-px shrink-0 bg-zinc-700/70" aria-hidden="true" />
           </>

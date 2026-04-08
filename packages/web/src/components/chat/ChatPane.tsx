@@ -376,10 +376,10 @@ export function ChatPane() {
         )}
       </div>
 
-      <SessionCostBar />
       <ChatInput
         onSend={handleSend}
         modeToggle={<AgentModeToggle disabled={isStreaming} variant="inline" />}
+        costBar={<SessionCostBar />}
       />
     </div>
   );
