@@ -12,7 +12,7 @@ import { resolve as resolvePath, normalize } from 'node:path';
 import { homedir } from 'node:os';
 import { spawn as spawnProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { readConfig, normalizeBindAddresses, MainAgent, CommandFileLoader, createLogger, setGlobalLogLevel, enableFileLogging, discoverModels, clearModelCache, auditApiRequest, setCodingOrchestatorEmitters, closeDb } from '@orionomega/core';
+import { readConfig, normalizeBindAddresses, MainAgent, CommandFileLoader, createLogger, setGlobalLogLevel, enableFileLogging, discoverModels, clearModelCache, auditApiRequest, setCodingOrchestatorEmitters } from '@orionomega/core';
 import type { MainAgentConfig, MainAgentCallbacks, LogLevel, PlannerOutput } from '@orionomega/core';
 import { setLogLevel as setHindsightLogLevel } from '@orionomega/hindsight';
 import type { GatewayConfig } from './types.js';
@@ -34,8 +34,6 @@ import { handleStartCodingSession, handleGetCodingSession, handleGetCodingSteps,
 import { setCodingEventStreamer, emitCodingSessionStarted, emitCodingWorkflowStarted, emitCodingStepStarted, emitCodingStepProgress, emitCodingStepCompleted, emitCodingStepFailed, emitCodingReviewStarted, emitCodingReviewCompleted, emitCodingCommitCompleted, emitCodingSessionCompleted } from './coding-events.js';
 import { FeedService } from './feed/index.js';
 import { handleGetFeed, handleGetFeedMessage, handlePostFeedMessage, handleGetFeedCount } from './routes/feed.js';
-import { PersistenceService } from './persistence.js';
-import { handleGetEvents, handleGetSessionMessages, handleGetSessionEvents, handleExportSession, handleBackupDb } from './routes/sessions.js';
 
 process.on('uncaughtException', (err) => {
   console.error('[gateway] Uncaught exception:', err);
@@ -90,17 +88,14 @@ try {
 // Shared Services
 // ---------------------------------------------------------------------------
 
-const persistenceService = new PersistenceService();
-const sessionManager = new SessionManager(persistenceService);
-/** @deprecated ServerSessionStore is being replaced by PersistenceService. Kept for backward compatibility during migration. */
+const sessionManager = new SessionManager();
 const stateStore = new ServerSessionStore();
 const feedService = new FeedService(sessionManager);
 const activityService = new ActivityService();
 const commandHandler = new CommandHandler(sessionManager);
 const eventStreamer = new EventStreamer();
 eventStreamer.setSessionManager(sessionManager, DEFAULT_SESSION_ID);
-eventStreamer.setPersistenceService(persistenceService);
-const wsHandler = new WebSocketHandler(config, sessionManager, commandHandler, eventStreamer, activityService, stateStore, persistenceService);
+const wsHandler = new WebSocketHandler(config, sessionManager, commandHandler, eventStreamer, activityService, stateStore);
 
 // Wire the EventStreamer into the coding-events emitter module so that
 // emitCoding* functions can broadcast to all connected WebSocket clients.
@@ -403,26 +398,28 @@ async function initMainAgent(): Promise<void> {
       });
     },
     onEvent(event) {
-      try {
-        const workerEvent = event as { workflowId?: string; type?: string };
+      const workerEvent = event as { workflowId?: string; type?: string };
 
-        // Store orchestration events to state store (in-memory, for paginated API)
-        stateStore.appendEvent({
-          id: randomBytes(8).toString('hex'),
-          sessionId: DEFAULT_SESSION_ID,
-          type: 'event',
-          timestamp: new Date().toISOString(),
-          data: event as unknown as Record<string, unknown>,
-          workflowId: workerEvent.workflowId,
-        });
+      // Store orchestration events to state store
+      stateStore.appendEvent({
+        id: randomBytes(8).toString('hex'),
+        sessionId: DEFAULT_SESSION_ID,
+        type: 'event',
+        timestamp: new Date().toISOString(),
+        data: event as unknown as Record<string, unknown>,
+        workflowId: workerEvent.workflowId,
+      });
 
-        // Persist to session for snapshot inclusion — enables activity feed replay on reconnect
-        sessionManager.addOrchestrationEvent(DEFAULT_SESSION_ID, event, workerEvent.workflowId);
+      // Persist orchestration events to durable session storage
+      // (eventStreamer.emit bypasses wsHandler.broadcast/trackMessageState,
+      //  so we must persist directly here)
+      sessionManager.addOrchestrationEvent(
+        DEFAULT_SESSION_ID,
+        event,
+        workerEvent.workflowId,
+      );
 
-        eventStreamer.emit(event, workerEvent.type, workerEvent.workflowId);
-      } catch (err) {
-        log.error('onEvent callback error', { error: err instanceof Error ? err.message : String(err) });
-      }
+      eventStreamer.emit(event, workerEvent.type, workerEvent.workflowId);
     },
     onGraphState(state) {
       const evtId = randomBytes(8).toString('hex');
@@ -466,12 +463,6 @@ async function initMainAgent(): Promise<void> {
           cacheCreationTokens: s.cacheCreationTokens ?? 0,
           costUsd: s.sessionCostUsd ?? 0,
         });
-        sessionManager.accumulateSessionTotals(DEFAULT_SESSION_ID, {
-          inputTokens: s.inputTokens ?? 0,
-          outputTokens: s.outputTokens ?? 0,
-          cacheReadTokens: s.cacheReadTokens ?? 0,
-          costUsd: s.sessionCostUsd ?? 0,
-        });
       }
 
       wsHandler.broadcast({
@@ -481,63 +472,43 @@ async function initMainAgent(): Promise<void> {
       });
     },
     onDirectComplete(info) {
-      try {
-        const msgId = randomBytes(8).toString("hex");
-        const now = new Date().toISOString();
+      const msgId = randomBytes(8).toString("hex");
+      const now = new Date().toISOString();
 
-        // Store to state store BEFORE broadcasting
-        stateStore.appendEvent({
+      // Store to state store BEFORE broadcasting
+      stateStore.appendEvent({
+        id: msgId,
+        sessionId: DEFAULT_SESSION_ID,
+        type: 'direct_complete',
+        timestamp: now,
+        data: { directComplete: info },
+      });
+
+      // Accumulate costs from direct completion
+      if (info.totalCostUsd) {
+        stateStore.accumulateCosts(DEFAULT_SESSION_ID, {
+          costUsd: info.totalCostUsd,
+        });
+      }
+
+      wsHandler.broadcast({
+        id: msgId,
+        type: "direct_complete",
+        directComplete: info,
+      });
+      const sid = DEFAULT_SESSION_ID;
+      if (sid) {
+        sessionManager.addMessage(sid, {
           id: msgId,
-          sessionId: DEFAULT_SESSION_ID,
-          type: 'direct_complete',
+          role: "assistant",
+          content: "",
           timestamp: now,
-          data: { directComplete: info },
-        });
-
-        // Accumulate costs from direct completion
-        if (info.totalCostUsd) {
-          stateStore.accumulateCosts(DEFAULT_SESSION_ID, {
-            costUsd: info.totalCostUsd,
-          });
-          sessionManager.accumulateSessionTotals(DEFAULT_SESSION_ID, {
-            costUsd: info.totalCostUsd,
-          });
-        }
-
-        wsHandler.broadcast({
-          id: msgId,
-          type: "direct_complete",
-          directComplete: info,
-        });
-        const sid = DEFAULT_SESSION_ID;
-        if (sid) {
-          sessionManager.addMessage(sid, {
-            id: msgId,
-            role: "assistant",
-            content: "",
-            timestamp: now,
-            type: "direct-complete",
-            metadata: {
-              runId: info.runId,
-              directComplete: info,
-            },
-          });
-
-          // Persist run summary for direct completions
-          sessionManager.addRunSummary(sid, {
+          type: "direct-complete",
+          metadata: {
             runId: info.runId,
-            status: 'complete',
-            startedAt: now,
-            completedAt: now,
-            durationSec: info.durationSec ?? 0,
-            workerCount: 1,
-            totalCostUsd: info.totalCostUsd ?? 0,
-            summary: 'Direct response',
-            modelUsage: info.modelUsage as Array<{ model: string; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreationTokens: number; costUsd: number }> | undefined,
-          });
-        }
-      } catch (err) {
-        log.error('onDirectComplete callback error', { error: err instanceof Error ? err.message : String(err) });
+            directComplete: info,
+          },
+        });
       }
     },
     onWorkflowStart(workflowId, _workflowName) {
@@ -628,351 +599,220 @@ async function initMainAgent(): Promise<void> {
 
     // DAG lifecycle callbacks — route through EventStreamer for subscription filtering
     onDAGDispatched(dispatch) {
-      try {
-        const msgId = randomBytes(8).toString('hex');
-        const now = new Date().toISOString();
+      const msgId = randomBytes(8).toString('hex');
+      const now = new Date().toISOString();
 
-        // Store DAG dispatch to state store BEFORE broadcasting
-        stateStore.appendEvent({
+      // Store DAG dispatch to state store BEFORE broadcasting
+      stateStore.appendEvent({
+        id: msgId,
+        sessionId: DEFAULT_SESSION_ID,
+        type: 'dag_dispatched',
+        timestamp: now,
+        data: { dagDispatch: dispatch },
+        workflowId: dispatch.workflowId,
+      });
+
+      // Record materialized DAG state
+      stateStore.recordDAGDispatched(DEFAULT_SESSION_ID, dispatch.workflowId, {
+        workflowId: dispatch.workflowId,
+        workflowName: dispatch.workflowName,
+        nodeCount: dispatch.nodeCount,
+        estimatedTime: dispatch.estimatedTime,
+        estimatedCost: dispatch.estimatedCost,
+        summary: dispatch.summary,
+        nodes: dispatch.nodes,
+      });
+
+      eventStreamer.emitDAGMessage({
+        id: msgId,
+        type: 'dag_dispatched',
+        workflowId: dispatch.workflowId,
+        dagDispatch: dispatch,
+      });
+      const sid = DEFAULT_SESSION_ID;
+      if (sid) {
+        sessionManager.addMessage(sid, {
           id: msgId,
-          sessionId: DEFAULT_SESSION_ID,
-          type: 'dag_dispatched',
+          role: 'assistant',
+          content: dispatch.summary || 'Working on it...',
           timestamp: now,
-          data: { dagDispatch: dispatch },
-          workflowId: dispatch.workflowId,
-        });
-
-        // Record materialized DAG state (legacy)
-        stateStore.recordDAGDispatched(DEFAULT_SESSION_ID, dispatch.workflowId, {
-          workflowId: dispatch.workflowId,
-          workflowName: dispatch.workflowName,
-          nodeCount: dispatch.nodeCount,
-          estimatedTime: dispatch.estimatedTime,
-          estimatedCost: dispatch.estimatedCost,
-          summary: dispatch.summary,
-          nodes: dispatch.nodes,
-        });
-
-        // Persist workflow to SQLite
-        try {
-          persistenceService.upsertWorkflow({
-            id: dispatch.workflowId,
-            sessionId: DEFAULT_SESSION_ID,
-            name: dispatch.workflowName,
-            status: 'dispatched',
-            nodeCount: dispatch.nodeCount,
-            startedAt: now,
-            summary: dispatch.summary,
-            graphState: { nodes: dispatch.nodes, estimatedTime: dispatch.estimatedTime, estimatedCost: dispatch.estimatedCost },
-          });
-          persistenceService.appendWorkflowEvent({
-            id: msgId,
+          type: 'dag-dispatched',
+          metadata: {
             workflowId: dispatch.workflowId,
-            sessionId: DEFAULT_SESSION_ID,
-            seq: 0,
-            eventType: 'dispatched',
-            payload: { summary: dispatch.summary, nodeCount: dispatch.nodeCount },
-          });
-        } catch (err) {
-          log.warn('Failed to persist DAG dispatch to SQLite', { error: (err as Error).message });
-        }
-
-        eventStreamer.emitDAGMessage({
-          id: msgId,
-          type: 'dag_dispatched',
-          workflowId: dispatch.workflowId,
-          dagDispatch: dispatch,
-        });
-        const sid = DEFAULT_SESSION_ID;
-        if (sid) {
-          sessionManager.addMessage(sid, {
-            id: msgId,
-            role: 'assistant',
-            content: dispatch.summary || 'Working on it...',
-            timestamp: now,
-            type: 'dag-dispatched',
-            metadata: {
+            dagDispatch: {
               workflowId: dispatch.workflowId,
-              dagDispatch: {
-                workflowId: dispatch.workflowId,
-                summary: dispatch.summary,
-                nodeCount: dispatch.nodeCount,
-                nodes: dispatch.nodes,
-              },
+              summary: dispatch.summary,
+              nodeCount: dispatch.nodeCount,
+              nodes: dispatch.nodes,
             },
-          });
-        }
-      } catch (err) {
-        log.error('onDAGDispatched callback error', { error: err instanceof Error ? err.message : String(err) });
+          },
+        });
       }
     },
     onDAGProgress(progress) {
-      try {
-        const evtId = randomBytes(8).toString('hex');
+      const evtId = randomBytes(8).toString('hex');
 
-        // Store DAG progress to state store BEFORE broadcasting
-        stateStore.appendEvent({
-          id: evtId,
-          sessionId: DEFAULT_SESSION_ID,
-          type: 'dag_progress',
-          timestamp: new Date().toISOString(),
-          data: { dagProgress: progress },
-          workflowId: progress.workflowId,
-        });
+      // Store DAG progress to state store BEFORE broadcasting
+      stateStore.appendEvent({
+        id: evtId,
+        sessionId: DEFAULT_SESSION_ID,
+        type: 'dag_progress',
+        timestamp: new Date().toISOString(),
+        data: { dagProgress: progress },
+        workflowId: progress.workflowId,
+      });
 
-        // Update materialized DAG node state (legacy)
-        stateStore.recordDAGProgress(progress.workflowId, {
-          nodeId: progress.nodeId,
-          nodeLabel: progress.nodeLabel,
-          status: progress.status,
-          message: progress.message,
-          progress: progress.progress,
-          tool: progress.tool as Record<string, unknown> | undefined,
-          workerId: progress.workerId,
-        });
+      // Update materialized DAG node state
+      stateStore.recordDAGProgress(progress.workflowId, {
+        nodeId: progress.nodeId,
+        nodeLabel: progress.nodeLabel,
+        status: progress.status,
+        message: progress.message,
+        progress: progress.progress,
+        tool: progress.tool as Record<string, unknown> | undefined,
+        workerId: progress.workerId,
+      });
 
-        // Persist progress to SQLite
-        try {
-          persistenceService.appendWorkflowEvent({
-            id: evtId,
-            workflowId: progress.workflowId,
-            sessionId: DEFAULT_SESSION_ID,
-            seq: 0,
-            eventType: 'progress',
-            nodeId: progress.nodeId,
-            payload: {
-              status: progress.status,
-              message: progress.message,
-              progress: progress.progress,
-              tool: progress.tool,
-              workerId: progress.workerId,
-            },
-          });
-        } catch (err) {
-          log.warn('Failed to persist DAG progress to SQLite', { error: (err as Error).message });
-        }
-
-        eventStreamer.emitDAGMessage({
-          id: evtId,
-          type: 'dag_progress',
-          workflowId: progress.workflowId,
-          dagProgress: progress,
-        });
-      } catch (err) {
-        log.error('onDAGProgress callback error', { error: err instanceof Error ? err.message : String(err) });
-      }
+      eventStreamer.emitDAGMessage({
+        id: evtId,
+        type: 'dag_progress',
+        workflowId: progress.workflowId,
+        dagProgress: progress,
+      });
     },
     onDAGComplete(result) {
-      try {
-        const msgId = randomBytes(8).toString('hex');
-        const now = new Date().toISOString();
+      const msgId = randomBytes(8).toString('hex');
+      const now = new Date().toISOString();
 
-        // Store DAG completion to state store BEFORE broadcasting
-        stateStore.appendEvent({
+      // Store DAG completion to state store BEFORE broadcasting
+      stateStore.appendEvent({
+        id: msgId,
+        sessionId: DEFAULT_SESSION_ID,
+        type: 'dag_complete',
+        timestamp: now,
+        data: { dagComplete: result },
+        workflowId: result.workflowId,
+      });
+
+      // Update materialized DAG state
+      stateStore.recordDAGComplete(result.workflowId, {
+        workflowId: result.workflowId,
+        status: result.status,
+        summary: result.summary,
+        output: result.output,
+        durationSec: result.durationSec,
+        workerCount: result.workerCount,
+        totalCostUsd: result.totalCostUsd,
+        toolCallCount: result.toolCallCount,
+        modelUsage: result.modelUsage as unknown as Array<Record<string, unknown>> | undefined,
+        nodeOutputPaths: result.nodeOutputPaths,
+      });
+
+      // Accumulate DAG costs
+      if (result.totalCostUsd) {
+        stateStore.accumulateCosts(DEFAULT_SESSION_ID, {
+          costUsd: result.totalCostUsd,
+        });
+      }
+
+      eventStreamer.emitDAGMessage({
+        id: msgId,
+        type: 'dag_complete',
+        workflowId: result.workflowId,
+        dagComplete: result,
+      });
+      const sid = DEFAULT_SESSION_ID;
+      if (sid) {
+        sessionManager.addMessage(sid, {
           id: msgId,
-          sessionId: DEFAULT_SESSION_ID,
-          type: 'dag_complete',
+          role: 'assistant',
+          content: result.status === 'error'
+            ? `Something went wrong: ${result.summary}`
+            : result.output || result.summary || 'Done.',
           timestamp: now,
-          data: { dagComplete: result },
-          workflowId: result.workflowId,
-        });
-
-        // Update materialized DAG state (legacy)
-        stateStore.recordDAGComplete(result.workflowId, {
-          workflowId: result.workflowId,
-          status: result.status,
-          summary: result.summary,
-          output: result.output,
-          durationSec: result.durationSec,
-          workerCount: result.workerCount,
-          totalCostUsd: result.totalCostUsd,
-          toolCallCount: result.toolCallCount,
-          modelUsage: result.modelUsage as unknown as Array<Record<string, unknown>> | undefined,
-          nodeOutputPaths: result.nodeOutputPaths,
-        });
-
-        // Persist DAG completion to SQLite
-        try {
-          const dagStatus = result.status === 'error' ? 'error' : result.status === 'stopped' ? 'stopped' : 'complete';
-          persistenceService.upsertWorkflow({
-            id: result.workflowId,
-            sessionId: DEFAULT_SESSION_ID,
-            status: dagStatus,
-            completedAt: now,
-            durationSec: result.durationSec,
-            costUsd: result.totalCostUsd,
-            summary: result.summary,
-          });
-          persistenceService.appendWorkflowEvent({
-            id: msgId,
+          type: 'dag-complete',
+          metadata: {
             workflowId: result.workflowId,
-            sessionId: DEFAULT_SESSION_ID,
-            seq: 0,
-            eventType: 'complete',
-            payload: {
+            dagComplete: {
+              workflowId: result.workflowId,
               status: result.status,
               summary: result.summary,
+              output: result.output,
               durationSec: result.durationSec,
+              workerCount: result.workerCount,
               totalCostUsd: result.totalCostUsd,
               toolCallCount: result.toolCallCount,
+              modelUsage: result.modelUsage,
+              nodeOutputPaths: result.nodeOutputPaths,
             },
-          });
-        } catch (err) {
-          log.warn('Failed to persist DAG completion to SQLite', { error: (err as Error).message });
-        }
-
-        // Accumulate DAG costs
-        if (result.totalCostUsd) {
-          stateStore.accumulateCosts(DEFAULT_SESSION_ID, {
-            costUsd: result.totalCostUsd,
-          });
-          sessionManager.accumulateSessionTotals(DEFAULT_SESSION_ID, {
-            costUsd: result.totalCostUsd,
-          });
-        }
-
-        eventStreamer.emitDAGMessage({
-          id: msgId,
-          type: 'dag_complete',
-          workflowId: result.workflowId,
-          dagComplete: result,
+          },
         });
-        const sid = DEFAULT_SESSION_ID;
-        if (sid) {
-          sessionManager.addMessage(sid, {
-            id: msgId,
-            role: 'assistant',
-            content: result.status === 'error'
-              ? `Something went wrong: ${result.summary}`
-              : result.output || result.summary || 'Done.',
-            timestamp: now,
-            type: 'dag-complete',
-            metadata: {
-              workflowId: result.workflowId,
-              dagComplete: {
-                workflowId: result.workflowId,
-                status: result.status,
-                summary: result.summary,
-                output: result.output,
-                durationSec: result.durationSec,
-                workerCount: result.workerCount,
-                totalCostUsd: result.totalCostUsd,
-                toolCallCount: result.toolCallCount,
-                modelUsage: result.modelUsage,
-                nodeOutputPaths: result.nodeOutputPaths,
-              },
-            },
-          });
-
-          // Persist run summary for historical review
-          sessionManager.addRunSummary(sid, {
-            runId: result.workflowId,
-            status: result.status === 'error' ? 'error' : result.status === 'stopped' ? 'stopped' : 'complete',
-            startedAt: now, // approximate — exact start tracked in DAG state
-            completedAt: now,
-            durationSec: result.durationSec ?? 0,
-            workerCount: result.workerCount ?? 0,
-            totalCostUsd: result.totalCostUsd ?? 0,
-            toolCallCount: result.toolCallCount,
-            summary: result.summary,
-            error: result.status === 'error' ? result.summary : undefined,
-            modelUsage: result.modelUsage as Array<{ model: string; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreationTokens: number; costUsd: number }> | undefined,
-          });
-        }
-      } catch (err) {
-        log.error('onDAGComplete callback error', { error: err instanceof Error ? err.message : String(err) });
       }
     },
     onDAGConfirm(confirm) {
-      try {
-        const msgId = randomBytes(8).toString('hex');
-        const now = new Date().toISOString();
+      const msgId = randomBytes(8).toString('hex');
+      const now = new Date().toISOString();
 
-        // Store DAG confirmation to state store BEFORE broadcasting
-        stateStore.appendEvent({
-          id: msgId,
-          sessionId: DEFAULT_SESSION_ID,
-          type: 'dag_confirm',
-          timestamp: now,
-          data: { dagConfirm: confirm },
-          workflowId: confirm.workflowId,
-        });
+      // Store DAG confirmation to state store BEFORE broadcasting
+      stateStore.appendEvent({
+        id: msgId,
+        sessionId: DEFAULT_SESSION_ID,
+        type: 'dag_confirm',
+        timestamp: now,
+        data: { dagConfirm: confirm },
+        workflowId: confirm.workflowId,
+      });
 
-        // Record as materialized DAG state (legacy)
-        stateStore.recordDAGConfirm(confirm.workflowId, DEFAULT_SESSION_ID, {
+      // Record as materialized DAG state
+      stateStore.recordDAGConfirm(confirm.workflowId, DEFAULT_SESSION_ID, {
+        workflowId: confirm.workflowId,
+        summary: confirm.summary,
+        reasoning: confirm.reasoning,
+        estimatedCost: confirm.estimatedCost,
+        estimatedTime: confirm.estimatedTime,
+        nodes: confirm.nodes,
+        guardedActions: confirm.guardedActions,
+      });
+
+      // Track as pending action awaiting user approval
+      stateStore.addPendingAction({
+        id: confirm.workflowId,
+        sessionId: DEFAULT_SESSION_ID,
+        type: 'dag_confirm',
+        data: {
           workflowId: confirm.workflowId,
           summary: confirm.summary,
           reasoning: confirm.reasoning,
-          estimatedCost: confirm.estimatedCost,
-          estimatedTime: confirm.estimatedTime,
-          nodes: confirm.nodes,
           guardedActions: confirm.guardedActions,
-        });
+        },
+        status: 'pending',
+        createdAt: now,
+      });
 
-        // Track as pending action awaiting user approval (legacy)
-        stateStore.addPendingAction({
-          id: confirm.workflowId,
-          sessionId: DEFAULT_SESSION_ID,
-          type: 'dag_confirm',
-          data: {
-            workflowId: confirm.workflowId,
-            summary: confirm.summary,
-            reasoning: confirm.reasoning,
-            guardedActions: confirm.guardedActions,
-          },
-          status: 'pending',
-          createdAt: now,
-        });
-
-        // Persist confirmation as pending_action event + workflow state
-        try {
-          persistenceService.upsertWorkflow({
-            id: confirm.workflowId,
-            sessionId: DEFAULT_SESSION_ID,
-            name: confirm.summary,
-            status: 'confirming',
-            nodeCount: confirm.nodes.length,
-            summary: confirm.summary,
-            graphState: { nodes: confirm.nodes, reasoning: confirm.reasoning, guardedActions: confirm.guardedActions },
-          });
-          persistenceService.appendEvent(DEFAULT_SESSION_ID, 'pending_action', {
-            actionId: confirm.workflowId,
-            actionType: 'dag_confirm',
-            summary: confirm.summary,
-            reasoning: confirm.reasoning,
-            guardedActions: confirm.guardedActions,
-          }, confirm.workflowId);
-        } catch (err) {
-          log.warn('Failed to persist DAG confirm to SQLite', { error: (err as Error).message });
-        }
-
-        eventStreamer.emitDAGMessage({
+      eventStreamer.emitDAGMessage({
+        id: msgId,
+        type: 'dag_confirm',
+        workflowId: confirm.workflowId,
+        dagConfirm: confirm,
+      });
+      const sid = DEFAULT_SESSION_ID;
+      if (sid) {
+        sessionManager.addMessage(sid, {
           id: msgId,
-          type: 'dag_confirm',
-          workflowId: confirm.workflowId,
-          dagConfirm: confirm,
-        });
-        const sid = DEFAULT_SESSION_ID;
-        if (sid) {
-          sessionManager.addMessage(sid, {
-            id: msgId,
-            role: 'assistant',
-            content: confirm.summary,
-            timestamp: now,
-            type: 'dag-confirmation',
-            metadata: {
+          role: 'assistant',
+          content: confirm.summary,
+          timestamp: now,
+          type: 'dag-confirmation',
+          metadata: {
+            workflowId: confirm.workflowId,
+            dagConfirm: {
               workflowId: confirm.workflowId,
-              dagConfirm: {
-                workflowId: confirm.workflowId,
-                summary: confirm.summary,
-                reasoning: confirm.reasoning,
-                guardedActions: confirm.guardedActions,
-              },
+              summary: confirm.summary,
+              reasoning: confirm.reasoning,
+              guardedActions: confirm.guardedActions,
             },
-          });
-        }
-      } catch (err) {
-        log.error('onDAGConfirm callback error', { error: err instanceof Error ? err.message : String(err) });
+          },
+        });
       }
     },
   };
@@ -1206,39 +1046,6 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
     }
   }
 
-
-  // --- Gap Recovery: GET /api/events ---
-  if (pathname === '/api/events' && method === 'GET') {
-    handleGetEvents(req, res, persistenceService);
-    return;
-  }
-
-  // --- Session Messages: GET /api/sessions/:id/messages ---
-  const sessionMsgsMatch = pathname.match(/^\/api\/sessions\/([a-z0-9_-]+)\/messages$/);
-  if (sessionMsgsMatch && method === 'GET') {
-    handleGetSessionMessages(req, res, persistenceService, sessionMsgsMatch[1]!);
-    return;
-  }
-
-  // --- Session Events: GET /api/sessions/:id/events ---
-  const sessionEvtsMatch = pathname.match(/^\/api\/sessions\/([a-z0-9_-]+)\/events$/);
-  if (sessionEvtsMatch && method === 'GET') {
-    handleGetSessionEvents(req, res, persistenceService, sessionEvtsMatch[1]!);
-    return;
-  }
-
-  // --- Session Export: GET /api/sessions/:id/export ---
-  const sessionExportMatch = pathname.match(/^\/api\/sessions\/([a-z0-9_-]+)\/export$/);
-  if (sessionExportMatch && method === 'GET') {
-    handleExportSession(req, res, persistenceService, sessionManager, sessionExportMatch[1]!);
-    return;
-  }
-
-  // --- Database Backup: GET /api/backup ---
-  if (pathname === '/api/backup' && method === 'GET') {
-    handleBackupDb(req, res);
-    return;
-  }
 
   // --- Models ---
   if (pathname === '/api/models' && method === 'GET') {
@@ -1607,10 +1414,8 @@ async function shutdown(signal: string): Promise<void> {
     }
   }
 
-  stateStore.shutdown();
-  persistenceService.shutdown();
   sessionManager.shutdown();
-  closeDb();
+  stateStore.shutdown();
   feedService.destroy();
 
   log.info(' Shutdown complete.');
@@ -1620,4 +1425,4 @@ async function shutdown(signal: string): Promise<void> {
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
 
-export { server, servers, sessionManager, stateStore, persistenceService, activityService, commandHandler, eventStreamer, wsHandler };
+export { server, servers, sessionManager, stateStore, activityService, commandHandler, eventStreamer, wsHandler };
