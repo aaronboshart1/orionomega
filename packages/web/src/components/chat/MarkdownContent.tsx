@@ -35,9 +35,17 @@ const sanitizeSchema = {
 // Requires an extension so bare directories and URLs aren't falsely detected.
 const FILE_PATH_RE = /((?:\/|\.\.?\/)[\w/.\-]+\.[a-zA-Z0-9]{1,10})/g;
 
+/** Open a file path in the file viewer + orchestration pane */
+function openInFileViewer(filePath: string) {
+  useFileViewerStore.getState().openFile(filePath);
+  useOrchestrationStore.getState().setActiveOrchTab('files');
+  useOrchestrationStore.getState().setOrchPaneOpen(true);
+}
+
 // Remark plugin: finds file-path-like text in non-code, non-link nodes and converts
 // them to remark link nodes with a fileviewer: URL scheme so the a{} component can
 // render them as clickable file-opener buttons.
+// Also converts inlineCode nodes that are entirely a file path into clickable links.
 function remarkClickableFilePaths() {
   return (tree: any) => {
     function visitChildren(node: any) {
@@ -47,9 +55,26 @@ function remarkClickableFilePaths() {
       for (let i = node.children.length - 1; i >= 0; i--) {
         const child = node.children[i];
 
+        // Handle inlineCode nodes: if the entire content is a file path, convert to a link
+        if (child.type === 'inlineCode') {
+          const val = (child.value || '').trim();
+          if (FILE_PATH_RE.test(val)) {
+            // Reset lastIndex since we used .test()
+            FILE_PATH_RE.lastIndex = 0;
+            node.children[i] = {
+              type: 'link',
+              url: `fileviewer:${val}`,
+              title: null,
+              children: [{ type: 'inlineCode', value: val }],
+            };
+          }
+          FILE_PATH_RE.lastIndex = 0;
+          continue;
+        }
+
         if (child.type !== 'text') {
           // Don't recurse into code blocks or existing links
-          if (child.type !== 'code' && child.type !== 'inlineCode' && child.type !== 'link') {
+          if (child.type !== 'code' && child.type !== 'link') {
             visitChildren(child);
           }
           continue;
@@ -135,9 +160,56 @@ function extractCodeProps(children: React.ReactNode): { lang: string | null; tex
   return { lang: null, text: String(children ?? '') };
 }
 
+/**
+ * Renders text that may contain file paths as a mix of plain text and clickable
+ * file-path buttons. Used inside code blocks where the remark plugin can't operate.
+ */
+function CodeBlockWithClickablePaths({ text }: { text: string }) {
+  FILE_PATH_RE.lastIndex = 0;
+  const matches = [...text.matchAll(FILE_PATH_RE)];
+  if (matches.length === 0) {
+    return <>{text}</>;
+  }
+
+  const parts: React.ReactNode[] = [];
+  let lastIndex = 0;
+
+  for (const match of matches) {
+    const start = match.index!;
+    const filePath = match[1];
+    const end = start + filePath.length;
+
+    if (start > lastIndex) {
+      parts.push(<span key={`t-${lastIndex}`}>{text.slice(lastIndex, start)}</span>);
+    }
+
+    parts.push(
+      <button
+        key={`f-${start}`}
+        type="button"
+        onClick={() => openInFileViewer(filePath)}
+        className="font-mono text-blue-400/80 hover:text-blue-300 hover:underline cursor-pointer"
+      >
+        {filePath}
+      </button>,
+    );
+
+    lastIndex = end;
+  }
+
+  if (lastIndex < text.length) {
+    parts.push(<span key={`t-${lastIndex}`}>{text.slice(lastIndex)}</span>);
+  }
+
+  return <>{parts}</>;
+}
+
 const components: Components = {
   pre({ children }) {
     const { lang, text } = extractCodeProps(children);
+    const hasFilePaths = FILE_PATH_RE.test(text);
+    FILE_PATH_RE.lastIndex = 0;
+
     return (
       <div className="my-3 overflow-x-auto rounded-lg bg-zinc-900 text-xs">
         <div className="flex items-center justify-between border-b border-zinc-700/50 px-4 py-1.5">
@@ -150,9 +222,17 @@ const components: Components = {
           )}
           <CopyButton text={text} />
         </div>
-        <pre className="p-4">
-          {children}
-        </pre>
+        {hasFilePaths ? (
+          <pre className="p-4">
+            <code className="block">
+              <CodeBlockWithClickablePaths text={text} />
+            </code>
+          </pre>
+        ) : (
+          <pre className="p-4">
+            {children}
+          </pre>
+        )}
       </div>
     );
   },
@@ -181,11 +261,7 @@ const components: Components = {
       return (
         <button
           type="button"
-          onClick={() => {
-            useFileViewerStore.getState().openFile(filePath);
-            useOrchestrationStore.getState().setActiveOrchTab('files');
-            useOrchestrationStore.getState().setOrchPaneOpen(true);
-          }}
+          onClick={() => openInFileViewer(filePath)}
           className="font-mono text-blue-400/80 hover:text-blue-300 hover:underline cursor-pointer"
         >
           {children}
