@@ -148,8 +148,8 @@ export function DAGVisualization() {
       <Background color="#27272a" gap={20} />
       <Controls
         showInteractive={false}
-        position="bottom-left"
-        className="!bg-zinc-800 !border-zinc-700 !shadow-lg !bottom-3 !left-3 [&>button]:!bg-zinc-800 [&>button]:!border-zinc-700 [&>button]:!text-zinc-400 [&>button:hover]:!bg-zinc-700"
+        position="bottom-right"
+        className="!bg-zinc-800 !border-zinc-700 !shadow-lg !bottom-[52px] !right-4 [&>button]:!bg-zinc-800 [&>button]:!border-zinc-700 [&>button]:!text-zinc-400 [&>button:hover]:!bg-zinc-700"
       />
     </ReactFlow>
   );
