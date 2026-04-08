@@ -368,7 +368,7 @@ export const useOrchestrationStore = create<OrchestrationStore>()((set) => ({
     set((s) => {
       const dag = s.inlineDAGs[dagId];
       if (!dag) return s;
-      const nodes = dag.nodes.map((n) =>
+      const nodes = (dag.nodes ?? []).map((n) =>
         n.id === nodeId ? { ...n, ...update } : n,
       );
       const completedCount = nodes.filter(

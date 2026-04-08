@@ -114,7 +114,7 @@ export function RunSummaryCard({ dag }: RunSummaryCardProps) {
             {Object.entries(dag.nodeOutputPaths).map(([nodeLabel, paths]) => (
               <div key={nodeLabel}>
                 <div className="text-xs font-medium text-zinc-300">{nodeLabel}</div>
-                {paths.map((p) => (
+                {(paths ?? []).map((p) => (
                   <button
                     key={p}
                     type="button"

@@ -126,7 +126,7 @@ export function WorkflowSummary() {
         {!hasDetailedStats && (
           <div className="mt-2 text-xs text-zinc-500">
             Run completed{completedDAG.status === 'error' ? ' with errors' : completedDAG.status === 'stopped' ? ' (stopped)' : ''}.
-            {completedDAG.nodes.length > 0 && ` ${completedDAG.nodes.length} node${completedDAG.nodes.length !== 1 ? 's' : ''} executed.`}
+            {!!(completedDAG.nodes?.length) && ` ${completedDAG.nodes!.length} node${completedDAG.nodes!.length !== 1 ? 's' : ''} executed.`}
           </div>
         )}
         {completedDAG.modelUsage && completedDAG.modelUsage.length > 0 && (
@@ -143,7 +143,7 @@ export function WorkflowSummary() {
               {Object.entries(completedDAG.nodeOutputPaths).map(([nodeLabel, paths]) => (
                 <div key={nodeLabel}>
                   <div className="text-xs font-medium text-zinc-300">{nodeLabel}</div>
-                  {paths.map((p) => (
+                  {(paths ?? []).map((p) => (
                     <button
                       key={p}
                       type="button"

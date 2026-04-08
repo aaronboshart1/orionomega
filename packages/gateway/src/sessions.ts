@@ -962,18 +962,52 @@ export class SessionManager {
     hindsightStatus?: { connected: boolean; busy: boolean } | null,
     maxMessages = 200,
   ): Record<string, unknown> | null {
-    // In sqlite mode, delegate full snapshot to PersistenceService
+    // In sqlite mode, build snapshot from DB for pagination hints but normalize
+    // to the same format the in-memory path returns, so the client rehydration
+    // code sees a consistent structure regardless of persistence mode.
+    // The DB snapshot uses different field names ("session.messages", "dags") and
+    // only includes active workflows — we overlay in-memory data to fill the gaps.
     if (PERSISTENCE_MODE === 'sqlite' && this.sqliteEnabled) {
       const dbSnapshot = this.persistence!.buildSnapshot(sessionId, maxMessages);
       if (dbSnapshot) {
+        const inMemSession = this.sessions.get(sessionId);
+        const totalMessages = inMemSession?.messages.length ?? 0;
+        const truncated = totalMessages > maxMessages;
+        const recentMessages = truncated
+          ? inMemSession!.messages.slice(-maxMessages)
+          : (inMemSession?.messages ?? []);
         return {
-          ...dbSnapshot,
+          // Use in-memory messages — they have `timestamp` and `type` which the
+          // DB schema omits, both of which the client rehydration requires.
+          messages: recentMessages.map((m) => ({
+            id: m.id,
+            role: m.role,
+            content: m.content,
+            timestamp: m.timestamp,
+            type: m.type,
+            metadata: m.metadata,
+          })),
+          memoryEvents: inMemSession?.memoryEvents ?? [],
+          // Use in-memory inlineDAGs — includes completed runs (DB only stores active ones).
+          inlineDAGs: inMemSession?.inlineDAGs ?? {},
+          orchestrationEvents: inMemSession?.orchestrationEvents ?? [],
+          codingSession: inMemSession?.codingSession ?? null,
+          sessionTotals: inMemSession?.sessionTotals,
+          activePlan: inMemSession?.activePlan ?? null,
+          pendingConfirmation: inMemSession?.pendingConfirmation ?? null,
+          agentMode: inMemSession?.agentMode ?? 'orchestrate',
+          activeWorkflows: [...(inMemSession?.activeWorkflows ?? [])],
           hindsightStatus: hindsightStatus ?? null,
-          // Overlay in-memory-only fields not yet migrated to SQLite
-          orchestrationEvents: this.sessions.get(sessionId)?.orchestrationEvents ?? [],
-          codingSession: this.sessions.get(sessionId)?.codingSession ?? null,
-          activePlan: this.sessions.get(sessionId)?.activePlan ?? null,
-          pendingConfirmation: this.sessions.get(sessionId)?.pendingConfirmation ?? null,
+          runHistory: inMemSession?.runHistory ?? [],
+          // lastSeq from DB for client sequence tracking (delta sync on next reconnect)
+          lastSeq: (dbSnapshot as Record<string, unknown>).latestSeq,
+          // Pagination from DB (authoritative — covers full message history)
+          pagination: (dbSnapshot as Record<string, unknown>).pagination ?? {
+            totalMessages,
+            includedMessages: recentMessages.length,
+            hasOlderMessages: truncated,
+            oldestIncludedTimestamp: recentMessages[0]?.timestamp ?? null,
+          },
         };
       }
     }

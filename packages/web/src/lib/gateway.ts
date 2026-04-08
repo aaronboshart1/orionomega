@@ -293,7 +293,7 @@ function processHistoryWhenHydrated(history: HistoryMessage[]): void {
             dagId: d.workflowId,
             summary: d.summary,
             status: 'dispatched',
-            nodes: d.nodes.map((n) => ({
+            nodes: (d.nodes ?? []).map((n) => ({
               ...n, status: 'pending' as const,
             })),
             completedCount: 0,
@@ -936,7 +936,7 @@ function bindListeners(ws: ReconnectingWebSocket): void {
           dagId: d.workflowId,
           summary: d.summary,
           status: 'dispatched',
-          nodes: d.nodes.map((n: { id: string; label: string; type: string; dependsOn?: string[] }) => ({
+          nodes: (d.nodes ?? []).map((n: { id: string; label: string; type: string; dependsOn?: string[] }) => ({
             ...n, status: 'pending' as const,
           })),
           completedCount: 0,

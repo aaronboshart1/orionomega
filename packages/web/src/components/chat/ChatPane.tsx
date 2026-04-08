@@ -69,7 +69,8 @@ function buildRenderItems(messages: ChatMessage[]): RenderItem[] {
       if (group.length > 1) {
         items.push({ kind: 'tool-group', nodeLabel: groupLabel, toolCalls: group });
       } else {
-        items.push({ kind: 'message', message: messages[i - 1] });
+        const singleMsg = messages[i - 1];
+        if (singleMsg) items.push({ kind: 'message', message: singleMsg });
       }
     } else {
       items.push({ kind: 'message', message: msg });
