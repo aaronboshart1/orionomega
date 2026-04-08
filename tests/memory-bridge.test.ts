@@ -15,7 +15,7 @@ console.log('\n=== F7: Mental Model Seeding ===');
 
 {
   const fs = await import('node:fs');
-  const source = fs.readFileSync('/tmp/orionomega-fix/packages/core/src/agent/memory-bridge.ts', 'utf-8');
+  const source = fs.readFileSync('/Users/aaronboshart/.orionomega/src/packages/core/src/agent/memory-bridge.ts', 'utf-8');
 
   assert(
     source.includes('seedMentalModelsIfNeeded'),
@@ -66,7 +66,7 @@ console.log('\n=== F7: Mental Model Seeding ===');
 {
   // Verify the correct bank-to-model mapping
   const fs = await import('node:fs');
-  const source = fs.readFileSync('/tmp/orionomega-fix/packages/core/src/agent/memory-bridge.ts', 'utf-8');
+  const source = fs.readFileSync('/Users/aaronboshart/.orionomega/src/packages/core/src/agent/memory-bridge.ts', 'utf-8');
 
   // user-profile and session-context → core bank
   assert(
@@ -93,7 +93,7 @@ console.log('\n=== F7: Bootstrap Config Alignment ===');
 
 {
   const fs = await import('node:fs');
-  const source = fs.readFileSync('/tmp/orionomega-fix/packages/core/src/agent/memory-bridge.ts', 'utf-8');
+  const source = fs.readFileSync('/Users/aaronboshart/.orionomega/src/packages/core/src/agent/memory-bridge.ts', 'utf-8');
 
   assert(
     source.includes('relevanceFloor: 0.15'),
@@ -109,7 +109,7 @@ console.log('\n=== F11: Budget Alignment ===');
 
 {
   const fs = await import('node:fs');
-  const source = fs.readFileSync('/tmp/orionomega-fix/packages/core/src/memory/context-assembler.ts', 'utf-8');
+  const source = fs.readFileSync('/Users/aaronboshart/.orionomega/src/packages/core/src/memory/context-assembler.ts', 'utf-8');
 
   assert(
     source.includes('DEFAULT_RECALL_BUDGET = 8_192'),

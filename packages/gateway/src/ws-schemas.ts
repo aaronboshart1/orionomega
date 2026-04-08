@@ -71,6 +71,17 @@ const initSchema = z.object({
   sessionId: z.string().max(128).optional(),
 });
 
+const clientStateSchema = z.object({
+  id: z.string().min(1).max(128),
+  type: z.literal('client_state'),
+  clientState: z.object({
+    agentMode: z.enum(['orchestrate', 'direct', 'code']).optional(),
+    scrollPosition: z.number().optional(),
+    activePanel: z.string().max(128).optional(),
+    lastSeenSeq: z.number().int().optional(),
+  }).optional(),
+});
+
 const clientMessageSchema = z.discriminatedUnion('type', [
   chatMessageSchema,
   commandMessageSchema,
@@ -80,6 +91,7 @@ const clientMessageSchema = z.discriminatedUnion('type', [
   pingSchema,
   fileReadSchema,
   initSchema,
+  clientStateSchema,
 ]);
 
 export type ValidatedClientMessage = z.infer<typeof clientMessageSchema>;

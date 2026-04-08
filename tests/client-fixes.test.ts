@@ -22,7 +22,7 @@ console.log('\n=== F4: Relevance Threshold Calibration ===');
 {
   // Verify the default is 0.15 by reading the source
   const fs = await import('node:fs');
-  const source = fs.readFileSync('/tmp/orionomega-fix/packages/hindsight/src/client.ts', 'utf-8');
+  const source = fs.readFileSync('/Users/aaronboshart/.orionomega/src/packages/hindsight/src/client.ts', 'utf-8');
 
   assert(
     source.includes("opts?.minRelevance ?? 0.15"),
@@ -58,7 +58,7 @@ console.log('\n=== F5: Temporal Parameter Name ===');
 
 {
   const fs = await import('node:fs');
-  const source = fs.readFileSync('/tmp/orionomega-fix/packages/hindsight/src/client.ts', 'utf-8');
+  const source = fs.readFileSync('/Users/aaronboshart/.orionomega/src/packages/hindsight/src/client.ts', 'utf-8');
 
   assert(
     source.includes('body.query_timestamp = opts.before'),
@@ -79,7 +79,7 @@ console.log('\n=== F6: Query Truncation ===');
 
 {
   const fs = await import('node:fs');
-  const source = fs.readFileSync('/tmp/orionomega-fix/packages/hindsight/src/client.ts', 'utf-8');
+  const source = fs.readFileSync('/Users/aaronboshart/.orionomega/src/packages/hindsight/src/client.ts', 'utf-8');
 
   assert(
     source.includes('MAX_QUERY_LENGTH = 4000'),
@@ -128,7 +128,7 @@ console.log('\n=== F10: Log Message Differentiation ===');
 
 {
   const fs = await import('node:fs');
-  const source = fs.readFileSync('/tmp/orionomega-fix/packages/hindsight/src/client.ts', 'utf-8');
+  const source = fs.readFileSync('/Users/aaronboshart/.orionomega/src/packages/hindsight/src/client.ts', 'utf-8');
 
   assert(
     source.includes('API returned 0 results'),
@@ -154,7 +154,7 @@ console.log('\n=== Regression: Temporal Diversity Uses New Threshold ===');
 
 {
   const fs = await import('node:fs');
-  const source = fs.readFileSync('/tmp/orionomega-fix/packages/hindsight/src/client.ts', 'utf-8');
+  const source = fs.readFileSync('/Users/aaronboshart/.orionomega/src/packages/hindsight/src/client.ts', 'utf-8');
 
   // The temporal diversity buckets apply a slightly lower threshold
   // Verify it references the new 0.15 base, not the old 0.3

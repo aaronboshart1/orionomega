@@ -12,7 +12,7 @@ import {
   computeClientRelevance,
   trigramSimilarity,
   deduplicateByContent,
-} from '/tmp/orionomega-fix/packages/hindsight/src/similarity.js';
+} from '../packages/hindsight/src/similarity.js';
 
 import {
   suite, section, assert, assertEq, assertApprox, assertGt, assertLt, assertDeepEq,

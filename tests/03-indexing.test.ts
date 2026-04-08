@@ -10,7 +10,7 @@ import {
   classifyQuery,
   getRecallStrategy,
   isExternalAction,
-} from '/tmp/orionomega-fix/packages/core/src/memory/query-classifier.js';
+} from '../packages/core/src/memory/query-classifier.js';
 
 import {
   suite, section, assert, assertEq, assertApprox, assertGt,

@@ -17,7 +17,7 @@ console.log('\n=== F9: Retry Logic ===');
 
 {
   const fs = await import('node:fs');
-  const source = fs.readFileSync('/tmp/orionomega-fix/packages/core/src/memory/session-summary.ts', 'utf-8');
+  const source = fs.readFileSync('/Users/aaronboshart/.orionomega/src/packages/core/src/memory/session-summary.ts', 'utf-8');
 
   assert(
     source.includes('MAX_RETRIES = 3'),
@@ -58,7 +58,7 @@ console.log('\n=== F9: Retry Logic ===');
 {
   // Verify both core and project bank retain calls use retry
   const fs = await import('node:fs');
-  const source = fs.readFileSync('/tmp/orionomega-fix/packages/core/src/memory/session-summary.ts', 'utf-8');
+  const source = fs.readFileSync('/Users/aaronboshart/.orionomega/src/packages/core/src/memory/session-summary.ts', 'utf-8');
 
   const retryCallCount = (source.match(/withRetry\(/g) ?? []).length;
   assert(retryCallCount >= 2, `withRetry used for both core and project bank retains (${retryCallCount} calls)`);
@@ -72,7 +72,7 @@ console.log('\n=== F14: Debounce ===');
 
 {
   const fs = await import('node:fs');
-  const source = fs.readFileSync('/tmp/orionomega-fix/packages/core/src/memory/session-summary.ts', 'utf-8');
+  const source = fs.readFileSync('/Users/aaronboshart/.orionomega/src/packages/core/src/memory/session-summary.ts', 'utf-8');
 
   assert(
     source.includes('DEBOUNCE_WINDOW_MS = 5 * 60 * 1000'),
@@ -129,7 +129,7 @@ console.log('\n=== Regression: MIN_MESSAGES Guard ===');
 
 {
   const fs = await import('node:fs');
-  const source = fs.readFileSync('/tmp/orionomega-fix/packages/core/src/memory/session-summary.ts', 'utf-8');
+  const source = fs.readFileSync('/Users/aaronboshart/.orionomega/src/packages/core/src/memory/session-summary.ts', 'utf-8');
 
   assert(
     source.includes('MIN_MESSAGES = 5'),

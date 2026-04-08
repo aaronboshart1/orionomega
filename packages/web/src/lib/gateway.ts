@@ -1419,11 +1419,13 @@ function bindListeners(ws: ReconnectingWebSocket): void {
       if (ws.readyState === WebSocket.OPEN) {
         try {
           ws.send(JSON.stringify({
+            id: uuid(),
             type: 'client_state',
-            agentMode: useAgentModeStore.getState().mode,
-            lastSeenSeq: useConnectionStore.getState().lastSeenSeq,
-            activePanel: useOrchestrationStore.getState().activeOrchTab,
-            orchPaneOpen: useOrchestrationStore.getState().orchPaneOpen,
+            clientState: {
+              agentMode: useAgentModeStore.getState().mode,
+              lastSeenSeq: useConnectionStore.getState().lastSeenSeq,
+              activePanel: useOrchestrationStore.getState().activeOrchTab,
+            },
           }));
         } catch { /* ignore */ }
       }

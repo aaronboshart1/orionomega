@@ -10,13 +10,13 @@ import {
   computeClientRelevance,
   trigramSimilarity,
   deduplicateByContent,
-} from '/tmp/orionomega-fix/packages/hindsight/src/similarity.js';
+} from '../packages/hindsight/src/similarity.js';
 
 import {
   classifyQuery,
   getRecallStrategy,
   isExternalAction,
-} from '/tmp/orionomega-fix/packages/core/src/memory/query-classifier.js';
+} from '../packages/core/src/memory/query-classifier.js';
 
 import {
   suite, section, assertGt, assertLt,
