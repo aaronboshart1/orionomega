@@ -69,6 +69,7 @@ const initSchema = z.object({
   id: z.string().min(1).max(128),
   type: z.literal('init'),
   sessionId: z.string().max(128).optional(),
+  lastSeenSeq: z.number().int().optional(),
 });
 
 const clientStateSchema = z.object({
