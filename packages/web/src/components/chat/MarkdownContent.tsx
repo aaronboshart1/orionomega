@@ -10,30 +10,15 @@ import type { Components } from 'react-markdown';
 import { useFileViewerStore } from '@/stores/file-viewer';
 import { useOrchestrationStore } from '@/stores/orchestration';
 
-// Allow className on code/span only for syntax-highlight classes (language-*, hljs-*).
-// Also allow the fileviewer: protocol so clickable file paths survive sanitization.
-const sanitizeSchema = {
-  ...defaultSchema,
-  attributes: {
-    ...defaultSchema.attributes,
-    code: [
-      ...(defaultSchema.attributes?.code || []),
-      ['className', /^(language-\w+|hljs(-\w+)?)$/],
-    ],
-    span: [
-      ...(defaultSchema.attributes?.span || []),
-      ['className', /^(hljs(-\w+)?)$/],
-    ],
-  },
-  protocols: {
-    ...(defaultSchema.protocols ?? {}),
-    href: [...(defaultSchema.protocols?.href ?? []), 'fileviewer'],
-  },
-};
-
-// Match absolute (/path/to/file.ext) and relative (./path or ../path) file paths.
-// Requires an extension so bare directories and URLs aren't falsely detected.
+// ── File path detection ────────────────────────────────────────────────
+// Match absolute paths that contain a file extension.
+// Broad enough to catch /output/..., /tmp/..., /home/..., etc.
 const FILE_PATH_RE = /((?:\/|\.\.?\/)[\w/.\-]+\.[a-zA-Z0-9]{1,10})/g;
+
+/** Returns true if a string looks like a file path */
+function isFilePath(s: string): boolean {
+  return /^(?:\/|\.\.?\/)[\w/.\-]+\.[a-zA-Z0-9]{1,10}$/.test(s.trim());
+}
 
 /** Open a file path in the file viewer + orchestration pane */
 function openInFileViewer(filePath: string) {
@@ -42,25 +27,22 @@ function openInFileViewer(filePath: string) {
   useOrchestrationStore.getState().setOrchPaneOpen(true);
 }
 
-// Remark plugin: finds file-path-like text in non-code, non-link nodes and converts
-// them to remark link nodes with a fileviewer: URL scheme so the a{} component can
-// render them as clickable file-opener buttons.
-// Also converts inlineCode nodes that are entirely a file path into clickable links.
+// ── Remark plugin ─────────────────────────────────────────────────────
+// Converts file paths in text nodes and inlineCode nodes into link nodes
+// with a fileviewer: URL scheme. The a{} component renders these as
+// clickable buttons that open the file viewer pane.
 function remarkClickableFilePaths() {
   return (tree: any) => {
     function visitChildren(node: any) {
       if (!node.children) return;
 
-      // Reverse iteration so splice indices stay valid after replacement
       for (let i = node.children.length - 1; i >= 0; i--) {
         const child = node.children[i];
 
-        // Handle inlineCode nodes: if the entire content is a file path, convert to a link
+        // Handle inlineCode nodes: if the entire content is a file path, wrap in a link
         if (child.type === 'inlineCode') {
           const val = (child.value || '').trim();
-          if (FILE_PATH_RE.test(val)) {
-            // Reset lastIndex since we used .test()
-            FILE_PATH_RE.lastIndex = 0;
+          if (isFilePath(val)) {
             node.children[i] = {
               type: 'link',
               url: `fileviewer:${val}`,
@@ -68,7 +50,6 @@ function remarkClickableFilePaths() {
               children: [{ type: 'inlineCode', value: val }],
             };
           }
-          FILE_PATH_RE.lastIndex = 0;
           continue;
         }
 
@@ -81,6 +62,7 @@ function remarkClickableFilePaths() {
         }
 
         const { value } = child;
+        FILE_PATH_RE.lastIndex = 0;
         const matches = [...value.matchAll(FILE_PATH_RE)];
         if (matches.length === 0) continue;
 
@@ -117,6 +99,28 @@ function remarkClickableFilePaths() {
     visitChildren(tree);
   };
 }
+
+// ── Sanitize schema ───────────────────────────────────────────────────
+// Allow className on code/span for syntax-highlight classes.
+// Allow fileviewer: protocol so clickable file paths survive sanitization.
+const sanitizeSchema = {
+  ...defaultSchema,
+  attributes: {
+    ...defaultSchema.attributes,
+    code: [
+      ...(defaultSchema.attributes?.code || []),
+      ['className', /^(language-\w+|hljs(-\w+)?)$/],
+    ],
+    span: [
+      ...(defaultSchema.attributes?.span || []),
+      ['className', /^(hljs(-\w+)?)$/],
+    ],
+  },
+  protocols: {
+    ...(defaultSchema.protocols ?? {}),
+    href: [...(defaultSchema.protocols?.href ?? []), 'fileviewer'],
+  },
+};
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
@@ -160,16 +164,26 @@ function extractCodeProps(children: React.ReactNode): { lang: string | null; tex
   return { lang: null, text: String(children ?? '') };
 }
 
+/** Extract all text content from a React node tree */
+function extractText(node: React.ReactNode): string {
+  if (typeof node === 'string') return node;
+  if (typeof node === 'number') return String(node);
+  if (!node) return '';
+  if (Array.isArray(node)) return node.map(extractText).join('');
+  if (typeof node === 'object' && 'props' in node) {
+    return extractText((node as any).props.children);
+  }
+  return '';
+}
+
 /**
- * Renders text that may contain file paths as a mix of plain text and clickable
- * file-path buttons. Used inside code blocks where the remark plugin can't operate.
+ * Renders text with file paths as clickable buttons.
+ * Used inside code blocks where the remark plugin can't operate.
  */
-function CodeBlockWithClickablePaths({ text }: { text: string }) {
+function TextWithClickablePaths({ text }: { text: string }) {
   FILE_PATH_RE.lastIndex = 0;
   const matches = [...text.matchAll(FILE_PATH_RE)];
-  if (matches.length === 0) {
-    return <>{text}</>;
-  }
+  if (matches.length === 0) return <>{text}</>;
 
   const parts: React.ReactNode[] = [];
   let lastIndex = 0;
@@ -187,8 +201,13 @@ function CodeBlockWithClickablePaths({ text }: { text: string }) {
       <button
         key={`f-${start}`}
         type="button"
-        onClick={() => openInFileViewer(filePath)}
-        className="font-mono text-blue-400/80 hover:text-blue-300 hover:underline cursor-pointer"
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          openInFileViewer(filePath);
+        }}
+        className="font-mono text-blue-400/80 hover:text-blue-300 hover:underline cursor-pointer bg-transparent border-none p-0 text-[inherit]"
+        title={`Open ${filePath} in file viewer`}
       >
         {filePath}
       </button>,
@@ -207,6 +226,7 @@ function CodeBlockWithClickablePaths({ text }: { text: string }) {
 const components: Components = {
   pre({ children }) {
     const { lang, text } = extractCodeProps(children);
+    FILE_PATH_RE.lastIndex = 0;
     const hasFilePaths = FILE_PATH_RE.test(text);
     FILE_PATH_RE.lastIndex = 0;
 
@@ -225,7 +245,7 @@ const components: Components = {
         {hasFilePaths ? (
           <pre className="p-4">
             <code className="block">
-              <CodeBlockWithClickablePaths text={text} />
+              <TextWithClickablePaths text={text} />
             </code>
           </pre>
         ) : (
@@ -256,18 +276,64 @@ const components: Components = {
     );
   },
   a({ href, children, ...props }) {
+    // Check for fileviewer: protocol (from remark plugin)
     if (href?.startsWith('fileviewer:')) {
       const filePath = href.slice('fileviewer:'.length);
       return (
         <button
           type="button"
-          onClick={() => openInFileViewer(filePath)}
-          className="font-mono text-blue-400/80 hover:text-blue-300 hover:underline cursor-pointer"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            openInFileViewer(filePath);
+          }}
+          className="inline font-mono text-blue-400/80 hover:text-blue-300 hover:underline cursor-pointer bg-transparent border-none p-0"
+          title={`Open ${filePath} in file viewer`}
         >
           {children}
         </button>
       );
     }
+
+    // Fallback: if the href itself looks like a file path (sanitizer may have
+    // stripped the fileviewer: protocol, leaving just the path)
+    if (href && isFilePath(href)) {
+      return (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            openInFileViewer(href);
+          }}
+          className="inline font-mono text-blue-400/80 hover:text-blue-300 hover:underline cursor-pointer bg-transparent border-none p-0"
+          title={`Open ${href} in file viewer`}
+        >
+          {children}
+        </button>
+      );
+    }
+
+    // Also check if the link text itself is a file path (covers edge cases
+    // where the href was fully stripped by the sanitizer)
+    const linkText = extractText(children);
+    if (linkText && isFilePath(linkText)) {
+      return (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            openInFileViewer(linkText.trim());
+          }}
+          className="inline font-mono text-blue-400/80 hover:text-blue-300 hover:underline cursor-pointer bg-transparent border-none p-0"
+          title={`Open ${linkText.trim()} in file viewer`}
+        >
+          {children}
+        </button>
+      );
+    }
+
     return (
       <a
         href={href}
