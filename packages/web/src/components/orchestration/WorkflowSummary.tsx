@@ -106,23 +106,23 @@ export function WorkflowSummary() {
     const hasDetailedStats = !!(completedDAG.modelUsage || completedDAG.totalCostUsd !== undefined || (completedDAG.result && completedDAG.result.trim().length > 0) || (completedDAG.nodeOutputPaths && Object.keys(completedDAG.nodeOutputPaths).length > 0));
     const badge = statusBadge[completedDAG.status] || statusBadge.complete;
     return (
-      <div className="h-full overflow-y-auto px-6 py-3">
-        <div className="flex items-center gap-3 mb-0.5">
+      <div className="h-full overflow-y-auto px-4 py-3">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mb-0.5">
           <h3 className="text-sm font-semibold text-zinc-200">Run Summary</h3>
-          <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${badge.bg} ${badge.text}`}>
+          <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${badge.bg} ${badge.text}`}>
             {completedDAG.status.toUpperCase()}
           </span>
           {completedDAG.durationSec !== undefined && (
-            <span className="text-xs text-zinc-500">⏱ {formatElapsed(completedDAG.durationSec)}</span>
+            <span className="shrink-0 text-xs text-zinc-500">⏱ {formatElapsed(completedDAG.durationSec)}</span>
           )}
           {completedDAG.workerCount !== undefined && (
-            <span className="text-xs text-zinc-500">{completedDAG.workerCount} worker{completedDAG.workerCount !== 1 ? 's' : ''}</span>
+            <span className="shrink-0 text-xs text-zinc-500">{completedDAG.workerCount} worker{completedDAG.workerCount !== 1 ? 's' : ''}</span>
           )}
           {completedDAG.totalCostUsd !== undefined && (
-            <span className="text-xs font-medium text-green-400">${completedDAG.totalCostUsd.toFixed(4)}</span>
+            <span className="shrink-0 text-xs font-medium text-green-400">${completedDAG.totalCostUsd.toFixed(4)}</span>
           )}
         </div>
-        <div className="text-[10px] font-mono text-zinc-600 mb-2">{completedDAG.dagId}</div>
+        <div className="truncate text-[10px] font-mono text-zinc-600 mb-2">{completedDAG.dagId}</div>
         {!hasDetailedStats && (
           <div className="mt-2 text-xs text-zinc-500">
             Run completed{completedDAG.status === 'error' ? ' with errors' : completedDAG.status === 'stopped' ? ' (stopped)' : ''}.
@@ -204,64 +204,43 @@ export function WorkflowSummary() {
     stats.total > 0 ? Math.round(((stats.done + stats.error) / stats.total) * 100) : 0;
 
   return (
-    <div className="flex h-full items-center gap-6 px-6">
-      <div className="flex flex-col gap-0.5">
-        <div className="flex items-center gap-3">
-          <h3 className="text-sm font-semibold text-zinc-200">{graphState.name}</h3>
-          <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${badge.bg} ${badge.text}`}>
-            {graphState.status.toUpperCase()}
-          </span>
+    <div className="flex h-full flex-col justify-center gap-2 px-4 py-2">
+      {/* Title + status badge row */}
+      <div className="flex min-w-0 items-center gap-2">
+        <div className="min-w-0 flex-1">
+          <h3 className="truncate text-sm font-semibold text-zinc-200">{graphState.name}</h3>
+          <span className="block truncate text-[10px] font-mono text-zinc-600">{graphState.workflowId}</span>
         </div>
-        <span className="text-[10px] font-mono text-zinc-600">{graphState.workflowId}</span>
+        <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${badge.bg} ${badge.text}`}>
+          {graphState.status.toUpperCase()}
+        </span>
       </div>
 
-      <div className="h-6 w-px bg-zinc-800" />
-
-      <div className="text-xs text-zinc-400">
-        <span className="text-zinc-200">{graphState.completedLayers}</span>
-        <span className="text-zinc-600">/</span>
-        <span>{graphState.totalLayers}</span>
-        <span className="ml-1 text-zinc-600">layers</span>
+      {/* Node stats row */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+        <span className="text-zinc-400">
+          <span className="text-zinc-200">{graphState.completedLayers}</span>
+          <span className="text-zinc-600">/</span>
+          <span>{graphState.totalLayers}</span>
+          <span className="ml-1 text-zinc-600">layers</span>
+        </span>
+        {stats.running > 0 && <span className="text-blue-400">{stats.running} running</span>}
+        {stats.done > 0 && <span className="text-green-400">{stats.done} done</span>}
+        {stats.pending > 0 && <span className="text-zinc-500">{stats.pending} pending</span>}
+        {stats.error > 0 && <span className="text-red-400">{stats.error} error</span>}
       </div>
 
-      <div className="flex items-center gap-3 text-xs">
-        {stats.running > 0 && (
-          <span className="text-blue-400">
-            {stats.running} running
-          </span>
-        )}
-        {stats.done > 0 && (
-          <span className="text-green-400">
-            {stats.done} done
-          </span>
-        )}
-        {stats.pending > 0 && (
-          <span className="text-zinc-500">
-            {stats.pending} pending
-          </span>
-        )}
-        {stats.error > 0 && (
-          <span className="text-red-400">
-            {stats.error} error
-          </span>
-        )}
-      </div>
-
-      <div className="flex-1" />
-
-      <div className="flex items-center gap-3">
-        <div className="h-1.5 w-24 overflow-hidden rounded-full bg-zinc-800">
+      {/* Progress row */}
+      <div className="flex items-center gap-2">
+        <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-zinc-800">
           <div
             className="h-full rounded-full bg-blue-500 transition-all"
             style={{ width: `${progressPct}%` }}
           />
         </div>
-        <span className="text-xs text-zinc-500">{progressPct}%</span>
+        <span className="shrink-0 text-xs text-zinc-500">{progressPct}%</span>
+        <span className="shrink-0 text-xs text-zinc-500">⏱ {formatElapsed(graphState.elapsed)}</span>
       </div>
-
-      <span className="text-xs text-zinc-500">
-        ⏱ {formatElapsed(graphState.elapsed)}
-      </span>
     </div>
   );
 }
