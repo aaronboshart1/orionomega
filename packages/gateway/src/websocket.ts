@@ -199,8 +199,9 @@ export class WebSocketHandler {
       auditAuthEvent('ws_auth_success', undefined, req.socket.remoteAddress ?? undefined);
     }
 
-    // Always join the default session — single-user system shares one persistent session
-    const session = this.sessionManager.getDefaultSession();
+    // Use the requested session if provided and it exists, otherwise fall back to default
+    const requestedSession = rawSessionId ? this.sessionManager.getSession(rawSessionId) : undefined;
+    const session = requestedSession ?? this.sessionManager.getDefaultSession();
 
     // Use cryptographically random UUID for client IDs (RFC 4122 v4)
     const clientId = randomUUID();
