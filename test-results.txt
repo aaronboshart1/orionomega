@@ -1,31 +1,180 @@
 ════════════════════════════════════════════════════════════
-✗ 01 — Storage Layer: Similarity Scoring (385ms)
+✓ 01 — Storage Layer: Similarity Scoring (219ms)
+════════════════════════════════════════════════════════════
+
+════════════════════════════════════════════════════════════
+  01 — Storage Layer: Similarity Scoring
 ════════════════════════════════════════════════════════════
 
 
-node:internal/modules/run_main:107
-    triggerUncaughtException(
-    ^
-Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/tmp/orionomega-fix/packages/hindsight/src/similarity.js' imported from /Users/aaronboshart/.orionomega/src/tests/01-similarity-storage.test.ts
-    at finalizeResolution (node:internal/modules/esm/resolve:275:11)
-    at moduleResolve (node:internal/modules/esm/resolve:865:10)
-    at defaultResolve (node:internal/modules/esm/resolve:991:11)
-    at nextResolve (node:internal/modules/esm/hooks:769:28)
-    at resolveBase (file:///Users/aaronboshart/.orionomega/src/node_modules/.pnpm/tsx@4.21.0/node_modules/tsx/dist/esm/index.mjs?1775609581900:2:3744)
-    at resolveDirectory (file:///Users/aaronboshart/.orionomega/src/node_modules/.pnpm/tsx@4.21.0/node_modules/tsx/dist/esm/index.mjs?1775609581900:2:4243)
-    at resolveTsPaths (file:///Users/aaronboshart/.orionomega/src/node_modules/.pnpm/tsx@4.21.0/node_modules/tsx/dist/esm/index.mjs?1775609581900:2:4984)
-    at resolve (file:///Users/aaronboshart/.orionomega/src/node_modules/.pnpm/tsx@4.21.0/node_modules/tsx/dist/esm/index.mjs?1775609581900:2:5361)
-    at nextResolve (node:internal/modules/esm/hooks:769:28)
-    at AsyncLoaderHooksOnLoaderHookWorker.resolve (node:internal/modules/esm/hooks:265:30) {
-  code: 'ERR_MODULE_NOT_FOUND',
-  url: 'file:///tmp/orionomega-fix/packages/hindsight/src/similarity.js'
-}
+── 1.1 Structural prefix stripping [F1] ──────────────────
 
-Node.js v25.5.0
+  ✓ PASS: [user] prefix stripped — score similar to clean content (0.7571)
+  ✓ PASS: [assistant] prefix stripped (0.7565)
+  ✓ PASS: [system] prefix stripped (0.4692)
+
+── 1.2 Structural label stripping [F1] ───────────────────
+
+  ✓ PASS: "Task:" label stripped — content still matchable (0.7925925925925925)
+  ✓ PASS: "Workers:" label stripped — content still matchable (0.7925925925925925)
+  ✓ PASS: "Decisions:" label stripped — content still matchable (0.7925925925925925)
+  ✓ PASS: "Findings:" label stripped — content still matchable (0.7925925925925925)
+  ✓ PASS: "Node:" label stripped — content still matchable (0.7925925925925925)
+  ✓ PASS: "Workflow:" label stripped — content still matchable (0.7925925925925925)
+  ✓ PASS: "Output:" label stripped — content still matchable (0.7925925925925925)
+  ✓ PASS: "Result:" label stripped — content still matchable (0.7925925925925925)
+  ✓ PASS: "Errors:" label stripped — content still matchable (0.7925925925925925)
+  ✓ PASS: "Outputs:" label stripped — content still matchable (0.7925925925925925)
+  ✓ PASS: "Artifacts:" label stripped — content still matchable (0.7925925925925925)
+
+── 1.3 Bracket noise removal [F1] ────────────────────────
+
+  ✓ PASS: Bracket noise removed — content still matches (0.6870588235294118)
+
+── 1.4 Colon-fused word cleanup [F1] ─────────────────────
+
+  ✓ PASS: Colon-fused words cleaned — "context:" → "context" (0.7714285714285714)
+  ✓ PASS: Colon after underscore-words cleaned (0.09333333333333334)
+
+── 1.5 Whitespace normalization ──────────────────────────
+
+  ✓ PASS: Extra whitespace normalized — scores identical
+  ✓ PASS: Leading/trailing whitespace trimmed
+
+── 2.1 Three-char technical terms included [F2] ──────────
+
+  ✓ PASS: 3-char term "fix" included in keyword matching (0.6210526315789473)
+  ✓ PASS: 3-char term "bug" included in keyword matching (0.6210526315789473)
+  ✓ PASS: 3-char term "sql" included in keyword matching (0.6210526315789473)
+  ✓ PASS: 3-char term "api" included in keyword matching (0.6210526315789473)
+  ✓ PASS: 3-char term "git" included in keyword matching (0.6210526315789473)
+  ✓ PASS: 3-char term "npm" included in keyword matching (0.6210526315789473)
+  ✓ PASS: 3-char term "cli" included in keyword matching (0.6210526315789473)
+  ✓ PASS: 3-char term "css" included in keyword matching (0.6210526315789473)
+  ✓ PASS: 3-char term "env" included in keyword matching (0.6210526315789473)
+  ✓ PASS: 3-char term "key" included in keyword matching (0.6210526315789473)
+  ✓ PASS: 3-char term "run" included in keyword matching (0.6210526315789473)
+  ✓ PASS: 3-char term "dev" included in keyword matching (0.6210526315789473)
+  ✓ PASS: 3-char term "log" included in keyword matching (0.6210526315789473)
+  ✓ PASS: 3-char term "err" included in keyword matching (0.6210526315789473)
+
+── 2.2 Two-char words still excluded [F2] ────────────────
+
+  ✓ PASS: 2-char words score lower than 3-char keyword matches (0.08727272727272728)
+
+── 2.3 Single-char and empty inputs ──────────────────────
+
+  ✓ PASS: Single char returns score in [0, 1]
+  ✓ PASS: Empty query returns 0
+  ✓ PASS: Empty content returns 0
+  ✓ PASS: Both empty returns 0
+
+── 3.1 Frequency bias eliminated [F3] ────────────────────
+
+  ✓ PASS: Diverse (0.5667) >= repeated (0.2909)
+
+── 3.2 Distinct match proportionality [F3] ───────────────
+
+  ✓ PASS: 3/3 (0.8500) > 2/3 (0.6240)
+  ✓ PASS: 2/3 (0.6240) > 1/3 (0.2171)
+
+── 3.3 No-match returns zero keyword contribution ────────
+
+  ✓ PASS: No keyword overlap yields low score (trigram only) (0.0000)
+
+── 4.1 Trigram identity and zero cases ───────────────────
+
+  ✓ PASS: Identical strings → 1.0
+  ✓ PASS: Disjoint strings → 0.0
+  ✓ PASS: Short identical strings (< 3 chars) → 1.0
+  ✓ PASS: Short different strings → 0.0
+  ✓ PASS: Length mismatch with < 3 chars → 0.0
+
+── 4.2 Trigram partial overlap ───────────────────────────
+
+  ✓ PASS: Partial overlap returns intermediate score (0.2857)
+  ✓ PASS: Similar strings score higher than dissimilar (0.7894736842105263)
+
+── 4.3 Trigram with structural prefixes ──────────────────
+
+  ✓ PASS: Prefix stripping keeps trigram scores comparable (0.4800)
+
+── 5.1 Composite score range ─────────────────────────────
+
+  ✓ PASS: Score 0.4870 in [0, 1] for pair 0
+  ✓ PASS: Score 0.3096 in [0, 1] for pair 1
+  ✓ PASS: Score 0.0000 in [0, 1] for pair 2
+  ✓ PASS: Score 0.0000 in [0, 1] for pair 3
+
+── 5.2 Length penalty for short content ──────────────────
+
+  ✓ PASS: Short content score valid (0.8000)
+  ✓ PASS: Long content with keyword match scores > 0 (0.6457142857142857)
+
+── 5.3 Keyword weight dominance (0.6 keyword + 0.4 trigram) 
+
+  ✓ PASS: High keyword overlap drives score up (0.7818181818181817)
+
+── 5.4 Real-world CTO report regression ──────────────────
+
+  ✓ PASS: CTO report case scores 0.0923 > 0 (was 0 before fixes) (0.09226618705035972)
+  ✓ PASS: Short technical query against structured content > 0 (0.4342857142857143)
+
+── 6.1 Basic deduplication ───────────────────────────────
+
+  ✓ PASS: Near-duplicate removed (3 → 2)
+  ✓ PASS: Higher-relevance item kept
+
+── 6.2 No dedup for dissimilar items ─────────────────────
+
+  ✓ PASS: All dissimilar items kept
+
+── 6.3 Custom dedup threshold ────────────────────────────
+
+  ✓ PASS: Strict threshold (0.99) keeps similar items
+  ✓ PASS: Loose threshold (0.5) removes similar items
+
+── 6.4 Empty and single-item inputs ──────────────────────
+
+  ✓ PASS: Empty array returns empty
+  ✓ PASS: Single item returned as-is
+
+── 6.5 Dedup preserves ordering by relevance ─────────────
+
+  ✓ PASS: Highest relevance item preserved
+  ✓ PASS: Non-duplicate items preserved
+
+── 6.6 Large-scale dedup correctness ─────────────────────
+
+  ✓ PASS: Dedup reduced 30 items to 11 (11)
+  ✓ PASS: Kept distinct items (11)
+
+── 7.1 Score determinism ─────────────────────────────────
+
+  ✓ PASS: Scoring is deterministic across 10 calls
+
+── 7.2 Unicode handling ──────────────────────────────────
+
+  ✓ PASS: Unicode text handled correctly (0.8)
+  ✓ PASS: CJK text returns valid score
+
+── 7.3 Special characters ────────────────────────────────
+
+  ✓ PASS: Hash/number characters handled (0.5103448275862068)
+  ✓ PASS: Dots in filenames handled (0.45135135135135135)
+
+── 7.4 Very long content ─────────────────────────────────
+
+  ✓ PASS: Very long content (50K chars) returns valid score
+
+════════════════════════════════════════════════════════════
+  Storage Layer Tests: 76 passed, 0 failed, 0 skipped
+════════════════════════════════════════════════════════════
+
 
 
 ════════════════════════════════════════════════════════════
-✓ 02 — Retrieval Layer: Client Recall (390ms)
+✓ 02 — Retrieval Layer: Client Recall (227ms)
 ════════════════════════════════════════════════════════════
 
 ════════════════════════════════════════════════════════════
@@ -174,105 +323,610 @@ Node.js v25.5.0
 
 
 ════════════════════════════════════════════════════════════
-✗ 03 — Indexing: Query Classification & Context Assembly (393ms)
+✓ 03 — Indexing: Query Classification & Context Assembly (240ms)
+════════════════════════════════════════════════════════════
+
+════════════════════════════════════════════════════════════
+  03 — Indexing: Query Classification & Context Assembly
 ════════════════════════════════════════════════════════════
 
 
-node:internal/modules/run_main:107
-    triggerUncaughtException(
-    ^
-Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/tmp/orionomega-fix/packages/core/src/memory/query-classifier.js' imported from /Users/aaronboshart/.orionomega/src/tests/03-indexing.test.ts
-    at finalizeResolution (node:internal/modules/esm/resolve:275:11)
-    at moduleResolve (node:internal/modules/esm/resolve:865:10)
-    at defaultResolve (node:internal/modules/esm/resolve:991:11)
-    at nextResolve (node:internal/modules/esm/hooks:769:28)
-    at resolveBase (file:///Users/aaronboshart/.orionomega/src/node_modules/.pnpm/tsx@4.21.0/node_modules/tsx/dist/esm/index.mjs?1775609582682:2:3744)
-    at resolveDirectory (file:///Users/aaronboshart/.orionomega/src/node_modules/.pnpm/tsx@4.21.0/node_modules/tsx/dist/esm/index.mjs?1775609582682:2:4243)
-    at resolveTsPaths (file:///Users/aaronboshart/.orionomega/src/node_modules/.pnpm/tsx@4.21.0/node_modules/tsx/dist/esm/index.mjs?1775609582682:2:4984)
-    at resolve (file:///Users/aaronboshart/.orionomega/src/node_modules/.pnpm/tsx@4.21.0/node_modules/tsx/dist/esm/index.mjs?1775609582682:2:5361)
-    at nextResolve (node:internal/modules/esm/hooks:769:28)
-    at AsyncLoaderHooksOnLoaderHookWorker.resolve (node:internal/modules/esm/hooks:265:30) {
-  code: 'ERR_MODULE_NOT_FOUND',
-  url: 'file:///tmp/orionomega-fix/packages/core/src/memory/query-classifier.js'
-}
+── 1.1 Task continuation detection ───────────────────────
 
-Node.js v25.5.0
+  ✓ PASS: "yes" classified as task_continuation
+  ✓ PASS: "do it" classified as task_continuation
+  ✓ PASS: "fix all" classified as task_continuation
+  ✓ PASS: "ok" classified as task_continuation
+  ✓ PASS: "#3" classified as task_continuation
+  ✓ PASS: "the second one" classified as task_continuation
+  ✓ PASS: "go ahead" classified as task_continuation
+  ✓ PASS: "sure" classified as task_continuation
+  ✓ PASS: "skip" classified as task_continuation
+  ✓ PASS: "next" classified as task_continuation
+  ✓ PASS: "continue" classified as task_continuation
+
+── 1.2 Historical reference detection ────────────────────
+
+  ✓ PASS: "we discussed the database migration earlier in great detail" → historical_reference
+  ✓ PASS: "what happened with the auth system in the last session" → historical_reference
+  ✓ PASS: "how did we handle the authentication system previously" → historical_reference
+
+── 1.3 Decision lookup detection ─────────────────────────
+
+  ✓ PASS: "the decision was to use PostgreSQL instead of Redis for our storage" → decision_lookup (expected decision_lookup or historical_reference)
+  ✓ PASS: "what was the rationale for choosing that particular framework option" → decision_lookup (expected decision_lookup or historical_reference)
+  ✓ PASS: "the decision about the trade-off between caching strategies is crucial" → decision_lookup (expected decision_lookup or historical_reference)
+
+── 1.4 Meta system detection ─────────────────────────────
+
+  ✓ PASS: "what can you do with the recall and memory features" → meta_system
+  ✓ PASS: "give me a complete status overview of the current project" → meta_system
+  ✓ PASS: "what features does this system have for helping with projects" → meta_system
+
+── 1.5 External action detection ─────────────────────────
+
+  ✓ PASS: "search the web for node.js best practices" → external_action
+  ✓ PASS: "curl https://api.example.com/data" → external_action
+  ✓ PASS: "npm install express" → external_action
+  ✓ PASS: "run the command "make build"" → external_action
+  ✓ PASS: "fetch the url https://example.com" → external_action
+  ✓ PASS: "pip install pandas" → external_action
+
+── 1.6 External action suppressed by memory cues ─────────
+
+  ✓ PASS: Memory cue overrides external: "search the web for what we decided last week" → historical_reference
+
+── 1.7 isExternalAction helper ───────────────────────────
+
+  ✓ PASS: Web search is external
+  ✓ PASS: npm install is external
+  ✓ PASS: Normal task is not external
+  ✓ PASS: Memory query not external
+
+── 1.8 Classification confidence ─────────────────────────
+
+  ✓ PASS: Short continuation has reasonable confidence (0.9000)
+  ✓ PASS: Clear decision query has good confidence (0.8200)
+
+── 1.9 Ambiguous queries default to task_continuation ────
+
+  ✓ PASS: Ambiguous query defaults to task_continuation
+
+── 2.1 Strategy minRelevance aligned with client scoring [F4] 
+
+  ✓ PASS: task_continuation minRelevance (0.15) <= 0.15
+  ✓ PASS: task_continuation minRelevance > 0 (0.15)
+  ✓ PASS: historical_reference minRelevance (0.1) <= 0.15
+  ✓ PASS: historical_reference minRelevance > 0 (0.1)
+  ✓ PASS: decision_lookup minRelevance (0.12) <= 0.15
+  ✓ PASS: decision_lookup minRelevance > 0 (0.12)
+  ✓ PASS: meta_system minRelevance (0.15) <= 0.15
+  ✓ PASS: meta_system minRelevance > 0 (0.15)
+
+── 2.2 External action suppresses recall ─────────────────
+
+  ✓ PASS: External action minRelevance = 1.0 (no recall)
+  ✓ PASS: External action conv budget = 0
+  ✓ PASS: External action temporal diversity = 0
+
+── 2.3 Historical reference strategy ─────────────────────
+
+  ✓ PASS: High temporal diversity for history (0.4000)
+  ✓ PASS: High budget for history
+  ✓ PASS: Broad temporal bias for history
+  ✓ PASS: Prefers session_summary
+  ✓ PASS: Prefers lesson
+
+── 2.4 Decision lookup strategy ──────────────────────────
+
+  ✓ PASS: Targeted temporal bias for decisions
+  ✓ PASS: Prefers decision category
+  ✓ PASS: Prefers architecture category
+
+── 2.5 Task continuation strategy ────────────────────────
+
+  ✓ PASS: High conv budget for continuation (0.8000)
+  ✓ PASS: Low temporal diversity (0.0500)
+  ✓ PASS: Mid budget for continuation
+
+── 3.1 Recall budget = 8192 (aligned with API tier cap) ──
+
+  ✓ PASS: Default recall budget matches high tier cap
+  ✓ PASS: Budget does not exceed API capability
+
+── 3.2 Old 30K budget would be silently clamped ──────────
+
+  ✓ PASS: Old 30K budget would be clamped to 8192
+  ✓ PASS: Old budget wasted 21,808 tokens (21808)
+
+── 4.1 Hot window serialization format ───────────────────
+
+  ✓ PASS: Hot window round-trips through JSON
+
+── 4.2 Hot window disk persistence ───────────────────────
+
+  ✓ PASS: Hot window file persisted
+  ✓ PASS: Loaded data is array
+  ✓ PASS: All 3 messages restored
+  ✓ PASS: All messages pass validation
+
+── 4.3 Hot window ring buffer behavior ───────────────────
+
+  ✓ PASS: Ring buffer keeps last 20
+  ✓ PASS: Oldest kept message is correct
+  ✓ PASS: Newest message is last
+
+── 4.4 Corrupted hot window recovery ─────────────────────
+
+  ✓ PASS: Non-array JSON detected as invalid
+  ✓ PASS: Only 1 valid message survives corruption filter
+
+── 5.1 Banks cache invalidation ──────────────────────────
+
+  ✓ PASS: Cache populated
+  ✓ PASS: Cache not expired
+  ✓ PASS: Cache invalidated
+  ✓ PASS: Cache time reset
+
+── 5.2 Cache TTL expiry ──────────────────────────────────
+
+  ✓ PASS: 70s-old cache is expired (TTL=60s)
+  ✓ PASS: 30s-old cache is fresh
+
+── 5.3 Bank federation discovery ─────────────────────────
+
+  ✓ PASS: Federated banks: only populated unknown banks
+
+── 6.1 Token estimation ──────────────────────────────────
+
+  ✓ PASS: Empty string = 0 tokens
+  ✓ PASS: 4 chars = 1 token
+  ✓ PASS: 5 chars = 2 tokens (ceil)
+  ✓ PASS: 1000 chars = 250 tokens
+
+── 6.2 Available recall budget calculation ───────────────
+
+  ✓ PASS: Available for recall = 60K - 4K - 4096 - 5K
+  ✓ PASS: Capped at recallBudgetTokens
+
+── 6.3 Budget exhaustion — hot window too large ──────────
+
+  ✓ PASS: No budget for recall when hot window is huge
+
+── 7.1 Confidence bucketing ──────────────────────────────
+
+  ✓ PASS: 2 high confidence (>= 0.7)
+  ✓ PASS: 2 moderate (>= 0.4, < 0.7)
+  ✓ PASS: 2 low (< 0.4)
+
+════════════════════════════════════════════════════════════
+  Indexing Tests: 87 passed, 0 failed, 0 skipped
+════════════════════════════════════════════════════════════
+
 
 
 ════════════════════════════════════════════════════════════
-✗ 04 — Integration: End-to-End Memory Operations (377ms)
+✓ 04 — Integration: End-to-End Memory Operations (231ms)
+════════════════════════════════════════════════════════════
+
+════════════════════════════════════════════════════════════
+  04 — Integration: End-to-End Memory Operations
 ════════════════════════════════════════════════════════════
 
 
-node:internal/modules/run_main:107
-    triggerUncaughtException(
-    ^
-Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/tmp/orionomega-fix/packages/hindsight/src/similarity.js' imported from /Users/aaronboshart/.orionomega/src/tests/04-integration.test.ts
-    at finalizeResolution (node:internal/modules/esm/resolve:275:11)
-    at moduleResolve (node:internal/modules/esm/resolve:865:10)
-    at defaultResolve (node:internal/modules/esm/resolve:991:11)
-    at nextResolve (node:internal/modules/esm/hooks:769:28)
-    at resolveBase (file:///Users/aaronboshart/.orionomega/src/node_modules/.pnpm/tsx@4.21.0/node_modules/tsx/dist/esm/index.mjs?1775609583063:2:3744)
-    at resolveDirectory (file:///Users/aaronboshart/.orionomega/src/node_modules/.pnpm/tsx@4.21.0/node_modules/tsx/dist/esm/index.mjs?1775609583063:2:4243)
-    at resolveTsPaths (file:///Users/aaronboshart/.orionomega/src/node_modules/.pnpm/tsx@4.21.0/node_modules/tsx/dist/esm/index.mjs?1775609583063:2:4984)
-    at resolve (file:///Users/aaronboshart/.orionomega/src/node_modules/.pnpm/tsx@4.21.0/node_modules/tsx/dist/esm/index.mjs?1775609583063:2:5361)
-    at nextResolve (node:internal/modules/esm/hooks:769:28)
-    at AsyncLoaderHooksOnLoaderHookWorker.resolve (node:internal/modules/esm/hooks:265:30) {
-  code: 'ERR_MODULE_NOT_FOUND',
-  url: 'file:///tmp/orionomega-fix/packages/hindsight/src/similarity.js'
-}
+── 1.1 Store → Query → Score → Filter → Deduplicate ──────
 
-Node.js v25.5.0
+  ✓ PASS: Pipeline: API returned all-zero relevance
+  ✓ PASS: Pipeline: 2 items survive threshold (2)
+  ✓ PASS: Pipeline: dedup 2 → 2
+  ✓ PASS: Pipeline: PostgreSQL decision memory surfaced
+  ✓ PASS: Noise content scored 0.0053 below threshold (0.005333333333333334)
+
+── 1.2 Short technical query pipeline ────────────────────
+
+  ✓ PASS: SQL memory scored > 0 with 3-char terms [F2] (0.6459016393442623)
+  ✓ PASS: SQL memory passes 0.15 threshold
+
+── 2.1 Classification drives recall strategy ─────────────
+
+  ✓ PASS: "yes" → task_continuation
+  ✓ PASS: task_continuation: minRelevance aligned with client scoring (0.15)
+  ✓ PASS: "we discussed the database migration earlier in great detail" → historical_reference
+  ✓ PASS: historical_reference: minRelevance aligned with client scoring (0.1)
+  ✓ PASS: "the decision was to use PostgreSQL instead of Redis for storage" → decision_lookup (decision or historical)
+  ✓ PASS: decision_lookup: minRelevance aligned with client scoring (0.12)
+  ✓ PASS: "search the web for react best practices" → external_action
+  ✓ PASS: External action: recall suppressed
+
+── 2.2 Strategy parameters flow correctly to recall ──────
+
+  ✓ PASS: Historical query has temporal diversity > 0.2
+  ✓ PASS: Historical query uses high budget
+  ✓ PASS: Historical query has preferred categories
+
+── 3.1 All thresholds aligned at 0.15 ────────────────────
+
+  ✓ PASS: client.ts default = 0.15
+  ✓ PASS: CLIENT_FALLBACK_CEILING = 0.15
+  ✓ PASS: context-assembler default = 0.15
+  ✓ PASS: memory-bridge relevanceFloor = 0.15
+  ✓ PASS: task_continuation minRelevance = 0.15
+  ✓ PASS: meta_system minRelevance = 0.15
+
+── 3.2 Budget tiers consistent across modules ────────────
+
+  ✓ PASS: Budget tiers match between client and bridge
+
+── 4.1 Mental model seed-on-404 flow ─────────────────────
+
+  ✓ PASS: All 3 models seeded after 404
+  ✓ PASS: GET called for each model
+  ✓ PASS: Refresh called for each missing model
+
+── 4.2 Existing models not re-seeded ─────────────────────
+
+  ✓ PASS: No refresh needed for existing models
+
+── 5.1 Retry with exponential backoff simulation [F9] ────
+
+  ✓ PASS: Operation succeeded after retries
+  ✓ PASS: Took 3 attempts
+  ✓ PASS: Backoff: 500ms, 1000ms
+
+── 5.2 Debounce prevents rapid summary storms [F14] ──────
+
+  ✓ PASS: 9 calls over 10 minutes → only 3 summaries (debounce active)
+
+── 5.3 MIN_MESSAGES guard ────────────────────────────────
+
+  ✓ PASS: Short convo skips summary
+  ✓ PASS: Long convo triggers summary
+
+── 6.1 Conversation text truncation ──────────────────────
+
+  ✓ PASS: Original text (102498) exceeds 60K (102498)
+  ✓ PASS: Truncated to 60K chars
+
+── 6.2 Intra-batch deduplication ─────────────────────────
+
+  ✓ PASS: Near-duplicate decision items merged (2)
+  ✓ PASS: PostgreSQL decision kept
+  ✓ PASS: Unique infrastructure item kept
+
+── 7.1 verifyConsistency structure ───────────────────────
+
+  ✓ PASS: Missing project bank detected as issue
+  ✓ PASS: Exactly 1 issue found
+  ✓ PASS: Issue identifies the missing bank
+
+── 7.2 Full healthy check ────────────────────────────────
+
+  ✓ PASS: No issues = healthy
+
+── 8.1 onIO callback receives recall events ──────────────
+
+  ✓ PASS: Both events captured
+  ✓ PASS: First event is recall
+  ✓ PASS: Second event is retain
+
+── 8.2 onMemoryEvent callback propagation ────────────────
+
+  ✓ PASS: All 4 memory events captured
+  ✓ PASS: Bootstrap event present
+  ✓ PASS: Flush event with bank
+
+── 9.1 MemoryItem format ─────────────────────────────────
+
+  ✓ PASS: content is string
+  ✓ PASS: context is string
+  ✓ PASS: timestamp is string
+  ✓ PASS: timestamp is valid ISO 8601
+
+── 9.2 RecallResult format ───────────────────────────────
+
+  ✓ PASS: results is array
+  ✓ PASS: One result
+  ✓ PASS: Relevance > 0 (0.85)
+  ✓ PASS: tokens_used is number
+
+── 9.3 SessionAnchor format ──────────────────────────────
+
+  ✓ PASS: pendingDecisions is array
+  ✓ PASS: unfinishedWork is array
+  ✓ PASS: timestamp is valid ISO 8601
+
+════════════════════════════════════════════════════════════
+  Integration Tests: 61 passed, 0 failed, 0 skipped
+════════════════════════════════════════════════════════════
+
 
 
 ════════════════════════════════════════════════════════════
-✗ 05 — Error Scenarios: Corruption Recovery (390ms)
+✓ 05 — Error Scenarios: Corruption Recovery (348ms)
+════════════════════════════════════════════════════════════
+
+════════════════════════════════════════════════════════════
+  05 — Error Scenarios: Corruption Recovery & Edge Cases
 ════════════════════════════════════════════════════════════
 
 
-node:internal/modules/run_main:107
-    triggerUncaughtException(
-    ^
-Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/tmp/orionomega-fix/packages/hindsight/src/similarity.js' imported from /Users/aaronboshart/.orionomega/src/tests/05-error-scenarios.test.ts
-    at finalizeResolution (node:internal/modules/esm/resolve:275:11)
-    at moduleResolve (node:internal/modules/esm/resolve:865:10)
-    at defaultResolve (node:internal/modules/esm/resolve:991:11)
-    at nextResolve (node:internal/modules/esm/hooks:769:28)
-    at resolveBase (file:///Users/aaronboshart/.orionomega/src/node_modules/.pnpm/tsx@4.21.0/node_modules/tsx/dist/esm/index.mjs?1775609583450:2:3744)
-    at resolveDirectory (file:///Users/aaronboshart/.orionomega/src/node_modules/.pnpm/tsx@4.21.0/node_modules/tsx/dist/esm/index.mjs?1775609583450:2:4243)
-    at resolveTsPaths (file:///Users/aaronboshart/.orionomega/src/node_modules/.pnpm/tsx@4.21.0/node_modules/tsx/dist/esm/index.mjs?1775609583450:2:4984)
-    at resolve (file:///Users/aaronboshart/.orionomega/src/node_modules/.pnpm/tsx@4.21.0/node_modules/tsx/dist/esm/index.mjs?1775609583450:2:5361)
-    at nextResolve (node:internal/modules/esm/hooks:769:28)
-    at AsyncLoaderHooksOnLoaderHookWorker.resolve (node:internal/modules/esm/hooks:265:30) {
-  code: 'ERR_MODULE_NOT_FOUND',
-  url: 'file:///tmp/orionomega-fix/packages/hindsight/src/similarity.js'
-}
+── 1.1 Null/undefined-like inputs ────────────────────────
 
-Node.js v25.5.0
+  ✓ PASS: Both empty → 0
+  ✓ PASS: Empty query → 0
+  ✓ PASS: Empty content → 0
+  ✓ PASS: Whitespace-only returns valid score
+
+── 1.2 Extremely long inputs ─────────────────────────────
+
+  ✓ PASS: 1MB content returns valid score
+  ✓ PASS: Long query (60KB) returns valid score
+
+── 1.3 Special character injection ───────────────────────
+
+  ✓ PASS: Special chars handled: content with   null bytes...
+  ✓ PASS: Special chars handled: content with 
+	 control chars...
+  ✓ PASS: Special chars handled: content with 🎉 emoji 🚀 chars...
+  ✓ PASS: Special chars handled: content with <script>alert("xss")</scrip...
+  ✓ PASS: Special chars handled: content with ${template} literals...
+  ✓ PASS: Special chars handled: content with \backslash\paths...
+  ✓ PASS: Special chars handled: content with "quotes" and 'apostrophes'...
+  ✓ PASS: Special chars handled: regex special: [a-z]+ (.*?) {1,3}...
+
+── 1.4 Trigram with pathological inputs ──────────────────
+
+  ✓ PASS: Empty identical strings
+  ✓ PASS: Single different chars
+  ✓ PASS: Case-insensitive match
+
+── 2.1 Items with missing fields ─────────────────────────
+
+  ✓ PASS: Dedup handles empty/whitespace content gracefully
+
+── 2.2 All identical items ───────────────────────────────
+
+  ✓ PASS: 10 identical items deduplicated to 1
+
+── 2.3 Items with zero relevance ─────────────────────────
+
+  ✓ PASS: Zero-relevance but distinct items all kept
+
+── 2.4 Negative relevance scores ─────────────────────────
+
+  ✓ PASS: Negative relevance items not crashed
+
+── 3.1 Invalid JSON in hot window file ───────────────────
+
+  ✓ PASS: Invalid JSON "{invalid json" caught by parser
+  ✓ PASS: Invalid JSON "" caught by parser
+  ✓ PASS: Non-array JSON "null" detected
+  ✓ PASS: Invalid JSON "undefined" caught by parser
+  ✓ PASS: Non-array JSON "42" detected
+  ✓ PASS: Non-array JSON ""just a string"" detected
+  ✓ PASS: Non-array JSON "true" detected
+
+── 3.2 Partially corrupt message arrays ──────────────────
+
+  ✓ PASS: Only 4 valid messages survive corruption filter
+  ✓ PASS: First valid message correct
+  ✓ PASS: Last valid message correct
+
+── 3.3 File system permission errors (simulated) ─────────
+
+  ✓ PASS: Write to invalid path caught gracefully
+
+── 4.1 HindsightError format ─────────────────────────────
+
+  ✓ PASS: Status code preserved
+  ✓ PASS: Endpoint preserved
+  ✓ PASS: Message includes status
+  ✓ PASS: Message includes original
+
+── 4.2 Retry skips 4xx errors [F9] ───────────────────────
+
+  ✓ PASS: Status 400: not retried
+  ✓ PASS: Status 401: not retried
+  ✓ PASS: Status 403: not retried
+  ✓ PASS: Status 404: not retried
+  ✓ PASS: Status 429: not retried
+  ✓ PASS: Status 499: not retried
+  ✓ PASS: Status 500: retried
+  ✓ PASS: Status 502: retried
+  ✓ PASS: Status 503: retried
+  ✓ PASS: Status 0: retried
+
+── 4.3 Malformed API response handling ───────────────────
+
+  ✓ PASS: Malformed response handled: {"results":null}
+  ✓ PASS: Malformed response handled: {"results":"not an array"}
+  ✓ PASS: Malformed response handled: {}
+  ✓ PASS: Malformed response handled: {"results":[{"text":null,"relevance":"not a number
+
+── 5.1 Empty and whitespace queries ──────────────────────
+
+  ✓ PASS: Empty query → task_continuation
+  ✓ PASS: Whitespace query → task_continuation
+
+── 5.2 Very long queries ─────────────────────────────────
+
+  ✓ PASS: Long query classified to valid type
+  ✓ PASS: Confidence in valid range
+
+── 5.3 Mixed-signal queries ──────────────────────────────
+
+  ✓ PASS: Mixed-signal query classified as historical_reference (either history or decision)
+
+── 5.4 Strategy for all query types ──────────────────────
+
+  ✓ PASS: task_continuation: convBudgetRatio in [0, 1]
+  ✓ PASS: task_continuation: temporalDiversityRatio in [0, 1]
+  ✓ PASS: task_continuation: minRelevance in [0, 1]
+  ✓ PASS: task_continuation: valid budget tier
+  ✓ PASS: task_continuation: valid temporal bias
+  ✓ PASS: historical_reference: convBudgetRatio in [0, 1]
+  ✓ PASS: historical_reference: temporalDiversityRatio in [0, 1]
+  ✓ PASS: historical_reference: minRelevance in [0, 1]
+  ✓ PASS: historical_reference: valid budget tier
+  ✓ PASS: historical_reference: valid temporal bias
+  ✓ PASS: decision_lookup: convBudgetRatio in [0, 1]
+  ✓ PASS: decision_lookup: temporalDiversityRatio in [0, 1]
+  ✓ PASS: decision_lookup: minRelevance in [0, 1]
+  ✓ PASS: decision_lookup: valid budget tier
+  ✓ PASS: decision_lookup: valid temporal bias
+  ✓ PASS: meta_system: convBudgetRatio in [0, 1]
+  ✓ PASS: meta_system: temporalDiversityRatio in [0, 1]
+  ✓ PASS: meta_system: minRelevance in [0, 1]
+  ✓ PASS: meta_system: valid budget tier
+  ✓ PASS: meta_system: valid temporal bias
+  ✓ PASS: external_action: convBudgetRatio in [0, 1]
+  ✓ PASS: external_action: temporalDiversityRatio in [0, 1]
+  ✓ PASS: external_action: minRelevance in [0, 1]
+  ✓ PASS: external_action: valid budget tier
+  ✓ PASS: external_action: valid temporal bias
+
+── 6.1 Relevance exactly at boundary ─────────────────────
+
+  ✓ PASS: Boundary: 0.15 passes, 0.14999 drops
+  ✓ PASS: 0.15 exactly passes
+  ✓ PASS: Just above passes
+  ✓ PASS: 1.0 passes
+
+── 6.2 Floating point precision ──────────────────────────
+
+  ✓ PASS: Floating point: 0.1 + 0.05 ≈ 0.15 passes threshold
+
+── 7.1 Concurrent scoring is safe (pure functions) ───────
+
+  ✓ PASS: All 100 concurrent scores valid
+  ✓ PASS: Concurrent result matches sequential result
+
+── 7.2 Concurrent deduplication ──────────────────────────
+
+  ✓ PASS: Concurrent dedup produces same count
+  ✓ PASS: All three concurrent results match
+
+── 8.1 First call always executes ────────────────────────
+
+  ✓ PASS: First call (lastTime=0) always executes
+
+── 8.2 Exact boundary timing ─────────────────────────────
+
+  ✓ PASS: Exact boundary: should execute
+  ✓ PASS: 1ms before: should debounce
+
+── 9.1 API response field name variations ────────────────
+
+  ✓ PASS: Resolved content: "memory via text field"
+  ✓ PASS: Resolved content: "memory via content field"
+  ✓ PASS: Resolved content: "text wins"
+  ✓ PASS: Resolved content: ""
+
+── 9.2 Timestamp format variations ───────────────────────
+
+  ✓ PASS: Resolved timestamp: "2026-01-01T00:00:00Z"
+  ✓ PASS: Resolved timestamp: "2026-01-01T00:00:00Z"
+  ✓ PASS: Resolved timestamp: ""
+
+── 9.3 Missing tokens_used field ─────────────────────────
+
+  ✓ PASS: Missing tokens_used defaults to 0
+
+════════════════════════════════════════════════════════════
+  Error Scenario Tests: 100 passed, 0 failed, 0 skipped
+════════════════════════════════════════════════════════════
+
 
 
 ════════════════════════════════════════════════════════════
-✗ 06 — Performance Benchmarks (387ms)
+✓ 06 — Performance Benchmarks (3175ms)
+════════════════════════════════════════════════════════════
+
+════════════════════════════════════════════════════════════
+  06 — Performance Benchmarks
 ════════════════════════════════════════════════════════════
 
 
-node:internal/modules/run_main:107
-    triggerUncaughtException(
-    ^
-Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/tmp/orionomega-fix/packages/hindsight/src/similarity.js' imported from /Users/aaronboshart/.orionomega/src/tests/06-performance-benchmarks.test.ts
-    at finalizeResolution (node:internal/modules/esm/resolve:275:11)
-    at moduleResolve (node:internal/modules/esm/resolve:865:10)
-    at defaultResolve (node:internal/modules/esm/resolve:991:11)
-    at nextResolve (node:internal/modules/esm/hooks:769:28)
-    at resolveBase (file:///Users/aaronboshart/.orionomega/src/node_modules/.pnpm/tsx@4.21.0/node_modules/tsx/dist/esm/index.mjs?1775609583839:2:3744)
-    at resolveDirectory (file:///Users/aaronboshart/.orionomega/src/node_modules/.pnpm/tsx@4.21.0/node_modules/tsx/dist/esm/index.mjs?1775609583839:2:4243)
-    at resolveTsPaths (file:///Users/aaronboshart/.orionomega/src/node_modules/.pnpm/tsx@4.21.0/node_modules/tsx/dist/esm/index.mjs?1775609583839:2:4984)
-    at resolve (file:///Users/aaronboshart/.orionomega/src/node_modules/.pnpm/tsx@4.21.0/node_modules/tsx/dist/esm/index.mjs?1775609583839:2:5361)
-    at nextResolve (node:internal/modules/esm/hooks:769:28)
-    at AsyncLoaderHooksOnLoaderHookWorker.resolve (node:internal/modules/esm/hooks:265:30) {
-  code: 'ERR_MODULE_NOT_FOUND',
-  url: 'file:///tmp/orionomega-fix/packages/hindsight/src/similarity.js'
-}
+── 1.1 trigramSimilarity throughput ──────────────────────
 
-Node.js v25.5.0
+  ⏱ trigramSimilarity (short strings): 172454 ops/s (avg: 0.006ms, p50: 0.005ms, p95: 0.008ms, p99: 0.012ms)
+  ✓ PASS: trigramSimilarity: > 5K ops/s (172454.15629606412)
+  ⏱ trigramSimilarity (2.5KB strings): 8376 ops/s (avg: 0.119ms, p50: 0.116ms, p95: 0.158ms, p99: 0.179ms)
+  ✓ PASS: trigramSimilarity (long): > 100 ops/s (8376.304473306767)
+
+── 1.2 computeClientRelevance throughput ─────────────────
+
+  ⏱ computeClientRelevance (typical): 167278 ops/s (avg: 0.006ms, p50: 0.006ms, p95: 0.006ms, p99: 0.009ms)
+  ✓ PASS: computeClientRelevance: > 5K ops/s (167278.17993310877)
+  ⏱ computeClientRelevance (real-world): 89870 ops/s (avg: 0.011ms, p50: 0.011ms, p95: 0.011ms, p99: 0.017ms)
+  ✓ PASS: Real-world scoring: > 3K ops/s (89869.96858038053)
+
+── 1.3 Scoring with structural prefixes ──────────────────
+
+  ⏱ computeClientRelevance (structured): 162073 ops/s (avg: 0.006ms, p50: 0.006ms, p95: 0.006ms, p99: 0.009ms)
+  ✓ PASS: Structured content scoring: > 3K ops/s (162072.82586840488)
+
+── 2.1 Deduplication — small batches ─────────────────────
+
+  ⏱ deduplicateByContent (10 items): 13396 ops/s (avg: 0.075ms, p50: 0.072ms, p95: 0.091ms, p99: 0.121ms)
+  ✓ PASS: Dedup 10 items: > 500 ops/s (13396.032660438557)
+
+── 2.2 Deduplication — medium batches ────────────────────
+
+  ⏱ deduplicateByContent (50 items): 892 ops/s (avg: 1.121ms, p50: 1.114ms, p95: 1.177ms, p99: 1.204ms)
+  ✓ PASS: Dedup 50 items: > 20 ops/s (892.1757324892576)
+
+── 2.3 Deduplication — large batches with duplicates ─────
+
+  ⏱ deduplicateByContent (100 items, 50% dups): 1322 ops/s (avg: 0.757ms, p50: 0.748ms, p95: 0.794ms, p99: 0.817ms)
+  ✓ PASS: Dedup 100 items with dups: > 5 ops/s (1321.6499914637939)
+
+── 3.1 classifyQuery throughput ──────────────────────────
+
+  ⏱ classifyQuery (mixed queries): 862077 ops/s (avg: 0.001ms, p50: 0.001ms, p95: 0.002ms, p99: 0.002ms)
+  ✓ PASS: classifyQuery: > 10K ops/s (862077.2147043933)
+
+── 3.2 getRecallStrategy throughput ──────────────────────
+
+  ⏱ getRecallStrategy (all types): 12218710 ops/s (avg: 0.000ms, p50: 0.000ms, p95: 0.000ms, p99: 0.000ms)
+  ✓ PASS: getRecallStrategy: > 100K ops/s (12218710.021908155)
+
+── 3.3 isExternalAction throughput ───────────────────────
+
+  ⏱ isExternalAction (mixed): 3513861 ops/s (avg: 0.000ms, p50: 0.000ms, p95: 0.000ms, p99: 0.000ms)
+  ✓ PASS: isExternalAction: > 10K ops/s (3513861.480769497)
+
+── 4.1 Hot window serialization ──────────────────────────
+
+  ⏱ JSON.stringify (20 messages): 707804 ops/s (avg: 0.001ms, p50: 0.001ms, p95: 0.002ms, p99: 0.003ms)
+  ✓ PASS: Hot window serialize: > 10K ops/s (707803.7987688334)
+  ⏱ JSON.parse (20 messages): 292953 ops/s (avg: 0.003ms, p50: 0.003ms, p95: 0.003ms, p99: 0.004ms)
+  ✓ PASS: Hot window deserialize: > 10K ops/s (292952.6776548516)
+
+── 4.2 Token estimation ──────────────────────────────────
+
+  ⏱ estimateTokens (mixed): 13662382 ops/s (avg: 0.000ms, p50: 0.000ms, p95: 0.000ms, p99: 0.000ms)
+  ✓ PASS: Token estimation: > 1M ops/s (13662381.779410575)
+
+── 5.1 Full recall pipeline (classify → score → filter → dedup) 
+
+  ⏱ full recall pipeline (20 items): 3152 ops/s (avg: 0.317ms, p50: 0.311ms, p95: 0.366ms, p99: 0.496ms)
+  ✓ PASS: Full pipeline (20 items): > 500 ops/s (3152.424661184214)
+  ✓ PASS: Full pipeline p95 < 10ms (0.3662500000000364)
+
+── 5.2 Batch scoring (100 items) ─────────────────────────
+
+  ⏱ batch score 100 items: 894 ops/s (avg: 1.118ms, p50: 1.109ms, p95: 1.172ms, p99: 1.194ms)
+  ✓ PASS: Batch score 100 items: > 50 ops/s (894.2088673041972)
+
+── 6.1 Prefix stripping overhead ─────────────────────────
+
+  ⏱ score (clean content): 242955 ops/s (avg: 0.004ms, p50: 0.004ms, p95: 0.004ms, p99: 0.006ms)
+  ⏱ score (prefixed content): 187855 ops/s (avg: 0.005ms, p50: 0.005ms, p95: 0.005ms, p99: 0.007ms)
+  ✓ PASS: Prefix stripping overhead: 29% (< 100%) (0.29331507022778114)
+
+════════════════════════════════════════════════════════════
+  Performance Benchmarks: 18 passed, 0 failed, 0 skipped
+════════════════════════════════════════════════════════════
+
 

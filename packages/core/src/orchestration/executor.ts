@@ -292,6 +292,22 @@ export class GraphExecutor {
             log.info(`Skipping already-completed node '${id}'`);
             return false;
           }
+          // Fix 5: Skip nodes whose dependencies failed or were cancelled.
+          // Running them with missing upstream outputs would produce incorrect
+          // results and can leave the workflow in a partially-stuck state where
+          // subsequent layers wait on outputs that will never arrive.
+          if (node && node.dependsOn.length > 0) {
+            const failedDeps = node.dependsOn.filter(depId => this.nodeErrors.has(depId));
+            if (failedDeps.length > 0) {
+              const failedLabels = failedDeps
+                .map(depId => this.graph.nodes.get(depId)?.label ?? depId)
+                .join(', ');
+              log.warn(`Node '${id}' skipped — upstream dependencies failed: ${failedLabels}`);
+              this.skippedNodes.add(id);
+              node.status = 'skipped';
+              return false;
+            }
+          }
           return true;
         });
 
@@ -697,6 +713,18 @@ export class GraphExecutor {
         const codingAbort = new AbortController();
         this.activeCodingAborts.set(node.id, codingAbort);
 
+        // Fix 3: Enforce wall-clock timeout for CODING_AGENT nodes.
+        // The SDK's maxTurns/maxBudgetUsd are soft limits; a stalled API call
+        // or infinite streaming response can hold up the entire workflow layer.
+        const codingTimeoutSec = node.timeout ?? this.config.workerTimeout;
+        const codingTimeoutHandle = setTimeout(() => {
+          log.warn(`CODING_AGENT '${node.id}' exceeded timeout of ${codingTimeoutSec}s — aborting`);
+          this.emitOrchestrator('status',
+            `CODING_AGENT '${node.label}' timed out after ${codingTimeoutSec}s`,
+          );
+          codingAbort.abort();
+        }, codingTimeoutSec * 1000);
+
         const startMs = Date.now();
         try {
           const codingResult = await executeCodingAgent(
@@ -743,6 +771,12 @@ export class GraphExecutor {
               nodeId: node.id, output: null, durationMs: Date.now() - startMs,
               toolCallCount: 0, findings: [], outputPaths: [], cancelled: true,
             };
+          }
+
+          // Fix 4: Propagate coding-agent failures so the executor's retry/fallback
+          // logic fires and the node is marked 'error' rather than silently succeeding.
+          if (!codingResult.success && codingResult.error) {
+            throw new Error(`Coding agent failed: ${codingResult.error}`);
           }
 
           const codingOutputPaths = codingResult.outputPaths ?? [];
@@ -798,6 +832,8 @@ export class GraphExecutor {
           }
           throw err;
         } finally {
+          // Fix 3: Always cancel the timeout so it doesn't fire after completion.
+          clearTimeout(codingTimeoutHandle);
           this.activeCodingAborts.delete(node.id);
         }
       }

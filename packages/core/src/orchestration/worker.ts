@@ -331,6 +331,20 @@ export class WorkerProcess {
     // Create abort controller — wired to cancel()
     this.abortController = new AbortController();
 
+    // Fix 1: Enforce wall-clock timeout so AGENT nodes can't run forever.
+    // The SDK's maxTurns/maxBudgetUsd limits are soft — a stalled API call
+    // or infinite streaming response can still block indefinitely.
+    const workerTimeoutMs = this.timeout * 1000;
+    const timeoutHandle = setTimeout(() => {
+      log.warn(`Worker '${this.node.id}' exceeded timeout of ${this.timeout}s — aborting`);
+      this.emitEvent({
+        type: 'error',
+        error: `Worker timed out after ${this.timeout}s`,
+        message: `Timeout: ${this.node.label}`,
+      });
+      this.abortController?.abort();
+    }, workerTimeoutMs);
+
     this.emitEvent({
       type: 'status',
       message: `Starting: ${this.node.label} (${model})`,
@@ -399,7 +413,18 @@ export class WorkerProcess {
         }
         // 'done' is handled below with full data
       },
-    }).finally(() => clearInterval(heartbeat));
+    }).finally(() => {
+      clearInterval(heartbeat);
+      // Fix 1: Cancel the timeout so it doesn't fire after the agent completes.
+      clearTimeout(timeoutHandle);
+    });
+
+    // Fix 2: Propagate SDK-level failures (success:false) as thrown errors so
+    // the executor's retry/fallback logic is triggered and the node is marked
+    // as 'error' rather than silently treated as a successful completion.
+    if (!result.success && result.error) {
+      throw new Error(`Agent failed: ${result.error}`);
+    }
 
     log.info(
       `Worker ${this.node.id} completed: ${result.toolCalls} tool calls, ${result.durationSec.toFixed(1)}s` +
