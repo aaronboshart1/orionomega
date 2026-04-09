@@ -1,0 +1,900 @@
+{
+  "$schema": "https://orionomega.dev/schemas/skill-manifest.v1.json",
+  "name": "google-workspace",
+  "version": "1.0.0",
+  "description": "Full-featured Google Workspace integration via workspace-mcp. Manage Gmail, Drive, Calendar, Docs, Sheets, Slides, Forms, Tasks, Contacts, Chat, Apps Script, and Custom Search. Powered by the open-source google_workspace_mcp server.",
+  "author": "OrionOmega",
+  "license": "MIT",
+  "homepage": "https://workspacemcp.com",
+  "repository": "https://github.com/aaronboshart1/orionomega",
+  "orionomega": ">=0.1.0",
+  "os": ["linux", "darwin"],
+  "requires": {
+    "commands": ["uvx"],
+    "env": [],
+    "skills": []
+  },
+  "setup": {
+    "required": true,
+    "description": "Configure Google OAuth credentials to access Workspace services. Requires a Google Cloud project with OAuth 2.0 credentials.",
+    "auth": {
+      "methods": [
+        {
+          "type": "oauth",
+          "label": "Google OAuth 2.0",
+          "description": "Configure OAuth credentials from Google Cloud Console, then run the initial authentication flow.",
+          "tokenUrl": "https://console.cloud.google.com/apis/credentials"
+        }
+      ]
+    },
+    "handler": "hooks/setup.js"
+  },
+  "triggers": {
+    "keywords": [
+      "gmail", "email", "google drive", "drive", "google calendar", "calendar",
+      "google docs", "google sheets", "spreadsheet", "google slides", "slides",
+      "google forms", "google tasks", "tasks", "google contacts", "contacts",
+      "google chat", "apps script", "google search", "workspace"
+    ],
+    "patterns": [
+      "\\b(send|read|search)\\s+(email|mail)\\b",
+      "\\b(create|open|edit|share)\\s+(doc|document|sheet|spreadsheet|slide|presentation|form)\\b",
+      "\\b(create|view|list|update|delete)\\s+(event|calendar|meeting)\\b",
+      "\\bgoogle\\s+(drive|docs|sheets|slides|forms|calendar|tasks|contacts|chat)\\b"
+    ],
+    "commands": ["/workspace", "/gmail", "/gdrive", "/gcal"]
+  },
+  "tools": [
+    {
+      "name": "gmail",
+      "description": "Manage Gmail: search, read, send, draft, and organize emails. Manage labels and filters. Supports batch operations and attachments.",
+      "handler": "handlers/gmail.js",
+      "timeout": 60000,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "search", "get", "get_batch", "send", "draft",
+              "get_thread", "get_thread_batch",
+              "list_labels", "manage_label", "modify_labels", "batch_modify_labels",
+              "list_filters", "manage_filter",
+              "get_attachment"
+            ],
+            "description": "Gmail action to perform"
+          },
+          "query": {
+            "type": "string",
+            "description": "Gmail search query (for search action, e.g. 'from:user@example.com is:unread')"
+          },
+          "message_id": {
+            "type": "string",
+            "description": "Gmail message ID (for get, modify_labels, get_attachment)"
+          },
+          "message_ids": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "List of message IDs (for get_batch, batch_modify_labels)"
+          },
+          "thread_id": {
+            "type": "string",
+            "description": "Gmail thread ID (for get_thread)"
+          },
+          "thread_ids": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "List of thread IDs (for get_thread_batch)"
+          },
+          "to": {
+            "type": "string",
+            "description": "Recipient email address (for send, draft)"
+          },
+          "cc": {
+            "type": "string",
+            "description": "CC email addresses (for send, draft)"
+          },
+          "bcc": {
+            "type": "string",
+            "description": "BCC email addresses (for send, draft)"
+          },
+          "subject": {
+            "type": "string",
+            "description": "Email subject (for send, draft)"
+          },
+          "body": {
+            "type": "string",
+            "description": "Email body (for send, draft)"
+          },
+          "body_format": {
+            "type": "string",
+            "enum": ["text", "html"],
+            "description": "Body format: text or html (default: text)"
+          },
+          "label_ids": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Label IDs to add/remove (for modify_labels, batch_modify_labels)"
+          },
+          "add_label_ids": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Label IDs to add"
+          },
+          "remove_label_ids": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Label IDs to remove"
+          },
+          "label_name": {
+            "type": "string",
+            "description": "Label name (for manage_label)"
+          },
+          "label_action": {
+            "type": "string",
+            "enum": ["create", "update", "delete"],
+            "description": "Label management action"
+          },
+          "attachment_index": {
+            "type": "number",
+            "description": "Attachment index (for get_attachment)"
+          },
+          "max_results": {
+            "type": "number",
+            "description": "Maximum number of results to return (default 10)"
+          }
+        },
+        "required": ["action"]
+      }
+    },
+    {
+      "name": "google_drive",
+      "description": "Manage Google Drive: search, read, create, update, copy, and share files and folders. Manage permissions and access control.",
+      "handler": "handlers/google_drive.js",
+      "timeout": 60000,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "search", "get", "download_url", "share_link",
+              "create", "create_folder", "import",
+              "list", "copy", "update",
+              "manage_access", "set_permissions", "get_permissions", "check_public"
+            ],
+            "description": "Drive action to perform"
+          },
+          "file_id": {
+            "type": "string",
+            "description": "Drive file or folder ID"
+          },
+          "folder_id": {
+            "type": "string",
+            "description": "Parent folder ID (for list, create)"
+          },
+          "query": {
+            "type": "string",
+            "description": "Drive search query (for search, e.g. 'name contains \"report\" and mimeType=\"application/pdf\"')"
+          },
+          "name": {
+            "type": "string",
+            "description": "File or folder name (for create, update)"
+          },
+          "content": {
+            "type": "string",
+            "description": "File content (for create, update)"
+          },
+          "mime_type": {
+            "type": "string",
+            "description": "MIME type for the file (for create)"
+          },
+          "export_format": {
+            "type": "string",
+            "description": "Export format for Google Workspace files (e.g. 'text/plain', 'application/pdf')"
+          },
+          "role": {
+            "type": "string",
+            "enum": ["reader", "commenter", "writer", "owner"],
+            "description": "Permission role (for set_permissions, manage_access)"
+          },
+          "share_with": {
+            "type": "string",
+            "description": "Email address to share with (for set_permissions, manage_access)"
+          },
+          "page_size": {
+            "type": "number",
+            "description": "Number of results per page (for list, search)"
+          }
+        },
+        "required": ["action"]
+      }
+    },
+    {
+      "name": "google_calendar",
+      "description": "Manage Google Calendar: list calendars, get events, create, update, and delete events. Supports recurring events and reminders.",
+      "handler": "handlers/google_calendar.js",
+      "timeout": 30000,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": ["list_calendars", "get_events", "manage_event"],
+            "description": "Calendar action to perform"
+          },
+          "calendar_id": {
+            "type": "string",
+            "description": "Calendar ID (default: 'primary')"
+          },
+          "event_id": {
+            "type": "string",
+            "description": "Event ID (for manage_event with get/update/delete)"
+          },
+          "time_min": {
+            "type": "string",
+            "description": "Start time filter in ISO 8601 format (for get_events)"
+          },
+          "time_max": {
+            "type": "string",
+            "description": "End time filter in ISO 8601 format (for get_events)"
+          },
+          "summary": {
+            "type": "string",
+            "description": "Event title/summary (for manage_event create/update)"
+          },
+          "description": {
+            "type": "string",
+            "description": "Event description (for manage_event create/update)"
+          },
+          "location": {
+            "type": "string",
+            "description": "Event location (for manage_event create/update)"
+          },
+          "start": {
+            "type": "string",
+            "description": "Event start datetime in ISO 8601 format"
+          },
+          "end": {
+            "type": "string",
+            "description": "Event end datetime in ISO 8601 format"
+          },
+          "attendees": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "List of attendee email addresses"
+          },
+          "event_action": {
+            "type": "string",
+            "enum": ["create", "get", "update", "delete", "list"],
+            "description": "Event sub-action (for manage_event)"
+          },
+          "max_results": {
+            "type": "number",
+            "description": "Maximum events to return (for get_events)"
+          }
+        },
+        "required": ["action"]
+      }
+    },
+    {
+      "name": "google_docs",
+      "description": "Manage Google Docs: create, read, edit documents. Format text, insert elements, manage comments, export to PDF or Markdown.",
+      "handler": "handlers/google_docs.js",
+      "timeout": 60000,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "get", "create", "modify_text", "get_markdown", "export_pdf",
+              "search", "find_replace", "list_in_folder",
+              "insert_elements", "update_paragraph", "insert_image",
+              "update_headers_footers", "batch_update", "inspect_structure",
+              "create_table", "list_comments", "manage_comment"
+            ],
+            "description": "Docs action to perform"
+          },
+          "document_id": {
+            "type": "string",
+            "description": "Google Doc document ID"
+          },
+          "title": {
+            "type": "string",
+            "description": "Document title (for create)"
+          },
+          "content": {
+            "type": "string",
+            "description": "Text content (for create, modify_text)"
+          },
+          "text": {
+            "type": "string",
+            "description": "Text to insert or replace"
+          },
+          "start_index": {
+            "type": "number",
+            "description": "Start index for text operations"
+          },
+          "end_index": {
+            "type": "number",
+            "description": "End index for text operations"
+          },
+          "find_text": {
+            "type": "string",
+            "description": "Text to find (for find_replace)"
+          },
+          "replace_text": {
+            "type": "string",
+            "description": "Replacement text (for find_replace)"
+          },
+          "bold": { "type": "boolean", "description": "Apply bold formatting" },
+          "italic": { "type": "boolean", "description": "Apply italic formatting" },
+          "font_size": { "type": "number", "description": "Font size in points" },
+          "heading_level": {
+            "type": "number",
+            "description": "Heading level 1-6 (for update_paragraph)"
+          },
+          "element_type": {
+            "type": "string",
+            "description": "Element type to insert (for insert_elements)"
+          },
+          "operations": {
+            "type": "array",
+            "description": "Batch update operations array (for batch_update)"
+          },
+          "folder_id": {
+            "type": "string",
+            "description": "Folder ID to list docs in (for list_in_folder)"
+          },
+          "query": {
+            "type": "string",
+            "description": "Search query (for search)"
+          },
+          "comment_id": {
+            "type": "string",
+            "description": "Comment ID (for manage_comment)"
+          },
+          "comment_action": {
+            "type": "string",
+            "enum": ["create", "reply", "resolve", "delete"],
+            "description": "Comment action (for manage_comment)"
+          },
+          "comment_content": {
+            "type": "string",
+            "description": "Comment text (for manage_comment create/reply)"
+          }
+        },
+        "required": ["action"]
+      }
+    },
+    {
+      "name": "google_sheets",
+      "description": "Manage Google Sheets: read and write cell values, create spreadsheets, format ranges, manage conditional formatting and comments.",
+      "handler": "handlers/google_sheets.js",
+      "timeout": 60000,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "read", "write", "create", "list", "get_info",
+              "format", "create_sheet",
+              "list_comments", "manage_comment", "conditional_format"
+            ],
+            "description": "Sheets action to perform"
+          },
+          "spreadsheet_id": {
+            "type": "string",
+            "description": "Google Sheets spreadsheet ID"
+          },
+          "range_name": {
+            "type": "string",
+            "description": "Cell range in A1 notation (e.g. 'Sheet1!A1:C10')"
+          },
+          "values": {
+            "type": "array",
+            "items": { "type": "array" },
+            "description": "2D array of values to write (for write)"
+          },
+          "title": {
+            "type": "string",
+            "description": "Spreadsheet or sheet title (for create, create_sheet)"
+          },
+          "sheet_names": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Sheet names for initial sheets (for create)"
+          },
+          "clear_values": {
+            "type": "boolean",
+            "description": "Clear existing values before writing (for write)"
+          },
+          "background_color": {
+            "type": "object",
+            "description": "Background color { red, green, blue } (for format)"
+          },
+          "number_format_type": {
+            "type": "string",
+            "description": "Number format type (for format, e.g. 'CURRENCY', 'DATE', 'PERCENT')"
+          },
+          "condition_type": {
+            "type": "string",
+            "description": "Condition type for conditional formatting"
+          },
+          "comment_id": {
+            "type": "string",
+            "description": "Comment ID (for manage_comment)"
+          },
+          "comment_action": {
+            "type": "string",
+            "enum": ["create", "reply", "resolve", "delete"],
+            "description": "Comment action"
+          },
+          "comment_content": {
+            "type": "string",
+            "description": "Comment text"
+          }
+        },
+        "required": ["action"]
+      }
+    },
+    {
+      "name": "google_slides",
+      "description": "Manage Google Slides: create presentations, read slides, batch update, get page thumbnails, manage comments.",
+      "handler": "handlers/google_slides.js",
+      "timeout": 60000,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "create", "get", "batch_update",
+              "get_page", "get_thumbnail",
+              "list_comments", "manage_comment"
+            ],
+            "description": "Slides action to perform"
+          },
+          "presentation_id": {
+            "type": "string",
+            "description": "Google Slides presentation ID"
+          },
+          "title": {
+            "type": "string",
+            "description": "Presentation title (for create)"
+          },
+          "page_object_id": {
+            "type": "string",
+            "description": "Page/slide object ID (for get_page, get_thumbnail)"
+          },
+          "thumbnail_size": {
+            "type": "string",
+            "enum": ["SMALL", "MEDIUM", "LARGE"],
+            "description": "Thumbnail image size (for get_thumbnail)"
+          },
+          "requests": {
+            "type": "array",
+            "description": "Array of update request objects (for batch_update)"
+          },
+          "comment_id": {
+            "type": "string",
+            "description": "Comment ID (for manage_comment)"
+          },
+          "comment_action": {
+            "type": "string",
+            "enum": ["create", "reply", "resolve", "delete"],
+            "description": "Comment action"
+          },
+          "comment_content": {
+            "type": "string",
+            "description": "Comment text"
+          }
+        },
+        "required": ["action"]
+      }
+    },
+    {
+      "name": "google_forms",
+      "description": "Manage Google Forms: create forms, view responses, manage questions, publish settings.",
+      "handler": "handlers/google_forms.js",
+      "timeout": 60000,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "create", "get", "list_responses", "get_response",
+              "set_publish", "batch_update"
+            ],
+            "description": "Forms action to perform"
+          },
+          "form_id": {
+            "type": "string",
+            "description": "Google Form ID"
+          },
+          "title": {
+            "type": "string",
+            "description": "Form title (for create)"
+          },
+          "description": {
+            "type": "string",
+            "description": "Form description (for create)"
+          },
+          "response_id": {
+            "type": "string",
+            "description": "Response ID (for get_response)"
+          },
+          "publish_as_template": {
+            "type": "boolean",
+            "description": "Publish form as a template (for set_publish)"
+          },
+          "require_authentication": {
+            "type": "boolean",
+            "description": "Require responders to sign in (for set_publish)"
+          },
+          "requests": {
+            "type": "array",
+            "description": "Array of update request objects (for batch_update)"
+          }
+        },
+        "required": ["action"]
+      }
+    },
+    {
+      "name": "google_tasks",
+      "description": "Manage Google Tasks: list, create, update, and complete tasks. Manage task lists with hierarchy support.",
+      "handler": "handlers/google_tasks.js",
+      "timeout": 30000,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "list", "get", "manage",
+              "list_lists", "get_list", "manage_list"
+            ],
+            "description": "Tasks action to perform"
+          },
+          "task_list_id": {
+            "type": "string",
+            "description": "Task list ID (default: '@default')"
+          },
+          "task_id": {
+            "type": "string",
+            "description": "Task ID (for get, manage)"
+          },
+          "title": {
+            "type": "string",
+            "description": "Task or list title (for create/update)"
+          },
+          "notes": {
+            "type": "string",
+            "description": "Task notes"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["needsAction", "completed"],
+            "description": "Task completion status"
+          },
+          "due": {
+            "type": "string",
+            "description": "Due date in RFC 3339 format"
+          },
+          "parent": {
+            "type": "string",
+            "description": "Parent task ID (for creating sub-tasks)"
+          },
+          "task_action": {
+            "type": "string",
+            "enum": ["create", "get", "update", "delete", "complete"],
+            "description": "Task sub-action (for manage)"
+          },
+          "list_action": {
+            "type": "string",
+            "enum": ["create", "update", "delete"],
+            "description": "Task list sub-action (for manage_list)"
+          }
+        },
+        "required": ["action"]
+      }
+    },
+    {
+      "name": "google_contacts",
+      "description": "Manage Google Contacts via the People API: search, list, create, update contacts. Manage contact groups.",
+      "handler": "handlers/google_contacts.js",
+      "timeout": 30000,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "search", "get", "list", "manage",
+              "list_groups", "get_group", "manage_group", "batch_manage"
+            ],
+            "description": "Contacts action to perform"
+          },
+          "query": {
+            "type": "string",
+            "description": "Search query (for search)"
+          },
+          "contact_id": {
+            "type": "string",
+            "description": "Contact resource name (e.g. 'people/c123456')"
+          },
+          "given_name": {
+            "type": "string",
+            "description": "First name (for create/update)"
+          },
+          "family_name": {
+            "type": "string",
+            "description": "Last name (for create/update)"
+          },
+          "email": {
+            "type": "string",
+            "description": "Email address (for create/update)"
+          },
+          "phone": {
+            "type": "string",
+            "description": "Phone number (for create/update)"
+          },
+          "organization": {
+            "type": "string",
+            "description": "Organization/company name (for create/update)"
+          },
+          "group_id": {
+            "type": "string",
+            "description": "Contact group resource name (for get_group, manage_group)"
+          },
+          "contact_action": {
+            "type": "string",
+            "enum": ["create", "update", "delete"],
+            "description": "Contact sub-action (for manage)"
+          },
+          "group_action": {
+            "type": "string",
+            "enum": ["create", "update", "delete"],
+            "description": "Group sub-action (for manage_group)"
+          },
+          "group_name": {
+            "type": "string",
+            "description": "Group name (for manage_group create/update)"
+          },
+          "page_size": {
+            "type": "number",
+            "description": "Number of results to return (default 20)"
+          }
+        },
+        "required": ["action"]
+      }
+    },
+    {
+      "name": "google_chat",
+      "description": "Manage Google Chat: send and search messages, manage spaces, add reactions, download attachments.",
+      "handler": "handlers/google_chat.js",
+      "timeout": 30000,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "get_messages", "send", "search",
+              "react", "list_spaces", "download_attachment"
+            ],
+            "description": "Chat action to perform"
+          },
+          "space_id": {
+            "type": "string",
+            "description": "Chat space ID (e.g. 'spaces/XXXXXXX')"
+          },
+          "message_text": {
+            "type": "string",
+            "description": "Message text to send (for send)"
+          },
+          "query": {
+            "type": "string",
+            "description": "Search query (for search)"
+          },
+          "thread_key": {
+            "type": "string",
+            "description": "Thread key to reply in a thread (for send)"
+          },
+          "emoji_unicode": {
+            "type": "string",
+            "description": "Emoji Unicode for reaction (for react, e.g. '1F44D' for thumbs up)"
+          },
+          "message_name": {
+            "type": "string",
+            "description": "Full message resource name (for react)"
+          },
+          "attachment_index": {
+            "type": "number",
+            "description": "Attachment index (for download_attachment)"
+          },
+          "page_size": {
+            "type": "number",
+            "description": "Number of messages to return (for get_messages)"
+          }
+        },
+        "required": ["action"]
+      }
+    },
+    {
+      "name": "google_apps_script",
+      "description": "Manage Google Apps Script: list, create, and run scripts. Manage deployments and view execution logs.",
+      "handler": "handlers/google_apps_script.js",
+      "timeout": 120000,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "list", "get", "get_content", "create", "update_content",
+              "run", "list_deployments", "manage_deployment", "list_processes"
+            ],
+            "description": "Apps Script action to perform"
+          },
+          "script_id": {
+            "type": "string",
+            "description": "Apps Script project ID"
+          },
+          "title": {
+            "type": "string",
+            "description": "Project title (for create)"
+          },
+          "file_name": {
+            "type": "string",
+            "description": "Script file name (for get_content, update_content)"
+          },
+          "source_code": {
+            "type": "string",
+            "description": "Script source code (for update_content)"
+          },
+          "function_name": {
+            "type": "string",
+            "description": "Function name to run (for run)"
+          },
+          "parameters": {
+            "type": "array",
+            "description": "Parameters to pass to the function (for run)"
+          },
+          "dev_mode": {
+            "type": "boolean",
+            "description": "Use development mode for execution (for run)"
+          },
+          "deployment_id": {
+            "type": "string",
+            "description": "Deployment ID (for manage_deployment)"
+          },
+          "deployment_action": {
+            "type": "string",
+            "enum": ["create", "update", "delete"],
+            "description": "Deployment sub-action (for manage_deployment)"
+          }
+        },
+        "required": ["action"]
+      }
+    },
+    {
+      "name": "google_search",
+      "description": "Search the web using Google Programmable Search Engine. Supports filtering, safe search, image search, and site-specific search.",
+      "handler": "handlers/google_search.js",
+      "timeout": 30000,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": ["search", "get_engine_info"],
+            "description": "Search action to perform"
+          },
+          "q": {
+            "type": "string",
+            "description": "Search query (for search)"
+          },
+          "num": {
+            "type": "number",
+            "description": "Number of results to return (1-10, default 10)"
+          },
+          "start": {
+            "type": "number",
+            "description": "Result offset for pagination (default 1)"
+          },
+          "safe": {
+            "type": "string",
+            "enum": ["active", "off"],
+            "description": "Safe search setting"
+          },
+          "search_type": {
+            "type": "string",
+            "enum": ["image"],
+            "description": "Search type (omit for web, 'image' for image search)"
+          },
+          "site_search": {
+            "type": "string",
+            "description": "Restrict results to a specific site (e.g. 'example.com')"
+          },
+          "date_restrict": {
+            "type": "string",
+            "description": "Restrict by date (e.g. 'd1' for past day, 'w1' for past week, 'm1' for past month)"
+          },
+          "language": {
+            "type": "string",
+            "description": "Language restriction (e.g. 'lang_en')"
+          },
+          "country": {
+            "type": "string",
+            "description": "Country restriction (e.g. 'countryUS')"
+          }
+        },
+        "required": ["action"]
+      }
+    }
+  ],
+  "workerProfile": {
+    "tools": [
+      "gmail", "google_drive", "google_calendar", "google_docs",
+      "google_sheets", "google_slides", "google_forms", "google_tasks",
+      "google_contacts", "google_chat", "google_apps_script", "google_search"
+    ],
+    "maxTimeout": 180000
+  },
+  "settings": {
+    "type": "object",
+    "properties": {
+      "GOOGLE_OAUTH_CLIENT_ID": {
+        "type": "password",
+        "label": "Google OAuth Client ID",
+        "description": "OAuth 2.0 Client ID from Google Cloud Console → APIs & Services → Credentials",
+        "placeholder": "123456789-xxxx.apps.googleusercontent.com",
+        "required": true,
+        "group": "auth",
+        "widget": "secret"
+      },
+      "GOOGLE_OAUTH_CLIENT_SECRET": {
+        "type": "password",
+        "label": "Google OAuth Client Secret",
+        "description": "OAuth 2.0 Client Secret from Google Cloud Console",
+        "placeholder": "GOCSPX-xxxxxxxxxxxx",
+        "required": true,
+        "group": "auth",
+        "widget": "secret"
+      },
+      "GOOGLE_PSE_API_KEY": {
+        "type": "password",
+        "label": "Custom Search API Key",
+        "description": "Google API key for Programmable Search Engine (required for google_search tool)",
+        "placeholder": "AIzaSy...",
+        "required": false,
+        "group": "optional",
+        "widget": "secret"
+      },
+      "GOOGLE_PSE_ENGINE_ID": {
+        "type": "string",
+        "label": "Custom Search Engine ID",
+        "description": "Programmable Search Engine ID (required for google_search tool)",
+        "placeholder": "012345678901234567890:xxxxxxxxxx",
+        "required": false,
+        "group": "optional"
+      },
+      "USER_GOOGLE_EMAIL": {
+        "type": "string",
+        "label": "Default Google Email",
+        "description": "Default Google account email address for single-user authentication",
+        "placeholder": "user@gmail.com",
+        "required": false,
+        "group": "preferences"
+      }
+    }
+  },
+  "hooks": {
+    "healthCheck": "hooks/health.js",
+    "postInstall": "hooks/setup.js"
+  }
+}

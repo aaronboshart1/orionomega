@@ -1,5 +1,5 @@
 ════════════════════════════════════════════════════════════
-✓ 01 — Storage Layer: Similarity Scoring (219ms)
+✓ 01 — Storage Layer: Similarity Scoring (235ms)
 ════════════════════════════════════════════════════════════
 
 ════════════════════════════════════════════════════════════
@@ -174,7 +174,7 @@
 
 
 ════════════════════════════════════════════════════════════
-✓ 02 — Retrieval Layer: Client Recall (227ms)
+✓ 02 — Retrieval Layer: Client Recall (232ms)
 ════════════════════════════════════════════════════════════
 
 ════════════════════════════════════════════════════════════
@@ -323,7 +323,7 @@
 
 
 ════════════════════════════════════════════════════════════
-✓ 03 — Indexing: Query Classification & Context Assembly (240ms)
+✓ 03 — Indexing: Query Classification & Context Assembly (233ms)
 ════════════════════════════════════════════════════════════
 
 ════════════════════════════════════════════════════════════
@@ -506,7 +506,7 @@
 
 
 ════════════════════════════════════════════════════════════
-✓ 04 — Integration: End-to-End Memory Operations (231ms)
+✓ 04 — Integration: End-to-End Memory Operations (236ms)
 ════════════════════════════════════════════════════════════
 
 ════════════════════════════════════════════════════════════
@@ -642,7 +642,7 @@
 
 
 ════════════════════════════════════════════════════════════
-✓ 05 — Error Scenarios: Corruption Recovery (348ms)
+✓ 05 — Error Scenarios: Corruption Recovery (345ms)
 ════════════════════════════════════════════════════════════
 
 ════════════════════════════════════════════════════════════
@@ -839,7 +839,7 @@
 
 
 ════════════════════════════════════════════════════════════
-✓ 06 — Performance Benchmarks (3175ms)
+✓ 06 — Performance Benchmarks (3196ms)
 ════════════════════════════════════════════════════════════
 
 ════════════════════════════════════════════════════════════
@@ -849,81 +849,81 @@
 
 ── 1.1 trigramSimilarity throughput ──────────────────────
 
-  ⏱ trigramSimilarity (short strings): 172454 ops/s (avg: 0.006ms, p50: 0.005ms, p95: 0.008ms, p99: 0.012ms)
-  ✓ PASS: trigramSimilarity: > 5K ops/s (172454.15629606412)
-  ⏱ trigramSimilarity (2.5KB strings): 8376 ops/s (avg: 0.119ms, p50: 0.116ms, p95: 0.158ms, p99: 0.179ms)
-  ✓ PASS: trigramSimilarity (long): > 100 ops/s (8376.304473306767)
+  ⏱ trigramSimilarity (short strings): 171236 ops/s (avg: 0.006ms, p50: 0.005ms, p95: 0.009ms, p99: 0.015ms)
+  ✓ PASS: trigramSimilarity: > 5K ops/s (171236.12550731268)
+  ⏱ trigramSimilarity (2.5KB strings): 7704 ops/s (avg: 0.130ms, p50: 0.127ms, p95: 0.167ms, p99: 0.183ms)
+  ✓ PASS: trigramSimilarity (long): > 100 ops/s (7703.877019251649)
 
 ── 1.2 computeClientRelevance throughput ─────────────────
 
-  ⏱ computeClientRelevance (typical): 167278 ops/s (avg: 0.006ms, p50: 0.006ms, p95: 0.006ms, p99: 0.009ms)
-  ✓ PASS: computeClientRelevance: > 5K ops/s (167278.17993310877)
-  ⏱ computeClientRelevance (real-world): 89870 ops/s (avg: 0.011ms, p50: 0.011ms, p95: 0.011ms, p99: 0.017ms)
-  ✓ PASS: Real-world scoring: > 3K ops/s (89869.96858038053)
+  ⏱ computeClientRelevance (typical): 160715 ops/s (avg: 0.006ms, p50: 0.006ms, p95: 0.007ms, p99: 0.012ms)
+  ✓ PASS: computeClientRelevance: > 5K ops/s (160715.3401217136)
+  ⏱ computeClientRelevance (real-world): 87902 ops/s (avg: 0.011ms, p50: 0.011ms, p95: 0.012ms, p99: 0.020ms)
+  ✓ PASS: Real-world scoring: > 3K ops/s (87901.90442816213)
 
 ── 1.3 Scoring with structural prefixes ──────────────────
 
-  ⏱ computeClientRelevance (structured): 162073 ops/s (avg: 0.006ms, p50: 0.006ms, p95: 0.006ms, p99: 0.009ms)
-  ✓ PASS: Structured content scoring: > 3K ops/s (162072.82586840488)
+  ⏱ computeClientRelevance (structured): 157393 ops/s (avg: 0.006ms, p50: 0.006ms, p95: 0.006ms, p99: 0.011ms)
+  ✓ PASS: Structured content scoring: > 3K ops/s (157392.77978880276)
 
 ── 2.1 Deduplication — small batches ─────────────────────
 
-  ⏱ deduplicateByContent (10 items): 13396 ops/s (avg: 0.075ms, p50: 0.072ms, p95: 0.091ms, p99: 0.121ms)
-  ✓ PASS: Dedup 10 items: > 500 ops/s (13396.032660438557)
+  ⏱ deduplicateByContent (10 items): 13355 ops/s (avg: 0.075ms, p50: 0.072ms, p95: 0.085ms, p99: 0.124ms)
+  ✓ PASS: Dedup 10 items: > 500 ops/s (13354.83779172618)
 
 ── 2.2 Deduplication — medium batches ────────────────────
 
-  ⏱ deduplicateByContent (50 items): 892 ops/s (avg: 1.121ms, p50: 1.114ms, p95: 1.177ms, p99: 1.204ms)
-  ✓ PASS: Dedup 50 items: > 20 ops/s (892.1757324892576)
+  ⏱ deduplicateByContent (50 items): 893 ops/s (avg: 1.120ms, p50: 1.110ms, p95: 1.166ms, p99: 1.193ms)
+  ✓ PASS: Dedup 50 items: > 20 ops/s (892.8167205801186)
 
 ── 2.3 Deduplication — large batches with duplicates ─────
 
-  ⏱ deduplicateByContent (100 items, 50% dups): 1322 ops/s (avg: 0.757ms, p50: 0.748ms, p95: 0.794ms, p99: 0.817ms)
-  ✓ PASS: Dedup 100 items with dups: > 5 ops/s (1321.6499914637939)
+  ⏱ deduplicateByContent (100 items, 50% dups): 1350 ops/s (avg: 0.741ms, p50: 0.732ms, p95: 0.789ms, p99: 0.830ms)
+  ✓ PASS: Dedup 100 items with dups: > 5 ops/s (1349.523321709686)
 
 ── 3.1 classifyQuery throughput ──────────────────────────
 
-  ⏱ classifyQuery (mixed queries): 862077 ops/s (avg: 0.001ms, p50: 0.001ms, p95: 0.002ms, p99: 0.002ms)
-  ✓ PASS: classifyQuery: > 10K ops/s (862077.2147043933)
+  ⏱ classifyQuery (mixed queries): 882642 ops/s (avg: 0.001ms, p50: 0.001ms, p95: 0.002ms, p99: 0.002ms)
+  ✓ PASS: classifyQuery: > 10K ops/s (882642.058370719)
 
 ── 3.2 getRecallStrategy throughput ──────────────────────
 
-  ⏱ getRecallStrategy (all types): 12218710 ops/s (avg: 0.000ms, p50: 0.000ms, p95: 0.000ms, p99: 0.000ms)
-  ✓ PASS: getRecallStrategy: > 100K ops/s (12218710.021908155)
+  ⏱ getRecallStrategy (all types): 12523572 ops/s (avg: 0.000ms, p50: 0.000ms, p95: 0.000ms, p99: 0.000ms)
+  ✓ PASS: getRecallStrategy: > 100K ops/s (12523572.494327374)
 
 ── 3.3 isExternalAction throughput ───────────────────────
 
-  ⏱ isExternalAction (mixed): 3513861 ops/s (avg: 0.000ms, p50: 0.000ms, p95: 0.000ms, p99: 0.000ms)
-  ✓ PASS: isExternalAction: > 10K ops/s (3513861.480769497)
+  ⏱ isExternalAction (mixed): 3482131 ops/s (avg: 0.000ms, p50: 0.000ms, p95: 0.000ms, p99: 0.000ms)
+  ✓ PASS: isExternalAction: > 10K ops/s (3482130.5764144915)
 
 ── 4.1 Hot window serialization ──────────────────────────
 
-  ⏱ JSON.stringify (20 messages): 707804 ops/s (avg: 0.001ms, p50: 0.001ms, p95: 0.002ms, p99: 0.003ms)
-  ✓ PASS: Hot window serialize: > 10K ops/s (707803.7987688334)
-  ⏱ JSON.parse (20 messages): 292953 ops/s (avg: 0.003ms, p50: 0.003ms, p95: 0.003ms, p99: 0.004ms)
-  ✓ PASS: Hot window deserialize: > 10K ops/s (292952.6776548516)
+  ⏱ JSON.stringify (20 messages): 628009 ops/s (avg: 0.002ms, p50: 0.001ms, p95: 0.003ms, p99: 0.003ms)
+  ✓ PASS: Hot window serialize: > 10K ops/s (628008.5929159784)
+  ⏱ JSON.parse (20 messages): 292673 ops/s (avg: 0.003ms, p50: 0.003ms, p95: 0.003ms, p99: 0.004ms)
+  ✓ PASS: Hot window deserialize: > 10K ops/s (292672.9531060958)
 
 ── 4.2 Token estimation ──────────────────────────────────
 
-  ⏱ estimateTokens (mixed): 13662382 ops/s (avg: 0.000ms, p50: 0.000ms, p95: 0.000ms, p99: 0.000ms)
-  ✓ PASS: Token estimation: > 1M ops/s (13662381.779410575)
+  ⏱ estimateTokens (mixed): 13431810 ops/s (avg: 0.000ms, p50: 0.000ms, p95: 0.000ms, p99: 0.000ms)
+  ✓ PASS: Token estimation: > 1M ops/s (13431809.99146674)
 
 ── 5.1 Full recall pipeline (classify → score → filter → dedup) 
 
-  ⏱ full recall pipeline (20 items): 3152 ops/s (avg: 0.317ms, p50: 0.311ms, p95: 0.366ms, p99: 0.496ms)
-  ✓ PASS: Full pipeline (20 items): > 500 ops/s (3152.424661184214)
-  ✓ PASS: Full pipeline p95 < 10ms (0.3662500000000364)
+  ⏱ full recall pipeline (20 items): 3127 ops/s (avg: 0.320ms, p50: 0.312ms, p95: 0.366ms, p99: 0.420ms)
+  ✓ PASS: Full pipeline (20 items): > 500 ops/s (3126.5063018845863)
+  ✓ PASS: Full pipeline p95 < 10ms (0.3656029999997372)
 
 ── 5.2 Batch scoring (100 items) ─────────────────────────
 
-  ⏱ batch score 100 items: 894 ops/s (avg: 1.118ms, p50: 1.109ms, p95: 1.172ms, p99: 1.194ms)
-  ✓ PASS: Batch score 100 items: > 50 ops/s (894.2088673041972)
+  ⏱ batch score 100 items: 882 ops/s (avg: 1.134ms, p50: 1.126ms, p95: 1.189ms, p99: 1.213ms)
+  ✓ PASS: Batch score 100 items: > 50 ops/s (881.7299533219567)
 
 ── 6.1 Prefix stripping overhead ─────────────────────────
 
-  ⏱ score (clean content): 242955 ops/s (avg: 0.004ms, p50: 0.004ms, p95: 0.004ms, p99: 0.006ms)
-  ⏱ score (prefixed content): 187855 ops/s (avg: 0.005ms, p50: 0.005ms, p95: 0.005ms, p99: 0.007ms)
-  ✓ PASS: Prefix stripping overhead: 29% (< 100%) (0.29331507022778114)
+  ⏱ score (clean content): 241063 ops/s (avg: 0.004ms, p50: 0.004ms, p95: 0.004ms, p99: 0.005ms)
+  ⏱ score (prefixed content): 190318 ops/s (avg: 0.005ms, p50: 0.005ms, p95: 0.005ms, p99: 0.007ms)
+  ✓ PASS: Prefix stripping overhead: 27% (< 100%) (0.26663376480129297)
 
 ════════════════════════════════════════════════════════════
   Performance Benchmarks: 18 passed, 0 failed, 0 skipped
