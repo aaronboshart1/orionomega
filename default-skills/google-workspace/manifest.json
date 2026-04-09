@@ -847,24 +847,54 @@
   },
   "settings": {
     "type": "object",
+    "required": ["GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET"],
     "properties": {
       "GOOGLE_OAUTH_CLIENT_ID": {
         "type": "password",
-        "label": "Google OAuth Client ID",
+        "label": "Client ID",
         "description": "OAuth 2.0 Client ID from Google Cloud Console → APIs & Services → Credentials",
         "placeholder": "123456789-xxxx.apps.googleusercontent.com",
         "required": true,
         "group": "auth",
-        "widget": "secret"
+        "widget": "secret",
+        "order": 1
       },
       "GOOGLE_OAUTH_CLIENT_SECRET": {
         "type": "password",
-        "label": "Google OAuth Client Secret",
+        "label": "Client Secret",
         "description": "OAuth 2.0 Client Secret from Google Cloud Console",
         "placeholder": "GOCSPX-xxxxxxxxxxxx",
         "required": true,
         "group": "auth",
-        "widget": "secret"
+        "widget": "secret",
+        "order": 2
+      },
+      "GOOGLE_OAUTH_REDIRECT_URI": {
+        "type": "string",
+        "label": "Redirect URI",
+        "description": "OAuth 2.0 redirect URI registered in Google Cloud Console. Use http://localhost:4100 for local desktop auth.",
+        "placeholder": "http://localhost:4100",
+        "required": false,
+        "group": "auth",
+        "order": 3
+      },
+      "GOOGLE_ACCESS_TOKEN": {
+        "type": "password",
+        "label": "Access Token",
+        "description": "OAuth 2.0 access token. Obtained automatically from the OAuth flow or enter manually.",
+        "required": false,
+        "group": "auth",
+        "widget": "secret",
+        "order": 4
+      },
+      "GOOGLE_REFRESH_TOKEN": {
+        "type": "password",
+        "label": "Refresh Token",
+        "description": "OAuth 2.0 refresh token used to obtain new access tokens without re-authenticating.",
+        "required": false,
+        "group": "auth",
+        "widget": "secret",
+        "order": 5
       },
       "GOOGLE_PSE_API_KEY": {
         "type": "password",

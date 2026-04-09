@@ -6,7 +6,7 @@ import { readBody } from './utils.js';
 import { checkAuth } from './auth-utils.js';
 
 const VALID_TOP_LEVEL_KEYS = new Set([
-  'gateway', 'hindsight', 'models', 'orchestration', 'workspace', 'logging', 'skills', 'autonomous', 'agentSdk', 'webui', 'commands',
+  'gateway', 'hindsight', 'models', 'orchestration', 'workspace', 'logging', 'skills', 'autonomous', 'agentSdk', 'webui', 'commands', 'codingMode',
 ]);
 
 const VALID_AUTH_MODES = new Set(['api-key', 'none']);
@@ -168,6 +168,34 @@ function validateConfig(config: Record<string, unknown>): string[] {
       errors.push('webui.port must be a number between 1 and 65535');
     }
     validateBindAddress(webui.bind, 'webui.bind', errors);
+  }
+
+  const codingMode = config.codingMode as Record<string, unknown> | undefined;
+  if (codingMode) {
+    if (codingMode.enabled !== undefined && typeof codingMode.enabled !== 'boolean') {
+      errors.push('codingMode.enabled must be a boolean');
+    }
+    if (codingMode.maxParallelAgents !== undefined && (typeof codingMode.maxParallelAgents !== 'number' || codingMode.maxParallelAgents < 1)) {
+      errors.push('codingMode.maxParallelAgents must be a positive number');
+    }
+    if (codingMode.templates !== undefined && (typeof codingMode.templates !== 'object' || Array.isArray(codingMode.templates))) {
+      errors.push('codingMode.templates must be an object');
+    }
+    if (codingMode.models !== undefined && (typeof codingMode.models !== 'object' || Array.isArray(codingMode.models))) {
+      errors.push('codingMode.models must be an object');
+    }
+    if (codingMode.budgetMultiplier !== undefined && (typeof codingMode.budgetMultiplier !== 'number' || codingMode.budgetMultiplier < 0)) {
+      errors.push('codingMode.budgetMultiplier must be a non-negative number');
+    }
+    const validation = codingMode.validation as Record<string, unknown> | undefined;
+    if (validation) {
+      if (validation.autoRun !== undefined && typeof validation.autoRun !== 'boolean') {
+        errors.push('codingMode.validation.autoRun must be a boolean');
+      }
+      if (validation.commands !== undefined && !Array.isArray(validation.commands)) {
+        errors.push('codingMode.validation.commands must be an array');
+      }
+    }
   }
 
   return errors;
