@@ -28,7 +28,7 @@ import { handleLogActivity, handleGetActivity } from './routes/activity.js';
 import { ActivityService } from './activity.js';
 import { handleStatus } from './routes/status.js';
 import { handleGetConfig, handlePutConfig } from './routes/config.js';
-import { handleGetSkills, handlePutSkillConfig } from './routes/skills.js';
+import { handleGetSkills, handlePutSkillConfig, handleGoogleOAuthStart, handleGoogleOAuthStatus } from './routes/skills.js';
 import { rateLimitRest } from './rate-limit.js';
 import { setSecurityHeaders } from './security-headers.js';
 import { handleStartCodingSession, handleGetCodingSession, handleGetCodingSteps, handleCancelCodingSession } from './routes/coding.js';
@@ -1158,6 +1158,21 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Internal server error' }));
     });
+    return;
+  }
+
+  // --- Skills: Google OAuth ---
+  if (pathname === '/api/skills/google-workspace/oauth/start' && method === 'POST') {
+    handleGoogleOAuthStart(req, res, config).catch((err) => {
+      log.error('Google OAuth start route error', { error: err instanceof Error ? err.message : String(err) });
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Internal server error' }));
+    });
+    return;
+  }
+
+  if (pathname === '/api/skills/google-workspace/oauth/status' && method === 'GET') {
+    handleGoogleOAuthStatus(req, res, config);
     return;
   }
 

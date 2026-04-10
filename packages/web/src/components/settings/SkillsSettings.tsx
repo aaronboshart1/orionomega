@@ -131,6 +131,153 @@ function SkillField({
   );
 }
 
+function GoogleOAuthSection({ skillSettings }: { skillSettings: Record<string, unknown> }) {
+  const [authStatus, setAuthStatus] = useState<{
+    authenticated: boolean;
+    email?: string;
+    tokenAge?: string;
+    reason?: string;
+  } | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [authenticating, setAuthenticating] = useState(false);
+  const [error, setError] = useState('');
+
+  const checkStatus = useCallback(async () => {
+    try {
+      const res = await fetch('/api/gateway/api/skills/google-workspace/oauth/status');
+      if (res.ok) {
+        const data = await res.json();
+        setAuthStatus(data);
+        return data.authenticated;
+      }
+    } catch {}
+    return false;
+  }, []);
+
+  useEffect(() => {
+    checkStatus().finally(() => setLoading(false));
+  }, [checkStatus]);
+
+  const handleAuthenticate = async () => {
+    setAuthenticating(true);
+    setError('');
+
+    try {
+      const res = await fetch('/api/gateway/api/skills/google-workspace/oauth/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({ error: 'Failed to start OAuth' }));
+        throw new Error((body as { error?: string }).error || 'Failed to start OAuth flow');
+      }
+
+      const data = await res.json();
+
+      if (data.authUrl) {
+        window.open(data.authUrl, '_blank', 'noopener,noreferrer');
+
+        let attempts = 0;
+        const maxAttempts = 40;
+        const pollInterval = setInterval(async () => {
+          attempts++;
+          const isAuth = await checkStatus();
+          if (isAuth || attempts >= maxAttempts) {
+            clearInterval(pollInterval);
+            setAuthenticating(false);
+            if (!isAuth && attempts >= maxAttempts) {
+              setError('Authentication timed out. Please try again.');
+            }
+          }
+        }, 3000);
+      } else {
+        throw new Error((data as { error?: string }).error || 'No auth URL returned');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Authentication failed');
+      setAuthenticating(false);
+    }
+  };
+
+  void skillSettings;
+
+  if (loading) {
+    return (
+      <div className="flex items-center gap-2 py-2">
+        <Loader2 size={12} className="animate-spin text-zinc-500" />
+        <span className="text-[11px] text-zinc-500">Checking auth status...</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2 pt-1 border-t border-zinc-800">
+      <h4 className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
+        Google Authentication
+      </h4>
+
+      <div className="flex items-center gap-2">
+        {authStatus?.authenticated ? (
+          <>
+            <CheckCircle size={12} className="text-green-500" />
+            <span className="text-[11px] text-green-400">
+              Authenticated as {authStatus.email}
+            </span>
+            {authStatus.tokenAge && (
+              <span className="text-[10px] text-zinc-600">({authStatus.tokenAge})</span>
+            )}
+          </>
+        ) : (
+          <>
+            <AlertCircle size={12} className="text-amber-500" />
+            <span className="text-[11px] text-amber-400">Not authenticated</span>
+          </>
+        )}
+      </div>
+
+      {error && (
+        <p className="text-[11px] text-red-400">{error}</p>
+      )}
+
+      <button
+        onClick={handleAuthenticate}
+        disabled={authenticating}
+        className="flex items-center gap-1.5 rounded bg-blue-600 px-3 py-1.5 text-[11px] font-medium text-white transition-colors hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+      >
+        {authenticating ? (
+          <>
+            <Loader2 size={11} className="animate-spin" />
+            Waiting for authentication...
+          </>
+        ) : authStatus?.authenticated ? (
+          <>
+            <RefreshCw size={11} />
+            Re-authenticate
+          </>
+        ) : (
+          <>
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 01-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z"/>
+              <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+              <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
+              <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
+            </svg>
+            Authenticate with Google
+          </>
+        )}
+      </button>
+
+      {authenticating && (
+        <p className="text-[10px] text-zinc-500">
+          A Google sign-in page has been opened in your browser.
+          Complete the sign-in there, then this will update automatically.
+        </p>
+      )}
+    </div>
+  );
+}
+
 function SkillCard({
   skill,
   onSave,
@@ -295,6 +442,10 @@ function SkillCard({
             </>
           ) : (
             <p className="text-[11px] text-zinc-500">No configurable settings for this skill.</p>
+          )}
+
+          {skill.name === 'google-workspace' && (
+            <GoogleOAuthSection skillSettings={localSettings} />
           )}
 
           {(hasSchema || settingsDirty) && (

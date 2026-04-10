@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
 import {
   SkillLoader,
   readSkillConfig,
@@ -199,5 +200,64 @@ export async function handlePutSkillConfig(
     const status = message.includes('exceeds limit') ? 413 : 400;
     res.writeHead(status, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: status === 413 ? 'Request body too large' : 'Failed to update skill configuration' }));
+  }
+}
+
+export async function handleGoogleOAuthStart(
+  req: IncomingMessage,
+  res: ServerResponse,
+  gatewayConfig: GatewayConfig,
+): Promise<void> {
+  if (!checkAuth(req, res, gatewayConfig)) return;
+
+  const scriptPath = join(getConfiguredSkillsDir(), 'google-workspace', 'hooks', 'oauth-start.js');
+  if (!existsSync(scriptPath)) {
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'OAuth start script not found' }));
+    return;
+  }
+
+  const result = spawnSync('node', [scriptPath], { encoding: 'utf-8', timeout: 60000, env: { ...process.env } });
+  try {
+    const parsed = JSON.parse(result.stdout) as Record<string, unknown>;
+    if (parsed.error) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: parsed.error }));
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(parsed));
+  } catch {
+    const errMsg = result.stderr?.trim() || 'Failed to start OAuth flow';
+    console.error('[skills] Google OAuth start error:', errMsg);
+    res.writeHead(500, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: errMsg }));
+  }
+}
+
+export function handleGoogleOAuthStatus(
+  req: IncomingMessage,
+  res: ServerResponse,
+  gatewayConfig: GatewayConfig,
+): void {
+  if (!checkAuth(req, res, gatewayConfig)) return;
+
+  const scriptPath = join(getConfiguredSkillsDir(), 'google-workspace', 'hooks', 'oauth-status.js');
+  if (!existsSync(scriptPath)) {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ authenticated: false, reason: 'Status script not found' }));
+    return;
+  }
+
+  const result = spawnSync('node', [scriptPath], { encoding: 'utf-8', timeout: 10000, env: { ...process.env } });
+  try {
+    const parsed = JSON.parse(result.stdout) as Record<string, unknown>;
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(parsed));
+  } catch {
+    const errMsg = result.stderr?.trim() || 'Failed to get OAuth status';
+    console.error('[skills] Google OAuth status error:', errMsg);
+    res.writeHead(500, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: errMsg }));
   }
 }
