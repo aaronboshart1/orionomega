@@ -162,6 +162,10 @@ function GoogleOAuthSection({ skillSettings }: { skillSettings: Record<string, u
     setAuthenticating(true);
     setError('');
 
+    // Open a blank window synchronously within the user gesture context.
+    // Browsers block window.open() called after an await (gesture context is lost).
+    const popup = window.open('about:blank', '_blank');
+
     try {
       const res = await fetch('/api/gateway/api/skills/google-workspace/oauth/start', {
         method: 'POST',
@@ -169,6 +173,7 @@ function GoogleOAuthSection({ skillSettings }: { skillSettings: Record<string, u
       });
 
       if (!res.ok) {
+        popup?.close();
         const body = await res.json().catch(() => ({ error: 'Failed to start OAuth' }));
         throw new Error((body as { error?: string }).error || 'Failed to start OAuth flow');
       }
@@ -176,7 +181,11 @@ function GoogleOAuthSection({ skillSettings }: { skillSettings: Record<string, u
       const data = await res.json();
 
       if (data.authUrl) {
-        window.open(data.authUrl, '_blank', 'noopener,noreferrer');
+        if (popup) {
+          popup.location.href = data.authUrl;
+        } else {
+          window.open(data.authUrl, '_blank');
+        }
 
         let attempts = 0;
         const maxAttempts = 40;
@@ -192,6 +201,7 @@ function GoogleOAuthSection({ skillSettings }: { skillSettings: Record<string, u
           }
         }, 3000);
       } else {
+        popup?.close();
         throw new Error((data as { error?: string }).error || 'No auth URL returned');
       }
     } catch (err) {
