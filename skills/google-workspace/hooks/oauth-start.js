@@ -8,6 +8,39 @@ const OAUTH_PORT = 9877;
 const MCP_ENDPOINT = `http://localhost:${OAUTH_PORT}/mcp`;
 const STATE_FILE = join(homedir(), '.google_workspace_mcp', '.oauth_server_pid');
 
+/**
+ * MCP streamable-http requires Accept: application/json, text/event-stream
+ * and returns SSE format: "event: message\ndata: {json}\n\n"
+ * This helper parses the SSE body to extract the JSON payload.
+ */
+function parseSSE(body) {
+  // Try plain JSON first (some responses may be direct JSON)
+  try {
+    return JSON.parse(body);
+  } catch {}
+
+  // Parse SSE: look for "data: " lines
+  const lines = body.split('\n');
+  for (const line of lines) {
+    if (line.startsWith('data: ')) {
+      try {
+        return JSON.parse(line.slice(6));
+      } catch {}
+    }
+  }
+  return null;
+}
+
+/** Standard headers for MCP streamable-http requests */
+function mcpHeaders(sessionId) {
+  const h = {
+    'Content-Type': 'application/json',
+    'Accept': 'application/json, text/event-stream',
+  };
+  if (sessionId) h['mcp-session-id'] = sessionId;
+  return h;
+}
+
 async function main() {
   const configPath = join(homedir(), '.orionomega', 'skills', 'google-workspace', 'config.json');
   let config = {};
@@ -28,6 +61,7 @@ async function main() {
     process.exit(1);
   }
 
+  // Kill any existing OAuth server
   if (existsSync(STATE_FILE)) {
     try {
       const oldPid = parseInt(readFileSync(STATE_FILE, 'utf-8').trim(), 10);
@@ -35,60 +69,126 @@ async function main() {
     } catch {}
   }
 
+  // Build environment for workspace-mcp child process.
+  // CRITICAL: Set PORT (not just WORKSPACE_MCP_PORT) because workspace-mcp
+  // reads PORT first: int(os.getenv("PORT", os.getenv("WORKSPACE_MCP_PORT", 8000)))
+  // The parent gateway sets PORT=8000, which would override WORKSPACE_MCP_PORT.
   const env = {
     ...process.env,
+    PORT: String(OAUTH_PORT),
+    WORKSPACE_MCP_PORT: String(OAUTH_PORT),
+    WORKSPACE_MCP_HOST: '127.0.0.1',
     GOOGLE_OAUTH_CLIENT_ID: clientId,
     GOOGLE_OAUTH_CLIENT_SECRET: clientSecret,
     USER_GOOGLE_EMAIL: userEmail,
-    WORKSPACE_MCP_PORT: String(OAUTH_PORT),
-    WORKSPACE_MCP_HOST: '127.0.0.1',
     OAUTHLIB_INSECURE_TRANSPORT: '1',
   };
+
+  // Collect stderr from child for diagnostics
+  let childStderr = '';
 
   const child = spawn('uvx', ['workspace-mcp', '--single-user', '--transport', 'streamable-http'], {
     env,
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: true,
   });
+
+  child.stderr.on('data', (chunk) => {
+    childStderr += chunk.toString();
+  });
+
+  child.on('error', (err) => {
+    childStderr += `\nSpawn error: ${err.message}`;
+  });
+
   child.unref();
 
+  // Save PID for cleanup
   mkdirSync(join(homedir(), '.google_workspace_mcp'), { recursive: true });
   writeFileSync(STATE_FILE, String(child.pid));
 
+  // Wait for server to be ready (poll up to 30s)
   const startTime = Date.now();
   let ready = false;
+  let lastPollError = '';
+
   while (Date.now() - startTime < 30000) {
+    // Check if child process has already exited
+    try {
+      process.kill(child.pid, 0);
+    } catch {
+      process.stdout.write(JSON.stringify({
+        error: `workspace-mcp server exited before becoming ready. stderr: ${childStderr.slice(-500)}`,
+      }));
+      process.exit(1);
+    }
+
     try {
       const res = await fetch(MCP_ENDPOINT, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'orionomega', version: '1.0.0' } } }),
+        headers: mcpHeaders(null),
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'initialize',
+          params: {
+            protocolVersion: '2024-11-05',
+            capabilities: {},
+            clientInfo: { name: 'orionomega', version: '1.0.0' },
+          },
+        }),
         signal: AbortSignal.timeout(3000),
       });
-      if (res.ok) { ready = true; break; }
-    } catch {}
-    await new Promise(r => setTimeout(r, 1000));
+      if (res.ok) {
+        ready = true;
+        break;
+      }
+      lastPollError = `HTTP ${res.status}`;
+    } catch (e) {
+      lastPollError = e.message || String(e);
+    }
+    await new Promise((r) => setTimeout(r, 1000));
   }
 
   if (!ready) {
     try { process.kill(child.pid, 'SIGTERM'); } catch {}
-    process.stdout.write(JSON.stringify({ error: 'workspace-mcp server failed to start within 30 seconds.' }));
+    process.stdout.write(JSON.stringify({
+      error: `workspace-mcp server failed to start within 30s. Last poll error: ${lastPollError}. stderr: ${childStderr.slice(-500)}`,
+    }));
     process.exit(1);
   }
 
+  // Initialize MCP session
   const initRes = await fetch(MCP_ENDPOINT, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'orionomega', version: '1.0.0' } } }),
+    headers: mcpHeaders(null),
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: {
+        protocolVersion: '2024-11-05',
+        capabilities: {},
+        clientInfo: { name: 'orionomega', version: '1.0.0' },
+      },
+    }),
   });
   const sessionId = initRes.headers.get('mcp-session-id');
 
-  const headers = { 'Content-Type': 'application/json' };
-  if (sessionId) headers['mcp-session-id'] = sessionId;
+  // Send initialized notification (required by MCP protocol)
+  await fetch(MCP_ENDPOINT, {
+    method: 'POST',
+    headers: mcpHeaders(sessionId),
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      method: 'notifications/initialized',
+    }),
+  });
 
+  // Call start_google_auth tool
   const toolRes = await fetch(MCP_ENDPOINT, {
     method: 'POST',
-    headers,
+    headers: mcpHeaders(sessionId),
     body: JSON.stringify({
       jsonrpc: '2.0',
       id: 2,
@@ -99,20 +199,22 @@ async function main() {
       },
     }),
   });
-  const toolResult = await toolRes.json();
+  const toolBody = await toolRes.text();
+  const toolResult = parseSSE(toolBody);
 
+  // Extract auth URL from the response text
   let authUrl = null;
   const content = toolResult?.result?.content;
   if (Array.isArray(content)) {
-    const text = content.filter(c => c.type === 'text').map(c => c.text).join('\n');
-    const urlMatch = text.match(/https:\/\/accounts\.google\.com\/o\/oauth2\/[^\s)]+/);
+    const text = content.filter((c) => c.type === 'text').map((c) => c.text).join('\n');
+    const urlMatch = text.match(/https:\/\/accounts\.google\.com\/o\/oauth2\/[^\s)"]+/);
     if (urlMatch) authUrl = urlMatch[0];
   }
 
   if (!authUrl) {
     process.stdout.write(JSON.stringify({
       error: 'Could not extract auth URL from workspace-mcp response.',
-      raw: JSON.stringify(toolResult),
+      raw: toolBody.slice(0, 1000),
     }));
     process.exit(1);
   }
@@ -125,7 +227,7 @@ async function main() {
   }));
 }
 
-main().catch(err => {
-  process.stdout.write(JSON.stringify({ error: err.message }));
+main().catch((err) => {
+  process.stdout.write(JSON.stringify({ error: err.message || String(err) }));
   process.exit(1);
 });
