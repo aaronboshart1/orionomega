@@ -1,31 +1,25 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
-import { readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, existsSync, writeFileSync, mkdirSync, openSync, readSync, closeSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 
 const OAUTH_PORT = 9877;
 const MCP_ENDPOINT = `http://localhost:${OAUTH_PORT}/mcp`;
-const STATE_FILE = join(homedir(), '.google_workspace_mcp', '.oauth_server_pid');
+const WM_DIR = join(homedir(), '.google_workspace_mcp');
+const STATE_FILE = join(WM_DIR, '.oauth_server_pid');
+const LOG_FILE = join(WM_DIR, 'oauth-server.log');
 
 /**
- * MCP streamable-http requires Accept: application/json, text/event-stream
- * and returns SSE format: "event: message\ndata: {json}\n\n"
+ * MCP streamable-http returns SSE format: "event: message\ndata: {json}\n\n"
  * This helper parses the SSE body to extract the JSON payload.
  */
 function parseSSE(body) {
-  // Try plain JSON first (some responses may be direct JSON)
-  try {
-    return JSON.parse(body);
-  } catch {}
-
-  // Parse SSE: look for "data: " lines
+  try { return JSON.parse(body); } catch {}
   const lines = body.split('\n');
   for (const line of lines) {
     if (line.startsWith('data: ')) {
-      try {
-        return JSON.parse(line.slice(6));
-      } catch {}
+      try { return JSON.parse(line.slice(6)); } catch {}
     }
   }
   return null;
@@ -39,6 +33,16 @@ function mcpHeaders(sessionId) {
   };
   if (sessionId) h['mcp-session-id'] = sessionId;
   return h;
+}
+
+/** Read tail of the log file for diagnostics */
+function readLogTail(maxBytes = 1000) {
+  try {
+    const content = readFileSync(LOG_FILE, 'utf-8');
+    return content.slice(-maxBytes);
+  } catch {
+    return '(no log)';
+  }
 }
 
 async function main() {
@@ -66,13 +70,18 @@ async function main() {
     try {
       const oldPid = parseInt(readFileSync(STATE_FILE, 'utf-8').trim(), 10);
       process.kill(oldPid, 'SIGTERM');
+      // Give it a moment to release the port
+      await new Promise((r) => setTimeout(r, 1000));
     } catch {}
   }
 
+  // Ensure workspace-mcp directory exists
+  mkdirSync(WM_DIR, { recursive: true });
+
   // Build environment for workspace-mcp child process.
-  // CRITICAL: Set PORT (not just WORKSPACE_MCP_PORT) because workspace-mcp
-  // reads PORT first: int(os.getenv("PORT", os.getenv("WORKSPACE_MCP_PORT", 8000)))
-  // The parent gateway sets PORT=8000, which would override WORKSPACE_MCP_PORT.
+  // CRITICAL: Set PORT explicitly because workspace-mcp reads it first:
+  //   int(os.getenv("PORT", os.getenv("WORKSPACE_MCP_PORT", 8000)))
+  // The gateway sets PORT=8000 which would override WORKSPACE_MCP_PORT.
   const env = {
     ...process.env,
     PORT: String(OAUTH_PORT),
@@ -84,27 +93,25 @@ async function main() {
     OAUTHLIB_INSECURE_TRANSPORT: '1',
   };
 
-  // Collect stderr from child for diagnostics
-  let childStderr = '';
+  // CRITICAL: Use file descriptors (not pipes) for the child's stdio.
+  // When this script exits, pipe file descriptors would close and
+  // workspace-mcp (uvicorn) would get SIGPIPE on its next write to
+  // stdout/stderr, causing it to crash. File descriptors backed by
+  // actual files survive the parent process exiting.
+  const logFd = openSync(LOG_FILE, 'w');
 
   const child = spawn('uvx', ['workspace-mcp', '--single-user', '--transport', 'streamable-http'], {
     env,
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: ['ignore', logFd, logFd],
     detached: true,
-  });
-
-  child.stderr.on('data', (chunk) => {
-    childStderr += chunk.toString();
-  });
-
-  child.on('error', (err) => {
-    childStderr += `\nSpawn error: ${err.message}`;
   });
 
   child.unref();
 
+  // Close our copy of the fd — the child has its own copy now
+  closeSync(logFd);
+
   // Save PID for cleanup
-  mkdirSync(join(homedir(), '.google_workspace_mcp'), { recursive: true });
   writeFileSync(STATE_FILE, String(child.pid));
 
   // Wait for server to be ready (poll up to 30s)
@@ -117,8 +124,9 @@ async function main() {
     try {
       process.kill(child.pid, 0);
     } catch {
+      const logTail = readLogTail();
       process.stdout.write(JSON.stringify({
-        error: `workspace-mcp server exited before becoming ready. stderr: ${childStderr.slice(-500)}`,
+        error: `workspace-mcp server exited before becoming ready. Log: ${logTail}`,
       }));
       process.exit(1);
     }
@@ -152,8 +160,9 @@ async function main() {
 
   if (!ready) {
     try { process.kill(child.pid, 'SIGTERM'); } catch {}
+    const logTail = readLogTail();
     process.stdout.write(JSON.stringify({
-      error: `workspace-mcp server failed to start within 30s. Last poll error: ${lastPollError}. stderr: ${childStderr.slice(-500)}`,
+      error: `workspace-mcp server failed to start within 30s. Last poll error: ${lastPollError}. Log: ${logTail}`,
     }));
     process.exit(1);
   }
