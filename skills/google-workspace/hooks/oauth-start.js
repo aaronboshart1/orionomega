@@ -55,6 +55,7 @@ async function main() {
   const clientId = config.GOOGLE_OAUTH_CLIENT_ID || process.env.GOOGLE_OAUTH_CLIENT_ID;
   const clientSecret = config.GOOGLE_OAUTH_CLIENT_SECRET || process.env.GOOGLE_OAUTH_CLIENT_SECRET;
   const userEmail = config.USER_GOOGLE_EMAIL || process.env.USER_GOOGLE_EMAIL;
+  const redirectUri = config.GOOGLE_OAUTH_REDIRECT_URI || process.env.GOOGLE_OAUTH_REDIRECT_URI || 'http://localhost:4100';
 
   if (!clientId || !clientSecret) {
     process.stdout.write(JSON.stringify({ error: 'OAuth Client ID and Secret must be configured first.' }));
@@ -89,6 +90,7 @@ async function main() {
     WORKSPACE_MCP_HOST: '127.0.0.1',
     GOOGLE_OAUTH_CLIENT_ID: clientId,
     GOOGLE_OAUTH_CLIENT_SECRET: clientSecret,
+    GOOGLE_OAUTH_REDIRECT_URI: redirectUri,
     USER_GOOGLE_EMAIL: userEmail,
     OAUTHLIB_INSECURE_TRANSPORT: '1',
   };
@@ -228,10 +230,22 @@ async function main() {
     process.exit(1);
   }
 
+  // Parse the redirect URI to extract host/port for remote access detection
+  let redirectHost = 'localhost';
+  let redirectPort = 4100;
+  try {
+    const parsedRedirect = new URL(redirectUri);
+    redirectHost = parsedRedirect.hostname;
+    redirectPort = parseInt(parsedRedirect.port, 10) || (parsedRedirect.protocol === 'https:' ? 443 : 80);
+  } catch {}
+
   process.stdout.write(JSON.stringify({
     authUrl,
     port: OAUTH_PORT,
     pid: child.pid,
+    redirectUri,
+    redirectHost,
+    redirectPort,
     message: 'Open the auth URL in your browser to authenticate with Google.',
   }));
 }

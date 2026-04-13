@@ -141,6 +141,10 @@ function GoogleOAuthSection({ skillSettings }: { skillSettings: Record<string, u
   const [loading, setLoading] = useState(true);
   const [authenticating, setAuthenticating] = useState(false);
   const [error, setError] = useState('');
+  const [showManualEntry, setShowManualEntry] = useState(false);
+  const [manualCodeInput, setManualCodeInput] = useState('');
+  const [submittingCode, setSubmittingCode] = useState(false);
+  const [showRemoteHelp, setShowRemoteHelp] = useState(false);
 
   const checkStatus = useCallback(async () => {
     try {
@@ -158,9 +162,51 @@ function GoogleOAuthSection({ skillSettings }: { skillSettings: Record<string, u
     checkStatus().finally(() => setLoading(false));
   }, [checkStatus]);
 
+  const handleSubmitManualCode = async () => {
+    if (!manualCodeInput.trim()) return;
+    setSubmittingCode(true);
+    setError('');
+    try {
+      const isUrl = manualCodeInput.includes('code=') || manualCodeInput.startsWith('http');
+      const payload = isUrl ? { url: manualCodeInput.trim() } : { code: manualCodeInput.trim() };
+
+      const res = await fetch('/api/gateway/api/skills/google-workspace/oauth/callback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error((data as { error?: string }).error || 'Failed to submit authorization code');
+      }
+
+      setManualCodeInput('');
+      setShowManualEntry(false);
+      // Poll for a few seconds to confirm token was saved
+      let attempts = 0;
+      const poll = setInterval(async () => {
+        attempts++;
+        const isAuth = await checkStatus();
+        if (isAuth || attempts >= 10) {
+          clearInterval(poll);
+          setAuthenticating(false);
+          if (isAuth) {
+            setError('');
+          }
+        }
+      }, 2000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to submit code');
+    } finally {
+      setSubmittingCode(false);
+    }
+  };
+
   const handleAuthenticate = async () => {
     setAuthenticating(true);
     setError('');
+    setShowManualEntry(false);
 
     // Open a blank window synchronously within the user gesture context.
     // Browsers block window.open() called after an await (gesture context is lost).
@@ -187,6 +233,11 @@ function GoogleOAuthSection({ skillSettings }: { skillSettings: Record<string, u
           window.open(data.authUrl, '_blank');
         }
 
+        // Show manual entry option after a short delay — remote users will need it
+        setTimeout(() => {
+          setShowManualEntry(true);
+        }, 5000);
+
         let attempts = 0;
         const maxAttempts = 40;
         const pollInterval = setInterval(async () => {
@@ -195,8 +246,10 @@ function GoogleOAuthSection({ skillSettings }: { skillSettings: Record<string, u
           if (isAuth || attempts >= maxAttempts) {
             clearInterval(pollInterval);
             setAuthenticating(false);
+            setShowManualEntry(false);
             if (!isAuth && attempts >= maxAttempts) {
-              setError('Authentication timed out. Please try again.');
+              setError('Authentication timed out. If you are accessing remotely, use the manual code entry below.');
+              setShowManualEntry(true);
             }
           }
         }, 3000);
@@ -283,6 +336,91 @@ function GoogleOAuthSection({ skillSettings }: { skillSettings: Record<string, u
           A Google sign-in page has been opened in your browser.
           Complete the sign-in there, then this will update automatically.
         </p>
+      )}
+
+      {/* Manual code entry for remote users */}
+      {(showManualEntry || (!authenticating && !authStatus?.authenticated)) && (
+        <div className="space-y-2 rounded border border-zinc-700 bg-zinc-800/50 p-2.5">
+          <button
+            type="button"
+            onClick={() => setShowRemoteHelp(!showRemoteHelp)}
+            className="text-[11px] text-blue-400 hover:text-blue-300 underline"
+          >
+            Accessing remotely? Click here for help
+          </button>
+
+          {showRemoteHelp && (
+            <div className="space-y-2 text-[10px] text-zinc-400 leading-relaxed">
+              <p className="font-medium text-zinc-300">
+                If you are accessing OrionOmega from a remote machine (VM, cloud server, etc.),
+                the Google OAuth redirect to localhost will fail because it targets your browser{"'"}s
+                machine, not the server.
+              </p>
+
+              <div>
+                <p className="font-medium text-zinc-300 mb-1">Option 1: SSH Port Forwarding (Recommended)</p>
+                <p>Forward the OAuth callback port from the server to your local machine:</p>
+                <code className="block mt-1 px-2 py-1 rounded bg-zinc-900 text-green-400 font-mono text-[10px] select-all">
+                  ssh -L 4100:localhost:4100 user@your-server-ip
+                </code>
+                <p className="mt-1">Then authenticate normally — the redirect will work through the tunnel.</p>
+              </div>
+
+              <div>
+                <p className="font-medium text-zinc-300 mb-1">Option 2: Manual Code Entry</p>
+                <ol className="list-decimal list-inside space-y-0.5">
+                  <li>Click &quot;Authenticate with Google&quot; above</li>
+                  <li>Complete the Google sign-in in the popup</li>
+                  <li>After signing in, your browser will redirect to a localhost URL that won{"'"}t load</li>
+                  <li>Copy the <strong>entire URL</strong> from your browser{"'"}s address bar</li>
+                  <li>Paste it into the field below and click Submit</li>
+                </ol>
+                <p className="mt-1 text-zinc-500">
+                  The URL looks like: <code className="text-zinc-400">http://localhost:4100?code=4/0A...&scope=...</code>
+                </p>
+              </div>
+
+              <div>
+                <p className="font-medium text-zinc-300 mb-1">Option 3: Custom Redirect URI</p>
+                <p>
+                  Set the <strong>Redirect URI</strong> field above to your server{"'"}s accessible address
+                  (e.g., <code className="text-zinc-400">http://your-server-ip:4100</code>).
+                  You must also add this URI in your{' '}
+                  <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 underline">
+                    Google Cloud Console
+                  </a>
+                  {' '}OAuth client configuration under &quot;Authorized redirect URIs&quot;.
+                </p>
+              </div>
+            </div>
+          )}
+
+          <div className="flex gap-1.5">
+            <input
+              type="text"
+              value={manualCodeInput}
+              onChange={(e) => setManualCodeInput(e.target.value)}
+              placeholder="Paste redirect URL or authorization code here"
+              className="flex-1 rounded border border-zinc-600 bg-zinc-900 px-2 py-1 text-[11px] text-zinc-200 outline-none focus:border-blue-500 placeholder:text-zinc-600"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && manualCodeInput.trim()) {
+                  handleSubmitManualCode();
+                }
+              }}
+            />
+            <button
+              onClick={handleSubmitManualCode}
+              disabled={submittingCode || !manualCodeInput.trim()}
+              className="rounded bg-zinc-700 px-2.5 py-1 text-[11px] font-medium text-zinc-200 transition-colors hover:bg-zinc-600 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {submittingCode ? (
+                <Loader2 size={10} className="animate-spin" />
+              ) : (
+                'Submit'
+              )}
+            </button>
+          </div>
+        </div>
       )}
     </div>
   );

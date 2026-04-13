@@ -872,7 +872,7 @@
       "GOOGLE_OAUTH_REDIRECT_URI": {
         "type": "string",
         "label": "Redirect URI",
-        "description": "OAuth 2.0 redirect URI registered in Google Cloud Console. Use http://localhost:4100 for local desktop auth.",
+        "description": "OAuth 2.0 redirect URI. Defaults to http://localhost:4100. For remote/VM access, set to http://YOUR_SERVER_IP:4100 and add this URI in Google Cloud Console under Authorized redirect URIs. Alternatively, use SSH port forwarding or manual code entry.",
         "placeholder": "http://localhost:4100",
         "required": false,
         "group": "auth",

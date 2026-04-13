@@ -235,6 +235,82 @@ export async function handleGoogleOAuthStart(
   }
 }
 
+/**
+ * Proxy endpoint for manual OAuth callback.
+ * Remote users can't reach localhost:4100 on the VM, so they paste the redirect
+ * URL (or just the auth code) into the web UI.  This handler replays the
+ * callback against the workspace-mcp OAuth listener running on the VM.
+ */
+export async function handleGoogleOAuthCallback(
+  req: IncomingMessage,
+  res: ServerResponse,
+  gatewayConfig: GatewayConfig,
+): Promise<void> {
+  if (!checkAuth(req, res, gatewayConfig)) return;
+
+  try {
+    const body = await readBody(req);
+    const payload = JSON.parse(body) as { url?: string; code?: string };
+
+    // Extract the authorization code from either a full redirect URL or a bare code value
+    let code: string | null = null;
+
+    if (payload.url) {
+      try {
+        const parsed = new URL(payload.url);
+        code = parsed.searchParams.get('code');
+      } catch {
+        // If it's not a valid URL, treat the whole string as a code
+        code = payload.url.trim();
+      }
+    } else if (payload.code) {
+      code = payload.code.trim();
+    }
+
+    if (!code) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'No authorization code found. Paste the full redirect URL or just the code parameter.' }));
+      return;
+    }
+
+    // Read the redirect URI from skill config to know which port workspace-mcp listens on
+    const configDir = getConfiguredSkillsDir();
+    const config = readSkillConfig(configDir, 'google-workspace');
+    const redirectUri = (config.fields?.GOOGLE_OAUTH_REDIRECT_URI as string)
+      || process.env.GOOGLE_OAUTH_REDIRECT_URI
+      || 'http://localhost:4100';
+
+    // Build the callback URL targeting the VM's localhost (where workspace-mcp actually runs)
+    const callbackUrl = new URL(redirectUri);
+    // Always target localhost on the VM regardless of what the configured redirect host is
+    callbackUrl.hostname = '127.0.0.1';
+    callbackUrl.searchParams.set('code', code);
+
+    // Replay the OAuth callback against workspace-mcp's local listener
+    const proxyRes = await fetch(callbackUrl.toString(), {
+      method: 'GET',
+      signal: AbortSignal.timeout(15000),
+    });
+
+    if (proxyRes.ok) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, message: 'Authorization code submitted successfully. Check OAuth status.' }));
+    } else {
+      const errText = await proxyRes.text().catch(() => '');
+      res.writeHead(502, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        error: `workspace-mcp callback returned HTTP ${proxyRes.status}`,
+        detail: errText.slice(0, 500),
+      }));
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Failed to proxy OAuth callback';
+    console.error('[skills] Google OAuth callback proxy error:', message);
+    res.writeHead(500, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: message }));
+  }
+}
+
 export function handleGoogleOAuthStatus(
   req: IncomingMessage,
   res: ServerResponse,
