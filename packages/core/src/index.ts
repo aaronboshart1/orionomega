@@ -65,6 +65,9 @@ export { OrchestratorCommands } from './orchestration/index.js';
 export { CommandFileLoader } from './commands/index.js';
 export type { FileCommand } from './commands/index.js';
 
+// UI lifecycle
+export { restartWebUI } from './commands/ui.js';
+
 // Logging
 export type { Logger, LogLevel, AuditCategory, AuditEntry } from './logging/index.js';
 export { createLogger, setGlobalLogLevel, getGlobalLogLevel, enableFileLogging, setConsoleLogging, emitAuditEvent, auditToolInvocation, auditApiRequest, auditAuthEvent, auditConfigChange } from './logging/index.js';

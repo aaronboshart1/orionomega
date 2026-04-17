@@ -10,6 +10,7 @@ import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { readConfig } from '../config/index.js';
 import { safeChildEnv } from './process-utils.js';
+import { restartWebUI } from './ui.js';
 
 const GREEN = '\x1b[32m';
 const RED = '\x1b[31m';
@@ -165,7 +166,7 @@ export async function runGateway(args: string[]): Promise<void> {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes('not found') || msg.includes('could not be found') || msg.includes('No such file')) {
         process.stdout.write(`${DIM}systemd unit not installed, using dev mode${RESET}\n`);
-        runDevMode(sub);
+        await runDevMode(sub);
       } else {
         if (sub === 'status') {
           process.stdout.write(`${DIM}systemd unit not active, checking dev mode...${RESET}\n`);
@@ -176,16 +177,28 @@ export async function runGateway(args: string[]): Promise<void> {
       }
     }
   } else {
-    runDevMode(sub);
+    await runDevMode(sub);
   }
 }
 
-function runDevMode(sub: string): void {
+async function runDevMode(sub: string): Promise<void> {
   switch (sub) {
     case 'start': startDev(); break;
     case 'stop': stopDev(); break;
     case 'restart':
       startDev(true);
+      process.stdout.write(`${DIM}Restarting web UI...${RESET}\n`);
+      try {
+        const result = await restartWebUI();
+        if (result.started) {
+          process.stdout.write(`${GREEN}✓${RESET} Web UI restarted (PID ${result.started})\n`);
+        } else {
+          process.stdout.write(`${YELLOW}⚠${RESET} Web UI is not running or failed to start\n`);
+        }
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        process.stdout.write(`${YELLOW}⚠${RESET} Failed to restart web UI: ${msg}\n`);
+      }
       break;
     case 'status': statusDev(); break;
   }

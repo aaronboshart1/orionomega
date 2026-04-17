@@ -12,7 +12,7 @@ import { resolve as resolvePath, normalize } from 'node:path';
 import { homedir } from 'node:os';
 import { spawn as spawnProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { readConfig, normalizeBindAddresses, MainAgent, CommandFileLoader, createLogger, setGlobalLogLevel, enableFileLogging, discoverModels, clearModelCache, auditApiRequest, setCodingOrchestatorEmitters } from '@orionomega/core';
+import { readConfig, normalizeBindAddresses, MainAgent, CommandFileLoader, createLogger, setGlobalLogLevel, enableFileLogging, discoverModels, clearModelCache, auditApiRequest, setCodingOrchestatorEmitters, restartWebUI } from '@orionomega/core';
 import type { MainAgentConfig, MainAgentCallbacks, LogLevel, PlannerOutput } from '@orionomega/core';
 import { setLogLevel as setHindsightLogLevel } from '@orionomega/hindsight';
 import type { GatewayConfig } from './types.js';
@@ -1357,6 +1357,17 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
     });
     child.unref();
     setTimeout(() => shutdown('API_RESTART'), 500);
+
+    // Restart the web UI after the gateway restart response is sent.
+    // Delay ensures the HTTP response is delivered before this process restarts.
+    setTimeout(() => {
+      restartWebUI().then((result) => {
+        log.info('Web UI restarted after gateway restart', { stopped: result.stopped, started: result.started });
+      }).catch((err) => {
+        log.error('Failed to restart web UI after gateway restart', { error: String(err) });
+      });
+    }, 1000);
+
     return;
   }
 
