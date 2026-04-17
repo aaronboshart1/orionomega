@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo, type MouseEvent } from 'react';
 import { useOrchestrationStore, useFilteredMemoryEvents, type MemoryEvent, type MemoryFilterState, type RecallMeta, type RetainMeta, type QualityMeta, type DedupMeta } from '@/stores/orchestration';
+import { copyToClipboard } from '@/utils/clipboard';
 import {
   Brain,
   Download,
@@ -71,15 +72,30 @@ function QualityDot({ score }: { score: number }) {
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
-  const handleCopy = useCallback((e: React.MouseEvent) => {
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (timerRef.current !== null) clearTimeout(timerRef.current);
+    };
+  }, []);
+
+  const handleCopy = useCallback((e: MouseEvent) => {
     e.stopPropagation();
-    navigator.clipboard.writeText(text).then(() => {
+    copyToClipboard(text).then((ok) => {
+      if (!ok) return;
       setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    }).catch(() => {});
+      if (timerRef.current !== null) clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => {
+        timerRef.current = null;
+        setCopied(false);
+      }, 1500);
+    });
   }, [text]);
+
   return (
     <button
+      type="button"
       onClick={handleCopy}
       className="flex-shrink-0 text-zinc-600 hover:text-zinc-400 transition-colors"
       title="Copy to clipboard"

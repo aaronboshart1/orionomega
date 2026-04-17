@@ -9,6 +9,7 @@ import 'highlight.js/styles/github-dark.css';
 import type { Components } from 'react-markdown';
 import { useFileViewerStore } from '@/stores/file-viewer';
 import { useOrchestrationStore } from '@/stores/orchestration';
+import { copyToClipboard } from '@/utils/clipboard';
 
 // ── File path detection ────────────────────────────────────────────────
 // Match absolute paths that contain a file extension.
@@ -133,7 +134,8 @@ function CopyButton({ text }: { text: string }) {
   }, []);
 
   const handleCopy = useCallback(() => {
-    navigator.clipboard.writeText(text).then(() => {
+    copyToClipboard(text).then((ok) => {
+      if (!ok) return;
       setCopied(true);
       if (timerRef.current !== null) clearTimeout(timerRef.current);
       timerRef.current = setTimeout(() => {
@@ -145,6 +147,7 @@ function CopyButton({ text }: { text: string }) {
 
   return (
     <button
+      type="button"
       onClick={handleCopy}
       className="rounded px-2 py-1 text-xs text-zinc-400 transition-colors hover:bg-zinc-700 hover:text-zinc-200"
     >

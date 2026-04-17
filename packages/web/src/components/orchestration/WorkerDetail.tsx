@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import {
   X, ChevronDown, Copy, Check, Clock, Cpu,
   ArrowRight, ChevronRight, AlertCircle,
@@ -8,6 +8,7 @@ import {
 import { useOrchestrationStore, type WorkerEvent, type WorkerEventType } from '@/stores/orchestration';
 import { TabGroup } from '../shared/TabGroup';
 import { formatElapsed } from '@/utils/format';
+import { copyToClipboard } from '@/utils/clipboard';
 
 type Tab = 'activity' | 'reasoning' | 'tools' | 'output' | 'info';
 
@@ -37,13 +38,23 @@ function detectLang(filePath?: string): string {
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (timerRef.current !== null) clearTimeout(timerRef.current);
+    };
+  }, []);
 
   const handleCopy = useCallback(() => {
-    navigator.clipboard.writeText(text).then(() => {
+    copyToClipboard(text).then((ok) => {
+      if (!ok) return;
       setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    }).catch(() => {
-      // Fallback for non-secure contexts
+      if (timerRef.current !== null) clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => {
+        timerRef.current = null;
+        setCopied(false);
+      }, 2000);
     });
   }, [text]);
 
