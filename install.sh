@@ -897,7 +897,7 @@ YAML
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  9. Service setup — systemd (Linux) or launchd (macOS)
-#  Optional: skipped if ORIONOMEGA_NO_SERVICE is set or user declines.
+#  Skipped only if ORIONOMEGA_NO_SERVICE is set.
 # ═══════════════════════════════════════════════════════════════════════════════
 
 setup_service() {
@@ -905,19 +905,7 @@ setup_service() {
     return 0
   fi
 
-  step "Service setup (optional)..."
-
-  if ! is_interactive; then
-    printf "  ${DIM}Non-interactive: skipping service setup. See docs for manual setup.${NC}\n"
-    return 0
-  fi
-
-  printf "  Set up OrionOmega gateway as a background service? [y/N] "
-  read -r answer </dev/tty
-  case "$answer" in
-    [yY]|[yY][eE][sS]) ;;
-    *) info "Skipping service setup"; return 0 ;;
-  esac
+  step "Setting up OrionOmega gateway as a background service..."
 
   case "$OS_ID" in
     kali|ubuntu|debian|pop|linuxmint|fedora|raspbian)
