@@ -235,11 +235,23 @@ export async function handleGoogleOAuthStart(
   }
 }
 
+/** Default port that workspace-mcp listens on for both MCP and OAuth callbacks. */
+const WORKSPACE_MCP_PORT = 9877;
+
 /**
  * Proxy endpoint for manual OAuth callback.
- * Remote users can't reach localhost:4100 on the VM, so they paste the redirect
- * URL (or just the auth code) into the web UI.  This handler replays the
- * callback against the workspace-mcp OAuth listener running on the VM.
+ *
+ * Remote users can't reach localhost on the VM, so they paste the redirect URL
+ * (or just the auth code) into the web UI.  This handler replays the callback
+ * against the workspace-mcp OAuth listener running on the VM.
+ *
+ * workspace-mcp serves its OAuth callback at /oauth2callback on the same port
+ * as its MCP endpoint (default 9877).  The handler supports three input modes:
+ *
+ *  1. Full redirect URL — replayed as-is with hostname swapped to 127.0.0.1
+ *     (preserves port, path, and ALL query params including state/scope/iss).
+ *  2. Bare authorization code — assembled into a minimal callback URL.
+ *  3. URL with just a code param — same as (1).
  */
 export async function handleGoogleOAuthCallback(
   req: IncomingMessage,
@@ -252,51 +264,74 @@ export async function handleGoogleOAuthCallback(
     const body = await readBody(req);
     const payload = JSON.parse(body) as { url?: string; code?: string };
 
-    // Extract the authorization code from either a full redirect URL or a bare code value
-    let code: string | null = null;
+    let callbackUrl: string | null = null;
 
     if (payload.url) {
       try {
         const parsed = new URL(payload.url);
-        code = parsed.searchParams.get('code');
+
+        // Validate that the URL contains an authorization code
+        if (!parsed.searchParams.get('code')) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            error: 'The pasted URL does not contain an authorization code. Make sure you copied the full URL from your browser after Google sign-in.',
+          }));
+          return;
+        }
+
+        // Replay the full URL against localhost, preserving port, path, and
+        // ALL query parameters (state, code, scope, iss, authuser, etc.).
+        // workspace-mcp needs these for CSRF validation and token exchange.
+        parsed.hostname = '127.0.0.1';
+        callbackUrl = parsed.toString();
+
+        console.log('[skills] OAuth callback: replaying full redirect URL against localhost');
+        console.log('[skills] OAuth callback target:', `http://127.0.0.1:${parsed.port || WORKSPACE_MCP_PORT}${parsed.pathname}`);
       } catch {
-        // If it's not a valid URL, treat the whole string as a code
-        code = payload.url.trim();
+        // Not a valid URL — treat the whole string as a bare authorization code
+        const code = payload.url.trim();
+        if (!code) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'No authorization code found.' }));
+          return;
+        }
+        callbackUrl = `http://127.0.0.1:${WORKSPACE_MCP_PORT}/oauth2callback?code=${encodeURIComponent(code)}`;
+        console.log('[skills] OAuth callback: using bare code, assembled callback URL');
       }
     } else if (payload.code) {
-      code = payload.code.trim();
+      const code = payload.code.trim();
+      if (!code) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'No authorization code found.' }));
+        return;
+      }
+      callbackUrl = `http://127.0.0.1:${WORKSPACE_MCP_PORT}/oauth2callback?code=${encodeURIComponent(code)}`;
+      console.log('[skills] OAuth callback: using code field, assembled callback URL');
     }
 
-    if (!code) {
+    if (!callbackUrl) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'No authorization code found. Paste the full redirect URL or just the code parameter.' }));
       return;
     }
 
-    // Read the redirect URI from skill config to know which port workspace-mcp listens on
-    const configDir = getConfiguredSkillsDir();
-    const config = readSkillConfig(configDir, 'google-workspace');
-    const redirectUri = (config.fields?.GOOGLE_OAUTH_REDIRECT_URI as string)
-      || process.env.GOOGLE_OAUTH_REDIRECT_URI
-      || 'http://localhost:4100';
-
-    // Build the callback URL targeting the VM's localhost (where workspace-mcp actually runs)
-    const callbackUrl = new URL(redirectUri);
-    // Always target localhost on the VM regardless of what the configured redirect host is
-    callbackUrl.hostname = '127.0.0.1';
-    callbackUrl.searchParams.set('code', code);
+    console.log('[skills] OAuth callback: fetching', callbackUrl.replace(/code=[^&]+/, 'code=<REDACTED>'));
 
     // Replay the OAuth callback against workspace-mcp's local listener
-    const proxyRes = await fetch(callbackUrl.toString(), {
+    const proxyRes = await fetch(callbackUrl, {
       method: 'GET',
+      redirect: 'manual',  // Don't follow redirects — workspace-mcp may redirect after success
       signal: AbortSignal.timeout(15000),
     });
 
-    if (proxyRes.ok) {
+    // workspace-mcp returns 200 on success, or may redirect (3xx) after storing the token
+    if (proxyRes.ok || (proxyRes.status >= 300 && proxyRes.status < 400)) {
+      console.log('[skills] OAuth callback: workspace-mcp returned', proxyRes.status);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true, message: 'Authorization code submitted successfully. Check OAuth status.' }));
     } else {
       const errText = await proxyRes.text().catch(() => '');
+      console.error('[skills] OAuth callback: workspace-mcp returned', proxyRes.status, errText.slice(0, 500));
       res.writeHead(502, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         error: `workspace-mcp callback returned HTTP ${proxyRes.status}`,
