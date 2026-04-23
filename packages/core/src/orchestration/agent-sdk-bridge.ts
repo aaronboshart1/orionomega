@@ -458,6 +458,7 @@ export async function executeAgent(
         systemPrompt,
         abortController,
         env: {
+          ...process.env,
           HOME: process.env.HOME || '/root',
           PATH: process.env.PATH || '',
           TERM: process.env.TERM || 'xterm-256color',
@@ -475,6 +476,8 @@ export async function executeAgent(
         ...(mcpServers ? { mcpServers } : {}),
         // P6: Structured output format (optional)
         ...(outputFormat ? { outputFormat } : {}),
+        // Capture stderr for diagnostics when the CLI process crashes
+        stderr: (data: string) => log.debug(`[agent-stderr] ${data.trimEnd()}`),
       },
     });
 
@@ -725,6 +728,7 @@ export async function executeCodingAgent(
         // P2: AbortController for cooperative cancellation
         abortController,
         env: {
+          ...process.env,
           HOME: process.env.HOME || '/root',
           PATH: process.env.PATH || '',
           TERM: process.env.TERM || 'xterm-256color',
@@ -739,6 +743,8 @@ export async function executeCodingAgent(
         ...(agents ? { agents } : {}),
         settingSources: ['project'], // Load CLAUDE.md files from the project
         persistSession: false, // Don't persist — orchestration manages state
+        // Capture stderr for diagnostics when the CLI process crashes
+        stderr: (data: string) => log.debug(`[coding-agent-stderr] ${data.trimEnd()}`),
       },
     });
 
