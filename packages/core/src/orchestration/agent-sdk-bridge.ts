@@ -462,7 +462,9 @@ export async function executeAgent(
   // `queryResult` is created later but the abort signal can fire at any point.
   // Holding it in a ref lets the abort listener attempt a graceful interrupt
   // (`Query.interrupt()`) before we hard-abort the SDK process.
-  const queryRef: { current: { interrupt?: () => Promise<void> | void } | null } = { current: null };
+  const queryRef: {
+    current: { interrupt?: () => Promise<void> | void; close?: () => void } | null;
+  } = { current: null };
   let interruptAttempted = false;
   const tryGracefulInterrupt = (): void => {
     if (interruptAttempted) return;
@@ -474,17 +476,33 @@ export async function executeAgent(
       void Promise.resolve(q.interrupt()).catch(() => { /* swallow — abort path will fire */ });
     } catch { /* swallow — abort path will fire */ }
   };
+  let closed = false;
+  const tryClose = (): void => {
+    if (closed) return;
+    closed = true;
+    const q = queryRef.current;
+    if (!q || typeof q.close !== 'function') return;
+    try { q.close(); } catch { /* swallow — process is going down anyway */ }
+  };
   /**
-   * Two-phase shutdown: try `Query.interrupt()` first to let the SDK end its
-   * current turn gracefully, then escalate to `AbortController.abort(reason)`
-   * after `INTERRUPT_GRACE_MS` if the iterator hasn't finished. This avoids
-   * leaving the SDK with a half-streamed message AND guarantees we don't hang
-   * forever on a wedged interrupt.
+   * Three-phase shutdown:
+   *   1. `Query.interrupt()` immediately so the SDK can end its current turn
+   *      gracefully and flush any pending message.
+   *   2. After `INTERRUPT_GRACE_MS`, hard-`AbortController.abort(reason)` so
+   *      the iterator unblocks even if interrupt() wedged.
+   *   3. Also call `Query.close()` at escalation time so the SDK transport
+   *      tears down deterministically (without close(), the underlying
+   *      subprocess can linger).
+   * Timer is `.unref()`'d so it never keeps the event loop alive after the
+   * iterator drains naturally.
    */
   const INTERRUPT_GRACE_MS = 5_000;
   const escalateToHardAbort = (reason: unknown): void => {
     tryGracefulInterrupt();
-    setTimeout(() => abortController.abort(reason), INTERRUPT_GRACE_MS).unref?.();
+    setTimeout(() => {
+      abortController.abort(reason);
+      tryClose();
+    }, INTERRUPT_GRACE_MS).unref?.();
   };
   if (abortSignal) {
     // Forward the *reason* too — without this the inner controller would
@@ -812,7 +830,9 @@ export async function executeCodingAgent(
   // message behind. The two-phase shutdown gives the SDK 5s to drain
   // before we hard-abort.
   const abortController = new AbortController();
-  const queryRef: { current: { interrupt?: () => Promise<void> | void } | null } = { current: null };
+  const queryRef: {
+    current: { interrupt?: () => Promise<void> | void; close?: () => void } | null;
+  } = { current: null };
   let interruptAttempted = false;
   const tryGracefulInterrupt = (): void => {
     if (interruptAttempted) return;
@@ -823,10 +843,22 @@ export async function executeCodingAgent(
       void Promise.resolve(q.interrupt()).catch(() => { /* swallow — abort path will fire */ });
     } catch { /* swallow — abort path will fire */ }
   };
+  let closed = false;
+  const tryClose = (): void => {
+    if (closed) return;
+    closed = true;
+    const q = queryRef.current;
+    if (!q || typeof q.close !== 'function') return;
+    try { q.close(); } catch { /* swallow — process is going down anyway */ }
+  };
+  // Three-phase shutdown — see executeAgent for the full rationale.
   const INTERRUPT_GRACE_MS = 5_000;
   const escalateToHardAbort = (reason: unknown): void => {
     tryGracefulInterrupt();
-    setTimeout(() => abortController.abort(reason), INTERRUPT_GRACE_MS).unref?.();
+    setTimeout(() => {
+      abortController.abort(reason);
+      tryClose();
+    }, INTERRUPT_GRACE_MS).unref?.();
   };
   if (abortSignal) {
     if (abortSignal.aborted) {

@@ -446,9 +446,19 @@ export class WorkerProcess {
       onProgress: (event) => {
         if (event.type === 'tool_call') {
           heartbeatToolCalls++;
-          // Extract tool name (before the first colon if present)
-          const toolName = event.message.split(':')[0].trim();
-          this.lastToolName = toolName;
+          // Extract tool name (before the first colon if present). Validate
+          // the result looks like a real SDK tool identifier (alphanumeric +
+          // underscore/hyphen/dot, length 1-64) before recording it as the
+          // "last tool" diagnostic — otherwise diagnostic-only strings like
+          // "Tool running" or empty messages would pollute timeout reports.
+          const rawName = event.message.split(':')[0].trim();
+          const TOOL_NAME_RE = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/;
+          const looksLikeToolName =
+            TOOL_NAME_RE.test(rawName) &&
+            rawName.toLowerCase() !== 'tool' &&
+            rawName.toLowerCase() !== 'tool running';
+          const toolName = looksLikeToolName ? rawName : (this.lastToolName ?? rawName);
+          if (looksLikeToolName) this.lastToolName = toolName;
           // Extract file path from the message (after "ToolName: ")
           const afterColon = event.message.includes(':')
             ? event.message.split(':').slice(1).join(':').trim()
