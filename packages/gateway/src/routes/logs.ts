@@ -255,18 +255,27 @@ export function handleLogsStream(req: IncomingMessage, res: ServerResponse): voi
 
       const toRead = Math.min(size - cursor, SSE_MAX_CHUNK_BYTES);
       let buf: Buffer;
+      let actuallyRead = 0;
       try {
         const fh = await openFile(ctx.filePath, 'r');
         try {
           buf = Buffer.alloc(toRead);
-          await fh.read(buf, 0, toRead, cursor);
+          let total = 0;
+          while (total < toRead) {
+            const { bytesRead } = await fh.read(buf, total, toRead - total, cursor + total);
+            if (bytesRead === 0) break;
+            total += bytesRead;
+          }
+          actuallyRead = total;
+          if (total < toRead) buf = buf.subarray(0, total);
         } finally {
           await fh.close();
         }
       } catch {
         return;
       }
-      cursor += toRead;
+      if (actuallyRead === 0) return;
+      cursor += actuallyRead;
 
       const chunk = leftover + buf.toString('utf-8');
       const lastNl = chunk.lastIndexOf('\n');
