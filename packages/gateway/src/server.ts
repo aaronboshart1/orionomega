@@ -1480,17 +1480,29 @@ function startListening(): void {
   // Resolve effective orchestration timeouts from config, with the same
   // defaults used by initMainAgent() so what we log here is what the runtime
   // will actually enforce.
-  let effWorkerTimeout = 600;
-  let effCodingAgentTimeout = 1800;
+  // Floors mirror the runtime clamp in executor.ts (Math.max(configured,
+  // floor)). We log the post-clamp value so the line on disk matches what
+  // the runtime will actually enforce — otherwise an operator who sees
+  // workerTimeout=300 in the log might think a Worker died after 300s when
+  // in reality the floor pushed it to 600s.
+  const AGENT_FLOOR = 600;
+  const CODING_AGENT_FLOOR = 1800;
+  const TOOL_FLOOR = 60;
+  let configuredWorker = AGENT_FLOOR;
+  let configuredCodingAgent = CODING_AGENT_FLOOR;
   try {
     const fc = readConfig();
-    effWorkerTimeout = fc.orchestration?.workerTimeout ?? 600;
-    effCodingAgentTimeout = fc.orchestration?.codingAgentTimeout ?? 1800;
+    configuredWorker = fc.orchestration?.workerTimeout ?? AGENT_FLOOR;
+    configuredCodingAgent = fc.orchestration?.codingAgentTimeout ?? CODING_AGENT_FLOOR;
   } catch { /* fall through with defaults */ }
+  const effWorkerTimeout = Math.max(configuredWorker, AGENT_FLOOR);
+  const effCodingAgentTimeout = Math.max(configuredCodingAgent, CODING_AGENT_FLOOR);
   log.info(
-    `Orchestration timeouts: workerTimeout=${effWorkerTimeout}s, ` +
+    `Orchestration timeouts (post-clamp): workerTimeout=${effWorkerTimeout}s ` +
+    `(configured=${configuredWorker}s, floor=${AGENT_FLOOR}s), ` +
     `codingAgentTimeout=${effCodingAgentTimeout}s ` +
-    `(floors: AGENT=600s, CODING_AGENT=1800s, TOOL=60s)`
+    `(configured=${configuredCodingAgent}s, floor=${CODING_AGENT_FLOOR}s), ` +
+    `toolFloor=${TOOL_FLOOR}s`
   );
   if (gatewayStale?.isStale || coreStale?.isStale) {
     if (gatewayStale?.isStale) log.warn(`STALE BUILD DETECTED (gateway) — ${gatewayStale.reason}`);
