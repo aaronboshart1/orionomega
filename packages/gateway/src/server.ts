@@ -8,12 +8,14 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { readFileSync, existsSync, statSync, realpathSync } from 'node:fs';
-import { resolve as resolvePath, normalize } from 'node:path';
+import { resolve as resolvePath, normalize, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { spawn as spawnProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { readConfig, normalizeBindAddresses, MainAgent, CommandFileLoader, createLogger, setGlobalLogLevel, enableFileLogging, discoverModels, clearModelCache, auditApiRequest, setCodingOrchestatorEmitters, restartWebUI } from '@orionomega/core';
-import type { MainAgentConfig, MainAgentCallbacks, LogLevel, PlannerOutput } from '@orionomega/core';
+import { readConfig, normalizeBindAddresses, MainAgent, CommandFileLoader, createLogger, setGlobalLogLevel, enableFileLogging, discoverModels, clearModelCache, auditApiRequest, setCodingOrchestatorEmitters, restartWebUI, BUILD_INFO as CORE_BUILD_INFO, getStaleBuildStatus } from '@orionomega/core';
+import type { MainAgentConfig, MainAgentCallbacks, LogLevel, PlannerOutput, StaleBuildStatus } from '@orionomega/core';
+import { BUILD_INFO as GATEWAY_BUILD_INFO } from './generated/build-info.js';
 import { setLogLevel as setHindsightLogLevel } from '@orionomega/hindsight';
 import type { GatewayConfig } from './types.js';
 import { SessionManager, DEFAULT_SESSION_ID } from './sessions.js';
@@ -1447,6 +1449,54 @@ function startListening(): void {
   log.info(`Auth mode: ${config.auth.mode}`);
   log.info(`CORS origins: ${config.cors.origins.join(', ')}`);
   log.info(`Hindsight: ${hindsightUrl}`);
+
+  // ── Build provenance + orchestration floors ────────────────────────────
+  // These two log lines exist to make stale-build incidents trivially
+  // diagnosable from the gateway log alone. If a user reports "Worker timed
+  // out after 120s" we want them to be able to grep this log and see
+  //   (a) the commit dist/ was actually compiled from, and
+  //   (b) the AGENT/CODING_AGENT timeout floors the runtime is enforcing,
+  // so support can immediately tell whether the fix from task #103 is live
+  // or whether the user is still on a stale build.
+  // Anchor `.git` discovery on this module's directory rather than
+  // process.cwd(), which is unreliable under service supervisors.
+  const serverModuleDir = dirname(fileURLToPath(import.meta.url));
+  let gatewayStale: StaleBuildStatus | null = null;
+  let coreStale: StaleBuildStatus | null = null;
+  try {
+    gatewayStale = getStaleBuildStatus({ buildInfo: GATEWAY_BUILD_INFO, candidateDirs: [serverModuleDir] });
+    coreStale = getStaleBuildStatus({ buildInfo: CORE_BUILD_INFO, candidateDirs: [serverModuleDir] });
+  } catch (err) {
+    log.warn('Failed to compute stale-build status', { error: err instanceof Error ? err.message : String(err) });
+  }
+  const sourceShortCommit = gatewayStale?.sourceShortCommit ?? coreStale?.sourceShortCommit ?? null;
+  log.info(
+    `Build: gateway ${GATEWAY_BUILD_INFO.shortCommit}${GATEWAY_BUILD_INFO.dirty ? '-dirty' : ''} ` +
+    `(built ${GATEWAY_BUILD_INFO.buildTime}), ` +
+    `core ${CORE_BUILD_INFO.shortCommit}${CORE_BUILD_INFO.dirty ? '-dirty' : ''} ` +
+    `(built ${CORE_BUILD_INFO.buildTime})` +
+    (sourceShortCommit ? `, source ${sourceShortCommit}` : '')
+  );
+  // Resolve effective orchestration timeouts from config, with the same
+  // defaults used by initMainAgent() so what we log here is what the runtime
+  // will actually enforce.
+  let effWorkerTimeout = 600;
+  let effCodingAgentTimeout = 1800;
+  try {
+    const fc = readConfig();
+    effWorkerTimeout = fc.orchestration?.workerTimeout ?? 600;
+    effCodingAgentTimeout = fc.orchestration?.codingAgentTimeout ?? 1800;
+  } catch { /* fall through with defaults */ }
+  log.info(
+    `Orchestration timeouts: workerTimeout=${effWorkerTimeout}s, ` +
+    `codingAgentTimeout=${effCodingAgentTimeout}s ` +
+    `(floors: AGENT=600s, CODING_AGENT=1800s, TOOL=60s)`
+  );
+  if (gatewayStale?.isStale || coreStale?.isStale) {
+    if (gatewayStale?.isStale) log.warn(`STALE BUILD DETECTED (gateway) — ${gatewayStale.reason}`);
+    if (coreStale?.isStale) log.warn(`STALE BUILD DETECTED (core) — ${coreStale.reason}`);
+    log.warn('Run `orionomega update --clean` to wipe dist/ and rebuild from the current source.');
+  }
 
   for (let i = 0; i < bindAddresses.length; i++) {
     const address = bindAddresses[i];

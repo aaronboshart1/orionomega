@@ -1,0 +1,146 @@
+/**
+ * @module build-info
+ * Public re-export of the auto-generated `BUILD_INFO` baked into `dist/` at
+ * build time, plus runtime helpers to detect a stale build (i.e. dist/ that
+ * was compiled from a different commit than the current source tree).
+ *
+ * Stale-build detection exists because we have repeatedly seen partial
+ * monorepo builds — typically caused by a `pnpm build` step timing out
+ * mid-way — leave half-fresh, half-stale `dist/` directories behind. The
+ * gateway then loads compiled JS that doesn't reflect the user's source code,
+ * which makes "I already pulled the fix" debugging maddening. Surfacing
+ * BUILD_INFO at startup, in the status endpoint, and in the web header
+ * lets operators tell at a glance whether they need to rebuild.
+ */
+
+import { execSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+
+import { BUILD_INFO } from './generated/build-info.js';
+import type { BuildInfo } from './generated/build-info.js';
+
+export type { BuildInfo };
+export { BUILD_INFO };
+
+/** Returns the BUILD_INFO baked into this dist/ at build time. */
+export function getBuildInfo(): BuildInfo {
+  return BUILD_INFO;
+}
+
+export interface StaleBuildStatus {
+  /** Commit baked into dist/ at build time. */
+  buildCommit: string;
+  /** Short form of `buildCommit` for display. */
+  buildShortCommit: string;
+  /** Current commit of the source tree on disk (HEAD), if detectable. */
+  sourceCommit: string | null;
+  /** Short form of `sourceCommit` for display, if detectable. */
+  sourceShortCommit: string | null;
+  /**
+   * True iff we successfully read both commits and they differ, OR the build
+   * was produced from a dirty working tree. False means "definitely fresh"
+   * or "cannot determine" — callers should not block on this.
+   */
+  isStale: boolean;
+  /**
+   * Human-readable reason the build is considered stale. Empty when
+   * `isStale === false`.
+   */
+  reason: string;
+  /** True if the build was produced from a dirty working tree. */
+  builtDirty: boolean;
+  /** ISO-8601 timestamp the dist/ was built. */
+  buildTime: string;
+}
+
+export interface StaleBuildOptions {
+  /**
+   * BuildInfo to compare against the source tree. Defaults to this package's
+   * own `BUILD_INFO` (i.e. core's). Callers in other packages (gateway, web)
+   * MUST pass their own BUILD_INFO so the staleness check reflects THEIR
+   * dist/, not core's — otherwise a half-finished monorepo build that
+   * refreshed core but not gateway will look "fresh" while the gateway runs
+   * stale code (the exact failure mode this module exists to detect).
+   */
+  buildInfo?: BuildInfo;
+  /**
+   * Ordered list of directories whose ancestors should be searched for a
+   * `.git` directory. Pass deterministic locations (e.g. the directory of
+   * the calling module via `fileURLToPath(import.meta.url)`) so that
+   * detection does not depend on `process.cwd()`, which is unreliable when
+   * the gateway runs under a service supervisor / launchd / systemd unit.
+   */
+  candidateDirs?: string[];
+}
+
+/**
+ * Compare a build's baked-in commit against the current HEAD of the source
+ * tree on disk. Returns `sourceCommit=null` when no source tree is reachable
+ * (e.g. running from a packaged install with no `.git` directory) — in that
+ * case `isStale` is only true if the build itself is dirty/unknown.
+ */
+export function getStaleBuildStatus(opts: StaleBuildOptions = {}): StaleBuildStatus {
+  const info = opts.buildInfo ?? BUILD_INFO;
+  const buildCommit = info.commit;
+  const buildShortCommit = info.shortCommit;
+  const builtDirty = info.dirty;
+  const buildTime = info.buildTime;
+
+  let sourceCommit: string | null = null;
+  const candidates: string[] = [];
+  if (opts.candidateDirs) candidates.push(...opts.candidateDirs.filter(Boolean));
+  candidates.push(process.cwd());
+
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    try {
+      // Walk up to find a `.git` directory so a nested cwd still resolves.
+      let dir = candidate;
+      for (let i = 0; i < 8; i++) {
+        if (existsSync(join(dir, '.git'))) {
+          sourceCommit = execSync('git rev-parse HEAD', {
+            cwd: dir,
+            stdio: ['ignore', 'pipe', 'ignore'],
+            encoding: 'utf-8',
+            timeout: 3000,
+          }).trim();
+          break;
+        }
+        const parent = join(dir, '..');
+        if (parent === dir) break;
+        dir = parent;
+      }
+    } catch {
+      sourceCommit = null;
+    }
+    if (sourceCommit) break;
+  }
+
+  const sourceShortCommit = sourceCommit ? sourceCommit.slice(0, 7) : null;
+
+  let isStale = false;
+  let reason = '';
+
+  if (builtDirty) {
+    isStale = true;
+    reason = `Build was produced from a dirty working tree at ${buildShortCommit}`;
+  } else if (buildCommit === 'unknown') {
+    isStale = true;
+    reason = 'Build was produced without a known git commit (dist/ was not generated by `pnpm build`)';
+  } else if (sourceCommit && sourceCommit !== buildCommit) {
+    isStale = true;
+    reason = `Source tree is at ${sourceShortCommit} but dist/ was built from ${buildShortCommit} — run \`orionomega update --clean\` to rebuild`;
+  }
+
+  return {
+    buildCommit,
+    buildShortCommit,
+    sourceCommit,
+    sourceShortCommit,
+    isStale,
+    reason,
+    builtDirty,
+    buildTime,
+  };
+}

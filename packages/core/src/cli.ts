@@ -86,7 +86,11 @@ const COMMANDS: Record<string, () => Promise<void>> = {
   config: async () => (await import('./commands/config.js')).runConfig(process.argv.slice(3)),
   skill: async () => (await import('./commands/skill.js')).runSkill(process.argv.slice(3)),
   logs: async () => (await import('./commands/logs.js')).runLogs(process.argv.slice(3)),
-  update: async () => (await import('./commands/update.js')).runUpdate(),
+  update: async () => {
+    const args = process.argv.slice(3);
+    const clean = args.includes('--clean');
+    await (await import('./commands/update.js')).runUpdate({ clean });
+  },
   ui: async () => (await import('./commands/ui.js')).runUI(process.argv.slice(3)),
   remove: async () => (await import('./commands/remove.js')).runRemove(),
   help: async () => (await import('./commands/help.js')).runHelp(),

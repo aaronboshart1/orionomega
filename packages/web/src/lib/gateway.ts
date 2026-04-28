@@ -1471,6 +1471,33 @@ function bindListeners(ws: ReconnectingWebSocket): void {
             .getState()
             .setHindsightStatus(!!data.hindsight.connected, !!data.hindsight.busy);
         }
+        // Surface stale-build status from the gateway so the header can show
+        // a "rebuild required" indicator. We pull the short-commit fields
+        // defensively because older gateway builds (pre this fix) won't emit
+        // the `build` block at all. Note: this is intentionally NOT gated on
+        // `gatewayConnected` — the WS session ack may not have landed yet
+        // when /api/status returns (we kicked it off in `onopen`), and
+        // dropping a stale-build payload here means the badge would never
+        // appear until the next reconnect. The /status data is authoritative
+        // about the gateway we just reached, so always apply it.
+        if (data?.build) {
+          const b = data.build as {
+            isStale?: boolean;
+            reason?: string;
+            builtDirty?: boolean;
+            gateway?: { shortCommit?: string };
+            core?: { shortCommit?: string };
+            sourceShortCommit?: string | null;
+          };
+          useConnectionStore.getState().setStaleBuild({
+            isStale: !!b.isStale,
+            reason: b.reason ?? '',
+            builtDirty: !!b.builtDirty,
+            gatewayShortCommit: b.gateway?.shortCommit,
+            coreShortCommit: b.core?.shortCommit,
+            sourceShortCommit: b.sourceShortCommit ?? null,
+          });
+        }
       })
       .catch((err) => { console.warn('[gateway] status fetch error', err); });
   };

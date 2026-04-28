@@ -167,3 +167,7 @@ export type {
 // Coding orchestrator emitters (for gateway wiring)
 export { setCodingOrchestatorEmitters } from './orchestration/index.js';
 export type { CodingEventEmitters } from './orchestration/index.js';
+
+// Build info — commit baked into dist/ at build time + stale-build detection
+export { BUILD_INFO, getBuildInfo, getStaleBuildStatus } from './build-info.js';
+export type { BuildInfo, StaleBuildStatus } from './build-info.js';

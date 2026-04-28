@@ -4,8 +4,18 @@
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { fileURLToPath } from 'node:url';
+import { dirname } from 'node:path';
 import type { SystemStatus } from '../types.js';
 import { SessionManager } from '../sessions.js';
+import { BUILD_INFO as CORE_BUILD_INFO, getStaleBuildStatus } from '@orionomega/core';
+import { BUILD_INFO as GATEWAY_BUILD_INFO } from '../generated/build-info.js';
+
+// Derive a deterministic anchor for `.git` discovery. This file lives at
+// packages/gateway/dist/routes/status.js after build, so walking up from
+// here reaches the workspace root regardless of process.cwd() (which may be
+// "/" when running under systemd / launchd / a service supervisor).
+const STATUS_MODULE_DIR = dirname(fileURLToPath(import.meta.url));
 
 /**
  * Handle GET /api/status — full system status overview.
@@ -56,12 +66,65 @@ export async function handleStatus(
     uptime,
   };
 
+  // Stale-build detection: if EITHER the gateway or the core dist/ was
+  // compiled from a different commit than the current source tree, surface
+  // that to the web UI so the user sees a "rebuild required" indicator
+  // instead of being told everything is fine while their gateway runs old
+  // code. We must check both packages independently because a half-finished
+  // monorepo build can leave one package fresh and the other stale (the
+  // exact failure mode this whole feature exists to detect).
+  let staleBuild;
+  try {
+    const candidateDirs = [STATUS_MODULE_DIR];
+    const gatewayStatus = getStaleBuildStatus({ buildInfo: GATEWAY_BUILD_INFO, candidateDirs });
+    const coreStatus = getStaleBuildStatus({ buildInfo: CORE_BUILD_INFO, candidateDirs });
+    const reasons: string[] = [];
+    if (gatewayStatus.isStale) reasons.push(`gateway: ${gatewayStatus.reason}`);
+    if (coreStatus.isStale) reasons.push(`core: ${coreStatus.reason}`);
+    const isStale = gatewayStatus.isStale || coreStatus.isStale;
+    // Source commit comes from whichever check resolved it (both walk the
+    // same tree, so prefer gateway then fall back to core).
+    const sourceCommit = gatewayStatus.sourceCommit ?? coreStatus.sourceCommit;
+    const sourceShortCommit = gatewayStatus.sourceShortCommit ?? coreStatus.sourceShortCommit;
+    staleBuild = {
+      isStale,
+      reason: isStale ? reasons.join(' | ') : '',
+      builtDirty: gatewayStatus.builtDirty || coreStatus.builtDirty,
+      gateway: {
+        commit: GATEWAY_BUILD_INFO.commit,
+        shortCommit: GATEWAY_BUILD_INFO.shortCommit,
+        buildTime: GATEWAY_BUILD_INFO.buildTime,
+        dirty: GATEWAY_BUILD_INFO.dirty,
+        isStale: gatewayStatus.isStale,
+      },
+      core: {
+        commit: CORE_BUILD_INFO.commit,
+        shortCommit: CORE_BUILD_INFO.shortCommit,
+        buildTime: CORE_BUILD_INFO.buildTime,
+        dirty: CORE_BUILD_INFO.dirty,
+        isStale: coreStatus.isStale,
+      },
+      sourceCommit,
+      sourceShortCommit,
+    };
+  } catch {
+    staleBuild = { isStale: false, reason: '', builtDirty: false };
+  }
+
   const body = JSON.stringify({
-    gateway: { status: 'ok', version: '0.1.0', uptime },
+    gateway: {
+      status: 'ok',
+      version: '0.1.0',
+      uptime,
+      buildCommit: GATEWAY_BUILD_INFO.commit,
+      buildShortCommit: GATEWAY_BUILD_INFO.shortCommit,
+      buildTime: GATEWAY_BUILD_INFO.buildTime,
+    },
     sessions: { total: sessions.length, active: sessions.filter((s) => s.clients.size > 0).length },
     hindsight: { connected: hindsightConnected, url: hindsightUrl },
     workflows: { active: activeWorkflows.length, details: activeWorkflows },
     systemHealth: status.systemHealth,
+    build: staleBuild,
   });
 
   res.writeHead(200, { 'Content-Type': 'application/json' });

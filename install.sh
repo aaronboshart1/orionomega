@@ -15,7 +15,14 @@
 #    ORIONOMEGA_DIR        Override source install directory
 #    ORIONOMEGA_MODEL      Default model (default: claude-haiku-4-5-20251001)
 #    ORIONOMEGA_NO_SERVICE Set to skip service setup prompt
+#    ORIONOMEGA_CLEAN      Set to "1" to wipe all packages/*/dist before
+#                          building (recovery for half-finished builds that
+#                          left stale compiled JS in place)
 #    NO_COLOR              Disable colored output (https://no-color.org/)
+#
+#  After install, run `orionomega update --clean` to fully wipe and rebuild
+#  the dist/ directories — useful if the gateway is loading stale compiled
+#  code (look for the "rebuild required" badge in the web UI).
 # ═══════════════════════════════════════════════════════════════════════════════
 set -euo pipefail
 
@@ -477,8 +484,18 @@ clone_or_update() {
 # ═══════════════════════════════════════════════════════════════════════════════
 
 build_project() {
-  step "Installing dependencies..."
   cd "$INSTALL_DIR"
+
+  # Optional clean rebuild — wipe every packages/*/dist before installing so
+  # the build cannot inherit stale compiled JS from a previous half-finished
+  # run. Triggered by ORIONOMEGA_CLEAN=1 in the installer environment.
+  if [ "${ORIONOMEGA_CLEAN:-}" = "1" ]; then
+    step "Cleaning previous dist/ directories..."
+    rm -rf packages/*/dist packages/*/tsconfig.tsbuildinfo 2>/dev/null || true
+    info "dist/ directories cleaned"
+  fi
+
+  step "Installing dependencies..."
   if ! pnpm install --frozen-lockfile </dev/null 2>/dev/null; then
     warn "Frozen lockfile failed — using regular install (lockfile may be stale)"
     pnpm install </dev/null || fail "Dependency install failed. Run 'cd $INSTALL_DIR && pnpm install' manually."
@@ -486,7 +503,11 @@ build_project() {
   info "Dependencies installed"
 
   step "Building OrionOmega..."
-  pnpm build </dev/null || fail "Build failed. Run 'cd $INSTALL_DIR && pnpm build' to see errors."
+  # `pnpm build` runs each package's prebuild + build, including the
+  # build-info generator that bakes the current commit into dist/. The
+  # gateway uses that BUILD_INFO at runtime to detect stale-build mismatches.
+  pnpm build </dev/null || fail "Build failed. Run 'cd $INSTALL_DIR && pnpm build' to see errors.
+  If a previous run left a partial dist/, retry with: ORIONOMEGA_CLEAN=1 bash install.sh"
   info "Build complete"
 }
 

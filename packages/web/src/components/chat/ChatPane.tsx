@@ -102,6 +102,7 @@ export function ChatPane() {
   const hasOlderMessages = useConnectionStore((s) => s.hasOlderMessages);
   const setHasOlderMessages = useConnectionStore((s) => s.setHasOlderMessages);
   const presenceCount = useConnectionStore((s) => s.presenceCount);
+  const staleBuild = useConnectionStore((s) => s.staleBuild);
   const { sendChat, sendCommand, respondToPlan } = useGateway();
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const [showAdvancedPlan, setShowAdvancedPlan] = useState(false);
@@ -262,6 +263,21 @@ export function ChatPane() {
             <p className="text-xs leading-tight text-zinc-500">
               v{process.env.NEXT_PUBLIC_APP_VERSION} ({process.env.NEXT_PUBLIC_GIT_HASH})
             </p>
+            {staleBuild?.isStale && (
+              <span
+                className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-300 ring-1 ring-amber-500/30"
+                title={
+                  staleBuild.reason +
+                  (staleBuild.gatewayShortCommit ? `\nGateway dist/: ${staleBuild.gatewayShortCommit}` : '') +
+                  (staleBuild.coreShortCommit ? `\nCore dist/: ${staleBuild.coreShortCommit}` : '') +
+                  (staleBuild.sourceShortCommit ? `\nSource HEAD: ${staleBuild.sourceShortCommit}` : '') +
+                  '\n\nRun: orionomega update --clean'
+                }
+              >
+                <AlertOctagon size={10} />
+                rebuild required
+              </span>
+            )}
             <SessionSwitcher />
           </div>
         </div>

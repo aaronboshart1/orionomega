@@ -13,6 +13,9 @@ packages/*/src/**/*.js.map
 packages/*/src/**/*.d.ts
 packages/*/src/**/*.d.ts.map
 
+# Auto-generated build-info modules (regenerated on every `pnpm build`)
+packages/*/src/generated/build-info.ts
+
 # Environment & secrets
 .env
 .env.*

@@ -249,7 +249,9 @@ export function pullLatest(installDir: string, branch: string | null): PullResul
 
 export function installDependencies(installDir: string): { ok: boolean; error?: string } {
   try {
-    execCmd('pnpm install --frozen-lockfile 2>&1 || pnpm install 2>&1', installDir, 180_000);
+    // 5 min: matches UPDATE_STEPS install timeout. Older 180_000 was tight on
+    // slow hardware where pnpm has to fetch and link a fresh node_modules.
+    execCmd('pnpm install --frozen-lockfile 2>&1 || pnpm install 2>&1', installDir, 300_000);
     return { ok: true };
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -259,7 +261,30 @@ export function installDependencies(installDir: string): { ok: boolean; error?: 
 
 export function buildProject(installDir: string): { ok: boolean; error?: string } {
   try {
-    execCmd('pnpm build 2>&1', installDir, 300_000);
+    // 10 min: matches UPDATE_STEPS build timeout. Full monorepo (core +
+    // gateway + web + tui + skills-sdk + hindsight) build can exceed 5 min on
+    // a Kali VM; if this trips, dist/ ends up partially populated and the
+    // gateway loads stale code from the previous successful build.
+    execCmd('pnpm build 2>&1', installDir, 600_000);
+    return { ok: true };
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ok: false, error: msg.slice(0, 300) };
+  }
+}
+
+/**
+ * Wipe every package's `dist/` directory. Used by `orionomega update --clean`
+ * (and by callers recovering from a half-finished build) so the next build
+ * starts from a clean slate and cannot inherit stale compiled JavaScript from
+ * a previous failed run.
+ */
+export function cleanDistDirectories(installDir: string): { ok: boolean; error?: string } {
+  try {
+    // `rm -rf` per glob is portable across macOS BSD `rm` and GNU `rm`. The
+    // 2>/dev/null swallows "no match" when running on a tree that has never
+    // been built, which is fine — there is nothing to clean.
+    execCmd('rm -rf packages/*/dist packages/*/tsconfig.tsbuildinfo 2>/dev/null || true', installDir, 30_000);
     return { ok: true };
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -523,10 +548,20 @@ export interface UpdateStep {
   timeout: number;
 }
 
+// IMPORTANT: these timeouts must accommodate the full monorepo build on slow
+// hardware (Kali VMs, low-spec laptops). The previous values (120 s for both
+// install and build) were set when only @orionomega/core existed and routinely
+// time out today, which silently abandons the build mid-way and leaves a
+// half-fresh dist/ — the gateway then loads stale compiled code that still
+// has the old 120 s worker timeout, causing the very "Worker timed out after
+// 120s" / "Claude Code process aborted by user" errors users report.
+//
+// Keep these in sync with the modern path's `installDependencies` /
+// `buildProject` helpers above.
 export const UPDATE_STEPS: UpdateStep[] = [
-  { label: 'Pulling latest changes', cmd: 'git pull --ff-only || { echo "Fast-forward failed. You may have local changes." >&2; exit 1; }', timeout: 30_000 },
-  { label: 'Installing dependencies', cmd: 'pnpm install --frozen-lockfile || pnpm install', timeout: 120_000 },
-  { label: 'Building all packages', cmd: 'pnpm build', timeout: 120_000 },
+  { label: 'Pulling latest changes', cmd: 'git pull --ff-only || { echo "Fast-forward failed. You may have local changes." >&2; exit 1; }', timeout: 60_000 },
+  { label: 'Installing dependencies', cmd: 'pnpm install --frozen-lockfile || pnpm install', timeout: 300_000 },
+  { label: 'Building all packages', cmd: 'pnpm build', timeout: 600_000 },
 ];
 
 export function runUpdateSteps(installDir: string, callbacks: { onStep: (l: string) => void; onStepDone: (l: string) => void; onStepFailed: (l: string, e: string) => void }): boolean {
@@ -546,9 +581,21 @@ export function runUpdateSteps(installDir: string, callbacks: { onStep: (l: stri
 
 /* ── CLI entry point: `orionomega update` ─────────────────────────── */
 
-export async function runUpdate(): Promise<void> {
+export interface RunUpdateOptions {
+  /**
+   * When true, wipe every packages/<pkg>/dist directory before building so the
+   * build cannot inherit stale compiled JavaScript from a previous half-
+   * finished run. This is the recovery flag for users hitting "Worker timed
+   * out after 120s" / "Claude Code process aborted by user" because their
+   * gateway is running compiled code older than their source tree.
+   */
+  clean?: boolean;
+}
+
+export async function runUpdate(options: RunUpdateOptions = {}): Promise<void> {
   const totalStart = Date.now();
-  process.stdout.write(`\n${BOLD}Updating OrionOmega${RESET}\n\n`);
+  const cleanRebuild = options.clean === true;
+  process.stdout.write(`\n${BOLD}Updating OrionOmega${RESET}${cleanRebuild ? ` ${DIM}(clean rebuild)${RESET}` : ''}\n\n`);
 
   /* ── Pre-flight checks ─────────────────────────────────────────── */
   process.stdout.write(`  ${DIM}Running pre-update checks...${RESET} `);
@@ -598,6 +645,20 @@ export async function runUpdate(): Promise<void> {
   }
 
   process.stdout.write(`${GREEN}✓${RESET} ${DIM}${pullResult.commitCount} commit${pullResult.commitCount !== 1 ? 's' : ''} (${elapsed(pullStart)})${RESET}\n`);
+
+  /* ── Optional: clean dist/ directories ──────────────────────────── */
+  if (cleanRebuild) {
+    process.stdout.write(`  ${DIM}Cleaning dist/ directories...${RESET} `);
+    const cleanStart = Date.now();
+    const cleanResult = cleanDistDirectories(dir);
+    if (cleanResult.ok) {
+      process.stdout.write(`${GREEN}✓${RESET} ${DIM}(${elapsed(cleanStart)})${RESET}\n`);
+    } else {
+      // Non-fatal: a failed clean still lets the build proceed (it'll just
+      // overwrite stale files), but warn so the user can investigate.
+      process.stdout.write(`${YELLOW}⚠${RESET} ${DIM}${cleanResult.error}${RESET}\n`);
+    }
+  }
 
   /* ── Install dependencies ───────────────────────────────────────── */
   process.stdout.write(`  ${DIM}Installing dependencies...${RESET} `);
