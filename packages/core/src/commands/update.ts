@@ -638,13 +638,22 @@ export async function runUpdate(options: RunUpdateOptions = {}): Promise<void> {
 
   if (pullResult.alreadyUpToDate) {
     process.stdout.write(`${GREEN}✓${RESET} ${DIM}already up to date (${elapsed(pullStart)})${RESET}\n`);
-    process.stdout.write(`\n${GREEN}✓${RESET} ${BOLD}No updates available.${RESET}\n\n`);
-    // Still restart the services that were stopped
-    startServicesForCli(dir);
-    return;
+    // The whole point of `--clean` is to recover from a stale dist/ even
+    // when the source tree already matches the remote — that is the most
+    // common stale-build scenario (user pulled the fix days ago, but a
+    // 120s-killed `pnpm build` left half-stale compiled JS behind). So we
+    // ONLY short-circuit here in the non-clean path; with --clean we fall
+    // through to clean + install + build below.
+    if (!cleanRebuild) {
+      process.stdout.write(`\n${GREEN}✓${RESET} ${BOLD}No updates available.${RESET}\n\n`);
+      // Still restart the services that were stopped
+      startServicesForCli(dir);
+      return;
+    }
+    process.stdout.write(`  ${DIM}Continuing with clean rebuild despite no new commits...${RESET}\n`);
+  } else {
+    process.stdout.write(`${GREEN}✓${RESET} ${DIM}${pullResult.commitCount} commit${pullResult.commitCount !== 1 ? 's' : ''} (${elapsed(pullStart)})${RESET}\n`);
   }
-
-  process.stdout.write(`${GREEN}✓${RESET} ${DIM}${pullResult.commitCount} commit${pullResult.commitCount !== 1 ? 's' : ''} (${elapsed(pullStart)})${RESET}\n`);
 
   /* ── Optional: clean dist/ directories ──────────────────────────── */
   if (cleanRebuild) {
