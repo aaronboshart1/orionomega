@@ -19,10 +19,11 @@
   "types": "dist/server.d.ts",
   "scripts": {
     "prebuild": "node ../../scripts/generate-build-info.mjs gateway",
+    "predev": "node ../../scripts/generate-build-info.mjs gateway",
     "build": "tsc",
     "start": "node dist/server.js",
     "dev": "tsx watch src/server.ts",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist src/generated"
   },
   "dependencies": {
     "@orionomega/core": "workspace:*",

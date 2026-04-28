@@ -25,7 +25,8 @@
   "scripts": {
     "prebuild": "node ../../scripts/generate-build-info.mjs core",
     "build": "tsc && cp -r src/db/migrations dist/db/migrations",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist src/generated",
+    "ensure-build-info": "node ../../scripts/generate-build-info.mjs core"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.71",
