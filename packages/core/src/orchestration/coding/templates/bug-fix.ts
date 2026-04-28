@@ -37,6 +37,13 @@ export interface BugFixParams {
   };
   validationCommands?: string[];
   validationMaxRetries?: number;
+  /**
+   * Per-command wall-clock budget (ms) for build/test/lint commands.
+   * Sourced from `orchestration.validationTimeout` in the user's config so
+   * monorepos that need >5 min for `pnpm -r build` can raise it without
+   * editing template code. Defaults to 300_000 (5 min).
+   */
+  validationTimeoutMs?: number;
 }
 
 /**
@@ -51,6 +58,7 @@ export function buildBugFixTemplate(params: BugFixParams): WorkflowNode[] {
     maxTurns,
     validationCommands = [],
     validationMaxRetries = 2,
+    validationTimeoutMs = 300_000,
   } = params;
 
   // ── Layer 0: Reproduce & Analyze ──────────────────────────────────────────
@@ -203,7 +211,7 @@ export function buildBugFixTemplate(params: BugFixParams): WorkflowNode[] {
       // 5-minute per-command budget for build/test/lint — the previous 2 min
       // was insufficient for multi-package monorepo builds (e.g. pnpm -r) and
       // produced spurious "validation failed" results.
-      validationConfig: { commands: validationCommands, maxRetries: validationMaxRetries, timeout: 300_000 },
+      validationConfig: { commands: validationCommands, maxRetries: validationMaxRetries, timeout: validationTimeoutMs },
     },
   };
 

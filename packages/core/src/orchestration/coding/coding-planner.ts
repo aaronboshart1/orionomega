@@ -91,6 +91,12 @@ export interface CodingPlannerOptions {
   discoveredModels?: DiscoveredModel[];
   fallbackModel: string;
   cwd?: string;
+  /**
+   * Per-command wall-clock budget (ms) for validation steps, propagated
+   * from `orchestration.validationTimeout`. Defaults to 300_000 ms when
+   * omitted. Plumbed through to template builders.
+   */
+  validationTimeoutMs?: number;
 }
 
 export class CodingPlanner {
@@ -98,10 +104,12 @@ export class CodingPlanner {
   private readonly modelResolver: CodingModelResolver;
   private readonly budgetAllocator: CodingBudgetAllocator;
   private readonly cwd: string;
+  private readonly validationTimeoutMs: number;
 
   constructor(opts: CodingPlannerOptions) {
     this.config = opts.codingModeConfig;
     this.cwd = opts.cwd ?? process.cwd();
+    this.validationTimeoutMs = opts.validationTimeoutMs ?? 300_000;
 
     this.modelResolver = new CodingModelResolver({
       overrides: opts.codingModeConfig.models,
@@ -216,6 +224,7 @@ export class CodingPlanner {
       },
       validationCommands: validationCmds,
       validationMaxRetries: 2,
+      validationTimeoutMs: this.validationTimeoutMs,
     });
 
     // 5. Build model assignment map (node ID → {model, thinking})

@@ -45,6 +45,11 @@ export interface FeatureImplementationParams {
   validationCommands?: string[];
   /** Max validation retry iterations. */
   validationMaxRetries?: number;
+  /**
+   * Per-command wall-clock budget (ms) for validation steps. Sourced from
+   * `orchestration.validationTimeout` in the user's config. Defaults to 5 min.
+   */
+  validationTimeoutMs?: number;
 }
 
 /**
@@ -68,6 +73,7 @@ export function buildFeatureImplementationTemplate(
     maxTurns,
     validationCommands = [],
     validationMaxRetries = 2,
+    validationTimeoutMs = 300_000,
   } = params;
 
   // ── Layer 0: Codebase Scanner ───────────────────────────────────────────────
@@ -313,9 +319,10 @@ ${task}
       validationConfig: {
         commands: validationCommands,
         maxRetries: validationMaxRetries,
-        // 5-minute per-command budget for build/test/lint — the previous 2 min
-        // was insufficient for multi-package monorepo builds.
-        timeout: 300_000,
+        // Per-command budget sourced from `orchestration.validationTimeout`
+        // so monorepo builds (e.g. `pnpm -r`) can be granted more time
+        // without editing template code.
+        timeout: validationTimeoutMs,
       },
     },
   };

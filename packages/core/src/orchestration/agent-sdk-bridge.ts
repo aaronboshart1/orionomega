@@ -25,6 +25,11 @@ import { z } from 'zod/v4';
 import { readConfig } from '../config/loader.js';
 import type { WorkflowNode } from './types.js';
 import { createLogger } from '../logging/logger.js';
+import {
+  isOrionOmegaAbortReason,
+  describeAbortReason,
+  type OrionOmegaAbortReason,
+} from './abort-reason.js';
 import { getPortAvoidanceInstructions } from '../utils/port-restrictions.js';
 import { auditToolInvocation } from '../logging/audit.js';
 import { SkillLoader, SkillExecutor, readSkillConfig } from '@orionomega/skills-sdk';
@@ -454,8 +459,36 @@ export async function executeAgent(
   onProgress?.({ type: 'status', message: `Agent starting: ${task.slice(0, 60)}...`, progress: 0 });
 
   const abortController = new AbortController();
+  // `queryResult` is created later but the abort signal can fire at any point.
+  // Holding it in a ref lets the abort listener attempt a graceful interrupt
+  // (`Query.interrupt()`) before we hard-abort the SDK process.
+  const queryRef: { current: { interrupt?: () => Promise<void> | void } | null } = { current: null };
+  let interruptAttempted = false;
+  const tryGracefulInterrupt = (): void => {
+    if (interruptAttempted) return;
+    interruptAttempted = true;
+    const q = queryRef.current;
+    if (!q || typeof q.interrupt !== 'function') return;
+    try {
+      // Fire-and-forget; SDK rejects to abort path on failure.
+      void Promise.resolve(q.interrupt()).catch(() => { /* swallow — abort path will fire */ });
+    } catch { /* swallow — abort path will fire */ }
+  };
   if (abortSignal) {
-    abortSignal.addEventListener('abort', () => abortController.abort());
+    // Forward the *reason* too — without this the inner controller would
+    // throw a plain "AbortError" with no kind, and the catch site couldn't
+    // distinguish a user cancel from a wall-clock timeout. We also call
+    // `Query.interrupt()` first so the SDK can flush its current turn
+    // gracefully instead of leaving a half-streamed message.
+    if (abortSignal.aborted) {
+      tryGracefulInterrupt();
+      abortController.abort(abortSignal.reason);
+    } else {
+      abortSignal.addEventListener('abort', () => {
+        tryGracefulInterrupt();
+        abortController.abort(abortSignal.reason);
+      });
+    }
   }
 
   const startTime = Date.now();
@@ -512,6 +545,7 @@ export async function executeAgent(
         cwd,
         allowedTools: DEFAULT_AGENT_TOOLS,
         permissionMode,
+        // (queryRef wired below — needs queryResult to exist first)
         ...(permissionMode === 'bypassPermissions'
           ? { allowDangerouslySkipPermissions: true }
           : {}),
@@ -545,6 +579,14 @@ export async function executeAgent(
         stderr: (data: string) => log.debug(`[agent-stderr] ${data.trimEnd()}`),
       },
     });
+    // Wire the queryRef *before* the abort handler can fire mid-iteration —
+    // otherwise abort would skip straight to the hard-abort path.
+    queryRef.current = queryResult as unknown as { interrupt?: () => Promise<void> | void };
+    if (abortController.signal.aborted) {
+      // The abort fired between controller creation and queryResult assignment;
+      // attempt the graceful interrupt now.
+      tryGracefulInterrupt();
+    }
 
     for await (const message of queryResult) {
       // Assistant message — collect text and tool use
@@ -668,18 +710,37 @@ export async function executeAgent(
     };
   } catch (err) {
     const durationSec = (Date.now() - startTime) / 1000;
-    const errorMsg = err instanceof Error ? err.message : String(err);
     const aborted = err instanceof AbortError;
-    const retryable = !aborted && isRetryableSdkError(err);
 
-    log.error(`Agent failed${aborted ? ' (aborted)' : ''}: ${errorMsg}`);
-    onProgress?.({ type: 'error', message: `Agent error: ${errorMsg}` });
+    // Disambiguate aborts: if the executor cancelled us with a typed reason,
+    // surface that instead of the SDK's stock "process aborted by user"
+    // message. This is the core of the timeout-vs-user fix — without it,
+    // every wall-clock-driven cancel reads as a user cancel.
+    let displayMessage: string;
+    let retryable: boolean;
+    if (aborted) {
+      const reason = options.abortSignal?.reason;
+      if (isOrionOmegaAbortReason(reason)) {
+        displayMessage = `Agent ${describeAbortReason(reason)}`;
+        // Timeout aborts are transient; user cancels are terminal.
+        retryable = reason.kind === 'timeout';
+      } else {
+        displayMessage = err instanceof Error ? err.message : String(err);
+        retryable = false;
+      }
+    } else {
+      displayMessage = err instanceof Error ? err.message : String(err);
+      retryable = isRetryableSdkError(err);
+    }
+
+    log.error(`Agent failed${aborted ? ' (aborted)' : ''}: ${displayMessage}`);
+    onProgress?.({ type: 'error', message: `Agent error: ${displayMessage}` });
 
     return {
       output: output.trim(),
       toolCalls,
       success: false,
-      error: errorMsg,
+      error: displayMessage,
       durationSec,
       outputPaths,
       retryable,
@@ -737,10 +798,34 @@ export async function executeCodingAgent(
 
   onProgress?.({ type: 'status', message: `Coding agent starting: ${task.slice(0, 60)}...`, progress: 0 });
 
-  // P2: AbortController for SDK cancellation
+  // P2: AbortController for SDK cancellation. Forward the abort *reason*
+  // so the catch site can distinguish a user cancel from a wall-clock
+  // timeout — see executeAgent for the same pattern + rationale. Also
+  // attempt a graceful `Query.interrupt()` before the hard abort so the
+  // SDK can flush its current turn instead of leaving a half-streamed
+  // message behind.
   const abortController = new AbortController();
+  const queryRef: { current: { interrupt?: () => Promise<void> | void } | null } = { current: null };
+  let interruptAttempted = false;
+  const tryGracefulInterrupt = (): void => {
+    if (interruptAttempted) return;
+    interruptAttempted = true;
+    const q = queryRef.current;
+    if (!q || typeof q.interrupt !== 'function') return;
+    try {
+      void Promise.resolve(q.interrupt()).catch(() => { /* swallow — abort path will fire */ });
+    } catch { /* swallow — abort path will fire */ }
+  };
   if (abortSignal) {
-    abortSignal.addEventListener('abort', () => abortController.abort());
+    if (abortSignal.aborted) {
+      tryGracefulInterrupt();
+      abortController.abort(abortSignal.reason);
+    } else {
+      abortSignal.addEventListener('abort', () => {
+        tryGracefulInterrupt();
+        abortController.abort(abortSignal.reason);
+      });
+    }
   }
 
   const startTime = Date.now();
@@ -839,6 +924,13 @@ export async function executeCodingAgent(
         stderr: (data: string) => log.debug(`[coding-agent-stderr] ${data.trimEnd()}`),
       },
     });
+    // Wire queryRef so a mid-stream abort can call Query.interrupt() first
+    // (graceful turn-end) before the hard SDK abort fires. See executeAgent
+    // for the same pattern.
+    queryRef.current = queryResult as unknown as { interrupt?: () => Promise<void> | void };
+    if (abortController.signal.aborted) {
+      tryGracefulInterrupt();
+    }
 
     for await (const message of queryResult) {
       // P3: Use message.type discriminator for proper typed handling
@@ -980,24 +1072,40 @@ export async function executeCodingAgent(
     };
   } catch (err) {
     const durationSec = (Date.now() - startTime) / 1000;
-    const errorMsg = err instanceof Error ? err.message : String(err);
     const aborted = err instanceof AbortError;
-    // AbortError is non-retryable inside the bridge — the executor's outer
-    // timeout/cancel logic decides whether to retry.
-    const retryable = !aborted && isRetryableSdkError(err);
 
-    log.error(`Coding agent failed${aborted ? ' (aborted)' : ''}: ${errorMsg}`);
+    // Disambiguate aborts using the typed reason on the abort signal — see
+    // executeAgent above for the rationale. Without this, every cancel
+    // surfaces as the SDK's "Claude Code process aborted by user" message
+    // even when the *real* cause was the executor's wall-clock timeout.
+    let displayMessage: string;
+    let retryable: boolean;
+    if (aborted) {
+      const reason = abortSignal?.reason;
+      if (isOrionOmegaAbortReason(reason)) {
+        displayMessage = `Coding agent ${describeAbortReason(reason)}`;
+        retryable = reason.kind === 'timeout';
+      } else {
+        displayMessage = err instanceof Error ? err.message : String(err);
+        retryable = false;
+      }
+    } else {
+      displayMessage = err instanceof Error ? err.message : String(err);
+      retryable = isRetryableSdkError(err);
+    }
+
+    log.error(`Coding agent failed${aborted ? ' (aborted)' : ''}: ${displayMessage}`);
 
     onProgress?.({
       type: 'error',
-      message: `Coding agent error: ${errorMsg}`,
+      message: `Coding agent error: ${displayMessage}`,
     });
 
     return {
       output: output.trim(),
       toolCalls,
       success: false,
-      error: errorMsg,
+      error: displayMessage,
       durationSec,
       outputPaths: [...new Set(outputPaths)],
       // Fix: include partial token counts even on failure so partial usage is accounted for.

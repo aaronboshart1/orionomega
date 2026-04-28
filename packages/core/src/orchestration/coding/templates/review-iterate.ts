@@ -31,6 +31,11 @@ export interface ReviewIterateParams {
   };
   validationCommands?: string[];
   validationMaxRetries?: number;
+  /**
+   * Per-command wall-clock budget (ms) for validation steps. Sourced from
+   * `orchestration.validationTimeout` in the user's config. Defaults to 5 min.
+   */
+  validationTimeoutMs?: number;
 }
 
 export function buildReviewIterateTemplate(params: ReviewIterateParams): WorkflowNode[] {
@@ -42,6 +47,7 @@ export function buildReviewIterateTemplate(params: ReviewIterateParams): Workflo
     maxTurns,
     validationCommands = [],
     validationMaxRetries = 2,
+    validationTimeoutMs = 300_000,
   } = params;
 
   // ── Layer 0: Diff Analysis ────────────────────────────────────────────────
@@ -177,7 +183,7 @@ export function buildReviewIterateTemplate(params: ReviewIterateParams): Workflo
       fileScope: { owned: [], readable: [], lockRequired: false },
       // 5-minute per-command budget for build/test/lint — the previous 2 min
       // was insufficient for multi-package monorepo builds.
-      validationConfig: { commands: validationCommands, maxRetries: validationMaxRetries, timeout: 300_000 },
+      validationConfig: { commands: validationCommands, maxRetries: validationMaxRetries, timeout: validationTimeoutMs },
     },
   };
 

@@ -19,6 +19,7 @@ import type { EventBus } from './event-bus.js';
 import { WorkflowState } from './state.js';
 import { WorkerProcess, type WorkerResult } from './worker.js';
 import { TaggedRetryError } from './retry-error.js';
+import type { OrionOmegaAbortReason } from './abort-reason.js';
 import { CheckpointManager } from './checkpoint.js';
 import { createLogger } from '../logging/logger.js';
 import { readConfig } from '../config/loader.js';
@@ -190,6 +191,19 @@ function resolveNodeTimeoutSec(
     return floor;
   }
   return requested;
+}
+
+/**
+ * Per-attempt timeout multiplier. The first attempt gets the base budget;
+ * each retry gets progressively more time, since a transient timeout on
+ * attempt N often means the workload is genuinely larger than the planner
+ * estimated. This prevents the same-budget-every-time loop where every
+ * attempt times out at exactly the same point.
+ */
+const RETRY_TIMEOUT_MULTIPLIERS = [1.0, 1.5, 2.0, 2.0, 2.0] as const;
+
+function timeoutMultiplierForAttempt(attempt: number): number {
+  return RETRY_TIMEOUT_MULTIPLIERS[Math.min(attempt, RETRY_TIMEOUT_MULTIPLIERS.length - 1)];
 }
 
 /** Configuration for the graph executor. */
@@ -519,7 +533,9 @@ export class GraphExecutor {
     for (const [id, controller] of this.activeCodingAborts) {
       log.info(`Aborting coding agent '${id}'`);
       this.nodeAbortReasons.set(id, { kind: 'user' });
-      controller.abort();
+      // Pass a typed reason so the bridge's AbortError handler can render
+      // "cancelled by user" instead of the SDK's generic abort message.
+      controller.abort({ kind: 'user' } satisfies OrionOmegaAbortReason);
     }
 
     this.resume();
@@ -591,7 +607,7 @@ export class GraphExecutor {
           await new Promise((resolve) => setTimeout(resolve, delayMs));
         }
 
-        const result = await this.executeNodeByType(node);
+        const result = await this.executeNodeByType(node, attempt);
         // Success — clear any abort reason so the map stays small.
         this.nodeAbortReasons.delete(nodeId);
         return result;
@@ -676,8 +692,11 @@ export class GraphExecutor {
 
   /**
    * Dispatches node execution based on its type.
+   *
+   * `attempt` is 0-indexed: 0 = first try, 1 = first retry, etc. It is used
+   * to scale per-attempt wall-clock budgets via `timeoutMultiplierForAttempt`.
    */
-  private async executeNodeByType(node: WorkflowNode): Promise<WorkerResult> {
+  private async executeNodeByType(node: WorkflowNode, attempt: number = 0): Promise<WorkerResult> {
     switch (node.type) {
       case 'AGENT':
       case 'TOOL': {
@@ -732,10 +751,19 @@ export class GraphExecutor {
         const workerOutputDir = `${this.getRunDir()}/${node.id}`;
         try { mkdirSync(workerOutputDir, { recursive: true }); } catch { /* may exist */ }
 
-        const effectiveTimeoutSec = resolveNodeTimeoutSec(node, {
+        const baseTimeoutSec = resolveNodeTimeoutSec(node, {
           workerTimeout: this.config.workerTimeout,
           codingAgentTimeout: this.config.codingAgentTimeout ?? this.config.workerTimeout,
         });
+        // Escalate the wall-clock budget on retries — see
+        // RETRY_TIMEOUT_MULTIPLIERS for the rationale.
+        const multiplier = timeoutMultiplierForAttempt(attempt);
+        const effectiveTimeoutSec = Math.round(baseTimeoutSec * multiplier);
+        if (multiplier !== 1.0) {
+          log.info(
+            `Node '${node.id}' attempt ${attempt + 1}: scaling timeout ${baseTimeoutSec}s × ${multiplier} → ${effectiveTimeoutSec}s`,
+          );
+        }
 
         const worker = new WorkerProcess(node, this.eventBus, {
           workspaceDir: workerOutputDir,
@@ -805,10 +833,20 @@ export class GraphExecutor {
         // Fix 3: Enforce wall-clock timeout for CODING_AGENT nodes.
         // The SDK's maxTurns/maxBudgetUsd are soft limits; a stalled API call
         // or infinite streaming response can hold up the entire workflow layer.
-        const codingTimeoutSec = resolveNodeTimeoutSec(node, {
+        const baseCodingTimeoutSec = resolveNodeTimeoutSec(node, {
           workerTimeout: this.config.workerTimeout,
           codingAgentTimeout: this.config.codingAgentTimeout ?? this.config.workerTimeout,
         });
+        // Same per-attempt escalation as AGENT/TOOL — see
+        // RETRY_TIMEOUT_MULTIPLIERS. Coding agents are the *most* likely to
+        // need extra wall-clock on retries.
+        const codingMultiplier = timeoutMultiplierForAttempt(attempt);
+        const codingTimeoutSec = Math.round(baseCodingTimeoutSec * codingMultiplier);
+        if (codingMultiplier !== 1.0) {
+          log.info(
+            `CODING_AGENT '${node.id}' attempt ${attempt + 1}: scaling timeout ${baseCodingTimeoutSec}s × ${codingMultiplier} → ${codingTimeoutSec}s`,
+          );
+        }
         // Track the most recently observed tool so a timeout error can name it.
         let lastCodingTool: string | undefined;
         const codingStartMs = Date.now();
@@ -824,12 +862,17 @@ export class GraphExecutor {
           );
           // Record reason BEFORE abort so listeners that observe the abort
           // already see the timeout classification.
-          this.nodeAbortReasons.set(node.id, {
+          const reason: OrionOmegaAbortReason = {
             kind: 'timeout',
             timeoutSec: codingTimeoutSec,
+            nodeLabel: node.label,
             ...(lastCodingTool ? { lastTool: lastCodingTool } : {}),
-          });
-          codingAbort.abort();
+          };
+          this.nodeAbortReasons.set(node.id, reason);
+          // Pass the typed reason → bridge surfaces "Coding agent timed out
+          // after Xs (last tool: …)" instead of the SDK's generic
+          // "process aborted by user" message.
+          codingAbort.abort(reason);
         }, codingTimeoutSec * 1000);
 
         // Heartbeat — long coding sessions otherwise look frozen in the UI.

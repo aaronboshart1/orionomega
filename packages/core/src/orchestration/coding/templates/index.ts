@@ -48,6 +48,12 @@ export interface CommonTemplateParams {
   /** Validation commands. Empty = auto-detect. */
   validationCommands?: string[];
   validationMaxRetries?: number;
+  /**
+   * Per-command wall-clock budget (ms) for validation steps. Sourced from
+   * `orchestration.validationTimeout` in the user's config; passed through
+   * to the underlying templates that need it.
+   */
+  validationTimeoutMs?: number;
 }
 
 // ── Template loader ───────────────────────────────────────────────────────────
@@ -71,6 +77,7 @@ export function loadCodingTemplate(
     maxTurns,
     validationCommands,
     validationMaxRetries,
+    validationTimeoutMs,
   } = params;
 
   switch (template) {
@@ -104,6 +111,7 @@ export function loadCodingTemplate(
         },
         validationCommands,
         validationMaxRetries,
+        validationTimeoutMs,
       } as FeatureImplementationParams);
 
     case 'bug-fix':
@@ -133,6 +141,7 @@ export function loadCodingTemplate(
         },
         validationCommands,
         validationMaxRetries,
+        validationTimeoutMs,
       } as BugFixParams);
 
     case 'refactor':
@@ -165,6 +174,7 @@ export function loadCodingTemplate(
         },
         validationCommands,
         validationMaxRetries,
+        validationTimeoutMs,
       } as RefactorParams);
 
     case 'test-suite':
@@ -194,6 +204,7 @@ export function loadCodingTemplate(
         },
         validationCommands,
         validationMaxRetries,
+        validationTimeoutMs,
       } as TestSuiteParams);
 
     case 'review-iterate':
@@ -220,6 +231,7 @@ export function loadCodingTemplate(
         },
         validationCommands,
         validationMaxRetries,
+        validationTimeoutMs,
       } as ReviewIterateParams);
 
     default: {

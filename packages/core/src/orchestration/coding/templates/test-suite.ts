@@ -33,6 +33,14 @@ export interface TestSuiteParams {
   };
   validationCommands?: string[];
   validationMaxRetries?: number;
+  /**
+   * Per-command wall-clock budget (ms) for validation steps. Sourced from
+   * `orchestration.validationTimeout` in the user's config. Defaults to
+   * 300_000 (5 min) — previously was 180_000 but that hard-coded value
+   * was inconsistent with the other coding templates and undersized for
+   * monorepo `pnpm -r` builds.
+   */
+  validationTimeoutMs?: number;
 }
 
 export function buildTestSuiteTemplate(params: TestSuiteParams): WorkflowNode[] {
@@ -44,6 +52,7 @@ export function buildTestSuiteTemplate(params: TestSuiteParams): WorkflowNode[] 
     maxTurns,
     validationCommands = [],
     validationMaxRetries = 2,
+    validationTimeoutMs = 300_000,
   } = params;
 
   // ── Layer 0: Codebase Scanner ─────────────────────────────────────────────
@@ -181,7 +190,7 @@ export function buildTestSuiteTemplate(params: TestSuiteParams): WorkflowNode[] 
       task: 'Validate test suite',
       codingRole: 'validator',
       fileScope: { owned: [], readable: [], lockRequired: false },
-      validationConfig: { commands: validationCommands, maxRetries: validationMaxRetries, timeout: 180_000 },
+      validationConfig: { commands: validationCommands, maxRetries: validationMaxRetries, timeout: validationTimeoutMs },
     },
   };
 

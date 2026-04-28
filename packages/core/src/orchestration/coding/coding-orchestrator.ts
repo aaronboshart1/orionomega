@@ -97,6 +97,13 @@ export interface CodingOrchestratorConfig {
   highPowerModel: string;
   /** Path to the orionomega source repo (used as default when no repo: hint given). */
   sourceRepoDir?: string;
+  /**
+   * Per-command wall-clock budget (seconds) for build/test/lint validation
+   * commands, propagated from `orchestration.validationTimeout`. Defaults
+   * to 300s when omitted. The previous hard-coded 300_000 ms blocked
+   * monorepo users from raising the budget without editing template code.
+   */
+  validationTimeoutSec?: number;
 }
 
 // ── DAG step definitions ──────────────────────────────────────────────────────
@@ -395,6 +402,9 @@ export class CodingOrchestrator {
         const planner = new CodingPlanner({
           codingModeConfig: this.cfg.codingModeConfig,
           fallbackModel: this.cfg.highPowerModel,
+          // Plumb validation timeout from orchestration config so monorepo
+          // builds can be granted >5 min without editing template code.
+          validationTimeoutMs: (this.cfg.validationTimeoutSec ?? 300) * 1000,
         });
 
         // Use real scan output if available, otherwise build a stub
@@ -527,7 +537,12 @@ export class CodingOrchestrator {
           const validationConfig: ValidationConfig = {
             commands: validationCmds,
             maxRetries: 0,
-            timeout: 60_000,
+            // Use the same config-driven validation timeout as the primary
+            // path so the fallback doesn't apply a stricter (60s) budget
+            // than the user configured. The previous hard-coded 60_000
+            // caused legitimate monorepo builds to time out only on the
+            // recovery path, masking the real failure from the user.
+            timeout: (this.cfg.validationTimeoutSec ?? 300) * 1000,
           };
           try {
             const valResult = await validator.execute(validationConfig, targetDir, () => {});
@@ -555,11 +570,14 @@ export class CodingOrchestrator {
 
       let report: ReviewReport;
       try {
-        // Use the proper architect-reviewer module
+        // Per-command budget sourced from config (orchestration.validationTimeout).
+        // Monorepo builds (`pnpm -r`) routinely exceed 2 min and sometimes 5 min;
+        // letting the user raise this without editing template code is the
+        // whole point of plumbing the value through.
+        const validationTimeoutMs = (this.cfg.validationTimeoutSec ?? 300) * 1000;
         report = await generateReviewReport(targetDir, {
           changedFiles: [...filesModified, ...filesCreated],
-          // 5-minute per-command budget — monorepo build/test exceeds 2 min.
-          timeoutMs: 300_000,
+          timeoutMs: validationTimeoutMs,
         });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);

@@ -15,6 +15,7 @@ import type { WorkflowNode, WorkerEvent } from './types.js';
 import type { EventBus } from './event-bus.js';
 import { executeAgent } from './agent-sdk-bridge.js';
 import { TaggedRetryError } from './retry-error.js';
+import type { OrionOmegaAbortReason } from './abort-reason.js';
 import { readConfig } from '../config/loader.js';
 import { SkillLoader } from '@orionomega/skills-sdk';
 import { createLogger } from '../logging/logger.js';
@@ -244,7 +245,10 @@ export class WorkerProcess {
   cancel(): void {
     this.cancelled = true;
     if (!this.abortReason) this.abortReason = 'user';
-    this.abortController?.abort();
+    // Pass a typed reason so the SDK bridge can disambiguate user-cancel
+    // from a wall-clock timeout when it catches the AbortError.
+    const reason: OrionOmegaAbortReason = { kind: 'user' };
+    this.abortController?.abort(reason);
   }
 
   /**
@@ -395,7 +399,16 @@ export class WorkerProcess {
       // correctly as a timeout rather than as user-driven cancellation.
       this.abortReason = 'timeout';
       this.onTimeout?.(lastTool);
-      this.abortController?.abort();
+      // Typed abort reason → bridge can render the right error message
+      // ("Agent timed out after Xs") instead of the SDK's stock
+      // "process aborted by user" string.
+      const reason: OrionOmegaAbortReason = {
+        kind: 'timeout',
+        timeoutSec: this.timeout,
+        lastTool,
+        nodeLabel: this.node.label,
+      };
+      this.abortController?.abort(reason);
     }, workerTimeoutMs);
 
     this.emitEvent({
