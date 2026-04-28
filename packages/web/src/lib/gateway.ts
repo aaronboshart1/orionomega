@@ -1497,6 +1497,18 @@ function bindListeners(ws: ReconnectingWebSocket): void {
             coreShortCommit: b.core?.shortCommit,
             sourceShortCommit: b.sourceShortCommit ?? null,
           });
+        } else if (data) {
+          // Mixed-version deployment: the gateway responded successfully but
+          // doesn't yet emit the `build` block (i.e. it predates this fix).
+          // Clear any prior stale-build state so a leftover badge from an
+          // earlier session doesn't stick around forever — we have no way to
+          // verify staleness here, so the safer default is "unknown / OK".
+          useConnectionStore.getState().setStaleBuild({
+            isStale: false,
+            reason: '',
+            builtDirty: false,
+            sourceShortCommit: null,
+          });
         }
       })
       .catch((err) => { console.warn('[gateway] status fetch error', err); });
