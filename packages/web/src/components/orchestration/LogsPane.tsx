@@ -47,7 +47,7 @@ const LEVEL_ICON: Record<LogLevel, React.ReactNode> = {
 };
 
 const MAX_BUFFER_LINES = 50_000;
-const INITIAL_TAIL_LINES = 1_000;
+const INITIAL_TAIL_LINES = 500;
 
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -266,9 +266,15 @@ export function LogsPane() {
   }, [loadAll, effectiveLevel]);
 
   const handleLevelChange = useCallback((next: LogLevel) => {
-    // Client-side re-filter only; user can hit Refresh to widen the buffer.
-    setFilterLevel(next);
-  }, []);
+    setFilterLevel((prev) => {
+      const prevOrder = LEVEL_ORDER[prev ?? serverLevel];
+      const nextOrder = LEVEL_ORDER[next];
+      // Widening (e.g. warn → debug) needs more lines than the buffer holds —
+      // re-fetch. Narrowing is instant via the client-side memo.
+      if (nextOrder > prevOrder) void loadAll(next);
+      return next;
+    });
+  }, [loadAll, serverLevel]);
 
   if (meta && !meta.exists && !loading) {
     return (
