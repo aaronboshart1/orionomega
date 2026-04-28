@@ -11,7 +11,7 @@
  * we delegate to the SDK that powers Claude Code itself.
  */
 
-import { query, createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
+import { query, createSdkMcpServer, tool, AbortError } from '@anthropic-ai/claude-agent-sdk';
 import type {
   SDKAssistantMessage,
   SDKResultSuccess,
@@ -32,6 +32,55 @@ import type { SkillTool } from '@orionomega/skills-sdk';
 import path from 'node:path';
 
 const log = createLogger('agent-sdk-bridge');
+
+/**
+ * Classify whether an error returned from the SDK is worth retrying.
+ *
+ * - AbortError surfaces both for *user-driven* cancellation and for
+ *   *AbortController-driven timeouts*. The bridge cannot distinguish those
+ *   from inside the SDK; the caller knows which one it triggered. We mark
+ *   AbortError as non-retryable here and rely on the executor's wall-clock
+ *   timeout reasoning to retry timeouts at the outer layer.
+ * - Authentication / API-key / 4xx errors are permanent.
+ * - Anything else (network blips, rate limits, 5xx, unknown) is retryable.
+ */
+function isRetryableSdkError(err: unknown): boolean {
+  if (err instanceof AbortError) return false;
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  if (
+    msg.includes('invalid api key') ||
+    msg.includes('unauthorized') ||
+    msg.includes('forbidden') ||
+    msg.includes('authentication failed') ||
+    msg.includes('401') ||
+    msg.includes('403')
+  ) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Build a human-readable error message from a non-success SDKResultError.
+ * The SDK distinguishes several failure subtypes; surface them so operators
+ * can act differently on, say, max-budget exhaustion vs an outright crash.
+ */
+function describeResultError(errorMsg: SDKResultError): string {
+  const subtype = errorMsg.subtype;
+  const summary = errorMsg.errors?.join('; ') ?? '';
+  switch (subtype) {
+    case 'error_max_turns':
+      return `max turns reached${summary ? `: ${summary}` : ''}`;
+    case 'error_max_budget_usd':
+      return `max budget (USD) reached${summary ? `: ${summary}` : ''}`;
+    case 'error_max_structured_output_retries':
+      return `max structured-output retries reached${summary ? `: ${summary}` : ''}`;
+    case 'error_during_execution':
+      return `error during execution${summary ? `: ${summary}` : ''}`;
+    default:
+      return summary || String(subtype);
+  }
+}
 
 /** Result of a coding agent invocation via the Agent SDK. */
 export interface CodingAgentResult {
@@ -60,6 +109,13 @@ export interface CodingAgentResult {
   cacheReadTokens?: number;
   /** Cache creation tokens across all turns. */
   cacheCreationTokens?: number;
+  /**
+   * If false, the failure is permanent (auth error, bad config) and the
+   * caller should not retry. Undefined on success.
+   */
+  retryable?: boolean;
+  /** SDK result subtype when the SDK reported a non-success result. */
+  errorSubtype?: SDKResultError['subtype'];
 }
 
 /** Configuration for a coding agent node. */
@@ -164,6 +220,13 @@ export interface AgentExecutionResult {
   cacheReadTokens?: number;
   /** Total cache creation tokens across all turns. */
   cacheCreationTokens?: number;
+  /**
+   * If false, the failure is permanent (auth error, bad config) and the
+   * caller should not retry. Undefined on success.
+   */
+  retryable?: boolean;
+  /** SDK result subtype when the SDK reported a non-success result. */
+  errorSubtype?: SDKResultError['subtype'];
 }
 
 /**
@@ -372,6 +435,8 @@ export async function executeAgent(
       error: 'No API key configured',
       durationSec: 0,
       outputPaths: [],
+      // Permanent: no retry will conjure an API key into existence.
+      retryable: false,
     };
   }
 
@@ -549,9 +614,31 @@ export async function executeAgent(
             output += '\n' + successMsg.result;
           }
         } else {
+          // SDK reported a structured error result — surface the subtype so the
+          // caller can decide whether the failure is worth retrying.
           const errorMsg = message as SDKResultError;
-          const errSummary = errorMsg.errors?.join('; ') ?? errorMsg.subtype;
-          log.warn(`Agent result error: ${errSummary}`);
+          const description = describeResultError(errorMsg);
+          log.warn(`Agent result error (${errorMsg.subtype}): ${description}`);
+          // max_budget / max_turns are *not* retryable — the same call would
+          // hit the same cap. error_during_execution typically is.
+          const retryable =
+            errorMsg.subtype === 'error_during_execution';
+          const durationSec = (Date.now() - startTime) / 1000;
+          return {
+            output: output.trim(),
+            toolCalls,
+            success: false,
+            error: `SDK ${errorMsg.subtype}: ${description}`,
+            durationSec,
+            costUsd,
+            outputPaths,
+            inputTokens: totalInputTokens,
+            outputTokens: totalOutputTokens,
+            cacheReadTokens: totalCacheReadTokens,
+            cacheCreationTokens: totalCacheCreationTokens,
+            retryable,
+            errorSubtype: errorMsg.subtype,
+          };
         }
 
         onProgress?.({
@@ -582,8 +669,10 @@ export async function executeAgent(
   } catch (err) {
     const durationSec = (Date.now() - startTime) / 1000;
     const errorMsg = err instanceof Error ? err.message : String(err);
+    const aborted = err instanceof AbortError;
+    const retryable = !aborted && isRetryableSdkError(err);
 
-    log.error(`Agent failed: ${errorMsg}`);
+    log.error(`Agent failed${aborted ? ' (aborted)' : ''}: ${errorMsg}`);
     onProgress?.({ type: 'error', message: `Agent error: ${errorMsg}` });
 
     return {
@@ -593,6 +682,7 @@ export async function executeAgent(
       error: errorMsg,
       durationSec,
       outputPaths,
+      retryable,
     };
   }
 }
@@ -629,6 +719,8 @@ export async function executeCodingAgent(
       error: 'No API key configured',
       durationSec: 0,
       outputPaths: [],
+      // Permanent: no retry will conjure an API key into existence.
+      retryable: false,
     };
   }
 
@@ -834,10 +926,30 @@ export async function executeCodingAgent(
             output += '\n' + successMsg.result;
           }
         } else {
-          // Error result — log the errors
+          // SDK reported a structured error result (subtype !== 'success').
+          // Surface the subtype so callers can react: max_budget / max_turns
+          // are not retryable; error_during_execution typically is.
           const errorMsg = message as SDKResultError;
-          const errSummary = errorMsg.errors?.join('; ') ?? errorMsg.subtype;
-          log.warn(`Coding agent result error: ${errSummary}`);
+          const description = describeResultError(errorMsg);
+          log.warn(`Coding agent result error (${errorMsg.subtype}): ${description}`);
+          const retryable = errorMsg.subtype === 'error_during_execution';
+          const durationSec = (Date.now() - startTime) / 1000;
+          return {
+            output: output.trim(),
+            toolCalls,
+            success: false,
+            error: `SDK ${errorMsg.subtype}: ${description}`,
+            durationSec,
+            costUsd,
+            outputPaths: [...new Set(outputPaths)],
+            model,
+            inputTokens: totalInputTokens,
+            outputTokens: totalOutputTokens,
+            cacheReadTokens: totalCacheReadTokens,
+            cacheCreationTokens: totalCacheCreationTokens,
+            retryable,
+            errorSubtype: errorMsg.subtype,
+          };
         }
 
         onProgress?.({
@@ -869,8 +981,12 @@ export async function executeCodingAgent(
   } catch (err) {
     const durationSec = (Date.now() - startTime) / 1000;
     const errorMsg = err instanceof Error ? err.message : String(err);
+    const aborted = err instanceof AbortError;
+    // AbortError is non-retryable inside the bridge — the executor's outer
+    // timeout/cancel logic decides whether to retry.
+    const retryable = !aborted && isRetryableSdkError(err);
 
-    log.error(`Coding agent failed: ${errorMsg}`);
+    log.error(`Coding agent failed${aborted ? ' (aborted)' : ''}: ${errorMsg}`);
 
     onProgress?.({
       type: 'error',
@@ -890,6 +1006,7 @@ export async function executeCodingAgent(
       outputTokens: totalOutputTokens,
       cacheReadTokens: totalCacheReadTokens,
       cacheCreationTokens: totalCacheCreationTokens,
+      retryable,
     };
   }
 }

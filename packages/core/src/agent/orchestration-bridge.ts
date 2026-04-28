@@ -37,6 +37,8 @@ export interface OrchestrationConfig {
   workspaceDir: string;
   checkpointDir: string;
   workerTimeout: number;
+  /** Per-CODING_AGENT-node wall-clock budget (seconds). Defaults to workerTimeout. */
+  codingAgentTimeout?: number;
   maxRetries: number;
   /** Path to the source repo for coding mode (default working directory). */
   codingRepoDir?: string;
@@ -612,6 +614,7 @@ ${userTask}`;
       workspaceDir: this.config.workspaceDir,
       checkpointDir: this.config.checkpointDir,
       workerTimeout: this.config.workerTimeout,
+      codingAgentTimeout: this.config.codingAgentTimeout,
       maxRetries: this.config.maxRetries,
       checkpointInterval: 1,
       codingRepoDir: this.config.codingRepoDir,

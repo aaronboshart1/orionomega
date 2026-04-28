@@ -558,7 +558,8 @@ export class CodingOrchestrator {
         // Use the proper architect-reviewer module
         report = await generateReviewReport(targetDir, {
           changedFiles: [...filesModified, ...filesCreated],
-          timeoutMs: 120_000,
+          // 5-minute per-command budget — monorepo build/test exceeds 2 min.
+          timeoutMs: 300_000,
         });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);

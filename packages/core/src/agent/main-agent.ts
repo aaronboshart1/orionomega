@@ -52,6 +52,13 @@ export interface MainAgentConfig {
   workspaceDir: string;
   checkpointDir: string;
   workerTimeout: number;
+  /**
+   * Wall-clock budget (seconds) for CODING_AGENT nodes. Defaults to
+   * `workerTimeout` when omitted, but the recommended value is much higher
+   * (≥1800s) because Claude Code coding loops are inherently long-running
+   * and the executor enforces a 1800s floor anyway.
+   */
+  codingAgentTimeout?: number;
   maxRetries: number;
   skillsDir?: string;
   commandsDir?: string;
@@ -315,6 +322,7 @@ export class MainAgent {
         workspaceDir: this.config.workspaceDir,
         checkpointDir: this.config.checkpointDir,
         workerTimeout: this.config.workerTimeout,
+        codingAgentTimeout: this.config.codingAgentTimeout,
         maxRetries: this.config.maxRetries,
         codingRepoDir: this.config.codingRepoDir,
       },

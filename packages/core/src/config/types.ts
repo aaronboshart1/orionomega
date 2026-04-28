@@ -51,8 +51,25 @@ export interface OrionOmegaConfig {
   orchestration: {
     /** Maximum depth of nested agent spawns. */
     maxSpawnDepth: number;
-    /** Worker timeout in seconds. */
+    /**
+     * Default wall-clock timeout (seconds) for AGENT and TOOL nodes.
+     * Used when a node does not declare its own `timeout`.
+     * A floor is applied per node type — see executor.ts.
+     */
     workerTimeout: number;
+    /**
+     * Default wall-clock timeout (seconds) for CODING_AGENT nodes.
+     * Coding agents perform multi-turn tool loops (Read/Write/Edit/Bash)
+     * and routinely need much longer than non-coding workers. Used when
+     * a CODING_AGENT node does not declare its own `timeout`.
+     * A floor is applied — see executor.ts.
+     */
+    codingAgentTimeout: number;
+    /**
+     * Default timeout (seconds) for in-loop validation commands
+     * (build/test/lint executed inside coding mode templates).
+     */
+    validationTimeout: number;
     /** Maximum retry attempts per worker. */
     maxRetries: number;
     /** Whether to require planning before execution. */

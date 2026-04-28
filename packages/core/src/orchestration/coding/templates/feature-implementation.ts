@@ -313,7 +313,9 @@ ${task}
       validationConfig: {
         commands: validationCommands,
         maxRetries: validationMaxRetries,
-        timeout: 120_000,
+        // 5-minute per-command budget for build/test/lint — the previous 2 min
+        // was insufficient for multi-package monorepo builds.
+        timeout: 300_000,
       },
     },
   };

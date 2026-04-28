@@ -186,7 +186,10 @@ async function initMainAgent(): Promise<void> {
     checkpointDir: freshConfig.workspace?.path
       ? freshConfig.workspace.path + '/checkpoints'
       : '/tmp/orionomega-checkpoints',
-    workerTimeout: freshConfig.orchestration?.workerTimeout ?? 300,
+    workerTimeout: freshConfig.orchestration?.workerTimeout ?? 600,
+    // Coding loops are inherently long-running; default 30 min and allow
+    // operators to override via orchestration.codingAgentTimeout in config.
+    codingAgentTimeout: freshConfig.orchestration?.codingAgentTimeout ?? 1800,
     maxRetries: freshConfig.orchestration?.maxRetries ?? 2,
     skillsDir: freshConfig.skills?.directory,
     commandsDir: freshConfig.commands?.directory,

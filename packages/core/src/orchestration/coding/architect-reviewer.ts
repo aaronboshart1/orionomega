@@ -131,13 +131,15 @@ export interface ReviewOptions {
   lintCommand?: string;
   /** Whether to run type checking (TypeScript projects only). */
   runTypeCheck?: boolean;
-  /** Per-command timeout in milliseconds. Default: 120_000. */
+  /** Per-command timeout in milliseconds. Default: 300_000 (5 min). */
   timeoutMs?: number;
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const DEFAULT_TIMEOUT_MS = 120_000;
+// 5-minute default — 2-minute timeout was insufficient for monorepo build/test
+// commands and produced false-negative review results.
+const DEFAULT_TIMEOUT_MS = 300_000;
 const MAX_OUTPUT_BYTES = 10_000;
 
 /** Allowlist for reviewer commands (mirrors validation-loop's security posture). */

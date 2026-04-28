@@ -346,7 +346,15 @@ export class Planner {
 4. LOOP for iterative tasks (exitCondition: all_pass | output_match | llm_judge). Prefer LOOP over retries.
 5. ROUTER for conditional branching. JOIN when paths converge.
 6. Max ${this.config.maxWorkers ?? 8} concurrent workers per layer.
-7. Set timeouts (seconds), retries, fallbackNodeId. Pick models from list below.
+7. Per-node \`timeout\` is the **wall-clock budget in seconds** (NOT an estimated runtime).
+   It MUST be larger than any plausible execution time, or the node will be killed mid-flight.
+   Required minimums by node type — emit values >= these or omit the field to inherit defaults:
+     • AGENT         >= 600   (research/analysis tasks; default 600s)
+     • CODING_AGENT  >= 1800  (multi-turn Read/Edit/Bash loops; default 1800s)
+     • TOOL          >= 60    (short-lived shell invocations; default 600s)
+   For *expected* wall time, use the top-level \`estimatedTime\` field instead.
+   Always set \`retries\` (0–2) and a \`fallbackNodeId\` when a backup approach exists.
+   Pick models from the list below.
 ## Context Efficiency
 Workers auto-receive: upstream outputs, Hindsight memories, infra config. Do NOT create discovery nodes for known info.
 
@@ -354,9 +362,12 @@ Workers auto-receive: upstream outputs, Hindsight memories, infra config. Do NOT
 Retrieval: 50K-100K tokens (lightweight). Analysis: 100K-200K (midweight). Complex reasoning: 200K-400K (heavyweight).
 
 ## Output: JSON
+The \`estimatedTime\` field is the *expected* total runtime of the entire plan in seconds.
+Per-node \`timeout\` values are *budgets* that must comfortably exceed expected runtimes (see rule 7).
 \`\`\`json
-{"reasoning":"...","estimatedCost":0.05,"estimatedTime":120,"summary":"...","nodes":[{"id":"...","type":"AGENT|TOOL|ROUTER|JOIN|CODING_AGENT|LOOP","label":"...","dependsOn":[],"timeout":300,"retries":1,"agent":{"model":"...","task":"...","tokenBudget":200000,"skillIds":["linear"]},"codingAgent":{"task":"...","model":"...","allowedTools":["Read","Write","Edit","Bash","Glob","Grep"],"maxTurns":30},"tool":{"name":"BINARY","params":{}},"router":{"condition":"key","routes":{"val":"node-id","default":"node-id"}},"loop":{"body":[...],"maxIterations":5,"exitCondition":{"type":"all_pass|output_match|llm_judge"},"carryForward":true}}]}
+{"reasoning":"...","estimatedCost":0.05,"estimatedTime":600,"summary":"...","nodes":[{"id":"...","type":"AGENT|TOOL|ROUTER|JOIN|CODING_AGENT|LOOP","label":"...","dependsOn":[],"timeout":600,"retries":1,"agent":{"model":"...","task":"...","tokenBudget":200000,"skillIds":["linear"]},"codingAgent":{"task":"...","model":"...","allowedTools":["Read","Write","Edit","Bash","Glob","Grep"],"maxTurns":30},"tool":{"name":"BINARY","params":{}},"router":{"condition":"key","routes":{"val":"node-id","default":"node-id"}},"loop":{"body":[...],"maxIterations":5,"exitCondition":{"type":"all_pass|output_match|llm_judge"},"carryForward":true}}]}
 \`\`\`
+Note: For a CODING_AGENT node specifically, set \`timeout: 1800\` (or higher) — never 120 or 300.
 Include only the relevant config key per node type (agent/tool/router/codingAgent/loop). Every node: id, type, label, dependsOn.
 CODING_AGENT is preferred for coding tasks (key: codingAgent, not agent). LOOP is essential for iterative build-test-fix cycles.
 When a task involves an available skill, add \`"skillIds": ["<skill-name>"]\` inside the \`agent\` config of the AGENT node so its tools are available at runtime.

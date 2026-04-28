@@ -14,6 +14,7 @@ import { join, resolve as resolvePath } from 'node:path';
 import type { WorkflowNode, WorkerEvent } from './types.js';
 import type { EventBus } from './event-bus.js';
 import { executeAgent } from './agent-sdk-bridge.js';
+import { TaggedRetryError } from './retry-error.js';
 import { readConfig } from '../config/loader.js';
 import { SkillLoader } from '@orionomega/skills-sdk';
 import { createLogger } from '../logging/logger.js';
@@ -122,11 +123,28 @@ export class WorkerProcess {
   private readonly workflowId: string | undefined;
   /** The run-level output directory (e.g. ~/.orionomega/runs/{workflowId}). */
   private readonly runDir: string | undefined;
+  /**
+   * Distinguishes between user-driven cancellation (cancel()) and
+   * wall-clock-timeout-driven aborts. Surfaced so the executor can produce
+   * accurate "timed out" vs "aborted by user" error messages.
+   */
+  private abortReason: 'user' | 'timeout' | undefined;
+  /** Most recently observed tool name — included in timeout diagnostics. */
+  private lastToolName?: string;
+  /** Optional callback invoked when this worker self-aborts on its own timeout. */
+  private readonly onTimeout?: (lastTool?: string) => void;
 
   constructor(
     node: WorkflowNode,
     eventBus: EventBus,
-    options: { workspaceDir: string; timeout: number; context?: string; workflowId?: string; runDir?: string },
+    options: {
+      workspaceDir: string;
+      timeout: number;
+      context?: string;
+      workflowId?: string;
+      runDir?: string;
+      onTimeout?: (lastTool?: string) => void;
+    },
   ) {
     this.node = node;
     this.eventBus = eventBus;
@@ -135,6 +153,7 @@ export class WorkerProcess {
     this.context = options.context;
     this.workflowId = options.workflowId;
     this.runDir = options.runDir;
+    this.onTimeout = options.onTimeout;
   }
 
   /**
@@ -179,26 +198,52 @@ export class WorkerProcess {
       this.currentProgress = 100;
       return result;
     } catch (err) {
-      if (this.cancelled) {
+      // Distinguish user-driven cancel from a wall-clock-timeout-driven abort.
+      // Only the former should be reported as a cancelled (benign) result;
+      // the latter must propagate as an error so the executor's retry/replan
+      // logic engages instead of silently swallowing the timeout.
+      if (this.cancelled && this.abortReason === 'user') {
         this.currentStatus = 'done';
         return this.cancelledResult();
       }
       this.currentStatus = 'error';
+      const original = err instanceof Error ? err.message : String(err);
+      const errorMessage = this.abortReason === 'timeout'
+        ? `Worker '${this.node.label}' timed out after ${this.timeout}s`
+          + (this.lastToolName ? ` (last tool: ${this.lastToolName})` : '')
+          + ` — original SDK error: ${original}`
+        : original;
       this.emitEvent({
         type: 'error',
-        error: err instanceof Error ? err.message : String(err),
+        error: errorMessage,
         message: `Failed: ${this.node.label}`,
       });
-      throw err;
+      // Preserve the bridge's retry verdict. If runAgent threw a TaggedRetryError
+      // (auth/permanent vs transient), forward that classification so the
+      // executor's classifyError honors it. Wall-clock timeouts are inherently
+      // transient — re-tag those explicitly. Otherwise rethrow as plain Error.
+      if (this.abortReason === 'timeout') {
+        throw new TaggedRetryError(errorMessage, { retryable: true });
+      }
+      if (err instanceof TaggedRetryError) {
+        // Preserve original retry decision and subtype; surface the same message.
+        throw new TaggedRetryError(errorMessage, {
+          retryable: err.retryable,
+          errorSubtype: err.errorSubtype,
+        });
+      }
+      throw new Error(errorMessage);
     }
   }
 
   /**
    * Cancels the worker. Aborts the Agent SDK invocation immediately
-   * and marks the worker as cancelled.
+   * and marks the worker as cancelled. Defaults to a `user`-driven reason
+   * when called externally (the executor's stop()).
    */
   cancel(): void {
     this.cancelled = true;
+    if (!this.abortReason) this.abortReason = 'user';
     this.abortController?.abort();
   }
 
@@ -336,12 +381,20 @@ export class WorkerProcess {
     // or infinite streaming response can still block indefinitely.
     const workerTimeoutMs = this.timeout * 1000;
     const timeoutHandle = setTimeout(() => {
-      log.warn(`Worker '${this.node.id}' exceeded timeout of ${this.timeout}s — aborting`);
+      const lastTool = this.lastToolName;
+      log.warn(
+        `Worker '${this.node.id}' exceeded timeout of ${this.timeout}s — aborting` +
+        (lastTool ? ` (last tool: ${lastTool})` : ''),
+      );
       this.emitEvent({
         type: 'error',
-        error: `Worker timed out after ${this.timeout}s`,
+        error: `Worker timed out after ${this.timeout}s` + (lastTool ? ` (last tool: ${lastTool})` : ''),
         message: `Timeout: ${this.node.label}`,
       });
+      // Record reason BEFORE abort so downstream reporting classifies this
+      // correctly as a timeout rather than as user-driven cancellation.
+      this.abortReason = 'timeout';
+      this.onTimeout?.(lastTool);
       this.abortController?.abort();
     }, workerTimeoutMs);
 
@@ -382,6 +435,7 @@ export class WorkerProcess {
           heartbeatToolCalls++;
           // Extract tool name (before the first colon if present)
           const toolName = event.message.split(':')[0].trim();
+          this.lastToolName = toolName;
           // Extract file path from the message (after "ToolName: ")
           const afterColon = event.message.includes(':')
             ? event.message.split(':').slice(1).join(':').trim()
@@ -421,9 +475,14 @@ export class WorkerProcess {
 
     // Fix 2: Propagate SDK-level failures (success:false) as thrown errors so
     // the executor's retry/fallback logic is triggered and the node is marked
-    // as 'error' rather than silently treated as a successful completion.
+    // as 'error' rather than silently treated as a successful completion. We
+    // forward the bridge's `retryable` decision via TaggedRetryError so the
+    // executor doesn't have to guess whether to back off and try again.
     if (!result.success && result.error) {
-      throw new Error(`Agent failed: ${result.error}`);
+      throw new TaggedRetryError(`Agent failed: ${result.error}`, {
+        retryable: result.retryable ?? true,
+        errorSubtype: result.errorSubtype,
+      });
     }
 
     log.info(

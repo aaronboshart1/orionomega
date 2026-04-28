@@ -105,6 +105,12 @@ function validateConfig(config: Record<string, unknown>): string[] {
     if (orchestration.workerTimeout !== undefined && (typeof orchestration.workerTimeout !== 'number' || orchestration.workerTimeout < 1)) {
       errors.push('orchestration.workerTimeout must be a positive number');
     }
+    if (orchestration.codingAgentTimeout !== undefined && (typeof orchestration.codingAgentTimeout !== 'number' || orchestration.codingAgentTimeout < 1)) {
+      errors.push('orchestration.codingAgentTimeout must be a positive number');
+    }
+    if (orchestration.validationTimeout !== undefined && (typeof orchestration.validationTimeout !== 'number' || orchestration.validationTimeout < 1)) {
+      errors.push('orchestration.validationTimeout must be a positive number');
+    }
     if (orchestration.maxRetries !== undefined && (typeof orchestration.maxRetries !== 'number' || orchestration.maxRetries < 0)) {
       errors.push('orchestration.maxRetries must be a non-negative number');
     }

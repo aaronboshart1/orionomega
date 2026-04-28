@@ -18,6 +18,7 @@ import type {
 import type { EventBus } from './event-bus.js';
 import { WorkflowState } from './state.js';
 import { WorkerProcess, type WorkerResult } from './worker.js';
+import { TaggedRetryError } from './retry-error.js';
 import { CheckpointManager } from './checkpoint.js';
 import { createLogger } from '../logging/logger.js';
 import { readConfig } from '../config/loader.js';
@@ -72,6 +73,10 @@ const TRANSIENT_ERROR_PATTERNS = [
 ];
 
 function classifyError(err: Error): ErrorClassification {
+  // Trust an explicit decision from the bridge over message-pattern matching.
+  if (err instanceof TaggedRetryError) {
+    return err.retryable ? 'transient' : 'permanent';
+  }
   const msg = err.message;
   for (const pattern of TRANSIENT_ERROR_PATTERNS) {
     if (pattern.test(msg)) return 'transient';
@@ -135,14 +140,68 @@ function scanForUntrackedFiles(outputDir: string, knownPaths: string[]): string[
   }
 }
 
+/**
+ * Minimum wall-clock timeout per node type, applied as a floor regardless of
+ * what the planner LLM emits or the user passes via config.
+ *
+ * Rationale: the planner has historically emitted node-level `timeout: 120`
+ * (the JSON example value) which silently overrode the user's higher
+ * `workerTimeout`. That triggered AbortController-driven aborts that the SDK
+ * surfaced as "Claude Code process aborted by user" — confusing every
+ * downstream operator. Floors below catch that class of bug at execution time.
+ *
+ * - AGENT:        600s  — research/analysis tasks need real headroom.
+ * - CODING_AGENT: 1800s — multi-turn coding loops are long-running by design.
+ * - TOOL:         60s   — short-lived shell invocations.
+ */
+// Floors must match the planner's documented rule 7 so the planner and the
+// runtime agree on the minimum budget per node type. Setting these too low
+// here was the original cause of "Worker timed out after 120s" — the planner
+// would helpfully emit, say, timeout:120 and the runtime would happily honor
+// it, guaranteeing an abort before the SDK had any chance to make progress.
+const TIMEOUT_FLOOR_SEC = {
+  AGENT: 600,
+  CODING_AGENT: 1800,
+  TOOL: 60,
+} as const;
+
+type AbortReason = { kind: 'user' } | { kind: 'timeout'; timeoutSec: number; lastTool?: string };
+
+/**
+ * Resolve the effective wall-clock timeout for a node, applying the per-type
+ * floor so a too-small planner-supplied value (e.g. `timeout: 120` for a
+ * coding agent) cannot cause a guaranteed timeout-driven abort.
+ */
+function resolveNodeTimeoutSec(
+  node: WorkflowNode,
+  defaults: { workerTimeout: number; codingAgentTimeout: number },
+): number {
+  const requested = node.timeout
+    ?? (node.type === 'CODING_AGENT' ? defaults.codingAgentTimeout : defaults.workerTimeout);
+  const floor = node.type === 'CODING_AGENT'
+    ? TIMEOUT_FLOOR_SEC.CODING_AGENT
+    : node.type === 'TOOL'
+      ? TIMEOUT_FLOOR_SEC.TOOL
+      : TIMEOUT_FLOOR_SEC.AGENT;
+  if (requested < floor) {
+    log.warn(
+      `Node '${node.id}' has timeout=${requested}s below the ${node.type} floor of ${floor}s — clamping up`,
+    );
+    return floor;
+  }
+  return requested;
+}
+
 /** Configuration for the graph executor. */
 export interface ExecutorConfig {
   /** Working directory for worker processes. */
   workspaceDir: string;
   /** Directory for state checkpoints. */
   checkpointDir: string;
-  /** Default timeout per worker in seconds. */
+  /** Default timeout per worker in seconds (AGENT/TOOL nodes). */
   workerTimeout: number;
+  /** Default timeout per CODING_AGENT node in seconds. */
+  codingAgentTimeout?: number;
   /** Maximum retry attempts per node. */
   maxRetries: number;
   /** Checkpoint state every N layers. */
@@ -178,6 +237,13 @@ export class GraphExecutor {
   private readonly startedAt: string;
   private readonly activeWorkers = new Map<string, WorkerProcess>();
   private readonly activeCodingAborts = new Map<string, AbortController>();
+  /**
+   * Tracks why each in-flight node's abort was triggered (timeout vs user stop).
+   * Consulted by error-handling and result-status logic so a timeout-driven
+   * cancellation is reported as a *timeout error* (retryable) rather than as
+   * "Claude Code process aborted by user".
+   */
+  private readonly nodeAbortReasons = new Map<string, AbortReason>();
   private readonly nodeResults = new Map<string, WorkerResult>();
   private readonly nodeErrors = new Map<string, string>();
   private readonly skippedNodes = new Set<string>();
@@ -446,11 +512,13 @@ export class GraphExecutor {
 
     for (const [id, worker] of this.activeWorkers) {
       log.info(`Cancelling active worker '${id}'`);
+      this.nodeAbortReasons.set(id, { kind: 'user' });
       worker.cancel();
     }
 
     for (const [id, controller] of this.activeCodingAborts) {
       log.info(`Aborting coding agent '${id}'`);
+      this.nodeAbortReasons.set(id, { kind: 'user' });
       controller.abort();
     }
 
@@ -509,6 +577,10 @@ export class GraphExecutor {
         return { nodeId, output: null, durationMs: 0, toolCallCount: 0, findings: [], outputPaths: [], cancelled: true };
       }
 
+      // Each attempt gets a fresh abort-reason slate so a previous
+      // timeout-driven abort does not bleed into the next attempt's reporting.
+      this.nodeAbortReasons.delete(nodeId);
+
       try {
         if (attempt > 0) {
           const delayMs = computeBackoffDelay(attempt);
@@ -520,6 +592,8 @@ export class GraphExecutor {
         }
 
         const result = await this.executeNodeByType(node);
+        // Success — clear any abort reason so the map stays small.
+        this.nodeAbortReasons.delete(nodeId);
         return result;
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
@@ -658,12 +732,27 @@ export class GraphExecutor {
         const workerOutputDir = `${this.getRunDir()}/${node.id}`;
         try { mkdirSync(workerOutputDir, { recursive: true }); } catch { /* may exist */ }
 
+        const effectiveTimeoutSec = resolveNodeTimeoutSec(node, {
+          workerTimeout: this.config.workerTimeout,
+          codingAgentTimeout: this.config.codingAgentTimeout ?? this.config.workerTimeout,
+        });
+
         const worker = new WorkerProcess(node, this.eventBus, {
           workspaceDir: workerOutputDir,
-          timeout: node.timeout ?? this.config.workerTimeout,
+          timeout: effectiveTimeoutSec,
           context: injectedContext,
           workflowId: this.graph.id,
           runDir: this.getRunDir(),
+          // Notify the executor when the worker self-aborts on its own wall-clock
+          // timeout, so we can distinguish that from a user-driven stop and
+          // surface a "timed out" error rather than "aborted by user".
+          onTimeout: (lastTool) => {
+            this.nodeAbortReasons.set(node.id, {
+              kind: 'timeout',
+              timeoutSec: effectiveTimeoutSec,
+              ...(lastTool ? { lastTool } : {}),
+            });
+          },
         });
         this.activeWorkers.set(node.id, worker);
 
@@ -716,16 +805,52 @@ export class GraphExecutor {
         // Fix 3: Enforce wall-clock timeout for CODING_AGENT nodes.
         // The SDK's maxTurns/maxBudgetUsd are soft limits; a stalled API call
         // or infinite streaming response can hold up the entire workflow layer.
-        const codingTimeoutSec = node.timeout ?? this.config.workerTimeout;
+        const codingTimeoutSec = resolveNodeTimeoutSec(node, {
+          workerTimeout: this.config.workerTimeout,
+          codingAgentTimeout: this.config.codingAgentTimeout ?? this.config.workerTimeout,
+        });
+        // Track the most recently observed tool so a timeout error can name it.
+        let lastCodingTool: string | undefined;
+        const codingStartMs = Date.now();
         const codingTimeoutHandle = setTimeout(() => {
-          log.warn(`CODING_AGENT '${node.id}' exceeded timeout of ${codingTimeoutSec}s — aborting`);
-          this.emitOrchestrator('status',
-            `CODING_AGENT '${node.label}' timed out after ${codingTimeoutSec}s`,
+          const elapsedSec = Math.round((Date.now() - codingStartMs) / 1000);
+          log.warn(
+            `CODING_AGENT '${node.id}' exceeded timeout of ${codingTimeoutSec}s — aborting` +
+            (lastCodingTool ? ` (last tool: ${lastCodingTool})` : ''),
           );
+          this.emitOrchestrator('status',
+            `CODING_AGENT '${node.label}' timed out after ${elapsedSec}s` +
+            (lastCodingTool ? ` (last tool: ${lastCodingTool})` : ''),
+          );
+          // Record reason BEFORE abort so listeners that observe the abort
+          // already see the timeout classification.
+          this.nodeAbortReasons.set(node.id, {
+            kind: 'timeout',
+            timeoutSec: codingTimeoutSec,
+            ...(lastCodingTool ? { lastTool: lastCodingTool } : {}),
+          });
           codingAbort.abort();
         }, codingTimeoutSec * 1000);
 
-        const startMs = Date.now();
+        // Heartbeat — long coding sessions otherwise look frozen in the UI.
+        // Mirrors the AGENT-node heartbeat in worker.ts.
+        let heartbeatToolCount = 0;
+        const codingHeartbeat = setInterval(() => {
+          const elapsed = Math.round((Date.now() - codingStartMs) / 1000);
+          this.eventBus.emit({
+            workflowId: this.graph.id,
+            workerId: node.id,
+            nodeId: node.id,
+            timestamp: new Date().toISOString(),
+            type: 'status',
+            message: `Still working... (${elapsed}s, ${heartbeatToolCount} tool calls`
+              + (lastCodingTool ? `, last: ${lastCodingTool}` : '')
+              + ')',
+            progress: 0,
+          });
+        }, 30_000);
+
+        const startMs = codingStartMs;
         try {
           const codingResult = await executeCodingAgent(
             codingNode,
@@ -738,16 +863,27 @@ export class GraphExecutor {
 
               let tool: WorkerEvent['tool'];
               if (eventType === 'tool_call' && event.message) {
-                const toolName = event.message.split(':')[0].trim();
-                const afterColon = event.message.includes(':')
-                  ? event.message.split(':').slice(1).join(':').trim()
-                  : '';
+                heartbeatToolCount++;
+                // The bridge emits messages in two shapes:
+                //   "Tool: <name>(<file>)"        — from tool_use
+                //   "Tool running: <name> (Xs)"   — from tool_progress
+                // Either way the *real* tool name is what comes after the
+                // first colon (and before the first paren / space). Splitting
+                // on ':' alone yielded the literal word "Tool" before this fix.
+                const msg = event.message;
+                const colonIdx = msg.indexOf(':');
+                const afterColon = colonIdx >= 0 ? msg.slice(colonIdx + 1).trim() : msg;
+                const toolName = afterColon
+                  .replace(/^running\s+/i, '')
+                  .split(/[\s(]/)[0]
+                  .trim() || msg.slice(0, colonIdx >= 0 ? colonIdx : msg.length).trim();
+                lastCodingTool = toolName;
                 const fileMatch = afterColon.match(/((?:\.?\/?)?[\w.\-/@]+\.[\w]+)/);
                 tool = {
                   name: toolName,
                   action: toolName,
                   file: fileMatch?.[1],
-                  summary: event.message,
+                  summary: msg,
                 };
               }
 
@@ -775,8 +911,13 @@ export class GraphExecutor {
 
           // Fix 4: Propagate coding-agent failures so the executor's retry/fallback
           // logic fires and the node is marked 'error' rather than silently succeeding.
+          // Forward the bridge's retryable verdict so classifyError honors it
+          // instead of guessing from the message string.
           if (!codingResult.success && codingResult.error) {
-            throw new Error(`Coding agent failed: ${codingResult.error}`);
+            throw new TaggedRetryError(`Coding agent failed: ${codingResult.error}`, {
+              retryable: codingResult.retryable ?? true,
+              errorSubtype: codingResult.errorSubtype,
+            });
           }
 
           const codingOutputPaths = codingResult.outputPaths ?? [];
@@ -830,10 +971,23 @@ export class GraphExecutor {
               toolCallCount: 0, findings: [], outputPaths: [], cancelled: true,
             };
           }
+          // If the abort was driven by our wall-clock timeout (not the user),
+          // re-cast the error so retry/classify treats it as a transient
+          // timeout instead of a misleading "process aborted by user".
+          const reason = this.nodeAbortReasons.get(node.id);
+          if (reason?.kind === 'timeout') {
+            const original = err instanceof Error ? err.message : String(err);
+            throw new Error(
+              `CODING_AGENT '${node.label}' timed out after ${reason.timeoutSec}s` +
+              (reason.lastTool ? ` (last tool: ${reason.lastTool})` : '') +
+              ` — original SDK error: ${original}`,
+            );
+          }
           throw err;
         } finally {
           // Fix 3: Always cancel the timeout so it doesn't fire after completion.
           clearTimeout(codingTimeoutHandle);
+          clearInterval(codingHeartbeat);
           this.activeCodingAborts.delete(node.id);
         }
       }

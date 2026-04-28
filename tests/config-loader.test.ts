@@ -93,7 +93,11 @@ section('getDefaultConfig — orchestration defaults');
 {
   const config = getDefaultConfig();
   assertEq(config.orchestration.maxSpawnDepth, 3, 'maxSpawnDepth = 3');
-  assertEq(config.orchestration.workerTimeout, 300, 'workerTimeout = 300');
+  // Bumped 300 → 600 in task #103 — the previous default was the root cause
+  // of "Worker timed out after 120s" errors on long-running coding loops.
+  assertEq(config.orchestration.workerTimeout, 600, 'workerTimeout = 600');
+  assertEq(config.orchestration.codingAgentTimeout, 1800, 'codingAgentTimeout = 1800');
+  assertEq(config.orchestration.validationTimeout, 300, 'validationTimeout = 300');
   assertEq(config.orchestration.maxRetries, 2, 'maxRetries = 2');
   assert(config.orchestration.planFirst === true, 'planFirst = true');
 }

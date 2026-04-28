@@ -59,7 +59,13 @@ export function getDefaultConfig(): OrionOmegaConfig {
     },
     orchestration: {
       maxSpawnDepth: 3,
-      workerTimeout: 300,
+      // Wall-clock budget for AGENT/TOOL nodes when the planner does not set one.
+      // Bumped from earlier defaults so straightforward research tasks have headroom.
+      workerTimeout: 600,
+      // Coding agents iterate (Read/Edit/Bash) and need a much larger envelope.
+      codingAgentTimeout: 1800,
+      // In-loop validation commands (build/test/lint) inside coding mode templates.
+      validationTimeout: 300,
       maxRetries: 2,
       planFirst: true,
       checkpointInterval: 30,

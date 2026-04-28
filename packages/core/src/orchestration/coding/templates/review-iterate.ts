@@ -175,7 +175,9 @@ export function buildReviewIterateTemplate(params: ReviewIterateParams): Workflo
       task: 'Validate review fixes',
       codingRole: 'validator',
       fileScope: { owned: [], readable: [], lockRequired: false },
-      validationConfig: { commands: validationCommands, maxRetries: validationMaxRetries, timeout: 120_000 },
+      // 5-minute per-command budget for build/test/lint — the previous 2 min
+      // was insufficient for multi-package monorepo builds.
+      validationConfig: { commands: validationCommands, maxRetries: validationMaxRetries, timeout: 300_000 },
     },
   };
 
