@@ -9,6 +9,7 @@ OrionOmega is a lightweight AI agent orchestration platform with a pnpm monorepo
 | Package | Description | Port |
 |---|---|---|
 | `packages/web` | Next.js 15 frontend dashboard (Orchestration → Logs tab tails `config.logging.file`) | 5000 (webview) |
+| | Logs tab calls gateway endpoints `GET /api/logs/{meta,tail,stream,download}` (path is server-resolved from config — no query params) | |
 | `packages/gateway` | Node.js WebSocket/HTTP backend | 8000 (console) |
 | `packages/core` | AI agent orchestration engine | — |
 | `packages/hindsight` | Memory/context persistence | — |

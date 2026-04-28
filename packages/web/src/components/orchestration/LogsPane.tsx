@@ -161,8 +161,13 @@ export function LogsPane() {
   // when the gateway is at info, "debug" when at debug, etc.).
   const effectiveLevel: LogLevel = filterLevel ?? serverLevel;
 
-  // ── Initial load + refresh ────────────────────────────────────────────────
-  const loadAll = useCallback(async (level: LogLevel) => {
+  // ── Load logs (meta + tail). When called without an explicit level, we
+  // fetch meta first and then use the gateway's configured level so the very
+  // first page load reflects the configured verbosity (rather than racing
+  // meta with a tail request that hard-coded `info`). Subsequent calls (from
+  // Refresh / level dropdown changes) pass the level explicitly and skip the
+  // meta-first ordering.
+  const loadAll = useCallback(async (explicitLevel?: LogLevel) => {
     if (fetchAbortRef.current) fetchAbortRef.current.abort();
     const controller = new AbortController();
     fetchAbortRef.current = controller;
@@ -170,18 +175,29 @@ export function LogsPane() {
     setLoading(true);
     setError(null);
     try {
-      const [m, t] = await Promise.all([
-        fetchLogsMeta(controller.signal),
-        fetchLogsTail({ lines: INITIAL_TAIL_LINES, level, signal: controller.signal }),
-      ]);
-      setMeta(m);
-      setServerLevel(m.level);
-      // First load — adopt the gateway's configured level as the default
-      // dropdown selection if the user hasn't explicitly picked one yet.
-      setFilterLevel((prev) => prev ?? m.level);
+      let levelForTail = explicitLevel;
+      if (!levelForTail) {
+        // First-load path: meta determines the effective level.
+        const m = await fetchLogsMeta(controller.signal);
+        setMeta(m);
+        setServerLevel(m.level);
+        setFilterLevel((prev) => prev ?? m.level);
+        levelForTail = m.level;
+      }
+      const t = await fetchLogsTail({
+        lines: INITIAL_TAIL_LINES,
+        level: levelForTail,
+        signal: controller.signal,
+      });
       setLines(t.lines);
       cursorRef.current = t.nextCursor;
       setTruncated(t.truncated);
+      // For refresh paths, refetch meta in parallel so size/mtime stay fresh.
+      if (explicitLevel) {
+        const m = await fetchLogsMeta(controller.signal);
+        setMeta(m);
+        setServerLevel(m.level);
+      }
     } catch (err) {
       if ((err as DOMException)?.name === 'AbortError') return;
       setError(`Failed to load logs: ${err instanceof Error ? err.message : String(err)}`);
@@ -192,7 +208,7 @@ export function LogsPane() {
 
   // First mount.
   useEffect(() => {
-    void loadAll(filterLevel ?? 'info');
+    void loadAll();
     return () => {
       fetchAbortRef.current?.abort();
     };
@@ -462,6 +478,23 @@ function Header({
         </div>
         <div className="text-[10px] text-zinc-600">
           Level: <span className="text-zinc-400">{meta?.level ?? '—'}</span>
+          {' · '}
+          <a
+            href="#settings"
+            onClick={(e) => {
+              e.preventDefault();
+              // Open the Settings modal so users can change the gateway's
+              // configured logging level. The Settings modal listens for the
+              // `orionomega:open-settings` window event.
+              try {
+                window.dispatchEvent(new CustomEvent('orionomega:open-settings', { detail: { section: 'logging' } }));
+              } catch { /* ignore — fallback is the visible href */ }
+            }}
+            className="text-zinc-500 hover:text-zinc-300 underline-offset-2 hover:underline"
+            title="Change the configured logging level in Settings"
+          >
+            change in Settings
+          </a>
           {meta?.exists && (
             <>
               {' · '}Size: <span className="text-zinc-400">{formatBytes(meta.sizeBytes)}</span>
