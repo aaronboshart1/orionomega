@@ -125,7 +125,7 @@ export function LogsPane() {
   const [live, setLive] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [streamState, setStreamState] = useState<'idle' | 'connecting' | 'open' | 'reconnecting' | 'error'>('idle');
+  const [streamState, setStreamState] = useState<'idle' | 'connecting' | 'open' | 'reconnecting'>('idle');
   const [truncated, setTruncated] = useState(false);
 
   const virtuosoRef = useRef<VirtuosoHandle>(null);
@@ -426,12 +426,11 @@ function Header({
   onDownload: () => void;
   downloadDisabled?: boolean;
   loading: boolean;
-  streamState: 'idle' | 'connecting' | 'open' | 'reconnecting' | 'error';
+  streamState: 'idle' | 'connecting' | 'open' | 'reconnecting';
 }) {
   const liveDot =
     streamState === 'open' ? 'bg-green-500 animate-pulse' :
     streamState === 'connecting' || streamState === 'reconnecting' ? 'bg-yellow-500 animate-pulse' :
-    streamState === 'error' ? 'bg-red-500' :
     'bg-zinc-600';
 
   return (
