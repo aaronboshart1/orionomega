@@ -266,9 +266,9 @@ export function LogsPane() {
   }, [loadAll, effectiveLevel]);
 
   const handleLevelChange = useCallback((next: LogLevel) => {
+    // Client-side re-filter only; user can hit Refresh to widen the buffer.
     setFilterLevel(next);
-    void loadAll(next);
-  }, [loadAll]);
+  }, []);
 
   if (meta && !meta.exists && !loading) {
     return (
@@ -467,9 +467,9 @@ function Header({
       <button
         type="button"
         onClick={onRefresh}
-        disabled={loading}
-        className="rounded px-1.5 py-1 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200 disabled:opacity-50"
-        title="Refresh"
+        disabled={loading || live}
+        className="rounded px-1.5 py-1 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200 disabled:opacity-50 disabled:cursor-not-allowed"
+        title={live ? 'Pause live tail to refresh' : 'Refresh'}
       >
         <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
       </button>
