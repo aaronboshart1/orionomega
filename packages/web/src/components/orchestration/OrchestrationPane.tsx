@@ -7,7 +7,8 @@ import { ActivityFeed } from './ActivityFeed';
 import { WorkerDetail } from './WorkerDetail';
 import { WorkflowSummary } from './WorkflowSummary';
 import { MemoryFeed } from './MemoryFeed';
-import { X, Play, Pause, Square, FileText, Wifi, WifiOff } from 'lucide-react';
+import { LogsPane } from './LogsPane';
+import { X, Play, Pause, Square, FileText, Wifi, WifiOff, ScrollText } from 'lucide-react';
 import { useGateway } from '@/lib/gateway';
 import { useFileViewerStore } from '@/stores/file-viewer';
 import { useConnectionStore } from '@/stores/connection';
@@ -100,6 +101,21 @@ export function OrchestrationPane() {
               {memoryCount}
             </span>
           )}
+        </button>
+
+        <button
+          role="tab"
+          aria-selected={activeOrchTab === 'logs'}
+          onClick={() => setActiveOrchTab('logs')}
+          className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium transition-colors rounded-md ${
+            activeOrchTab === 'logs'
+              ? 'bg-zinc-800 text-amber-400 ring-1 ring-zinc-600'
+              : 'text-zinc-500 hover:bg-zinc-800/50 hover:text-zinc-300'
+          }`}
+          title="System / gateway logs"
+        >
+          <ScrollText size={12} />
+          Logs
         </button>
 
         {fileCount > 0 && (
@@ -238,6 +254,12 @@ export function OrchestrationPane() {
       ) : activeOrchTab === 'memory' ? (
         <div className="flex-1 min-h-0 overflow-hidden">
           <MemoryFeed />
+        </div>
+      ) : activeOrchTab === 'logs' ? (
+        // Lazy-mount: the LogsPane only opens its SSE / fetches when this tab
+        // is active, so unmounting on tab-switch tears the stream down.
+        <div className="flex-1 min-h-0 overflow-hidden">
+          <LogsPane />
         </div>
       ) : (
         <>

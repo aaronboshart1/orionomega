@@ -196,7 +196,7 @@ interface OrchestrationStore {
   scrollToDagId: string | null;
   activitySectionCollapsed: boolean;
   memoryEvents: MemoryEvent[];
-  activeOrchTab: 'memory' | 'workflow' | 'files';
+  activeOrchTab: 'memory' | 'workflow' | 'files' | 'logs';
 
   graphState: GraphState | null;
   events: WorkerEvent[];
@@ -204,7 +204,7 @@ interface OrchestrationStore {
   memoryFilter: MemoryFilterState;
   addMemoryEvent: (e: MemoryEvent) => void;
   setMemoryFilter: (filter: Partial<MemoryFilterState>) => void;
-  setActiveOrchTab: (tab: 'memory' | 'workflow' | 'files') => void;
+  setActiveOrchTab: (tab: 'memory' | 'workflow' | 'files' | 'logs') => void;
   setActiveWorkflowId: (id: string | null) => void;
   removeWorkflow: (id: string) => void;
   setGraphState: (s: GraphState) => void;

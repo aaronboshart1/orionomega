@@ -30,6 +30,7 @@ import { handleLogActivity, handleGetActivity } from './routes/activity.js';
 import { ActivityService } from './activity.js';
 import { handleStatus } from './routes/status.js';
 import { handleGetConfig, handlePutConfig } from './routes/config.js';
+import { handleLogsMeta, handleLogsTail, handleLogsStream, handleLogsDownload } from './routes/logs.js';
 import { handleGetSkills, handlePutSkillConfig, handleGoogleOAuthStart, handleGoogleOAuthStatus, handleGoogleOAuthCallback } from './routes/skills.js';
 import { rateLimitRest } from './rate-limit.js';
 import { setSecurityHeaders } from './security-headers.js';
@@ -1142,6 +1143,34 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Failed to fetch models' }));
       });
+    return;
+  }
+
+  // --- System logs ---
+  // Surfaces the gateway/system log file (config.logging.file) to the web UI.
+  // The path is always resolved server-side from readConfig() — never from a
+  // query parameter — so these endpoints can never be coerced into reading
+  // arbitrary files.
+  if (pathname === '/api/logs/meta' && method === 'GET') {
+    handleLogsMeta(req, res);
+    return;
+  }
+  if (pathname === '/api/logs/tail' && method === 'GET') {
+    handleLogsTail(req, res).catch((err) => {
+      log.error('Logs tail route error', { error: err instanceof Error ? err.message : String(err) });
+      if (!res.headersSent) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Internal server error' }));
+      }
+    });
+    return;
+  }
+  if (pathname === '/api/logs/stream' && method === 'GET') {
+    handleLogsStream(req, res);
+    return;
+  }
+  if (pathname === '/api/logs/download' && method === 'GET') {
+    handleLogsDownload(req, res);
     return;
   }
 

@@ -204,6 +204,18 @@ export async function runDoctor(): Promise<void> {
     warn('Log directory', `not found at ${logDir}`);
   }
 
+  // 9b. Log file readable by gateway (so the web UI Logs tab works).
+  if (existsSync(config.logging.file)) {
+    try {
+      accessSync(config.logging.file, constants.R_OK);
+      ok('Log file', `${config.logging.file} (level: ${config.logging.level}) — viewable in web UI Logs tab`);
+    } catch {
+      bad('Log file', 'exists but not readable — web UI Logs tab will fail');
+    }
+  } else {
+    warn('Log file', `not yet created (will be on next gateway start) — ${config.logging.file}`);
+  }
+
   // 10. Disk space
   try {
     const df = execSync('df -h / | tail -1', { encoding: 'utf-8' }).trim();

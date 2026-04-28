@@ -12,6 +12,9 @@ export {
   setConsoleLogging,
 } from './logger.js';
 
+export type { ParsedLogLine } from './parser.js';
+export { parseLogLine, passesLevelFilter, asLogLevel, LOG_LEVELS, LOG_LEVEL_ORDER } from './parser.js';
+
 export type { AuditCategory, AuditEntry } from './audit.js';
 export {
   emitAuditEvent,
