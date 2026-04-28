@@ -351,7 +351,9 @@ export class Planner {
    Required minimums by node type — emit values >= these or omit the field to inherit defaults:
      • AGENT         >= 600   (research/analysis tasks; default 600s)
      • CODING_AGENT  >= 1800  (multi-turn Read/Edit/Bash loops; default 1800s)
-     • TOOL          >= 60    (short-lived shell invocations; default 600s)
+     • TOOL          >= 60    (short-lived shell invocations; floor 60s,
+                               inherited default 600s when omitted —
+                               raise explicitly for slow build/test commands)
    For *expected* wall time, use the top-level \`estimatedTime\` field instead.
    Always set \`retries\` (0–2) and a \`fallbackNodeId\` when a backup approach exists.
    Pick models from the list below.
