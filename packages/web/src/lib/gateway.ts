@@ -1738,8 +1738,6 @@ export interface LogsTailParams {
   level?: LogLevel;
   /** Case-insensitive substring filter on the raw line. */
   q?: string;
-  /** ISO timestamp; only return entries with `ts > since`. */
-  since?: string;
   /** AbortSignal for cancelling on unmount. */
   signal?: AbortSignal;
 }
@@ -1751,13 +1749,20 @@ export async function fetchLogsMeta(signal?: AbortSignal): Promise<LogsMeta> {
   return r.json() as Promise<LogsMeta>;
 }
 
-/** GET /api/logs/tail — last N lines with optional server-side filters. */
+/**
+ * GET /api/logs/tail — last N lines with optional server-side filters.
+ *
+ * Cursor contract: the response's `nextCursor` is a **byte offset** into the
+ * log file (the file size at read time). Pass it to `openLogsStream({offset})`
+ * to start live-tailing from the same point without replaying. The tail
+ * endpoint always returns the most recent N lines — there is no timestamp
+ * cursor for incremental tail polling (that's the SSE stream's job).
+ */
 export async function fetchLogsTail(params: LogsTailParams = {}): Promise<LogsTailResponse> {
   const qs = new URLSearchParams();
   if (params.lines !== undefined) qs.set('lines', String(params.lines));
   if (params.level) qs.set('level', params.level);
   if (params.q) qs.set('q', params.q);
-  if (params.since) qs.set('since', params.since);
   const r = await fetch(`/api/gateway/api/logs/tail?${qs}`, { signal: params.signal });
   if (!r.ok) throw new Error(`Logs tail failed: HTTP ${r.status}`);
   return r.json() as Promise<LogsTailResponse>;

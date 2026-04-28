@@ -91,15 +91,20 @@ export function handleLogsMeta(_req: IncomingMessage, res: ServerResponse): void
 }
 
 /**
- * GET /api/logs/tail?lines=N&level=LVL&q=text&since=ISO
+ * GET /api/logs/tail?lines=N&level=LVL&q=text
  *
  * Reads the last `lines` log lines (capped at TAIL_MAX_LINES, also capped by
  * TAIL_MAX_BYTES from the tail end of the file) and returns them as parsed
  * records. Optional `level` filter passes through the shared
  * `passesLevelFilter()` so only entries at-or-more-severe than the filter
  * are returned. Optional `q` filter is a case-insensitive substring search
- * over the raw line. Optional `since` filter drops entries with a timestamp
- * strictly less-than-or-equal to the cursor (used for incremental polling).
+ * over the raw line.
+ *
+ * Cursor contract: the response's `nextCursor` is a **byte offset** into the
+ * file (the file size at read time). Pass it to the SSE stream endpoint's
+ * `offset` param to resume tailing without replaying. The tail endpoint does
+ * NOT accept a timestamp cursor — incremental polling is the SSE stream's
+ * job; the tail endpoint always reads the most recent N lines.
  */
 export async function handleLogsTail(req: IncomingMessage, res: ServerResponse): Promise<void> {
   let ctx: LogContext;
@@ -118,7 +123,6 @@ export async function handleLogsTail(req: IncomingMessage, res: ServerResponse):
     : TAIL_DEFAULT_LINES;
   const levelFilter = asLogLevel(params.get('level'));
   const q = (params.get('q') ?? '').toLowerCase();
-  const since = params.get('since');
 
   if (!existsSync(ctx.filePath)) {
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
@@ -190,9 +194,6 @@ export async function handleLogsTail(req: IncomingMessage, res: ServerResponse):
   }
   if (q) {
     parsed = parsed.filter((p) => p.raw.toLowerCase().includes(q));
-  }
-  if (since) {
-    parsed = parsed.filter((p) => p.ts > since);
   }
 
   // Cap to last `lines` entries after filtering so the user always sees the

@@ -277,14 +277,22 @@ export function LogsPane() {
     virtuosoRef.current?.scrollToIndex({ index: idx, align: 'end', behavior: 'auto' });
   }, [lines, live]);
 
-  // ── Client-side search filter (substring on raw line) ─────────────────────
-  // Level filtering happens server-side, so all `lines` already pass the level
-  // gate. Search is kept client-side so typing feels instant.
+  // ── Client-side filtering ─────────────────────────────────────────────────
+  // Search is always client-side so typing feels instant.
+  // For LEVEL: server-side filtering happens at /tail and /stream request
+  // time, but we ALSO re-filter the in-memory buffer here. That way, when
+  // the user picks a STRICTER level (e.g. info → warn) the dropdown change
+  // hides matching rows immediately even before the new server-side response
+  // arrives — keeping the dropdown snappy on busy gateways.
   const filteredLines = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return lines;
-    return lines.filter((l) => l.raw.toLowerCase().includes(q));
-  }, [lines, search]);
+    const minOrder = LEVEL_ORDER[effectiveLevel];
+    return lines.filter((l) => {
+      if (LEVEL_ORDER[l.level] > minOrder) return false;
+      if (q && !l.raw.toLowerCase().includes(q)) return false;
+      return true;
+    });
+  }, [lines, effectiveLevel, search]);
 
   const hiddenCount = lines.length - filteredLines.length;
 
@@ -478,23 +486,17 @@ function Header({
         </div>
         <div className="text-[10px] text-zinc-600">
           Level: <span className="text-zinc-400">{meta?.level ?? '—'}</span>
-          {' · '}
-          <a
-            href="#settings"
-            onClick={(e) => {
-              e.preventDefault();
-              // Open the Settings modal so users can change the gateway's
-              // configured logging level. The Settings modal listens for the
-              // `orionomega:open-settings` window event.
-              try {
-                window.dispatchEvent(new CustomEvent('orionomega:open-settings', { detail: { section: 'logging' } }));
-              } catch { /* ignore — fallback is the visible href */ }
-            }}
-            className="text-zinc-500 hover:text-zinc-300 underline-offset-2 hover:underline"
-            title="Change the configured logging level in Settings"
+          {/* Hint pointing users to the existing Settings gear (in ChatPane
+              header) where the gateway-wide logging level is configured.
+              We keep this as a tooltip-only affordance rather than a button
+              because the SettingsModal is local state in ChatPane and not
+              wired to a global open-event in the current codebase. */}
+          <span
+            className="ml-1 cursor-help text-zinc-600"
+            title="Change the configured logging level via the Settings gear in the chat header (top-right)"
           >
-            change in Settings
-          </a>
+            (change via Settings ⚙)
+          </span>
           {meta?.exists && (
             <>
               {' · '}Size: <span className="text-zinc-400">{formatBytes(meta.sizeBytes)}</span>
