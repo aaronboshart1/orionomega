@@ -1695,6 +1695,216 @@ export function useGateway() {
   return { send, sendChat, sendCommand, sendWorkflowCommand, respondToPlan, respondToDAG, respondToConfirmation };
 }
 
+// ── Logs API helpers ────────────────────────────────────────────────────────
+// Typed wrappers around the gateway's `/api/logs/*` endpoints so the UI never
+// hand-rolls `fetch(`/api/gateway/api/logs/...`)`. The SSE wrapper layers on
+// reconnect-with-backoff and exposes a small handle (close, getCursor) so
+// callers don't need to manage the underlying EventSource themselves.
+
+export type LogLevel = 'error' | 'warn' | 'info' | 'verbose' | 'debug';
+
+export interface ParsedLogLine {
+  ts: string;
+  level: LogLevel;
+  name: string;
+  msg: string;
+  data?: Record<string, unknown>;
+  raw: string;
+}
+
+export interface LogsMeta {
+  filePath: string;
+  fileName: string;
+  level: LogLevel;
+  exists: boolean;
+  sizeBytes: number;
+  mtime: string | null;
+}
+
+export interface LogsTailResponse {
+  filePath: string;
+  level: LogLevel;
+  lines: ParsedLogLine[];
+  sizeBytes: number;
+  truncated: boolean;
+  nextCursor: number;
+  missing: boolean;
+}
+
+export interface LogsTailParams {
+  /** Max lines to return after filtering (capped server-side at 5,000). */
+  lines?: number;
+  /** Minimum level — server returns only entries at-or-more-severe than this. */
+  level?: LogLevel;
+  /** Case-insensitive substring filter on the raw line. */
+  q?: string;
+  /** ISO timestamp; only return entries with `ts > since`. */
+  since?: string;
+  /** AbortSignal for cancelling on unmount. */
+  signal?: AbortSignal;
+}
+
+/** GET /api/logs/meta — basic info about the configured log file. */
+export async function fetchLogsMeta(signal?: AbortSignal): Promise<LogsMeta> {
+  const r = await fetch('/api/gateway/api/logs/meta', { signal });
+  if (!r.ok) throw new Error(`Logs meta failed: HTTP ${r.status}`);
+  return r.json() as Promise<LogsMeta>;
+}
+
+/** GET /api/logs/tail — last N lines with optional server-side filters. */
+export async function fetchLogsTail(params: LogsTailParams = {}): Promise<LogsTailResponse> {
+  const qs = new URLSearchParams();
+  if (params.lines !== undefined) qs.set('lines', String(params.lines));
+  if (params.level) qs.set('level', params.level);
+  if (params.q) qs.set('q', params.q);
+  if (params.since) qs.set('since', params.since);
+  const r = await fetch(`/api/gateway/api/logs/tail?${qs}`, { signal: params.signal });
+  if (!r.ok) throw new Error(`Logs tail failed: HTTP ${r.status}`);
+  return r.json() as Promise<LogsTailResponse>;
+}
+
+/** Returns the URL the browser should hit to download the full log file. */
+export function getLogsDownloadUrl(): string {
+  return '/api/gateway/api/logs/download';
+}
+
+export interface LogsStreamHandlers {
+  /** Fired once after the SSE handshake; reports the resolved file/level. */
+  onMeta?: (m: { filePath: string; level: LogLevel; cursor: number }) => void;
+  /** Fired for every log line that passes the server-side level filter. */
+  onLine: (line: ParsedLogLine) => void;
+  /**
+   * Fired after each batch with the new committed cursor (read-cursor minus
+   * any partial trailing line). Persist this and pass it as `offset` on the
+   * next `openLogsStream()` call to avoid replays after reconnects.
+   */
+  onCursor?: (cursor: number) => void;
+  /** Fired when the gateway detects the file was truncated/rotated. */
+  onRotated?: () => void;
+  /** Fired on transient errors. The wrapper auto-reconnects with backoff. */
+  onError?: (err: Error) => void;
+  /** Fired when the wrapper transitions between connection states. */
+  onState?: (state: 'connecting' | 'open' | 'reconnecting' | 'closed') => void;
+}
+
+export interface LogsStreamOptions {
+  /** Byte offset to resume from — typically the last `onCursor` value. */
+  offset: number;
+  /** Optional server-side level filter (reduces bytes over the wire). */
+  level?: LogLevel;
+  handlers: LogsStreamHandlers;
+}
+
+export interface LogsStreamHandle {
+  /** Close the stream and cancel any pending reconnect. Idempotent. */
+  close: () => void;
+  /** Latest committed cursor seen so far (0 until the first `cursor` event). */
+  getCursor: () => number;
+}
+
+const SSE_BACKOFF_MS = [500, 1_000, 2_000, 5_000, 10_000];
+
+/**
+ * Open a /api/logs/stream SSE connection with reconnect-with-backoff. The
+ * returned handle's `getCursor()` always reflects the latest *committed*
+ * cursor so reconnects (handled internally) resume from a safe offset and
+ * never replay or drop lines.
+ */
+export function openLogsStream(opts: LogsStreamOptions): LogsStreamHandle {
+  const { handlers } = opts;
+  let es: EventSource | null = null;
+  let closed = false;
+  let cursor = opts.offset;
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let reconnectAttempt = 0;
+
+  const setState = (s: 'connecting' | 'open' | 'reconnecting' | 'closed') => {
+    handlers.onState?.(s);
+  };
+
+  const teardown = () => {
+    if (es) {
+      try { es.close(); } catch { /* ignore */ }
+      es = null;
+    }
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+  };
+
+  const connect = () => {
+    if (closed) return;
+    teardown();
+    setState('connecting');
+    const qs = new URLSearchParams({ offset: String(cursor) });
+    if (opts.level) qs.set('level', opts.level);
+    try {
+      es = new EventSource(`/api/gateway/api/logs/stream?${qs}`);
+    } catch (err) {
+      handlers.onError?.(err instanceof Error ? err : new Error(String(err)));
+      scheduleReconnect();
+      return;
+    }
+
+    es.addEventListener('meta', (ev) => {
+      try {
+        const m = JSON.parse((ev as MessageEvent).data) as { filePath: string; level: LogLevel; cursor: number };
+        setState('open');
+        reconnectAttempt = 0;
+        handlers.onMeta?.(m);
+      } catch { /* ignore malformed meta */ }
+    });
+
+    es.addEventListener('line', (ev) => {
+      try {
+        handlers.onLine(JSON.parse((ev as MessageEvent).data) as ParsedLogLine);
+      } catch { /* ignore malformed line */ }
+    });
+
+    es.addEventListener('cursor', (ev) => {
+      try {
+        const { cursor: c } = JSON.parse((ev as MessageEvent).data) as { cursor: number };
+        if (typeof c === 'number') {
+          cursor = c;
+          handlers.onCursor?.(c);
+        }
+      } catch { /* ignore */ }
+    });
+
+    es.addEventListener('rotated', () => {
+      cursor = 0;
+      handlers.onRotated?.();
+    });
+
+    es.onerror = () => {
+      handlers.onError?.(new Error('SSE connection error'));
+      scheduleReconnect();
+    };
+  };
+
+  const scheduleReconnect = () => {
+    if (closed) return;
+    teardown();
+    setState('reconnecting');
+    const delay = SSE_BACKOFF_MS[Math.min(reconnectAttempt, SSE_BACKOFF_MS.length - 1)];
+    reconnectAttempt++;
+    reconnectTimer = setTimeout(connect, delay);
+  };
+
+  connect();
+
+  return {
+    close: () => {
+      if (closed) return;
+      closed = true;
+      teardown();
+      setState('closed');
+    },
+    getCursor: () => cursor,
+  };
+}
+
 /**
  * Switch to a different session without a full page reload.
  * Clears all client stores, updates the stored session ID, and forces a

@@ -3,19 +3,23 @@
 /**
  * LogsPane — read, filter, live-tail and download the gateway/system log file.
  *
- * The pane talks to the gateway through the same `/api/gateway/...` reverse
- * proxy used by every other web → gateway request. Endpoints:
- *   GET /api/gateway/api/logs/meta     — header info (path / level / size)
- *   GET /api/gateway/api/logs/tail     — last N lines (initial load + Refresh)
- *   GET /api/gateway/api/logs/stream   — SSE: live tail (Live-tail toggle)
- *   GET /api/gateway/api/logs/download — full-file download
+ * Talks to the gateway through the typed helpers in `@/lib/gateway` (no
+ * hand-rolled `fetch`/`EventSource` calls live in this file):
+ *   fetchLogsMeta()    → GET /api/logs/meta
+ *   fetchLogsTail()    → GET /api/logs/tail
+ *   openLogsStream()   → SSE /api/logs/stream (with reconnect-with-backoff)
+ *   getLogsDownloadUrl() → URL for /api/logs/download
  *
- * Virtualization: we cap the in-memory ring buffer at MAX_BUFFER_LINES so a
- * 50k-line live tail doesn't lock the browser. When new lines arrive past the
- * cap, the oldest are dropped (the user can always re-fetch from the server).
+ * Rendering uses `react-virtuoso` so the full ring buffer (capped at
+ * MAX_BUFFER_LINES = 50,000 lines) can be browsed without locking the tab.
+ *
+ * Server-side level filter: when the user picks a minimum level we re-fetch
+ * the tail with `?level=…` and reopen the SSE with `?level=…`, so payload
+ * bytes are reduced over the wire — not just hidden client-side.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
 import {
   RefreshCw,
   Download,
@@ -30,36 +34,16 @@ import {
   FileText,
   X,
 } from 'lucide-react';
-
-type LogLevel = 'error' | 'warn' | 'info' | 'verbose' | 'debug';
-
-interface ParsedLogLine {
-  ts: string;
-  level: LogLevel;
-  name: string;
-  msg: string;
-  data?: Record<string, unknown>;
-  raw: string;
-}
-
-interface LogsMeta {
-  filePath: string;
-  fileName: string;
-  level: LogLevel;
-  exists: boolean;
-  sizeBytes: number;
-  mtime: string | null;
-}
-
-interface LogsTailResponse {
-  filePath: string;
-  level: LogLevel;
-  lines: ParsedLogLine[];
-  sizeBytes: number;
-  truncated: boolean;
-  nextCursor: number;
-  missing: boolean;
-}
+import {
+  fetchLogsMeta,
+  fetchLogsTail,
+  openLogsStream,
+  getLogsDownloadUrl,
+  type LogLevel,
+  type ParsedLogLine,
+  type LogsMeta,
+  type LogsStreamHandle,
+} from '@/lib/gateway';
 
 const LEVELS: readonly LogLevel[] = ['error', 'warn', 'info', 'verbose', 'debug'];
 const LEVEL_ORDER: Record<LogLevel, number> = { error: 0, warn: 1, info: 2, verbose: 3, debug: 4 };
@@ -81,11 +65,9 @@ const LEVEL_ICON: Record<LogLevel, React.ReactNode> = {
 };
 
 /** Cap in-memory log lines so live-tailing a busy gateway doesn't OOM the tab. */
-const MAX_BUFFER_LINES = 5_000;
+const MAX_BUFFER_LINES = 50_000;
 /** Initial number of lines fetched on mount and on Refresh. */
-const INITIAL_TAIL_LINES = 500;
-/** Live-tail re-fetch backoff schedule (ms). */
-const SSE_BACKOFF = [500, 1_000, 2_000, 5_000, 10_000];
+const INITIAL_TAIL_LINES = 1_000;
 
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -102,11 +84,6 @@ function formatTime(iso: string): string {
   } catch {
     return iso.slice(11, 19);
   }
-}
-
-/** Stable key for a log row — combines timestamp + index because timestamps may collide. */
-function rowKey(line: ParsedLogLine, idx: number): string {
-  return `${line.ts}::${idx}::${line.raw.length}`;
 }
 
 function LogRow({ line }: { line: ParsedLogLine }) {
@@ -162,9 +139,9 @@ function LogRow({ line }: { line: ParsedLogLine }) {
 export function LogsPane() {
   const [meta, setMeta] = useState<LogsMeta | null>(null);
   const [lines, setLines] = useState<ParsedLogLine[]>([]);
-  const [cursor, setCursor] = useState<number>(0);
   const [serverLevel, setServerLevel] = useState<LogLevel>('info');
-  const [displayLevel, setDisplayLevel] = useState<LogLevel | null>(null);
+  /** Server-side filter sent to /tail and /stream. */
+  const [filterLevel, setFilterLevel] = useState<LogLevel | null>(null);
   const [search, setSearch] = useState('');
   const [live, setLive] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -172,57 +149,39 @@ export function LogsPane() {
   const [streamState, setStreamState] = useState<'idle' | 'connecting' | 'open' | 'reconnecting' | 'error'>('idle');
   const [truncated, setTruncated] = useState(false);
 
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const userScrolledUpRef = useRef(false);
-  const sseRef = useRef<EventSource | null>(null);
-  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const reconnectAttemptRef = useRef(0);
-  // Used to abort the meta/tail fetches on unmount.
+  const virtuosoRef = useRef<VirtuosoHandle>(null);
+  const atBottomRef = useRef(true);
+  const streamHandleRef = useRef<LogsStreamHandle | null>(null);
   const fetchAbortRef = useRef<AbortController | null>(null);
-  // Mirror of `cursor` accessible from the SSE reconnect closure. We can't
-  // depend on `cursor` in `openStream`'s memo deps without tearing the SSE
-  // down on every cursor bump (every batch of new lines), so the ref is read
-  // at reconnect time to avoid stale-closure replay.
+  /** Cursor from the last successful tail / SSE batch — used to seed reconnects. */
   const cursorRef = useRef(0);
 
-  // Load meta on mount.
-  const loadMeta = useCallback(async (signal?: AbortSignal) => {
-    try {
-      const r = await fetch('/api/gateway/api/logs/meta', { signal });
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const data: LogsMeta = await r.json();
-      setMeta(data);
-      setServerLevel(data.level);
-      // Default the display filter to whatever the gateway is configured at.
-      setDisplayLevel((prev) => prev ?? data.level);
-    } catch (err) {
-      if ((err as DOMException)?.name === 'AbortError') return;
-      setError(`Failed to load log info: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }, []);
+  // Effective server-side level: explicit dropdown choice, falling back to the
+  // gateway's own configured level (so an unfiltered view defaults to "info"
+  // when the gateway is at info, "debug" when at debug, etc.).
+  const effectiveLevel: LogLevel = filterLevel ?? serverLevel;
 
-  const loadTail = useCallback(async (signal?: AbortSignal) => {
+  // ── Initial load + refresh ────────────────────────────────────────────────
+  const loadAll = useCallback(async (level: LogLevel) => {
+    if (fetchAbortRef.current) fetchAbortRef.current.abort();
+    const controller = new AbortController();
+    fetchAbortRef.current = controller;
+
     setLoading(true);
     setError(null);
     try {
-      const params = new URLSearchParams({ lines: String(INITIAL_TAIL_LINES) });
-      // Server-side level filter trims payload — apply the *most permissive* of
-      // the configured server level and the display filter so we don't miss
-      // entries the user might want to see when they widen the filter.
-      const r = await fetch(`/api/gateway/api/logs/tail?${params}`, { signal });
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const data: LogsTailResponse = await r.json();
-      setLines(data.lines);
-      setCursor(data.nextCursor);
-      cursorRef.current = data.nextCursor;
-      setTruncated(data.truncated);
-      setServerLevel(data.level);
-      // After a fresh load, jump to bottom unless the user is actively scrolled up.
-      requestAnimationFrame(() => {
-        if (scrollRef.current && !userScrolledUpRef.current) {
-          scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-        }
-      });
+      const [m, t] = await Promise.all([
+        fetchLogsMeta(controller.signal),
+        fetchLogsTail({ lines: INITIAL_TAIL_LINES, level, signal: controller.signal }),
+      ]);
+      setMeta(m);
+      setServerLevel(m.level);
+      // First load — adopt the gateway's configured level as the default
+      // dropdown selection if the user hasn't explicitly picked one yet.
+      setFilterLevel((prev) => prev ?? m.level);
+      setLines(t.lines);
+      cursorRef.current = t.nextCursor;
+      setTruncated(t.truncated);
     } catch (err) {
       if ((err as DOMException)?.name === 'AbortError') return;
       setError(`Failed to load logs: ${err instanceof Error ? err.message : String(err)}`);
@@ -231,155 +190,92 @@ export function LogsPane() {
     }
   }, []);
 
+  // First mount.
   useEffect(() => {
-    const controller = new AbortController();
-    fetchAbortRef.current = controller;
-    void loadMeta(controller.signal);
-    void loadTail(controller.signal);
+    void loadAll(filterLevel ?? 'info');
     return () => {
-      controller.abort();
-      fetchAbortRef.current = null;
+      fetchAbortRef.current?.abort();
     };
-  }, [loadMeta, loadTail]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  // ── SSE live-tail with backoff reconnect ──────────────────────────────────
+  // ── SSE live tail — reopens on level change so the server-side filter
+  //   matches the dropdown. Closing/reopening is cheap because the wrapper
+  //   uses cursorRef to resume without replaying lines. ──
   const closeStream = useCallback(() => {
-    if (sseRef.current) {
-      try { sseRef.current.close(); } catch { /* ignore */ }
-      sseRef.current = null;
-    }
-    if (reconnectTimerRef.current) {
-      clearTimeout(reconnectTimerRef.current);
-      reconnectTimerRef.current = null;
+    if (streamHandleRef.current) {
+      streamHandleRef.current.close();
+      streamHandleRef.current = null;
     }
   }, []);
 
-  // Note: openStream intentionally has NO `cursor` dep — it reads cursorRef.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const openStream = useCallback(() => {
-    closeStream();
-    setStreamState('connecting');
-    // Read from the ref — NOT from a closed-over `cursor` value — so reconnects
-    // resume from the latest committed cursor rather than the stale offset
-    // that was current when openStream was last memoized. This is what
-    // prevents duplicate line replays after a transient SSE drop.
-    const params = new URLSearchParams({ offset: String(cursorRef.current) });
-    // We don't pass the level filter to the server — the user can change the
-    // display dropdown without re-establishing the SSE, and we filter
-    // client-side. This costs a small amount of bandwidth on chatty logs but
-    // keeps the UX snappy.
-    const url = `/api/gateway/api/logs/stream?${params}`;
-    let es: EventSource;
-    try {
-      es = new EventSource(url);
-    } catch (err) {
-      setStreamState('error');
-      setError(`Stream init failed: ${err instanceof Error ? err.message : String(err)}`);
-      return;
-    }
-    sseRef.current = es;
-
-    es.addEventListener('meta', () => {
-      setStreamState('open');
-      reconnectAttemptRef.current = 0;
-    });
-
-    es.addEventListener('line', (ev) => {
-      try {
-        const line: ParsedLogLine = JSON.parse((ev as MessageEvent).data);
-        setLines((prev) => {
-          const next = [...prev, line];
-          if (next.length > MAX_BUFFER_LINES) {
-            return next.slice(next.length - MAX_BUFFER_LINES);
-          }
-          return next;
-        });
-      } catch {
-        // Bad payload — drop silently rather than crash the stream.
-      }
-    });
-
-    es.addEventListener('cursor', (ev) => {
-      try {
-        const { cursor: c } = JSON.parse((ev as MessageEvent).data) as { cursor: number };
-        if (typeof c === 'number') {
-          setCursor(c);
-          cursorRef.current = c;
-        }
-      } catch { /* ignore */ }
-    });
-
-    es.addEventListener('rotated', () => {
-      // File was truncated/rotated. Reset cursor and surface a marker line.
-      setCursor(0);
-      cursorRef.current = 0;
-      setLines((prev) => [...prev, {
-        ts: new Date().toISOString(),
-        level: 'warn',
-        name: 'logs',
-        msg: '— log file rotated/truncated —',
-        raw: '— log file rotated/truncated —',
-      }]);
-    });
-
-    es.onerror = () => {
-      setStreamState('reconnecting');
-      closeStream();
-      // Reconnect with exponential backoff if still in live mode.
-      const delay = SSE_BACKOFF[Math.min(reconnectAttemptRef.current, SSE_BACKOFF.length - 1)];
-      reconnectAttemptRef.current++;
-      reconnectTimerRef.current = setTimeout(() => { openStream(); }, delay);
-    };
-  }, [closeStream]);
-
   useEffect(() => {
-    if (live) {
-      openStream();
-    } else {
+    if (!live) {
       closeStream();
       setStreamState('idle');
+      return;
     }
-    return closeStream;
-    // We intentionally don't depend on `cursor` — openStream() reads the latest
-    // cursor at call time, and we don't want to tear down the SSE every time
-    // a new line bumps the cursor.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [live]);
+    const handle = openLogsStream({
+      offset: cursorRef.current,
+      level: effectiveLevel,
+      handlers: {
+        onState: (s) => setStreamState(s === 'closed' ? 'idle' : s),
+        onLine: (line) => {
+          setLines((prev) => {
+            const next = prev.length >= MAX_BUFFER_LINES
+              ? [...prev.slice(prev.length - MAX_BUFFER_LINES + 1), line]
+              : [...prev, line];
+            return next;
+          });
+        },
+        onCursor: (c) => { cursorRef.current = c; },
+        onRotated: () => {
+          cursorRef.current = 0;
+          setLines((prev) => [...prev, {
+            ts: new Date().toISOString(),
+            level: 'warn',
+            name: 'logs',
+            msg: '— log file rotated/truncated —',
+            raw: '— log file rotated/truncated —',
+          }]);
+        },
+        onError: (e) => {
+          // Surface only the first error; the wrapper handles reconnect itself.
+          setError((prev) => prev ?? `Live-tail error: ${e.message} (auto-reconnecting…)`);
+        },
+      },
+    });
+    streamHandleRef.current = handle;
+    return () => {
+      handle.close();
+      streamHandleRef.current = null;
+    };
+  }, [live, effectiveLevel, closeStream]);
 
   // Auto-scroll to bottom on new lines while live, unless the user scrolled up.
   useEffect(() => {
     if (!live) return;
-    const el = scrollRef.current;
-    if (!el) return;
-    if (userScrolledUpRef.current) return;
-    el.scrollTop = el.scrollHeight;
+    if (!atBottomRef.current) return;
+    const idx = lines.length - 1;
+    if (idx < 0) return;
+    virtuosoRef.current?.scrollToIndex({ index: idx, align: 'end', behavior: 'auto' });
   }, [lines, live]);
 
-  const handleScroll = useCallback(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    userScrolledUpRef.current = distFromBottom > 60;
-  }, []);
-
+  // ── Client-side search filter (substring on raw line) ─────────────────────
+  // Level filtering happens server-side, so all `lines` already pass the level
+  // gate. Search is kept client-side so typing feels instant.
   const filteredLines = useMemo(() => {
-    const minLevel = displayLevel ?? serverLevel;
-    const minOrder = LEVEL_ORDER[minLevel];
     const q = search.trim().toLowerCase();
-    return lines.filter((l) => {
-      if (LEVEL_ORDER[l.level] > minOrder) return false;
-      if (q && !l.raw.toLowerCase().includes(q)) return false;
-      return true;
-    });
-  }, [lines, displayLevel, serverLevel, search]);
+    if (!q) return lines;
+    return lines.filter((l) => l.raw.toLowerCase().includes(q));
+  }, [lines, search]);
 
   const hiddenCount = lines.length - filteredLines.length;
 
   const handleDownload = useCallback(() => {
-    // Use a synthetic anchor click so the browser respects Content-Disposition
-    // and our same-origin cookies/auth context.
+    // Synthetic anchor click respects Content-Disposition + same-origin auth.
     const a = document.createElement('a');
-    a.href = '/api/gateway/api/logs/download';
+    a.href = getLogsDownloadUrl();
     a.rel = 'noopener';
     document.body.appendChild(a);
     a.click();
@@ -387,10 +283,16 @@ export function LogsPane() {
   }, []);
 
   const handleRefresh = useCallback(() => {
-    userScrolledUpRef.current = false;
-    void loadMeta();
-    void loadTail();
-  }, [loadMeta, loadTail]);
+    atBottomRef.current = true;
+    void loadAll(effectiveLevel);
+  }, [loadAll, effectiveLevel]);
+
+  const handleLevelChange = useCallback((next: LogLevel) => {
+    setFilterLevel(next);
+    // Re-fetch with new server-side filter so payload reflects the choice
+    // (not just hidden client-side).
+    void loadAll(next);
+  }, [loadAll]);
 
   // Empty-state when the log file doesn't exist yet.
   if (meta && !meta.exists && !loading) {
@@ -412,8 +314,8 @@ export function LogsPane() {
           <div className="max-w-md text-xs text-zinc-600">
             The gateway hasn&apos;t written to <span className="font-mono text-zinc-500">{meta.filePath}</span> yet.
             Once it logs a startup event the file will appear here. To verify your
-            logging configuration, run <span className="font-mono text-zinc-500">orionomega ln</span> from a
-            terminal on the host.
+            logging configuration, run{' '}
+            <span className="font-mono text-zinc-500">orionomega doctor</span> from a terminal on the host.
           </div>
         </div>
       </div>
@@ -458,8 +360,8 @@ export function LogsPane() {
         <label className="flex items-center gap-1 text-[10px] text-zinc-500">
           Min level
           <select
-            value={displayLevel ?? serverLevel}
-            onChange={(e) => setDisplayLevel(e.target.value as LogLevel)}
+            value={effectiveLevel}
+            onChange={(e) => handleLevelChange(e.target.value as LogLevel)}
             className="rounded bg-zinc-800 border border-zinc-700 px-1.5 py-1 text-xs text-zinc-300 outline-none focus:border-blue-500/50"
           >
             {LEVELS.map((l) => (
@@ -478,6 +380,14 @@ export function LogsPane() {
           {error && (
             <div className="flex items-center gap-1.5 text-red-400">
               <XCircle size={10} /> {error}
+              <button
+                type="button"
+                onClick={() => setError(null)}
+                className="ml-auto text-zinc-500 hover:text-zinc-300"
+                aria-label="Dismiss error"
+              >
+                <X size={11} />
+              </button>
             </div>
           )}
           {truncated && !error && (
@@ -494,19 +404,24 @@ export function LogsPane() {
         </div>
       )}
 
-      <div
-        ref={scrollRef}
-        onScroll={handleScroll}
-        className="flex-1 overflow-y-auto bg-[var(--background)]"
-      >
+      <div className="flex-1 min-h-0 bg-[var(--background)]">
         {filteredLines.length === 0 && !loading ? (
           <div className="flex h-full items-center justify-center text-xs text-zinc-600">
             {lines.length === 0 ? 'No log entries yet.' : 'No lines match the current filter.'}
           </div>
         ) : (
-          filteredLines.map((line, i) => (
-            <LogRow key={rowKey(line, i)} line={line} />
-          ))
+          <Virtuoso
+            ref={virtuosoRef}
+            data={filteredLines}
+            itemContent={(_idx, line) => <LogRow line={line} />}
+            initialTopMostItemIndex={filteredLines.length > 0 ? filteredLines.length - 1 : 0}
+            followOutput={(isAtBottom) => (isAtBottom ? 'auto' : false)}
+            atBottomStateChange={(b) => { atBottomRef.current = b; }}
+            atBottomThreshold={50}
+            overscan={400}
+            className="h-full"
+            style={{ height: '100%', overscrollBehavior: 'none' }}
+          />
         )}
       </div>
     </div>

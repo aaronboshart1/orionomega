@@ -816,7 +816,7 @@ async function stepLogging(config: OrionOmegaConfig, stepIdx: number, totalSteps
   }
 
   success(`Logging: ${config.logging.level}, file: ${config.logging.file.replace(homedir(), '~')}`);
-  println(`  ${DIM}Tip: open the web UI → Orchestration pane → Logs tab to read, filter, live-tail, and download this file.${RESET}`);
+  println(`  ${DIM}Tip: open the web UI → Orchestration pane → Logs tab to read, filter, live-tail, and download this file. Run \`orionomega doctor\` to verify the file is readable.${RESET}`);
 
   return nav(stepIdx, totalSteps);
 }
