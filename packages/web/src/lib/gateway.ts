@@ -1695,11 +1695,7 @@ export function useGateway() {
   return { send, sendChat, sendCommand, sendWorkflowCommand, respondToPlan, respondToDAG, respondToConfirmation };
 }
 
-// ── Logs API helpers ────────────────────────────────────────────────────────
-// Typed wrappers around the gateway's `/api/logs/*` endpoints so the UI never
-// hand-rolls `fetch(`/api/gateway/api/logs/...`)`. The SSE wrapper layers on
-// reconnect-with-backoff and exposes a small handle (close, getCursor) so
-// callers don't need to manage the underlying EventSource themselves.
+// Logs API helpers — typed wrappers around /api/logs/{meta,tail,stream,download}.
 
 export type LogLevel = 'error' | 'warn' | 'info' | 'verbose' | 'debug';
 
@@ -1732,88 +1728,60 @@ export interface LogsTailResponse {
 }
 
 export interface LogsTailParams {
-  /** Max lines to return after filtering (capped server-side at 5,000). */
   lines?: number;
-  /** Minimum level — server returns only entries at-or-more-severe than this. */
   level?: LogLevel;
-  /** Case-insensitive substring filter on the raw line. */
   q?: string;
-  /** AbortSignal for cancelling on unmount. */
+  /** ISO timestamp; only return entries with `ts > since`. */
+  since?: string;
   signal?: AbortSignal;
 }
 
-/** GET /api/logs/meta — basic info about the configured log file. */
 export async function fetchLogsMeta(signal?: AbortSignal): Promise<LogsMeta> {
   const r = await fetch('/api/gateway/api/logs/meta', { signal });
   if (!r.ok) throw new Error(`Logs meta failed: HTTP ${r.status}`);
   return r.json() as Promise<LogsMeta>;
 }
 
-/**
- * GET /api/logs/tail — last N lines with optional server-side filters.
- *
- * Cursor contract: the response's `nextCursor` is a **byte offset** into the
- * log file (the file size at read time). Pass it to `openLogsStream({offset})`
- * to start live-tailing from the same point without replaying. The tail
- * endpoint always returns the most recent N lines — there is no timestamp
- * cursor for incremental tail polling (that's the SSE stream's job).
- */
 export async function fetchLogsTail(params: LogsTailParams = {}): Promise<LogsTailResponse> {
   const qs = new URLSearchParams();
   if (params.lines !== undefined) qs.set('lines', String(params.lines));
   if (params.level) qs.set('level', params.level);
   if (params.q) qs.set('q', params.q);
+  if (params.since) qs.set('since', params.since);
   const r = await fetch(`/api/gateway/api/logs/tail?${qs}`, { signal: params.signal });
   if (!r.ok) throw new Error(`Logs tail failed: HTTP ${r.status}`);
   return r.json() as Promise<LogsTailResponse>;
 }
 
-/** Returns the URL the browser should hit to download the full log file. */
 export function getLogsDownloadUrl(): string {
   return '/api/gateway/api/logs/download';
 }
 
 export interface LogsStreamHandlers {
-  /** Fired once after the SSE handshake; reports the resolved file/level. */
   onMeta?: (m: { filePath: string; level: LogLevel; cursor: number }) => void;
-  /** Fired for every log line that passes the server-side level filter. */
   onLine: (line: ParsedLogLine) => void;
-  /**
-   * Fired after each batch with the new committed cursor (read-cursor minus
-   * any partial trailing line). Persist this and pass it as `offset` on the
-   * next `openLogsStream()` call to avoid replays after reconnects.
-   */
   onCursor?: (cursor: number) => void;
-  /** Fired when the gateway detects the file was truncated/rotated. */
   onRotated?: () => void;
-  /** Fired on transient errors. The wrapper auto-reconnects with backoff. */
   onError?: (err: Error) => void;
-  /** Fired when the wrapper transitions between connection states. */
   onState?: (state: 'connecting' | 'open' | 'reconnecting' | 'closed') => void;
 }
 
 export interface LogsStreamOptions {
-  /** Byte offset to resume from — typically the last `onCursor` value. */
   offset: number;
-  /** Optional server-side level filter (reduces bytes over the wire). */
   level?: LogLevel;
   handlers: LogsStreamHandlers;
 }
 
 export interface LogsStreamHandle {
-  /** Close the stream and cancel any pending reconnect. Idempotent. */
   close: () => void;
-  /** Latest committed cursor seen so far (0 until the first `cursor` event). */
   getCursor: () => number;
 }
 
 const SSE_BACKOFF_MS = [500, 1_000, 2_000, 5_000, 10_000];
 
 /**
- * Open a /api/logs/stream SSE connection with reconnect-with-backoff. The
- * returned handle's `getCursor()` always reflects the latest *committed*
- * cursor so reconnects (handled internally) resume from a safe offset and
- * never replay or drop lines.
+ * Open an SSE connection to /api/logs/stream with auto-reconnect and backoff.
+ * Reconnects resume from the latest committed cursor (no replay, no loss).
  */
 export function openLogsStream(opts: LogsStreamOptions): LogsStreamHandle {
   const { handlers } = opts;
@@ -1858,13 +1826,13 @@ export function openLogsStream(opts: LogsStreamOptions): LogsStreamHandle {
         setState('open');
         reconnectAttempt = 0;
         handlers.onMeta?.(m);
-      } catch { /* ignore malformed meta */ }
+      } catch { /* ignore */ }
     });
 
     es.addEventListener('line', (ev) => {
       try {
         handlers.onLine(JSON.parse((ev as MessageEvent).data) as ParsedLogLine);
-      } catch { /* ignore malformed line */ }
+      } catch { /* ignore */ }
     });
 
     es.addEventListener('cursor', (ev) => {

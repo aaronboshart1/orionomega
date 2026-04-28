@@ -1,23 +1,5 @@
 'use client';
 
-/**
- * LogsPane — read, filter, live-tail and download the gateway/system log file.
- *
- * Talks to the gateway through the typed helpers in `@/lib/gateway` (no
- * hand-rolled `fetch`/`EventSource` calls live in this file):
- *   fetchLogsMeta()    → GET /api/logs/meta
- *   fetchLogsTail()    → GET /api/logs/tail
- *   openLogsStream()   → SSE /api/logs/stream (with reconnect-with-backoff)
- *   getLogsDownloadUrl() → URL for /api/logs/download
- *
- * Rendering uses `react-virtuoso` so the full ring buffer (capped at
- * MAX_BUFFER_LINES = 50,000 lines) can be browsed without locking the tab.
- *
- * Server-side level filter: when the user picks a minimum level we re-fetch
- * the tail with `?level=…` and reopen the SSE with `?level=…`, so payload
- * bytes are reduced over the wire — not just hidden client-side.
- */
-
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
 import {
@@ -64,9 +46,7 @@ const LEVEL_ICON: Record<LogLevel, React.ReactNode> = {
   debug: <Bug size={10} aria-hidden />,
 };
 
-/** Cap in-memory log lines so live-tailing a busy gateway doesn't OOM the tab. */
 const MAX_BUFFER_LINES = 50_000;
-/** Initial number of lines fetched on mount and on Refresh. */
 const INITIAL_TAIL_LINES = 1_000;
 
 function formatBytes(n: number): string {
@@ -140,7 +120,6 @@ export function LogsPane() {
   const [meta, setMeta] = useState<LogsMeta | null>(null);
   const [lines, setLines] = useState<ParsedLogLine[]>([]);
   const [serverLevel, setServerLevel] = useState<LogLevel>('info');
-  /** Server-side filter sent to /tail and /stream. */
   const [filterLevel, setFilterLevel] = useState<LogLevel | null>(null);
   const [search, setSearch] = useState('');
   const [live, setLive] = useState(false);
@@ -153,20 +132,10 @@ export function LogsPane() {
   const atBottomRef = useRef(true);
   const streamHandleRef = useRef<LogsStreamHandle | null>(null);
   const fetchAbortRef = useRef<AbortController | null>(null);
-  /** Cursor from the last successful tail / SSE batch — used to seed reconnects. */
   const cursorRef = useRef(0);
 
-  // Effective server-side level: explicit dropdown choice, falling back to the
-  // gateway's own configured level (so an unfiltered view defaults to "info"
-  // when the gateway is at info, "debug" when at debug, etc.).
   const effectiveLevel: LogLevel = filterLevel ?? serverLevel;
 
-  // ── Load logs (meta + tail). When called without an explicit level, we
-  // fetch meta first and then use the gateway's configured level so the very
-  // first page load reflects the configured verbosity (rather than racing
-  // meta with a tail request that hard-coded `info`). Subsequent calls (from
-  // Refresh / level dropdown changes) pass the level explicitly and skip the
-  // meta-first ordering.
   const loadAll = useCallback(async (explicitLevel?: LogLevel) => {
     if (fetchAbortRef.current) fetchAbortRef.current.abort();
     const controller = new AbortController();
@@ -177,7 +146,6 @@ export function LogsPane() {
     try {
       let levelForTail = explicitLevel;
       if (!levelForTail) {
-        // First-load path: meta determines the effective level.
         const m = await fetchLogsMeta(controller.signal);
         setMeta(m);
         setServerLevel(m.level);
@@ -192,7 +160,6 @@ export function LogsPane() {
       setLines(t.lines);
       cursorRef.current = t.nextCursor;
       setTruncated(t.truncated);
-      // For refresh paths, refetch meta in parallel so size/mtime stay fresh.
       if (explicitLevel) {
         const m = await fetchLogsMeta(controller.signal);
         setMeta(m);
@@ -206,7 +173,6 @@ export function LogsPane() {
     }
   }, []);
 
-  // First mount.
   useEffect(() => {
     void loadAll();
     return () => {
@@ -215,9 +181,6 @@ export function LogsPane() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ── SSE live tail — reopens on level change so the server-side filter
-  //   matches the dropdown. Closing/reopening is cheap because the wrapper
-  //   uses cursorRef to resume without replaying lines. ──
   const closeStream = useCallback(() => {
     if (streamHandleRef.current) {
       streamHandleRef.current.close();
@@ -256,7 +219,6 @@ export function LogsPane() {
           }]);
         },
         onError: (e) => {
-          // Surface only the first error; the wrapper handles reconnect itself.
           setError((prev) => prev ?? `Live-tail error: ${e.message} (auto-reconnecting…)`);
         },
       },
@@ -268,7 +230,6 @@ export function LogsPane() {
     };
   }, [live, effectiveLevel, closeStream]);
 
-  // Auto-scroll to bottom on new lines while live, unless the user scrolled up.
   useEffect(() => {
     if (!live) return;
     if (!atBottomRef.current) return;
@@ -277,13 +238,7 @@ export function LogsPane() {
     virtuosoRef.current?.scrollToIndex({ index: idx, align: 'end', behavior: 'auto' });
   }, [lines, live]);
 
-  // ── Client-side filtering ─────────────────────────────────────────────────
-  // Search is always client-side so typing feels instant.
-  // For LEVEL: server-side filtering happens at /tail and /stream request
-  // time, but we ALSO re-filter the in-memory buffer here. That way, when
-  // the user picks a STRICTER level (e.g. info → warn) the dropdown change
-  // hides matching rows immediately even before the new server-side response
-  // arrives — keeping the dropdown snappy on busy gateways.
+  // Client-side re-filter (instant for stricter dropdown choices and search).
   const filteredLines = useMemo(() => {
     const q = search.trim().toLowerCase();
     const minOrder = LEVEL_ORDER[effectiveLevel];
@@ -297,7 +252,6 @@ export function LogsPane() {
   const hiddenCount = lines.length - filteredLines.length;
 
   const handleDownload = useCallback(() => {
-    // Synthetic anchor click respects Content-Disposition + same-origin auth.
     const a = document.createElement('a');
     a.href = getLogsDownloadUrl();
     a.rel = 'noopener';
@@ -313,12 +267,9 @@ export function LogsPane() {
 
   const handleLevelChange = useCallback((next: LogLevel) => {
     setFilterLevel(next);
-    // Re-fetch with new server-side filter so payload reflects the choice
-    // (not just hidden client-side).
     void loadAll(next);
   }, [loadAll]);
 
-  // Empty-state when the log file doesn't exist yet.
   if (meta && !meta.exists && !loading) {
     return (
       <div className="flex h-full flex-col">
@@ -486,16 +437,11 @@ function Header({
         </div>
         <div className="text-[10px] text-zinc-600">
           Level: <span className="text-zinc-400">{meta?.level ?? '—'}</span>
-          {/* Hint pointing users to the existing Settings gear (in ChatPane
-              header) where the gateway-wide logging level is configured.
-              We keep this as a tooltip-only affordance rather than a button
-              because the SettingsModal is local state in ChatPane and not
-              wired to a global open-event in the current codebase. */}
           <span
             className="ml-1 cursor-help text-zinc-600"
-            title="Change the configured logging level via the Settings gear in the chat header (top-right)"
+            title="Configure via the Settings gear in the chat header (top-right) or `orionomega setup`"
           >
-            (change via Settings ⚙)
+            (configurable)
           </span>
           {meta?.exists && (
             <>
