@@ -22,7 +22,10 @@
     "dev": "npm run dev --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "lint": "eslint .",
-    "clean": "rm -rf packages/*/dist",
+    "clean": "rm -rf packages/*/dist packages/*/src/generated",
+    "build-info": "node scripts/generate-build-info.mjs core && node scripts/generate-build-info.mjs gateway",
+    "pretypecheck": "node scripts/generate-build-info.mjs core && node scripts/generate-build-info.mjs gateway",
+    "pretest": "node scripts/generate-build-info.mjs core && node scripts/generate-build-info.mjs gateway",
     "typecheck": "tsc --build"
   },
   "devDependencies": {
