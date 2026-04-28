@@ -437,12 +437,19 @@ function Header({
         </div>
         <div className="text-[10px] text-zinc-600">
           Level: <span className="text-zinc-400">{meta?.level ?? '—'}</span>
-          <span
-            className="ml-1 cursor-help text-zinc-600"
-            title="Configure via the Settings gear in the chat header (top-right) or `orionomega setup`"
+          {' · '}
+          <button
+            type="button"
+            onClick={() => {
+              try {
+                window.dispatchEvent(new CustomEvent('orionomega:open-settings'));
+              } catch { /* ignore */ }
+            }}
+            className="text-zinc-500 hover:text-zinc-300 underline-offset-2 hover:underline"
+            title="Open Settings to change the configured logging level"
           >
-            (configurable)
-          </span>
+            change in Settings
+          </button>
           {meta?.exists && (
             <>
               {' · '}Size: <span className="text-zinc-400">{formatBytes(meta.sizeBytes)}</span>

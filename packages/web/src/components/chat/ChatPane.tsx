@@ -111,6 +111,13 @@ export function ChatPane() {
   const [loadingOlder, setLoadingOlder] = useState(false);
   const hydrated = chatHydrated && orchHydrated;
 
+  // Allow other panes (e.g. LogsPane) to open the Settings modal.
+  useEffect(() => {
+    const handler = () => setSettingsOpen(true);
+    window.addEventListener('orionomega:open-settings', handler);
+    return () => window.removeEventListener('orionomega:open-settings', handler);
+  }, []);
+
 
   const renderItems = useMemo(() => buildRenderItems(messages), [messages]);
 

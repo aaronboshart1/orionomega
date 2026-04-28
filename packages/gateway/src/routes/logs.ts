@@ -122,7 +122,15 @@ export async function handleLogsTail(req: IncomingMessage, res: ServerResponse):
     try {
       const length = sizeBytes - readFromBytes;
       buf = Buffer.alloc(length);
-      await fh.read(buf, 0, length, readFromBytes);
+      // Loop until the requested bytes are fully read — fh.read() may return
+      // a short read on some filesystems / large reads.
+      let total = 0;
+      while (total < length) {
+        const { bytesRead } = await fh.read(buf, total, length - total, readFromBytes + total);
+        if (bytesRead === 0) break;
+        total += bytesRead;
+      }
+      if (total < length) buf = buf.subarray(0, total);
     } finally {
       await fh.close();
     }
@@ -147,7 +155,12 @@ export async function handleLogsTail(req: IncomingMessage, res: ServerResponse):
 
   if (levelFilter) parsed = parsed.filter((p) => passesLevelFilter(p.level, levelFilter));
   if (q) parsed = parsed.filter((p) => p.raw.toLowerCase().includes(q));
-  if (since) parsed = parsed.filter((p) => p.ts > since);
+  if (since) {
+    // `since` requires ISO-formatted timestamps (which the gateway logger
+    // always emits). Lines without a parseable timestamp are kept so users
+    // never silently lose unstructured warnings during incremental polling.
+    parsed = parsed.filter((p) => !p.ts || p.ts > since);
+  }
 
   const lineCapped = parsed.length > lines;
   if (lineCapped) parsed = parsed.slice(parsed.length - lines);
