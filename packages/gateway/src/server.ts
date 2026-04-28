@@ -1470,19 +1470,9 @@ function startListening(): void {
     log.warn('Failed to compute stale-build status', { error: err instanceof Error ? err.message : String(err) });
   }
   const sourceShortCommit = gatewayStale?.sourceShortCommit ?? coreStale?.sourceShortCommit ?? null;
-  log.info(
-    `Build: gateway ${GATEWAY_BUILD_INFO.shortCommit}${GATEWAY_BUILD_INFO.dirty ? '-dirty' : ''} ` +
-    `(built ${GATEWAY_BUILD_INFO.buildTime}), ` +
-    `core ${CORE_BUILD_INFO.shortCommit}${CORE_BUILD_INFO.dirty ? '-dirty' : ''} ` +
-    `(built ${CORE_BUILD_INFO.buildTime})` +
-    (sourceShortCommit ? `, source ${sourceShortCommit}` : '')
-  );
-  // Resolve effective orchestration timeouts from config, with the same
-  // defaults used by initMainAgent() so what we log here is what the runtime
-  // will actually enforce.
   // Floors mirror the runtime clamp in executor.ts (Math.max(configured,
-  // floor)). We log the post-clamp value so the line on disk matches what
-  // the runtime will actually enforce — otherwise an operator who sees
+  // floor)). We log post-clamp values so the line on disk matches what the
+  // runtime will actually enforce — otherwise an operator who sees
   // workerTimeout=300 in the log might think a Worker died after 300s when
   // in reality the floor pushed it to 600s.
   const AGENT_FLOOR = 600;
@@ -1497,13 +1487,26 @@ function startListening(): void {
   } catch { /* fall through with defaults */ }
   const effWorkerTimeout = Math.max(configuredWorker, AGENT_FLOOR);
   const effCodingAgentTimeout = Math.max(configuredCodingAgent, CODING_AGENT_FLOOR);
-  log.info(
-    `Orchestration timeouts (post-clamp): workerTimeout=${effWorkerTimeout}s ` +
-    `(configured=${configuredWorker}s, floor=${AGENT_FLOOR}s), ` +
-    `codingAgentTimeout=${effCodingAgentTimeout}s ` +
-    `(configured=${configuredCodingAgent}s, floor=${CODING_AGENT_FLOOR}s), ` +
-    `toolFloor=${TOOL_FLOOR}s`
-  );
+  // Single structured boot line carrying everything support runbooks need to
+  // diagnose stale-build / timeout incidents from logs alone.
+  log.info('Boot provenance & orchestration', {
+    build: {
+      gateway: `${GATEWAY_BUILD_INFO.shortCommit}${GATEWAY_BUILD_INFO.dirty ? '-dirty' : ''}`,
+      gatewayBuiltAt: GATEWAY_BUILD_INFO.buildTime,
+      core: `${CORE_BUILD_INFO.shortCommit}${CORE_BUILD_INFO.dirty ? '-dirty' : ''}`,
+      coreBuiltAt: CORE_BUILD_INFO.buildTime,
+      source: sourceShortCommit,
+    },
+    timeouts: {
+      workerTimeoutSec: effWorkerTimeout,
+      workerConfiguredSec: configuredWorker,
+      workerFloorSec: AGENT_FLOOR,
+      codingAgentTimeoutSec: effCodingAgentTimeout,
+      codingAgentConfiguredSec: configuredCodingAgent,
+      codingAgentFloorSec: CODING_AGENT_FLOOR,
+      toolFloorSec: TOOL_FLOOR,
+    },
+  });
   if (gatewayStale?.isStale || coreStale?.isStale) {
     if (gatewayStale?.isStale) log.warn(`STALE BUILD DETECTED (gateway) — ${gatewayStale.reason}`);
     if (coreStale?.isStale) log.warn(`STALE BUILD DETECTED (core) — ${coreStale.reason}`);

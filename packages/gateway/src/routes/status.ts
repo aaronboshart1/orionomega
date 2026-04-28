@@ -17,6 +17,14 @@ import { BUILD_INFO as GATEWAY_BUILD_INFO } from '../generated/build-info.js';
 // "/" when running under systemd / launchd / a service supervisor).
 const STATUS_MODULE_DIR = dirname(fileURLToPath(import.meta.url));
 
+// Cache the stale-build result for a short interval so a chatty client
+// polling /api/status (e.g. the web header refreshing every few seconds)
+// doesn't fork `git rev-parse HEAD` on every request. The TTL is short
+// enough that an operator running `orionomega update --clean` will see
+// the badge clear within seconds, but long enough to absorb burst polling.
+const STALE_CACHE_TTL_MS = 10_000;
+let staleCache: { computedAt: number; payload: unknown } | null = null;
+
 /**
  * Handle GET /api/status — full system status overview.
  * @param _req - The incoming HTTP request.
@@ -72,43 +80,47 @@ export async function handleStatus(
   // instead of being told everything is fine while their gateway runs old
   // code. We must check both packages independently because a half-finished
   // monorepo build can leave one package fresh and the other stale (the
-  // exact failure mode this whole feature exists to detect).
-  let staleBuild;
-  try {
-    const candidateDirs = [STATUS_MODULE_DIR];
-    const gatewayStatus = getStaleBuildStatus({ buildInfo: GATEWAY_BUILD_INFO, candidateDirs });
-    const coreStatus = getStaleBuildStatus({ buildInfo: CORE_BUILD_INFO, candidateDirs });
-    const reasons: string[] = [];
-    if (gatewayStatus.isStale) reasons.push(`gateway: ${gatewayStatus.reason}`);
-    if (coreStatus.isStale) reasons.push(`core: ${coreStatus.reason}`);
-    const isStale = gatewayStatus.isStale || coreStatus.isStale;
-    // Source commit comes from whichever check resolved it (both walk the
-    // same tree, so prefer gateway then fall back to core).
-    const sourceCommit = gatewayStatus.sourceCommit ?? coreStatus.sourceCommit;
-    const sourceShortCommit = gatewayStatus.sourceShortCommit ?? coreStatus.sourceShortCommit;
-    staleBuild = {
-      isStale,
-      reason: isStale ? reasons.join(' | ') : '',
-      builtDirty: gatewayStatus.builtDirty || coreStatus.builtDirty,
-      gateway: {
-        commit: GATEWAY_BUILD_INFO.commit,
-        shortCommit: GATEWAY_BUILD_INFO.shortCommit,
-        buildTime: GATEWAY_BUILD_INFO.buildTime,
-        dirty: GATEWAY_BUILD_INFO.dirty,
-        isStale: gatewayStatus.isStale,
-      },
-      core: {
-        commit: CORE_BUILD_INFO.commit,
-        shortCommit: CORE_BUILD_INFO.shortCommit,
-        buildTime: CORE_BUILD_INFO.buildTime,
-        dirty: CORE_BUILD_INFO.dirty,
-        isStale: coreStatus.isStale,
-      },
-      sourceCommit,
-      sourceShortCommit,
-    };
-  } catch {
-    staleBuild = { isStale: false, reason: '', builtDirty: false };
+  // exact failure mode this whole feature exists to detect). Cached for
+  // STALE_CACHE_TTL_MS to keep polling overhead bounded.
+  let staleBuild: unknown;
+  if (staleCache && (Date.now() - staleCache.computedAt) < STALE_CACHE_TTL_MS) {
+    staleBuild = staleCache.payload;
+  } else {
+    try {
+      const candidateDirs = [STATUS_MODULE_DIR];
+      const gatewayStatus = getStaleBuildStatus({ buildInfo: GATEWAY_BUILD_INFO, candidateDirs });
+      const coreStatus = getStaleBuildStatus({ buildInfo: CORE_BUILD_INFO, candidateDirs });
+      const reasons: string[] = [];
+      if (gatewayStatus.isStale) reasons.push(`gateway: ${gatewayStatus.reason}`);
+      if (coreStatus.isStale) reasons.push(`core: ${coreStatus.reason}`);
+      const isStale = gatewayStatus.isStale || coreStatus.isStale;
+      const sourceCommit = gatewayStatus.sourceCommit ?? coreStatus.sourceCommit;
+      const sourceShortCommit = gatewayStatus.sourceShortCommit ?? coreStatus.sourceShortCommit;
+      staleBuild = {
+        isStale,
+        reason: isStale ? reasons.join(' | ') : '',
+        builtDirty: gatewayStatus.builtDirty || coreStatus.builtDirty,
+        gateway: {
+          commit: GATEWAY_BUILD_INFO.commit,
+          shortCommit: GATEWAY_BUILD_INFO.shortCommit,
+          buildTime: GATEWAY_BUILD_INFO.buildTime,
+          dirty: GATEWAY_BUILD_INFO.dirty,
+          isStale: gatewayStatus.isStale,
+        },
+        core: {
+          commit: CORE_BUILD_INFO.commit,
+          shortCommit: CORE_BUILD_INFO.shortCommit,
+          buildTime: CORE_BUILD_INFO.buildTime,
+          dirty: CORE_BUILD_INFO.dirty,
+          isStale: coreStatus.isStale,
+        },
+        sourceCommit,
+        sourceShortCommit,
+      };
+    } catch {
+      staleBuild = { isStale: false, reason: '', builtDirty: false };
+    }
+    staleCache = { computedAt: Date.now(), payload: staleBuild };
   }
 
   const body = JSON.stringify({
