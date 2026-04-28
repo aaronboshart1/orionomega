@@ -20,10 +20,16 @@ if (!existsSync(pkgRoot)) {
   process.exit(2);
 }
 
+// Track whether ANY git command failed so we can degrade `dirty` gracefully
+// in restricted environments (read-only checkouts, sandboxes that block
+// `git status`'s implicit index lock acquisition, CI runners without a
+// `.git` directory, etc.) rather than emitting a misleading `dirty: false`.
+let gitAvailable = true;
 function tryGit(args, cwd) {
   try {
     return execSync(`git ${args}`, { cwd, stdio: ['ignore', 'pipe', 'ignore'], encoding: 'utf-8' }).trim();
   } catch {
+    gitAvailable = false;
     return '';
   }
 }
@@ -31,7 +37,30 @@ function tryGit(args, cwd) {
 const commit = tryGit('rev-parse HEAD', repoRoot) || 'unknown';
 const shortCommit = commit !== 'unknown' ? commit.slice(0, 7) : 'unknown';
 const branch = tryGit('rev-parse --abbrev-ref HEAD', repoRoot) || 'unknown';
-const dirty = tryGit('status --porcelain', repoRoot).length > 0;
+// Prefer `diff --quiet` over `status --porcelain` because it does not need
+// to acquire the index lock for refreshing the stat cache, and it returns
+// a clean exit code (0=clean, 1=dirty) so we can tell apart "clean" from
+// "command failed". Fall back to `status --porcelain` if `diff` itself
+// errors. If everything fails we report dirty=false and rely on the
+// `commit === 'unknown'` branch in `getStaleBuildStatus()` to flag stale.
+let dirty = false;
+if (gitAvailable && commit !== 'unknown') {
+  try {
+    execSync('git diff --quiet HEAD --', { cwd: repoRoot, stdio: 'ignore' });
+    // exit 0 → clean
+    dirty = false;
+  } catch (err) {
+    if (err && typeof err === 'object' && 'status' in err && err.status === 1) {
+      // exit 1 → dirty (this is the documented behavior)
+      dirty = true;
+    } else {
+      // Anything else (signal, ENOENT, permission denied) — fall back to
+      // status --porcelain, then to dirty=false if even that fails.
+      const porcelain = tryGit('status --porcelain', repoRoot);
+      dirty = porcelain.length > 0;
+    }
+  }
+}
 const buildTime = new Date().toISOString();
 
 let pkgVersion = '0.0.0';
