@@ -17,6 +17,7 @@ import { promisify } from 'node:util';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, extname } from 'node:path';
 import { createLogger } from '../../logging/logger.js';
+import { readConfig } from '../../config/loader.js';
 
 const execAsync = promisify(execCb);
 const log = createLogger('architect-reviewer');
@@ -548,7 +549,24 @@ export async function generateReviewReport(
   const reviewId = `review-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
   const timestamp = new Date().toISOString();
   const changedFiles = opts.changedFiles ?? [];
-  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  // When no explicit timeoutMs is supplied, fall back to
+  // `orchestration.validationTimeout` from the user's config so standalone
+  // callers (CLI, tests) inherit the same budget as the orchestrator.
+  // readConfig() is sync + cached; on read failure we silently use the
+  // module default rather than blocking the review.
+  let timeoutMs = opts.timeoutMs;
+  if (timeoutMs === undefined) {
+    try {
+      const cfg = readConfig();
+      const cfgTimeoutSec = cfg?.orchestration?.validationTimeout;
+      if (typeof cfgTimeoutSec === 'number' && cfgTimeoutSec > 0) {
+        timeoutMs = cfgTimeoutSec * 1000;
+      }
+    } catch {
+      // Config unreadable in this context (e.g. test harness) — fall through.
+    }
+    timeoutMs ??= DEFAULT_TIMEOUT_MS;
+  }
 
   log.info('Starting architect review', { cwd, reviewId, changedFiles: changedFiles.length });
 

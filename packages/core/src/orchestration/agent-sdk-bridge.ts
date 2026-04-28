@@ -474,20 +474,26 @@ export async function executeAgent(
       void Promise.resolve(q.interrupt()).catch(() => { /* swallow — abort path will fire */ });
     } catch { /* swallow — abort path will fire */ }
   };
+  /**
+   * Two-phase shutdown: try `Query.interrupt()` first to let the SDK end its
+   * current turn gracefully, then escalate to `AbortController.abort(reason)`
+   * after `INTERRUPT_GRACE_MS` if the iterator hasn't finished. This avoids
+   * leaving the SDK with a half-streamed message AND guarantees we don't hang
+   * forever on a wedged interrupt.
+   */
+  const INTERRUPT_GRACE_MS = 5_000;
+  const escalateToHardAbort = (reason: unknown): void => {
+    tryGracefulInterrupt();
+    setTimeout(() => abortController.abort(reason), INTERRUPT_GRACE_MS).unref?.();
+  };
   if (abortSignal) {
     // Forward the *reason* too — without this the inner controller would
     // throw a plain "AbortError" with no kind, and the catch site couldn't
-    // distinguish a user cancel from a wall-clock timeout. We also call
-    // `Query.interrupt()` first so the SDK can flush its current turn
-    // gracefully instead of leaving a half-streamed message.
+    // distinguish a user cancel from a wall-clock timeout.
     if (abortSignal.aborted) {
-      tryGracefulInterrupt();
-      abortController.abort(abortSignal.reason);
+      escalateToHardAbort(abortSignal.reason);
     } else {
-      abortSignal.addEventListener('abort', () => {
-        tryGracefulInterrupt();
-        abortController.abort(abortSignal.reason);
-      });
+      abortSignal.addEventListener('abort', () => escalateToHardAbort(abortSignal.reason));
     }
   }
 
@@ -803,7 +809,8 @@ export async function executeCodingAgent(
   // timeout — see executeAgent for the same pattern + rationale. Also
   // attempt a graceful `Query.interrupt()` before the hard abort so the
   // SDK can flush its current turn instead of leaving a half-streamed
-  // message behind.
+  // message behind. The two-phase shutdown gives the SDK 5s to drain
+  // before we hard-abort.
   const abortController = new AbortController();
   const queryRef: { current: { interrupt?: () => Promise<void> | void } | null } = { current: null };
   let interruptAttempted = false;
@@ -816,15 +823,16 @@ export async function executeCodingAgent(
       void Promise.resolve(q.interrupt()).catch(() => { /* swallow — abort path will fire */ });
     } catch { /* swallow — abort path will fire */ }
   };
+  const INTERRUPT_GRACE_MS = 5_000;
+  const escalateToHardAbort = (reason: unknown): void => {
+    tryGracefulInterrupt();
+    setTimeout(() => abortController.abort(reason), INTERRUPT_GRACE_MS).unref?.();
+  };
   if (abortSignal) {
     if (abortSignal.aborted) {
-      tryGracefulInterrupt();
-      abortController.abort(abortSignal.reason);
+      escalateToHardAbort(abortSignal.reason);
     } else {
-      abortSignal.addEventListener('abort', () => {
-        tryGracefulInterrupt();
-        abortController.abort(abortSignal.reason);
-      });
+      abortSignal.addEventListener('abort', () => escalateToHardAbort(abortSignal.reason));
     }
   }
 
