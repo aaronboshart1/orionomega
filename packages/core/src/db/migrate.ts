@@ -90,8 +90,11 @@ export function runMigrations(db: Database.Database): void {
     return;
   }
 
+  // INSERT OR IGNORE: migration files may also self-insert into
+  // schema_migrations (older migrations did this for back-compat). Without
+  // OR IGNORE, the runner's bookkeeping insert collides on UNIQUE(version).
   const insertStmt = db.prepare(
-    "INSERT INTO schema_migrations (version, applied_at) VALUES (?, datetime('now'))",
+    "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, datetime('now'))",
   );
 
   for (const file of files) {
