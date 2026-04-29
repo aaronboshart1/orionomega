@@ -265,6 +265,19 @@ export function LogsPane() {
     void loadAll(effectiveLevel);
   }, [loadAll, effectiveLevel]);
 
+  const handleToggleLive = useCallback(() => {
+    setLive((prev) => {
+      const next = !prev;
+      // When turning Live ON, re-seed with the most recent ~500 lines so the
+      // user sees a fresh view rather than streaming from a stale cursor.
+      if (next) {
+        atBottomRef.current = true;
+        void loadAll(effectiveLevel);
+      }
+      return next;
+    });
+  }, [loadAll, effectiveLevel]);
+
   const handleLevelChange = useCallback((next: LogLevel) => {
     setFilterLevel((prev) => {
       const prevOrder = LEVEL_ORDER[prev ?? serverLevel];
@@ -282,7 +295,7 @@ export function LogsPane() {
         <Header
           meta={meta}
           live={live}
-          onToggleLive={() => setLive((v) => !v)}
+          onToggleLive={handleToggleLive}
           onRefresh={handleRefresh}
           onDownload={handleDownload}
           downloadDisabled
@@ -308,7 +321,7 @@ export function LogsPane() {
       <Header
         meta={meta}
         live={live}
-        onToggleLive={() => setLive((v) => !v)}
+        onToggleLive={handleToggleLive}
         onRefresh={handleRefresh}
         onDownload={handleDownload}
         downloadDisabled={!meta?.exists}
