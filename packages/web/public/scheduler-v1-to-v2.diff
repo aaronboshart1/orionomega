@@ -1,0 +1,5038 @@
+diff --git a/.agents/agent_assets_metadata.toml b/.agents/agent_assets_metadata.toml
+new file mode 100644
+index 0000000..be9ea4a
+--- /dev/null
++++ b/.agents/agent_assets_metadata.toml
+@@ -0,0 +1,8 @@
++uploads = []
++generated = []
++
++[[outputs]]
++id = "GU8fyGT6mGbDA3Ymf6FV_"
++uri = "file://.local/exports/scheduler-round2.patch.txt"
++type = "text"
++title = "scheduler-round2.patch (rename to .patch after download)"
+diff --git a/.replit b/.replit
+deleted file mode 100644
+index f17e061..0000000
+--- a/.replit
++++ /dev/null
+@@ -1,68 +0,0 @@
+-modules = ["bash", "python-3.12", "web", "nodejs-22"]
+-[agent]
+-expertMode = true
+-
+-[nix]
+-channel = "stable-25_05"
+-
+-[workflows]
+-runButton = "Project"
+-
+-[[workflows.workflow]]
+-name = "Project"
+-mode = "parallel"
+-author = "agent"
+-
+-[[workflows.workflow.tasks]]
+-task = "workflow.run"
+-args = "Start application"
+-
+-[[workflows.workflow.tasks]]
+-task = "workflow.run"
+-args = "Gateway"
+-
+-[[workflows.workflow]]
+-name = "Start application"
+-author = "agent"
+-
+-[[workflows.workflow.tasks]]
+-task = "shell.exec"
+-args = "pnpm --filter @orionomega/web dev"
+-waitForPort = 5000
+-
+-[workflows.workflow.metadata]
+-outputType = "webview"
+-
+-[[workflows.workflow]]
+-name = "Gateway"
+-author = "agent"
+-
+-[workflows.workflow.metadata]
+-outputType = "console"
+-
+-[[workflows.workflow.tasks]]
+-task = "shell.exec"
+-args = "pnpm --filter @orionomega/gateway start"
+-waitForPort = 8000
+-
+-[[ports]]
+-localPort = 3000
+-externalPort = 3000
+-
+-[[ports]]
+-localPort = 5000
+-externalPort = 80
+-
+-[[ports]]
+-localPort = 8000
+-externalPort = 8000
+-exposeLocalhost = true
+-
+-[postMerge]
+-path = "scripts/post-merge.sh"
+-timeoutMs = 180000
+-
+-[deployment]
+-deploymentTarget = "autoscale"
+-run = ["bash", "-c", "pnpm --filter @orionomega/gateway start & pnpm --filter @orionomega/web start"]
+-build = ["pnpm", "--recursive", "run", "build"]
+diff --git a/attached_assets/Pasted-aaronboshart-Aarons-MacBook-Air-curl-fsSL-https-raw-git_1774300533303.txt b/attached_assets/Pasted-aaronboshart-Aarons-MacBook-Air-curl-fsSL-https-raw-git_1774300533303.txt
+deleted file mode 100644
+index 8c29c1c..0000000
+--- a/attached_assets/Pasted-aaronboshart-Aarons-MacBook-Air-curl-fsSL-https-raw-git_1774300533303.txt
++++ /dev/null
+@@ -1,64 +0,0 @@
+-aaronboshart@Aarons-MacBook-Air ~ % curl -fsSL https://raw.githubusercontent.com/aaronboshart1/orionomega/main/install.sh | bash
+-
+-  ╔══════════════════════════════════════╗
+-  ║     OrionOmega — Installer           ║
+-  ╚══════════════════════════════════════╝
+-
+-
+-Checking prerequisites...
+-✓ Node.js v25.5.0
+-✓ pnpm 10.32.1
+-
+-Getting OrionOmega source...
+-  Cloning into /Users/aaronboshart/.orionomega/src... Cloning into '/Users/aaronboshart/.orionomega/src'...
+-remote: Enumerating objects: 2119, done.
+-remote: Counting objects: 100% (294/294), done.
+-remote: Compressing objects: 100% (85/85), done.
+-remote: Total 2119 (delta 222), reused 244 (delta 209), pack-reused 1825 (from 1)
+-Receiving objects: 100% (2119/2119), 992.74 KiB | 4.47 MiB/s, done.
+-Resolving deltas: 100% (1132/1132), done.
+-done
+-✓ Source ready at /Users/aaronboshart/.orionomega/src
+-
+-Installing dependencies...
+-Scope: all 7 workspace projects
+-Lockfile is up to date, resolution step is skipped
+-Packages: +207
+-++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+-Progress: resolved 207, reused 207, downloaded 0, added 207, done
+- WARN  Failed to create bin at /Users/aaronboshart/.orionomega/src/packages/gateway/node_modules/.bin/orionomega. ENOENT: no such file or directory, open '/Users/aaronboshart/.orionomega/src/packages/core/dist/cli.js'
+- WARN  Failed to create bin at /Users/aaronboshart/.orionomega/src/packages/tui/node_modules/.bin/orionomega. ENOENT: no such file or directory, open '/Users/aaronboshart/.orionomega/src/packages/core/dist/cli.js'
+-
+-dependencies:
+-+ js-yaml 4.1.1
+-
+-devDependencies:
+-+ @eslint/js 9.39.4
+-+ @types/js-yaml 4.0.9
+-+ @types/node 22.19.15
+-+ @types/ws 8.18.1
+-+ @typescript-eslint/eslint-plugin 8.56.1
+-+ @typescript-eslint/parser 8.56.1
+-+ eslint 9.39.4
+-+ tsx 4.21.0
+-+ typescript 5.9.3
+-+ typescript-eslint 8.57.0
+-+ ws 8.19.0
+-
+- WARN  Failed to create bin at /Users/aaronboshart/.orionomega/src/packages/gateway/node_modules/.bin/orionomega. ENOENT: no such file or directory, open '/Users/aaronboshart/.orionomega/src/packages/gateway/node_modules/@orionomega/core/dist/cli.js'
+- WARN  Failed to create bin at /Users/aaronboshart/.orionomega/src/packages/tui/node_modules/.bin/orionomega. ENOENT: no such file or directory, open '/Users/aaronboshart/.orionomega/src/packages/tui/node_modules/@orionomega/core/dist/cli.js'
+-╭ Warning ─────────────────────────────────────────────────────────────────╮
+-│                                                                          │
+-│   Ignored build scripts: esbuild@0.27.3, koffi@2.15.1, sharp@0.34.5.     │
+-│   Run "pnpm approve-builds" to pick which dependencies should be         │
+-│   allowed to run scripts.                                                │
+-│                                                                          │
+-╰──────────────────────────────────────────────────────────────────────────╯
+-Done in 1.5s using pnpm v10.32.1
+-✓ Dependencies installed
+-✔ Choose which packages to build (Press <space> to select, <a> to toggle all, <i> to invert selection) · No items were selected
+-
+-All packages were added to ignoredBuiltDependencies.
+-aaronboshart@Aarons-MacBook-Air ~ % orionomega setup
+-zsh: command not found: orionomega
+-aaronboshart@Aarons-MacBook-Air ~ % 
+diff --git a/attached_assets/Pasted-aaronboshart-Aarons-MacBook-Air-curl-fsSL-https-raw-git_1774308676925.txt b/attached_assets/Pasted-aaronboshart-Aarons-MacBook-Air-curl-fsSL-https-raw-git_1774308676925.txt
+deleted file mode 100644
+index 6165c29..0000000
+--- a/attached_assets/Pasted-aaronboshart-Aarons-MacBook-Air-curl-fsSL-https-raw-git_1774308676925.txt
++++ /dev/null
+@@ -1,79 +0,0 @@
+-aaronboshart@Aarons-MacBook-Air ~ % curl -fsSL https://raw.githubusercontent.com/aaronboshart1/orionomega/main/install.sh | bash
+-
+-  ╔══════════════════════════════════════╗
+-  ║     OrionOmega — Installer           ║
+-  ╚══════════════════════════════════════╝
+-
+-
+-Checking prerequisites...
+-✓ Node.js v25.5.0
+-✓ pnpm 10.32.1
+-
+-Getting OrionOmega source...
+-  Updating existing installation... Already up to date.
+-done
+-✓ Source ready at /Users/aaronboshart/.orionomega/src
+-
+-Installing dependencies...
+-Scope: all 7 workspace projects
+-Lockfile is up to date, resolution step is skipped
+-Already up to date
+-Done in 269ms using pnpm v10.32.1
+-✓ Dependencies installed
+-
+-Building OrionOmega...
+-
+-> orionomega@0.1.0 build /Users/aaronboshart/.orionomega/src
+-> pnpm -r build
+-
+-Scope: 6 of 7 workspace projects
+-packages/hindsight build$ tsc
+-└─ Done in 809ms
+-packages/skills-sdk build$ tsc
+-└─ Done in 901ms
+-packages/web build$ next build
+-[11 lines collapsed]
+-│    Finalizing page optimization ...
+-│    Collecting build traces ...
+-│ Route (app)                                 Size  First Load JS
+-│ ┌ ○ /                                    69.1 kB         171 kB
+-│ └ ○ /_not-found                            993 B         103 kB
+-│ + First Load JS shared by all             102 kB
+-│   ├ chunks/249dc029-07a84849d1915fba.js  54.2 kB
+-│   ├ chunks/760-93f2674f80ce8538.js         46 kB
+-│   └ other shared chunks (total)           1.9 kB
+-│ ○  (Static)  prerendered as static content
+-└─ Done in 7s
+-packages/core build$ tsc
+-└─ Done in 586ms
+-packages/gateway build$ tsc
+-└─ Done in 497ms
+-packages/tui build$ tsc
+-└─ Done in 616ms
+-✓ Build complete
+-
+-Linking orionomega command...
+-✓ Added to PATH in /Users/aaronboshart/.zshrc
+-✓ orionomega command ready
+-
+-Verifying installation...
+-✓ Installation verified!
+-
+-  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+-    Installation complete!
+-  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+-
+-  Run the setup wizard:
+-
+-    orionomega setup
+-
+-  Then launch the TUI:
+-
+-    orionomega tui
+-
+-  If 'orionomega' is not found, open a new terminal or run:
+-    source /Users/aaronboshart/.zshrc
+-
+-aaronboshart@Aarons-MacBook-Air ~ % orionomega setup
+-zsh: command not found: orionomega
+-aaronboshart@Aarons-MacBook-Air ~ % 
+diff --git a/attached_assets/Pasted-aaronboshart-Aarons-MacBook-Air-orionomega-npm-install-_1774299130358.txt b/attached_assets/Pasted-aaronboshart-Aarons-MacBook-Air-orionomega-npm-install-_1774299130358.txt
+deleted file mode 100644
+index d318f3d..0000000
+--- a/attached_assets/Pasted-aaronboshart-Aarons-MacBook-Air-orionomega-npm-install-_1774299130358.txt
++++ /dev/null
+@@ -1,76 +0,0 @@
+-aaronboshart@Aarons-MacBook-Air orionomega % npm install -g pnpm && pnpm install && pnpm build && npx orionomega setup && npx orionomega tui
+-
+-added 1 package in 899ms
+-
+-1 package is looking for funding
+-  run `npm fund` for details
+-Scope: all 7 workspace projects
+-Lockfile is up to date, resolution step is skipped
+-Packages: +207
+-++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+-Downloading @img/sharp-libvips-darwin-arm64@1.2.4: 7.65 MB/7.65 MB, done
+-Downloading koffi@2.15.1: 18.25 MB/18.25 MB, done
+-Downloading next@15.5.12: 30.64 MB/30.64 MB, done
+-Downloading @next/swc-darwin-arm64@15.5.12: 42.42 MB/42.42 MB, done
+-Downloading @anthropic-ai/claude-agent-sdk@0.2.71: 17.20 MB/17.20 MB, done
+-Progress: resolved 207, reused 0, downloaded 207, added 207, done
+- WARN  Failed to create bin at /Users/aaronboshart/orionomega/packages/gateway/node_modules/.bin/orionomega. ENOENT: no such file or directory, open '/Users/aaronboshart/orionomega/packages/core/dist/cli.js'
+- WARN  Failed to create bin at /Users/aaronboshart/orionomega/packages/tui/node_modules/.bin/orionomega. ENOENT: no such file or directory, open '/Users/aaronboshart/orionomega/packages/core/dist/cli.js'
+-
+-dependencies:
+-+ js-yaml 4.1.1
+-
+-devDependencies:
+-+ @eslint/js 9.39.4
+-+ @types/js-yaml 4.0.9
+-+ @types/node 22.19.15
+-+ @types/ws 8.18.1
+-+ @typescript-eslint/eslint-plugin 8.56.1
+-+ @typescript-eslint/parser 8.56.1
+-+ eslint 9.39.4
+-+ tsx 4.21.0
+-+ typescript 5.9.3
+-+ typescript-eslint 8.57.0
+-+ ws 8.19.0
+-
+- WARN  Failed to create bin at /Users/aaronboshart/orionomega/packages/gateway/node_modules/.bin/orionomega. ENOENT: no such file or directory, open '/Users/aaronboshart/orionomega/packages/gateway/node_modules/@orionomega/core/dist/cli.js'
+- WARN  Failed to create bin at /Users/aaronboshart/orionomega/packages/tui/node_modules/.bin/orionomega. ENOENT: no such file or directory, open '/Users/aaronboshart/orionomega/packages/tui/node_modules/@orionomega/core/dist/cli.js'
+-╭ Warning ─────────────────────────────────────────────────────────────────╮
+-│                                                                          │
+-│   Ignored build scripts: esbuild@0.27.3, koffi@2.15.1, sharp@0.34.5.     │
+-│   Run "pnpm approve-builds" to pick which dependencies should be         │
+-│   allowed to run scripts.                                                │
+-│                                                                          │
+-╰──────────────────────────────────────────────────────────────────────────╯
+-Done in 6.7s using pnpm v10.32.1
+-
+-> orionomega@0.1.0 build /Users/aaronboshart/orionomega
+-> pnpm -r build
+-
+-Scope: 6 of 7 workspace projects
+-packages/hindsight build$ tsc
+-└─ Done in 932ms
+-packages/skills-sdk build$ tsc
+-└─ Done in 1.1s
+-packages/web build$ next build
+-[15 lines collapsed]
+-│    Finalizing page optimization ...
+-│    Collecting build traces ...
+-│ Route (app)                                 Size  First Load JS
+-│ ┌ ○ /                                    69.1 kB         171 kB
+-│ └ ○ /_not-found                            995 B         103 kB
+-│ + First Load JS shared by all             102 kB
+-│   ├ chunks/249dc029-07a84849d1915fba.js  54.2 kB
+-│   ├ chunks/760-93f2674f80ce8538.js         46 kB
+-│   └ other shared chunks (total)           1.9 kB
+-│ ○  (Static)  prerendered as static content
+-└─ Done in 11.9s
+-packages/core build$ tsc
+-└─ Done in 1.1s
+-packages/gateway build$ tsc
+-└─ Done in 835ms
+-packages/tui build$ tsc
+-└─ Done in 999ms
+-npm error could not determine executable to run
+-npm error A complete log of this run can be found in: /Users/aaronboshart/.npm/_logs/2026-03-23T20_51_50_979Z-debug-0.log
+-aaronboshart@Aarons-MacBook-Air orionomega % 
+\ No newline at end of file
+diff --git a/attached_assets/Pasted-packages-web-build-next-build-11-lines-collapsed-Finali_1774301532690.txt b/attached_assets/Pasted-packages-web-build-next-build-11-lines-collapsed-Finali_1774301532690.txt
+deleted file mode 100644
+index 1d8733b..0000000
+--- a/attached_assets/Pasted-packages-web-build-next-build-11-lines-collapsed-Finali_1774301532690.txt
++++ /dev/null
+@@ -1,110 +0,0 @@
+-packages/web build$ next build
+-[11 lines collapsed]
+-│    Finalizing page optimization ...
+-│    Collecting build traces ...
+-│ Route (app)                                 Size  First Load JS
+-│ ┌ ○ /                                    69.1 kB         171 kB
+-│ └ ○ /_not-found                            993 B         103 kB
+-│ + First Load JS shared by all             102 kB
+-│   ├ chunks/249dc029-07a84849d1915fba.js  54.2 kB
+-│   ├ chunks/760-93f2674f80ce8538.js         46 kB
+-│   └ other shared chunks (total)           1.9 kB
+-│ ○  (Static)  prerendered as static content
+-└─ Done in 6.8s
+-packages/core build$ tsc
+-└─ Done in 528ms
+-packages/tui build$ tsc
+-└─ Done in 585ms
+-packages/gateway build$ tsc
+-└─ Done in 477ms
+-✓ Build complete
+-
+-Linking orionomega command...
+-✓ orionomega command linked
+-
+-Verifying installation...
+-✓ Installation successful!
+-
+-\033[1mInstallation complete!\033[0m
+-
+-  \033[1mNext steps:\033[0m
+-  1. \033[0;32morionomega setup\033[0m     — run the setup wizard
+-  2. \033[0;32morionomega tui\033[0m       — launch the terminal UI
+-
+-  If "orionomega" is not found, open a new terminal or run:
+-    source /Users/aaronboshart/.zshrc
+-
+-aaronboshart@Aarons-MacBook-Air ~ % clear
+-
+-aaronboshart@Aarons-MacBook-Air ~ % curl -fsSL https://raw.githubusercontent.com/aaronboshart1/orionomega/main/install.sh | bash
+-
+-  ╔══════════════════════════════════════╗
+-  ║     OrionOmega — Installer           ║
+-  ╚══════════════════════════════════════╝
+-
+-
+-Checking prerequisites...
+-✓ Node.js v25.5.0
+-✓ pnpm 10.32.1
+-
+-Getting OrionOmega source...
+-⚠ Existing installation found at /Users/aaronboshart/.orionomega/src
+-  Pulling latest changes... Already up to date.
+-done
+-✓ Source ready at /Users/aaronboshart/.orionomega/src
+-
+-Installing dependencies...
+-Scope: all 7 workspace projects
+-Lockfile is up to date, resolution step is skipped
+-Already up to date
+-Done in 238ms using pnpm v10.32.1
+-✓ Dependencies installed
+-There are no packages awaiting approval
+-
+-Building OrionOmega...
+-
+-> orionomega@0.1.0 build /Users/aaronboshart/.orionomega/src
+-> pnpm -r build
+-
+-Scope: 6 of 7 workspace projects
+-packages/hindsight build$ tsc
+-└─ Done in 706ms
+-packages/skills-sdk build$ tsc
+-└─ Done in 678ms
+-packages/web build$ next build
+-[11 lines collapsed]
+-│    Finalizing page optimization ...
+-│    Collecting build traces ...
+-│ Route (app)                                 Size  First Load JS
+-│ ┌ ○ /                                    69.1 kB         171 kB
+-│ └ ○ /_not-found                            993 B         103 kB
+-│ + First Load JS shared by all             102 kB
+-│   ├ chunks/249dc029-07a84849d1915fba.js  54.2 kB
+-│   ├ chunks/760-93f2674f80ce8538.js         46 kB
+-│   └ other shared chunks (total)           1.9 kB
+-│ ○  (Static)  prerendered as static content
+-└─ Done in 6.4s
+-packages/core build$ tsc
+-└─ Done in 521ms
+-packages/gateway build$ tsc
+-└─ Done in 526ms
+-packages/tui build$ tsc
+-└─ Done in 632ms
+-✓ Build complete
+-
+-Linking orionomega command...
+-✓ orionomega command linked
+-
+-Verifying installation...
+-✓ Installation successful!
+-
+-\033[1mInstallation complete!\033[0m
+-
+-  \033[1mNext steps:\033[0m
+-  1. \033[0;32morionomega setup\033[0m     — run the setup wizard
+-  2. \033[0;32morionomega tui\033[0m       — launch the terminal UI
+-
+-  If "orionomega" is not found, open a new terminal or run:
+-    source /Users/aaronboshart/.zshrc
+-
+-aaronboshart@Aarons-MacBook-Air ~ % 
+diff --git a/config.example.yaml b/config.example.yaml
+index db82846..ab74663 100644
+--- a/config.example.yaml
++++ b/config.example.yaml
+@@ -219,17 +219,20 @@ commands:
+   # Default: ~/orionomega/commands
+   directory: ~/orionomega/commands
+ 
+-# ── Task Scheduling ──────────────────────────────────────────────────────────
++# ─── Scheduling ───────────────────────────────────────────────────────────────
++# Cron-driven scheduled prompts. When enabled, the gateway exposes
++# /api/schedules and the web app shows a "Schedules" tab in Settings.
++# When `enabled: false`, the REST routes return 503.
+ scheduling:
+-  # Enable or disable the task scheduler. Default: true
++  # Enable the scheduler engine. Default: true
+   enabled: true
+ 
+-  # Default timezone for scheduled tasks. Default: UTC
++  # Default IANA timezone for new schedules. Default: UTC
+   timezone: UTC
+ 
+-  # Maximum number of scheduled tasks that may run concurrently. Default: 3
++  # Maximum concurrent scheduled-task executions across all tasks. Default: 3
+   maxConcurrent: 3
+ 
+-  # Minimum seconds that must elapse between two executions of the same task.
+-  # Guards against runaway schedules with very short cron intervals. Default: 60
++  # Minimum interval between executions of any single task, in seconds.
++  # Default: 60
+   minIntervalSec: 60
+diff --git a/packages/core/src/config/types.ts b/packages/core/src/config/types.ts
+index 1280175..a7a8ba2 100644
+--- a/packages/core/src/config/types.ts
++++ b/packages/core/src/config/types.ts
+@@ -166,17 +166,6 @@ export interface OrionOmegaConfig {
+     additionalDirectories?: string[];
+   };
+ 
+-  scheduling?: {
+-    /** Whether task scheduling is enabled. Default: true. */
+-    enabled: boolean;
+-    /** Default timezone for scheduled tasks. Default: 'UTC'. */
+-    timezone: string;
+-    /** Maximum number of concurrently running scheduled tasks. Default: 3. */
+-    maxConcurrent: number;
+-    /** Minimum interval in seconds between any two executions of the same task. Default: 60. */
+-    minIntervalSec: number;
+-  };
+-
+   /** Coding Mode configuration — transforms OrionOmega into an autonomous coding system. */
+   codingMode: {
+     /** Whether Coding Mode is active. Default: true. */
+@@ -217,4 +206,23 @@ export interface OrionOmegaConfig {
+      */
+     budgetMultiplier: number;
+   };
++
++  /**
++   * Task scheduling configuration.
++   * Controls the in-process scheduler that fires recurring/one-shot prompts
++   * through MainAgent.handleMessage(). All fields are optional and default
++   * to sensible values; the scheduler runs with defaults if this section is
++   * absent. Set `enabled: false` to disable the scheduler entirely (REST
++   * routes will return 503 in that case).
++   */
++  scheduling?: {
++    /** Whether the scheduler engine is enabled. Default: true. */
++    enabled?: boolean;
++    /** Default IANA timezone for new schedules. Default: 'UTC'. */
++    timezone?: string;
++    /** Maximum concurrent scheduled-task executions. Default: 3. */
++    maxConcurrent?: number;
++    /** Minimum interval between executions of any single task (seconds). Default: 60. */
++    minIntervalSec?: number;
++  };
+ }
+diff --git a/packages/core/src/db/index.ts b/packages/core/src/db/index.ts
+index 9d2271f..84f106e 100644
+--- a/packages/core/src/db/index.ts
++++ b/packages/core/src/db/index.ts
+@@ -34,6 +34,8 @@ export type {
+   CodingSessionStatus,
+   CodingSessionWithExecutions,
+   Event,
++  ExecutionStatus,
++  ExecutionTriggerType,
+   MemoryEvent,
+   Message,
+   NewArchitectReview,
+@@ -53,12 +55,11 @@ export type {
+   OverlapPolicy,
+   ReviewDecision,
+   RunHistory,
++  ScheduleAgentMode,
++  ScheduleStatus,
+   ScheduledTask,
+-  ScheduledTaskStatus,
+   Session,
+   TaskExecution,
+-  TaskExecutionStatus,
+-  TriggerType,
+   Workflow,
+   WorkflowEvent,
+   WorkflowExecution,
+diff --git a/packages/core/src/db/migrations/0003_scheduled_tasks.sql b/packages/core/src/db/migrations/0003_scheduled_tasks.sql
+index 418a57b..f6ea828 100644
+--- a/packages/core/src/db/migrations/0003_scheduled_tasks.sql
++++ b/packages/core/src/db/migrations/0003_scheduled_tasks.sql
+@@ -1,4 +1,8 @@
+--- Scheduled task definitions
++-- Migration: 0003_scheduled_tasks
++-- Adds tables for the agent task scheduler: scheduled_tasks holds the
++-- recurring/one-shot schedule definitions, task_executions records each
++-- run (cron or manual) for history/audit purposes.
++
+ CREATE TABLE IF NOT EXISTS scheduled_tasks (
+   id              TEXT    PRIMARY KEY,
+   name            TEXT    NOT NULL UNIQUE,
+@@ -24,7 +28,6 @@ CREATE TABLE IF NOT EXISTS scheduled_tasks (
+ CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_status ON scheduled_tasks(status);
+ CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_next_run ON scheduled_tasks(next_run_at);
+ 
+--- Execution history
+ CREATE TABLE IF NOT EXISTS task_executions (
+   id              TEXT    PRIMARY KEY,
+   task_id         TEXT    NOT NULL REFERENCES scheduled_tasks(id) ON DELETE CASCADE,
+diff --git a/packages/core/src/db/models.ts b/packages/core/src/db/models.ts
+index 95284c6..016fae5 100644
+--- a/packages/core/src/db/models.ts
++++ b/packages/core/src/db/models.ts
+@@ -100,19 +100,34 @@ export type NewRunHistory = InferInsertModel<typeof runHistory>;
+ export type ClientState = InferSelectModel<typeof clientState>;
+ export type NewClientState = InferInsertModel<typeof clientState>;
+ 
+-// ── Scheduled Tasks ───────────────────────────────────────────────────────────
++// ── Scheduled Tasks ──────────────────────────────────────────────────────────
+ 
++/** Row as returned by SELECT on scheduled_tasks. */
+ export type ScheduledTask = InferSelectModel<typeof scheduledTasks>;
++
++/** Row shape for INSERT into scheduled_tasks. */
+ export type NewScheduledTask = InferInsertModel<typeof scheduledTasks>;
+ 
+-export type ScheduledTaskStatus = 'active' | 'paused' | 'deleted';
++/** Lifecycle status for a scheduled task definition. */
++export type ScheduleStatus = 'active' | 'paused' | 'deleted';
++
++/** Agent routing mode for a scheduled task. */
++export type ScheduleAgentMode = 'orchestrate' | 'direct' | 'code';
++
++/** Overlap policy when a task fires while a previous run is still running. */
+ export type OverlapPolicy = 'skip' | 'queue' | 'allow';
+ 
++/** Row as returned by SELECT on task_executions. */
+ export type TaskExecution = InferSelectModel<typeof taskExecutions>;
++
++/** Row shape for INSERT into task_executions. */
+ export type NewTaskExecution = InferInsertModel<typeof taskExecutions>;
+ 
+-export type TaskExecutionStatus = 'running' | 'completed' | 'failed' | 'timeout' | 'skipped';
+-export type TriggerType = 'cron' | 'manual';
++/** Lifecycle status of a single task execution. */
++export type ExecutionStatus = 'running' | 'completed' | 'failed' | 'timeout' | 'skipped';
++
++/** How an execution was triggered (cron tick or manual API trigger). */
++export type ExecutionTriggerType = 'cron' | 'manual';
+ 
+ // ── Composite helpers ─────────────────────────────────────────────────────────
+ 
+diff --git a/packages/core/src/db/schema.ts b/packages/core/src/db/schema.ts
+index b94ffbc..5afa0a3 100644
+--- a/packages/core/src/db/schema.ts
++++ b/packages/core/src/db/schema.ts
+@@ -308,17 +308,31 @@ export const clientState = sqliteTable(
+ 
+ // ── Scheduled Tasks ──────────────────────────────────────────────────────────
+ 
++/**
++ * Persisted schedule definitions for recurring/one-time agent task execution.
++ * Mounted in-process by the gateway's SchedulerService at startup; survives
++ * restarts via this table.
++ */
+ export const scheduledTasks = sqliteTable('scheduled_tasks', {
+   id: text('id').primaryKey(),
+   name: text('name').notNull().unique(),
+   description: text('description').notNull().default(''),
+   cronExpr: text('cron_expr').notNull(),
+   prompt: text('prompt').notNull(),
+-  agentMode: text('agent_mode').$type<'orchestrate' | 'direct' | 'code'>().notNull().default('orchestrate'),
++  agentMode: text('agent_mode')
++    .$type<'orchestrate' | 'direct' | 'code'>()
++    .notNull()
++    .default('orchestrate'),
+   sessionId: text('session_id').notNull().default('default'),
+-  status: text('status').$type<'active' | 'paused' | 'deleted'>().notNull().default('active'),
++  status: text('status')
++    .$type<'active' | 'paused' | 'deleted'>()
++    .notNull()
++    .default('active'),
+   timezone: text('timezone').notNull().default('UTC'),
+-  overlapPolicy: text('overlap_policy').$type<'skip' | 'queue' | 'allow'>().notNull().default('skip'),
++  overlapPolicy: text('overlap_policy')
++    .$type<'skip' | 'queue' | 'allow'>()
++    .notNull()
++    .default('skip'),
+   maxRetries: integer('max_retries').notNull().default(0),
+   timeoutSec: integer('timeout_sec').notNull().default(0),
+   createdAt: text('created_at').notNull(),
+@@ -330,13 +344,22 @@ export const scheduledTasks = sqliteTable('scheduled_tasks', {
+   runAt: text('run_at'),
+ });
+ 
++/** Execution history for scheduled tasks. */
+ export const taskExecutions = sqliteTable('task_executions', {
+   id: text('id').primaryKey(),
+-  taskId: text('task_id').notNull().references(() => scheduledTasks.id, { onDelete: 'cascade' }),
+-  status: text('status').$type<'running' | 'completed' | 'failed' | 'timeout' | 'skipped'>().notNull().default('running'),
++  taskId: text('task_id')
++    .notNull()
++    .references(() => scheduledTasks.id, { onDelete: 'cascade' }),
++  status: text('status')
++    .$type<'running' | 'completed' | 'failed' | 'timeout' | 'skipped'>()
++    .notNull()
++    .default('running'),
+   startedAt: text('started_at').notNull(),
+   completedAt: text('completed_at'),
+   durationSec: real('duration_sec'),
+   error: text('error'),
+-  triggerType: text('trigger_type').$type<'cron' | 'manual'>().notNull().default('cron'),
++  triggerType: text('trigger_type')
++    .$type<'cron' | 'manual'>()
++    .notNull()
++    .default('cron'),
+ });
+diff --git a/packages/core/src/index.ts b/packages/core/src/index.ts
+index 25feeca..fa7d233 100644
+--- a/packages/core/src/index.ts
++++ b/packages/core/src/index.ts
+@@ -140,6 +140,8 @@ export type {
+   CodingSessionStatus,
+   CodingSessionWithExecutions,
+   Event,
++  ExecutionStatus,
++  ExecutionTriggerType,
+   MemoryEvent as DbMemoryEvent,
+   Message,
+   NewArchitectReview,
+@@ -159,12 +161,11 @@ export type {
+   OverlapPolicy,
+   ReviewDecision,
+   RunHistory,
++  ScheduleAgentMode,
++  ScheduleStatus,
+   ScheduledTask,
+-  ScheduledTaskStatus,
+   Session,
+   TaskExecution,
+-  TaskExecutionStatus,
+-  TriggerType,
+   Workflow,
+   WorkflowEvent,
+   WorkflowExecution,
+diff --git a/packages/gateway/src/__tests__/scheduler.test.ts b/packages/gateway/src/__tests__/scheduler.test.ts
+new file mode 100644
+index 0000000..6275469
+--- /dev/null
++++ b/packages/gateway/src/__tests__/scheduler.test.ts
+@@ -0,0 +1,546 @@
++/**
++ * @module __tests__/scheduler
++ * Unit tests for SchedulerService — covers CRUD lifecycle, overlap policy,
++ * one-shot auto-pause, restart recovery, and broadcast wiring. Uses an
++ * in-memory SQLite db (via getDb with a tmp path) and a fake MainAgent.
++ */
++
++import { describe, it, expect, beforeEach, afterEach } from 'vitest';
++import { mkdtempSync, rmSync } from 'node:fs';
++import { tmpdir } from 'node:os';
++import { join } from 'node:path';
++import { closeDb, getDb, scheduledTasks, taskExecutions } from '@orionomega/core';
++import { eq } from 'drizzle-orm';
++import { SchedulerService } from '../scheduler.js';
++import type { ServerMessage } from '../types.js';
++
++// ── Fakes ────────────────────────────────────────────────────────────────────
++
++type AgentBehavior = (prompt: string) => Promise<void>;
++
++function makeFakeAgent(behavior?: AgentBehavior) {
++  const calls: string[] = [];
++  const agent = {
++    async handleMessage(prompt: string): Promise<void> {
++      calls.push(prompt);
++      if (behavior) await behavior(prompt);
++    },
++  };
++  return { agent, calls };
++}
++
++function makeFakeWs() {
++  const broadcasts: ServerMessage[] = [];
++  const ws = {
++    broadcast(message: ServerMessage): void {
++      broadcasts.push(message);
++    },
++  };
++  return { ws, broadcasts };
++}
++
++let originalHome: string | undefined;
++
++// ── Test helpers ─────────────────────────────────────────────────────────────
++
++/**
++ * Override $HOME so getDb() (called without args by SchedulerService internals)
++ * resolves to ~/.orionomega/omega.db inside an isolated tmp dir.
++ */
++function setupDb(): string {
++  const homeDir = mkdtempSync(join(tmpdir(), 'orion-sched-home-'));
++  originalHome = process.env.HOME;
++  process.env.HOME = homeDir;
++  closeDb();
++  // First call seeds the singleton at the tmp HOME path.
++  getDb();
++  return homeDir;
++}
++
++function teardownDb(homeDir: string): void {
++  closeDb();
++  if (originalHome === undefined) delete process.env.HOME;
++  else process.env.HOME = originalHome;
++  try {
++    rmSync(homeDir, { recursive: true, force: true });
++  } catch { /* ignore */ }
++}
++
++// ── Tests ────────────────────────────────────────────────────────────────────
++
++describe('SchedulerService — CRUD', () => {
++  let dbPath: string;
++  let scheduler: SchedulerService;
++  let agentCalls: string[];
++
++  beforeEach(() => {
++    dbPath = setupDb();
++    const { agent, calls } = makeFakeAgent();
++    const { ws } = makeFakeWs();
++    agentCalls = calls;
++    scheduler = new SchedulerService(agent, ws);
++    scheduler.start();
++  });
++
++  afterEach(() => {
++    scheduler.stop();
++    teardownDb(dbPath);
++  });
++
++  it('constructor falls back to UTC when given an invalid defaultTimezone', () => {
++    const { agent } = makeFakeAgent();
++    const { ws } = makeFakeWs();
++    const s = new SchedulerService(agent, ws, { defaultTimezone: 'Mars/Olympus_Mons' });
++    expect(s.options.defaultTimezone).toBe('UTC');
++  });
++
++  it('createTask rejects an invalid cron expression at the service layer', () => {
++    expect(() => scheduler.createTask({
++      name: 'bad-cron', cronExpr: 'totally garbage', prompt: 'p',
++    })).toThrow(/Invalid cron expression/);
++    expect(scheduler.listTasks()).toHaveLength(0);
++  });
++
++  it('createTask rejects an invalid IANA timezone at the service layer', () => {
++    expect(() => scheduler.createTask({
++      name: 'bad-tz', cronExpr: '0 9 * * *', prompt: 'p',
++      timezone: 'Mars/Olympus_Mons',
++    })).toThrow(/Invalid timezone/);
++    expect(scheduler.listTasks()).toHaveLength(0);
++  });
++
++  it('updateTask rejects invalid cron and leaves the row intact', () => {
++    const created = scheduler.createTask({
++      name: 'rt', cronExpr: '0 9 * * *', prompt: 'p',
++    });
++    expect(() => scheduler.updateTask(created.id, { cronExpr: 'broken' }))
++      .toThrow(/Invalid cron expression/);
++    const after = scheduler.getTask(created.id);
++    expect(after?.cronExpr).toBe('0 9 * * *');
++  });
++
++  it('createTask persists a row and returns it with nextRunAt populated', () => {
++    const task = scheduler.createTask({
++      name: 'morning-report',
++      cronExpr: '0 9 * * *',
++      prompt: 'Generate morning report',
++    });
++    expect(task.id).toBeTruthy();
++    expect(task.name).toBe('morning-report');
++    expect(task.status).toBe('active');
++    expect(task.nextRunAt).toBeTruthy();
++    expect(scheduler.listTasks()).toHaveLength(1);
++  });
++
++  it('updateTask remounts the cron job when cronExpr changes', () => {
++    const task = scheduler.createTask({
++      name: 'a', cronExpr: '0 9 * * *', prompt: 'x',
++    });
++    const oldNext = task.nextRunAt;
++    const updated = scheduler.updateTask(task.id, { cronExpr: '0 10 * * *' });
++    expect(updated.cronExpr).toBe('0 10 * * *');
++    expect(updated.nextRunAt).not.toBe(oldNext);
++  });
++
++  it('deleteTask soft-deletes (status=deleted) and excludes from listTasks', () => {
++    const task = scheduler.createTask({ name: 'b', cronExpr: '0 9 * * *', prompt: 'x' });
++    scheduler.deleteTask(task.id);
++    expect(scheduler.listTasks()).toHaveLength(0);
++    // Row still in DB with status=deleted
++    const db = getDb();
++    const row = db.select().from(scheduledTasks).where(eq(scheduledTasks.id, task.id)).get();
++    expect(row?.status).toBe('deleted');
++  });
++
++  it('pauseTask and resumeTask toggle status and unmount/remount the cron job', () => {
++    const task = scheduler.createTask({ name: 'c', cronExpr: '0 9 * * *', prompt: 'x' });
++    const paused = scheduler.pauseTask(task.id);
++    expect(paused.status).toBe('paused');
++    const resumed = scheduler.resumeTask(task.id);
++    expect(resumed.status).toBe('active');
++    expect(resumed.nextRunAt).toBeTruthy();
++  });
++
++  it('throws on missing task for update/pause/resume/delete', () => {
++    expect(() => scheduler.updateTask('nope', { name: 'x' })).toThrow(/not found/);
++    expect(() => scheduler.pauseTask('nope')).toThrow(/not found/);
++    expect(() => scheduler.resumeTask('nope')).toThrow(/not found/);
++    expect(() => scheduler.deleteTask('nope')).toThrow(/not found/);
++  });
++
++  it('describeCron returns a human-readable string for valid expressions', () => {
++    const desc = scheduler.describeCron('0 9 * * *');
++    expect(desc.toLowerCase()).toContain('9');
++  });
++
++  it('describeCron returns "Invalid expression" for invalid input', () => {
++    const desc = scheduler.describeCron('not-a-cron');
++    expect(desc).toBe('Invalid expression');
++  });
++
++  it('agent is not called by CRUD operations alone', () => {
++    scheduler.createTask({ name: 'd', cronExpr: '0 9 * * *', prompt: 'p' });
++    expect(agentCalls).toHaveLength(0);
++  });
++});
++
++describe('SchedulerService — execution', () => {
++  let dbPath: string;
++
++  beforeEach(() => { dbPath = setupDb(); });
++  afterEach(() => { teardownDb(dbPath); });
++
++  it('triggerTask invokes agent.handleMessage with the task prompt', async () => {
++    const { agent, calls } = makeFakeAgent();
++    const { ws, broadcasts } = makeFakeWs();
++    const scheduler = new SchedulerService(agent, ws);
++    scheduler.start();
++
++    const task = scheduler.createTask({
++      name: 'e', cronExpr: '0 9 * * *', prompt: 'Hello scheduler',
++    });
++    scheduler.triggerTask(task.id);
++
++    // triggerTask is fire-and-forget; await microtasks.
++    await new Promise((r) => setTimeout(r, 30));
++
++    expect(calls).toContain('Hello scheduler');
++    expect(broadcasts.some((m) => m.type === 'schedule_triggered')).toBe(true);
++    expect(broadcasts.some((m) => m.type === 'schedule_execution_complete')).toBe(true);
++
++    const completed = broadcasts.find((m) => m.type === 'schedule_execution_complete');
++    expect(completed?.scheduleExecutionComplete?.status).toBe('completed');
++
++    scheduler.stop();
++  });
++
++  it('records a failed execution when the agent throws', async () => {
++    const { agent } = makeFakeAgent(async () => {
++      throw new Error('boom');
++    });
++    const { ws, broadcasts } = makeFakeWs();
++    const scheduler = new SchedulerService(agent, ws);
++    scheduler.start();
++
++    const task = scheduler.createTask({ name: 'f', cronExpr: '0 9 * * *', prompt: 'p' });
++    scheduler.triggerTask(task.id);
++    await new Promise((r) => setTimeout(r, 30));
++
++    const executions = scheduler.getExecutions(task.id);
++    expect(executions).toHaveLength(1);
++    expect(executions[0]!.status).toBe('failed');
++    expect(executions[0]!.error).toContain('boom');
++
++    const complete = broadcasts.find((m) => m.type === 'schedule_execution_complete');
++    expect(complete?.scheduleExecutionComplete?.status).toBe('failed');
++
++    scheduler.stop();
++  });
++
++  it('skip overlap policy records a skipped execution and does not call the agent', async () => {
++    let resolveFirst: (() => void) | null = null;
++    const { agent, calls } = makeFakeAgent(
++      () => new Promise((resolve) => { resolveFirst = resolve; }),
++    );
++    const { ws } = makeFakeWs();
++    const scheduler = new SchedulerService(agent, ws);
++    scheduler.start();
++
++    const task = scheduler.createTask({
++      name: 'g', cronExpr: '0 9 * * *', prompt: 'p', overlapPolicy: 'skip',
++    });
++
++    scheduler.triggerTask(task.id);
++    await new Promise((r) => setTimeout(r, 10));
++    // First execution is in flight; trigger again
++    scheduler.triggerTask(task.id);
++    await new Promise((r) => setTimeout(r, 10));
++
++    expect(calls).toHaveLength(1);
++    const executions = scheduler.getExecutions(task.id);
++    expect(executions.some((e) => e.status === 'skipped')).toBe(true);
++
++    resolveFirst?.();
++    await new Promise((r) => setTimeout(r, 30));
++
++    scheduler.stop();
++  });
++
++  it('one-shot task (runAt) auto-pauses after first execution', async () => {
++    const { agent } = makeFakeAgent();
++    const { ws } = makeFakeWs();
++    const scheduler = new SchedulerService(agent, ws);
++    scheduler.start();
++
++    const task = scheduler.createTask({
++      name: 'h', cronExpr: '0 9 * * *', prompt: 'one-shot',
++      runAt: new Date(Date.now() + 60_000).toISOString(),
++    });
++    scheduler.triggerTask(task.id);
++    await new Promise((r) => setTimeout(r, 30));
++
++    const after = scheduler.getTask(task.id);
++    expect(after?.status).toBe('paused');
++
++    scheduler.stop();
++  });
++
++  it('marks stale running executions as failed on start (restart recovery)', () => {
++    const { agent } = makeFakeAgent();
++    const { ws } = makeFakeWs();
++    const scheduler = new SchedulerService(agent, ws);
++    scheduler.start();
++
++    const task = scheduler.createTask({ name: 'i', cronExpr: '0 9 * * *', prompt: 'p' });
++    scheduler.stop();
++
++    // Simulate a leftover 'running' row from a prior process
++    const db = getDb();
++    db.insert(taskExecutions).values({
++      id: 'leftover-1',
++      taskId: task.id,
++      status: 'running',
++      startedAt: new Date().toISOString(),
++      triggerType: 'cron',
++    }).run();
++
++    const scheduler2 = new SchedulerService(agent, ws);
++    scheduler2.start();
++
++    const row = db
++      .select()
++      .from(taskExecutions)
++      .where(eq(taskExecutions.id, 'leftover-1'))
++      .get();
++    expect(row?.status).toBe('failed');
++    expect(row?.error).toContain('restarted');
++
++    scheduler2.stop();
++  });
++
++  it('start is idempotent', () => {
++    const { agent } = makeFakeAgent();
++    const { ws } = makeFakeWs();
++    const scheduler = new SchedulerService(agent, ws);
++    scheduler.start();
++    scheduler.start();
++    expect(scheduler.listTasks()).toHaveLength(0);
++    scheduler.stop();
++  });
++});
++
++describe('SchedulerService — live config + concurrency', () => {
++  let dbPath: string;
++
++  beforeEach(() => { dbPath = setupDb(); });
++  afterEach(() => { teardownDb(dbPath); });
++
++  it('uses the latest prompt at fire time, even when updated after mount', async () => {
++    const { agent, calls } = makeFakeAgent();
++    const { ws } = makeFakeWs();
++    const scheduler = new SchedulerService(agent, ws);
++    scheduler.start();
++
++    const task = scheduler.createTask({
++      name: 'live', cronExpr: '0 9 * * *', prompt: 'old prompt',
++    });
++    // Update only fields that should NOT trigger remount but MUST be honored
++    // on the next fire (this is the regression covered by the code review).
++    scheduler.updateTask(task.id, { prompt: 'new prompt' });
++    scheduler.triggerTask(task.id);
++    await new Promise((r) => setTimeout(r, 30));
++
++    expect(calls).toEqual(['new prompt']);
++    scheduler.stop();
++  });
++
++  it('runCount uses an atomic increment (multiple runs accumulate correctly)', async () => {
++    const { agent } = makeFakeAgent();
++    const { ws } = makeFakeWs();
++    // minIntervalSec: 0 disables the throttle so we can fire back-to-back.
++    const scheduler = new SchedulerService(agent, ws, { minIntervalSec: 0 });
++    scheduler.start();
++
++    const task = scheduler.createTask({
++      name: 'rc', cronExpr: '0 9 * * *', prompt: 'p',
++    });
++
++    scheduler.triggerTask(task.id);
++    await new Promise((r) => setTimeout(r, 20));
++    scheduler.triggerTask(task.id);
++    await new Promise((r) => setTimeout(r, 20));
++    scheduler.triggerTask(task.id);
++    await new Promise((r) => setTimeout(r, 20));
++
++    const after = scheduler.getTask(task.id);
++    expect(after?.runCount).toBe(3);
++    scheduler.stop();
++  });
++
++  it('schedule_execution_complete WS payload includes the updated task row', async () => {
++    const { agent } = makeFakeAgent();
++    const { ws, broadcasts } = makeFakeWs();
++    const scheduler = new SchedulerService(agent, ws, { minIntervalSec: 0 });
++    scheduler.start();
++
++    const task = scheduler.createTask({
++      name: 'wsmeta', cronExpr: '0 9 * * *', prompt: 'p',
++    });
++    scheduler.triggerTask(task.id);
++    await new Promise((r) => setTimeout(r, 30));
++
++    const complete = broadcasts.find((m) => m.type === 'schedule_execution_complete');
++    expect(complete?.scheduleExecutionComplete?.task).toBeDefined();
++    expect(complete?.scheduleExecutionComplete?.task?.id).toBe(task.id);
++    expect(complete?.scheduleExecutionComplete?.task?.runCount).toBe(1);
++    expect(complete?.scheduleExecutionComplete?.task?.lastStatus).toBe('completed');
++    scheduler.stop();
++  });
++
++  it('honors maxConcurrent: 1 by recording a skipped execution when capacity is reached', async () => {
++    let resolveFirst: (() => void) | null = null;
++    const { agent, calls } = makeFakeAgent(
++      () => new Promise((resolve) => { resolveFirst = resolve; }),
++    );
++    const { ws } = makeFakeWs();
++    const scheduler = new SchedulerService(agent, ws, {
++      maxConcurrent: 1,
++      minIntervalSec: 0,
++    });
++    scheduler.start();
++
++    const taskA = scheduler.createTask({ name: 'a', cronExpr: '0 9 * * *', prompt: 'pa' });
++    const taskB = scheduler.createTask({ name: 'b', cronExpr: '0 9 * * *', prompt: 'pb' });
++
++    scheduler.triggerTask(taskA.id);
++    await new Promise((r) => setTimeout(r, 10));
++    scheduler.triggerTask(taskB.id);
++    await new Promise((r) => setTimeout(r, 10));
++
++    expect(calls).toEqual(['pa']);
++    const skipped = scheduler.getExecutions(taskB.id);
++    expect(skipped[0]?.status).toBe('skipped');
++    expect(skipped[0]?.error).toContain('maxConcurrent');
++
++    resolveFirst?.();
++    await new Promise((r) => setTimeout(r, 30));
++    scheduler.stop();
++  });
++
++  it('cron-fired ticks honor overlapPolicy=allow (no croner protect interference)', async () => {
++    // Regression: previously the cron jobs were created with `protect: true`,
++    // which suppresses overrun at the engine layer and silently overrides the
++    // service's overlap policy. With protect removed, two cron-fired ticks
++    // back-to-back on the same task with overlapPolicy='allow' must both run.
++    const inFlight: Array<() => void> = [];
++    const { agent, calls } = makeFakeAgent(
++      () => new Promise<void>((resolve) => { inFlight.push(resolve); }),
++    );
++    const { ws } = makeFakeWs();
++    const scheduler = new SchedulerService(agent, ws, {
++      maxConcurrent: 5,
++      minIntervalSec: 0,
++    });
++    scheduler.start();
++
++    const task = scheduler.createTask({
++      name: 'cron-allow', cronExpr: '0 9 * * *', prompt: 'p',
++      overlapPolicy: 'allow',
++    });
++
++    // Reach into the private jobs map to fire actual cron callbacks via
++    // croner's .trigger() — this is the path that protect: true used to block.
++    const job = (scheduler as unknown as { jobs: Map<string, { trigger: () => void }> })
++      .jobs.get(task.id);
++    expect(job).toBeDefined();
++    job!.trigger();
++    await new Promise((r) => setTimeout(r, 5));
++    job!.trigger();
++    await new Promise((r) => setTimeout(r, 15));
++
++    expect(calls).toHaveLength(2);
++    const execs = scheduler.getExecutions(task.id);
++    const skipped = execs.filter((e) => e.status === 'skipped');
++    expect(skipped).toHaveLength(0);
++
++    inFlight.forEach((r) => r());
++    await new Promise((r) => setTimeout(r, 20));
++    scheduler.stop();
++  });
++
++  it('maxConcurrent counts in-flight executions (not unique task ids) under overlapPolicy=allow', async () => {
++    // Regression: previously `running` was a Set keyed by taskId, so two
++    // simultaneous runs of the SAME task only counted as 1 toward the cap.
++    const inFlight: Array<() => void> = [];
++    const { agent, calls } = makeFakeAgent(
++      () => new Promise<void>((resolve) => { inFlight.push(resolve); }),
++    );
++    const { ws } = makeFakeWs();
++    const scheduler = new SchedulerService(agent, ws, {
++      maxConcurrent: 2,
++      minIntervalSec: 0,
++    });
++    scheduler.start();
++
++    const task = scheduler.createTask({
++      name: 'allow', cronExpr: '0 9 * * *', prompt: 'p',
++      overlapPolicy: 'allow',
++    });
++
++    // Fire three times. First two should run concurrently; third must be
++    // skipped because in-flight count (2) hit the cap.
++    scheduler.triggerTask(task.id);
++    await new Promise((r) => setTimeout(r, 5));
++    scheduler.triggerTask(task.id);
++    await new Promise((r) => setTimeout(r, 5));
++    scheduler.triggerTask(task.id);
++    await new Promise((r) => setTimeout(r, 10));
++
++    expect(calls).toHaveLength(2);
++    const execs = scheduler.getExecutions(task.id);
++    const skipped = execs.filter((e) => e.status === 'skipped');
++    expect(skipped).toHaveLength(1);
++    expect(skipped[0]?.error).toContain('maxConcurrent');
++
++    // Cleanup: drain in-flight runs before stopping the scheduler.
++    inFlight.forEach((r) => r());
++    await new Promise((r) => setTimeout(r, 20));
++    scheduler.stop();
++  });
++
++  it('honors minIntervalSec by recording a skipped execution within the window', async () => {
++    const { agent, calls } = makeFakeAgent();
++    const { ws } = makeFakeWs();
++    const scheduler = new SchedulerService(agent, ws, { minIntervalSec: 60 });
++    scheduler.start();
++
++    const task = scheduler.createTask({ name: 'rl', cronExpr: '0 9 * * *', prompt: 'p' });
++
++    scheduler.triggerTask(task.id);
++    await new Promise((r) => setTimeout(r, 30));
++    scheduler.triggerTask(task.id);
++    await new Promise((r) => setTimeout(r, 30));
++
++    expect(calls).toHaveLength(1);
++    const execs = scheduler.getExecutions(task.id);
++    const skipped = execs.find((e) => e.status === 'skipped');
++    expect(skipped?.error).toContain('minIntervalSec');
++    scheduler.stop();
++  });
++
++  it('cron tick is a no-op when the task was paused after mount', async () => {
++    const { agent, calls } = makeFakeAgent();
++    const { ws } = makeFakeWs();
++    const scheduler = new SchedulerService(agent, ws, { minIntervalSec: 0 });
++    scheduler.start();
++
++    const task = scheduler.createTask({ name: 'pz', cronExpr: '0 9 * * *', prompt: 'p' });
++    scheduler.pauseTask(task.id);
++
++    // Manual trigger still fires (manual is exempt from status check).
++    scheduler.triggerTask(task.id);
++    await new Promise((r) => setTimeout(r, 30));
++    expect(calls).toHaveLength(1);
++    scheduler.stop();
++  });
++});
+diff --git a/packages/gateway/src/__tests__/schedules-api.test.ts b/packages/gateway/src/__tests__/schedules-api.test.ts
+new file mode 100644
+index 0000000..ae66f23
+--- /dev/null
++++ b/packages/gateway/src/__tests__/schedules-api.test.ts
+@@ -0,0 +1,336 @@
++/**
++ * @module __tests__/schedules-api
++ * Integration tests for the /api/schedules HTTP routes — exercises the
++ * handler functions directly with mocked req/res, verifying status codes,
++ * Zod validation, and SchedulerService delegation.
++ */
++
++import { describe, it, expect, beforeEach, afterEach } from 'vitest';
++import { mkdtempSync, rmSync } from 'node:fs';
++import { tmpdir } from 'node:os';
++import { join } from 'node:path';
++import { closeDb, getDb } from '@orionomega/core';
++import { SchedulerService } from '../scheduler.js';
++import {
++  handleListSchedules,
++  handleCreateSchedule,
++  handleGetSchedule,
++  handleUpdateSchedule,
++  handleDeleteSchedule,
++  handlePauseSchedule,
++  handleResumeSchedule,
++  handleTriggerSchedule,
++  handleGetExecutions,
++  handleDescribeCron,
++} from '../routes/schedules.js';
++import {
++  createMockGetReq,
++  createMockPostReq,
++  createMockRes,
++} from '../routes/__tests__/test-utils.js';
++import type { GatewayConfig } from '../types.js';
++
++// ── Fixtures ─────────────────────────────────────────────────────────────────
++
++function noopAgent() {
++  return { handleMessage: async () => {} };
++}
++
++function noopWs() {
++  return { broadcast: () => {} };
++}
++
++function makeConfig(): GatewayConfig {
++  return {
++    auth: { mode: 'none', keyHash: '' },
++    cors: { origins: ['*'] },
++  } as unknown as GatewayConfig;
++}
++
++let originalHome: string | undefined;
++
++// ── Tests ────────────────────────────────────────────────────────────────────
++
++describe('schedules routes', () => {
++  let homeDir: string;
++  let scheduler: SchedulerService;
++  let config: GatewayConfig;
++
++  beforeEach(() => {
++    homeDir = mkdtempSync(join(tmpdir(), 'orion-sched-api-home-'));
++    originalHome = process.env.HOME;
++    process.env.HOME = homeDir;
++    closeDb();
++    getDb();
++    scheduler = new SchedulerService(noopAgent(), noopWs());
++    scheduler.start();
++    config = makeConfig();
++  });
++
++  afterEach(() => {
++    scheduler.stop();
++    closeDb();
++    if (originalHome === undefined) delete process.env.HOME;
++    else process.env.HOME = originalHome;
++    try { rmSync(homeDir, { recursive: true, force: true }); } catch { /* ignore */ }
++  });
++
++  it('GET /api/schedules returns empty list initially', () => {
++    const req = createMockGetReq('/api/schedules');
++    const { mock, res } = createMockRes();
++    handleListSchedules(req, res, scheduler, config);
++    expect(mock.statusCode).toBe(200);
++    expect(JSON.parse(mock.body)).toEqual({ tasks: [] });
++  });
++
++  it('POST /api/schedules with valid body creates a task', async () => {
++    const body = JSON.stringify({
++      name: 'test', cronExpr: '0 9 * * *', prompt: 'do thing',
++    });
++    const req = createMockPostReq('/api/schedules', body);
++    const { mock, res } = createMockRes();
++    await handleCreateSchedule(req, res, scheduler, config);
++    expect(mock.statusCode).toBe(201);
++    const parsed = JSON.parse(mock.body) as { task: { id: string; name: string } };
++    expect(parsed.task.name).toBe('test');
++    expect(parsed.task.id).toBeTruthy();
++  });
++
++  it('POST /api/schedules with invalid cron returns 400', async () => {
++    const body = JSON.stringify({
++      name: 'bad', cronExpr: 'not-cron', prompt: 'p',
++    });
++    const req = createMockPostReq('/api/schedules', body);
++    const { mock, res } = createMockRes();
++    await handleCreateSchedule(req, res, scheduler, config);
++    expect(mock.statusCode).toBe(400);
++    expect(mock.body).toContain('Validation failed');
++  });
++
++  it('POST /api/schedules with a past runAt returns 400', async () => {
++    const past = new Date(Date.now() - 60_000).toISOString();
++    const body = JSON.stringify({
++      name: 'past-once', cronExpr: '0 9 * * *', prompt: 'p', runAt: past,
++    });
++    const req = createMockPostReq('/api/schedules', body);
++    const { mock, res } = createMockRes();
++    await handleCreateSchedule(req, res, scheduler, config);
++    expect(mock.statusCode).toBe(400);
++    expect(mock.body).toMatch(/runAt must be a future timestamp/i);
++  });
++
++  it('POST /api/schedules with invalid IANA timezone returns 400 (not 500)', async () => {
++    const body = JSON.stringify({
++      name: 'tz-bad', cronExpr: '0 9 * * *', prompt: 'p',
++      timezone: 'Mars/Olympus_Mons',
++    });
++    const req = createMockPostReq('/api/schedules', body);
++    const { mock, res } = createMockRes();
++    await handleCreateSchedule(req, res, scheduler, config);
++    expect(mock.statusCode).toBe(400);
++    expect(mock.body).toMatch(/Invalid timezone/i);
++  });
++
++  it('POST /api/schedules with missing fields returns 400', async () => {
++    const body = JSON.stringify({ cronExpr: '0 9 * * *' });
++    const req = createMockPostReq('/api/schedules', body);
++    const { mock, res } = createMockRes();
++    await handleCreateSchedule(req, res, scheduler, config);
++    expect(mock.statusCode).toBe(400);
++  });
++
++  it('GET /api/schedules/:id returns 404 for unknown id', () => {
++    const req = createMockGetReq('/api/schedules/nope');
++    const { mock, res } = createMockRes();
++    handleGetSchedule(req, res, 'nope', scheduler, config);
++    expect(mock.statusCode).toBe(404);
++  });
++
++  it('GET /api/schedules/:id returns the task for known id', () => {
++    const created = scheduler.createTask({
++      name: 'x', cronExpr: '0 9 * * *', prompt: 'p',
++    });
++    const req = createMockGetReq(`/api/schedules/${created.id}`);
++    const { mock, res } = createMockRes();
++    handleGetSchedule(req, res, created.id, scheduler, config);
++    expect(mock.statusCode).toBe(200);
++    const parsed = JSON.parse(mock.body) as { task: { id: string } };
++    expect(parsed.task.id).toBe(created.id);
++  });
++
++  it('PUT /api/schedules/:id updates the task', async () => {
++    const created = scheduler.createTask({
++      name: 'orig', cronExpr: '0 9 * * *', prompt: 'p',
++    });
++    const body = JSON.stringify({ name: 'renamed' });
++    const req = createMockPostReq(`/api/schedules/${created.id}`, body);
++    const { mock, res } = createMockRes();
++    await handleUpdateSchedule(req, res, created.id, scheduler, config);
++    expect(mock.statusCode).toBe(200);
++    expect(JSON.parse(mock.body).task.name).toBe('renamed');
++  });
++
++  it('DELETE /api/schedules/:id soft-deletes the task', () => {
++    const created = scheduler.createTask({
++      name: 'to-delete', cronExpr: '0 9 * * *', prompt: 'p',
++    });
++    const req = createMockGetReq(`/api/schedules/${created.id}`);
++    const { mock, res } = createMockRes();
++    handleDeleteSchedule(req, res, created.id, scheduler, config);
++    expect(mock.statusCode).toBe(200);
++    expect(scheduler.listTasks()).toHaveLength(0);
++  });
++
++  it('POST /api/schedules/:id/pause toggles status to paused', () => {
++    const created = scheduler.createTask({ name: 'p1', cronExpr: '0 9 * * *', prompt: 'p' });
++    const req = createMockPostReq(`/api/schedules/${created.id}/pause`, '');
++    const { mock, res } = createMockRes();
++    handlePauseSchedule(req, res, created.id, scheduler, config);
++    expect(mock.statusCode).toBe(200);
++    expect(JSON.parse(mock.body).task.status).toBe('paused');
++  });
++
++  it('POST /api/schedules/:id/resume reactivates a paused task', () => {
++    const created = scheduler.createTask({ name: 'r1', cronExpr: '0 9 * * *', prompt: 'p' });
++    scheduler.pauseTask(created.id);
++    const req = createMockPostReq(`/api/schedules/${created.id}/resume`, '');
++    const { mock, res } = createMockRes();
++    handleResumeSchedule(req, res, created.id, scheduler, config);
++    expect(mock.statusCode).toBe(200);
++    expect(JSON.parse(mock.body).task.status).toBe('active');
++  });
++
++  it('POST /api/schedules/:id/trigger returns 202', () => {
++    const created = scheduler.createTask({ name: 't1', cronExpr: '0 9 * * *', prompt: 'p' });
++    const req = createMockPostReq(`/api/schedules/${created.id}/trigger`, '');
++    const { mock, res } = createMockRes();
++    handleTriggerSchedule(req, res, created.id, scheduler, config);
++    expect(mock.statusCode).toBe(202);
++  });
++
++  it('GET /api/schedules/:id/executions returns empty list initially', () => {
++    const created = scheduler.createTask({ name: 'e1', cronExpr: '0 9 * * *', prompt: 'p' });
++    const req = createMockGetReq(`/api/schedules/${created.id}/executions`);
++    const { mock, res } = createMockRes();
++    const url = new URL(`http://localhost/api/schedules/${created.id}/executions`);
++    handleGetExecutions(req, res, created.id, url, scheduler, config);
++    expect(mock.statusCode).toBe(200);
++    expect(JSON.parse(mock.body)).toEqual({ executions: [] });
++  });
++
++  it('GET /api/schedules/:id/executions returns 404 for unknown id', () => {
++    const req = createMockGetReq('/api/schedules/does-not-exist/executions');
++    const { mock, res } = createMockRes();
++    const url = new URL('http://localhost/api/schedules/does-not-exist/executions');
++    handleGetExecutions(req, res, 'does-not-exist', url, scheduler, config);
++    expect(mock.statusCode).toBe(404);
++    expect(mock.body).toMatch(/not found/i);
++  });
++
++  it('GET /api/schedules/describe-cron parses expressions', () => {
++    const url = new URL('http://localhost/api/schedules/describe-cron?expr=0+9+*+*+*');
++    const req = createMockGetReq('/api/schedules/describe-cron?expr=0+9+*+*+*');
++    const { mock, res } = createMockRes();
++    handleDescribeCron(req, res, url, scheduler, config);
++    expect(mock.statusCode).toBe(200);
++    const parsed = JSON.parse(mock.body) as { description: string; valid: boolean };
++    expect(parsed.valid).toBe(true);
++    expect(parsed.description.toLowerCase()).toContain('9');
++  });
++
++  it('GET /api/schedules/describe-cron returns valid:false for invalid expr', () => {
++    const url = new URL('http://localhost/api/schedules/describe-cron?expr=garbage');
++    const req = createMockGetReq('/api/schedules/describe-cron?expr=garbage');
++    const { mock, res } = createMockRes();
++    handleDescribeCron(req, res, url, scheduler, config);
++    expect(mock.statusCode).toBe(200);
++    expect(JSON.parse(mock.body).valid).toBe(false);
++  });
++
++  it('GET /api/schedules/describe-cron requires expr query param', () => {
++    const url = new URL('http://localhost/api/schedules/describe-cron');
++    const req = createMockGetReq('/api/schedules/describe-cron');
++    const { mock, res } = createMockRes();
++    handleDescribeCron(req, res, url, scheduler, config);
++    expect(mock.statusCode).toBe(400);
++  });
++
++  // ── Round-2 review fixes: validation tightening + 409 conflict ──
++
++  it('POST /api/schedules rejects names with disallowed characters (regex)', async () => {
++    const body = JSON.stringify({
++      name: 'bad name!', cronExpr: '0 9 * * *', prompt: 'p',
++    });
++    const req = createMockPostReq('/api/schedules', body);
++    const { mock, res } = createMockRes();
++    await handleCreateSchedule(req, res, scheduler, config);
++    expect(mock.statusCode).toBe(400);
++    expect(mock.body).toContain('Validation failed');
++  });
++
++  it('POST /api/schedules rejects names that start with a non-alphanumeric character', async () => {
++    const body = JSON.stringify({
++      name: ' leading-space', cronExpr: '0 9 * * *', prompt: 'p',
++    });
++    const req = createMockPostReq('/api/schedules', body);
++    const { mock, res } = createMockRes();
++    await handleCreateSchedule(req, res, scheduler, config);
++    expect(mock.statusCode).toBe(400);
++  });
++
++  it('POST /api/schedules accepts names with letters, digits, spaces, hyphens, underscores', async () => {
++    const body = JSON.stringify({
++      name: 'My Daily-Task_1', cronExpr: '0 9 * * *', prompt: 'p',
++    });
++    const req = createMockPostReq('/api/schedules', body);
++    const { mock, res } = createMockRes();
++    await handleCreateSchedule(req, res, scheduler, config);
++    expect(mock.statusCode).toBe(201);
++  });
++
++  it('POST /api/schedules rejects maxRetries above 5', async () => {
++    const body = JSON.stringify({
++      name: 'retries', cronExpr: '0 9 * * *', prompt: 'p', maxRetries: 6,
++    });
++    const req = createMockPostReq('/api/schedules', body);
++    const { mock, res } = createMockRes();
++    await handleCreateSchedule(req, res, scheduler, config);
++    expect(mock.statusCode).toBe(400);
++  });
++
++  it('POST /api/schedules rejects timeoutSec above 7200', async () => {
++    const body = JSON.stringify({
++      name: 'timeout', cronExpr: '0 9 * * *', prompt: 'p', timeoutSec: 7201,
++    });
++    const req = createMockPostReq('/api/schedules', body);
++    const { mock, res } = createMockRes();
++    await handleCreateSchedule(req, res, scheduler, config);
++    expect(mock.statusCode).toBe(400);
++  });
++
++  it('POST /api/schedules rejects timezone strings longer than 64 chars', async () => {
++    const body = JSON.stringify({
++      name: 'tz', cronExpr: '0 9 * * *', prompt: 'p', timezone: 'A'.repeat(65),
++    });
++    const req = createMockPostReq('/api/schedules', body);
++    const { mock, res } = createMockRes();
++    await handleCreateSchedule(req, res, scheduler, config);
++    expect(mock.statusCode).toBe(400);
++  });
++
++  it('POST /api/schedules returns 409 Conflict on duplicate name', async () => {
++    const body = JSON.stringify({
++      name: 'dup', cronExpr: '0 9 * * *', prompt: 'p',
++    });
++    const first = createMockPostReq('/api/schedules', body);
++    const firstRes = createMockRes();
++    await handleCreateSchedule(first, firstRes.res, scheduler, config);
++    expect(firstRes.mock.statusCode).toBe(201);
++
++    const second = createMockPostReq('/api/schedules', body);
++    const secondRes = createMockRes();
++    await handleCreateSchedule(second, secondRes.res, scheduler, config);
++    expect(secondRes.mock.statusCode).toBe(409);
++    expect(secondRes.mock.body).toContain('already exists');
++  });
++});
+diff --git a/packages/gateway/src/routes/schedules.ts b/packages/gateway/src/routes/schedules.ts
+index b8c5ac1..b70273f 100644
+--- a/packages/gateway/src/routes/schedules.ts
++++ b/packages/gateway/src/routes/schedules.ts
+@@ -1,349 +1,338 @@
+ /**
+  * @module routes/schedules
+- * REST API handlers for scheduled task management.
++ * REST endpoints for managing scheduled tasks (cron jobs).
+  *
+- * Routes (all prefixed with /api/schedules):
+- *   GET    /                    — list all non-deleted tasks
+- *   POST   /                    — create a new task
+- *   GET    /:id                 — get task by ID
+- *   PUT    /:id                 — update task
+- *   DELETE /:id                 — soft-delete task
+- *   POST   /:id/pause           — pause task
+- *   POST   /:id/resume          — resume task
+- *   POST   /:id/trigger         — manual trigger
+- *   GET    /:id/executions      — execution history
+- *   GET    /cron/describe       — describe cron expression (?expr=...)
++ * All handlers expect a `SchedulerService` instance — when scheduling is
++ * disabled in config the calling site in `server.ts` should NOT register
++ * these routes, so service availability is the caller's responsibility.
+  */
+ 
+ import type { IncomingMessage, ServerResponse } from 'node:http';
++import { z } from 'zod';
++import { Cron } from 'croner';
++import type { SchedulerService } from '../scheduler.js';
++import type { GatewayConfig } from '../types.js';
+ import { readBody } from './utils.js';
+-import type { SchedulerService, CreateScheduleInput, UpdateScheduleInput } from '../scheduler.js';
++import { checkAuth } from './auth-utils.js';
++
++// ── Schemas ──────────────────────────────────────────────────────────────────
++
++const cronExprSchema = z
++  .string()
++  .min(1, 'cronExpr is required')
++  .refine(
++    (expr) => {
++      try {
++        new Cron(expr, { paused: true }, () => {});
++        return true;
++      } catch {
++        return false;
++      }
++    },
++    { message: 'Invalid cron expression' },
++  );
++
++const isoDateTimeSchema = z
++  .string()
++  .refine((s) => !Number.isNaN(Date.parse(s)), {
++    message: 'Must be a valid ISO 8601 datetime',
++  });
+ 
+-// ── Helpers ───────────────────────────────────────────────────────────────────
+-
+-function jsonOk(res: ServerResponse, body: unknown, status = 200): void {
+-  const payload = JSON.stringify(body);
++/**
++ * Spec rule: name must start alphanumeric and contain only letters, digits,
++ * spaces, hyphens, and underscores. Bound length to 100 chars.
++ */
++const nameSchema = z
++  .string()
++  .min(1)
++  .max(100)
++  .regex(
++    /^[a-zA-Z0-9][a-zA-Z0-9 _-]*$/,
++    'Name must start with alphanumeric and contain only letters, digits, spaces, hyphens, or underscores',
++  );
++
++const timezoneSchema = z.string().min(1).max(64);
++
++const createScheduleSchema = z.object({
++  name: nameSchema,
++  description: z.string().max(500).optional(),
++  cronExpr: cronExprSchema,
++  prompt: z.string().min(1).max(10_000),
++  agentMode: z.enum(['orchestrate', 'direct', 'code']).optional(),
++  sessionId: z.string().max(128).optional(),
++  timezone: timezoneSchema.optional(),
++  overlapPolicy: z.enum(['skip', 'queue', 'allow']).optional(),
++  maxRetries: z.number().int().min(0).max(5).optional(),
++  timeoutSec: z.number().int().min(0).max(7_200).optional(),
++  // One-shot run timestamp must be in the future at submission time so that
++  // a stale form (or replayed request) cannot enqueue a task that would
++  // immediately fire the moment it's mounted. Parity with the UI guard.
++  runAt: isoDateTimeSchema
++    .refine((iso) => Date.parse(iso) > Date.now(), {
++      message: 'runAt must be a future timestamp',
++    })
++    .optional(),
++});
++
++const updateScheduleSchema = z.object({
++  name: nameSchema.optional(),
++  description: z.string().max(500).optional(),
++  cronExpr: cronExprSchema.optional(),
++  prompt: z.string().min(1).max(10_000).optional(),
++  agentMode: z.enum(['orchestrate', 'direct', 'code']).optional(),
++  timezone: timezoneSchema.optional(),
++  overlapPolicy: z.enum(['skip', 'queue', 'allow']).optional(),
++  maxRetries: z.number().int().min(0).max(5).optional(),
++  timeoutSec: z.number().int().min(0).max(7_200).optional(),
++});
++
++// ── Helpers ──────────────────────────────────────────────────────────────────
++
++function jsonResponse(res: ServerResponse, status: number, body: unknown): void {
+   res.writeHead(status, { 'Content-Type': 'application/json' });
+-  res.end(payload);
++  res.end(JSON.stringify(body));
+ }
+ 
+-function jsonError(res: ServerResponse, status: number, message: string): void {
+-  res.writeHead(status, { 'Content-Type': 'application/json' });
+-  res.end(JSON.stringify({ error: message }));
++function errorResponse(res: ServerResponse, status: number, message: string, details?: unknown): void {
++  jsonResponse(res, status, details === undefined ? { error: message } : { error: message, details });
+ }
+ 
+-function parseIntParam(params: URLSearchParams, key: string, defaultVal: number): number {
+-  const raw = params.get(key);
+-  if (!raw) return defaultVal;
+-  const n = parseInt(raw, 10);
+-  return isNaN(n) ? defaultVal : n;
++async function readJsonBody<T>(
++  req: IncomingMessage,
++  schema: z.ZodSchema<T>,
++): Promise<{ ok: true; data: T } | { ok: false; status: number; message: string; details?: unknown }> {
++  try {
++    const body = await readBody(req);
++    let parsed: unknown;
++    try {
++      parsed = JSON.parse(body);
++    } catch {
++      return { ok: false, status: 400, message: 'Invalid JSON body' };
++    }
++    const result = schema.safeParse(parsed);
++    if (!result.success) {
++      return {
++        ok: false,
++        status: 400,
++        message: 'Validation failed',
++        details: result.error.flatten(),
++      };
++    }
++    return { ok: true, data: result.data };
++  } catch (err) {
++    const message = err instanceof Error ? err.message : 'Failed to read body';
++    const status = message.includes('exceeds limit') ? 413 : 400;
++    return { ok: false, status, message };
++  }
+ }
+ 
+ // ── Handlers ─────────────────────────────────────────────────────────────────
+ 
+-/**
+- * GET /api/schedules — list all non-deleted tasks.
+- */
+-export async function handleListSchedules(
+-  _req: IncomingMessage,
+-  res: ServerResponse,
+-  scheduler: SchedulerService,
+-): Promise<void> {
+-  const tasks = await scheduler.listTasks();
+-  jsonOk(res, { tasks });
+-}
+-
+-/**
+- * POST /api/schedules — create a new scheduled task.
+- *
+- * Body: { name, cronExpr, prompt, description?, agentMode?, timezone?,
+- *         overlapPolicy?, maxRetries?, timeoutSec?, runAt? }
+- */
+-export async function handleCreateSchedule(
++export function handleListSchedules(
+   req: IncomingMessage,
+   res: ServerResponse,
+   scheduler: SchedulerService,
+-): Promise<void> {
+-  let raw: string;
+-  try {
+-    raw = await readBody(req, 32768);
+-  } catch {
+-    jsonError(res, 413, 'Request body too large');
+-    return;
+-  }
+-
+-  let body: unknown;
+-  try {
+-    body = JSON.parse(raw);
+-  } catch {
+-    jsonError(res, 400, 'Invalid JSON body');
+-    return;
+-  }
+-
+-  if (typeof body !== 'object' || body === null) {
+-    jsonError(res, 400, 'Body must be a JSON object');
+-    return;
+-  }
+-
+-  const b = body as Record<string, unknown>;
+-
+-  if (typeof b.name !== 'string' || !b.name.trim()) {
+-    jsonError(res, 400, 'Field "name" is required and must be a non-empty string');
+-    return;
+-  }
+-  if (typeof b.cronExpr !== 'string' || !b.cronExpr.trim()) {
+-    jsonError(res, 400, 'Field "cronExpr" is required and must be a non-empty string');
+-    return;
+-  }
+-  if (typeof b.prompt !== 'string' || !b.prompt.trim()) {
+-    jsonError(res, 400, 'Field "prompt" is required and must be a non-empty string');
+-    return;
+-  }
+-
+-  const validAgentModes = new Set(['orchestrate', 'direct', 'code']);
+-  if (b.agentMode !== undefined && !validAgentModes.has(b.agentMode as string)) {
+-    jsonError(res, 400, 'Field "agentMode" must be "orchestrate", "direct", or "code"');
+-    return;
+-  }
+-  const validOverlapPolicies = new Set(['skip', 'queue', 'allow']);
+-  if (b.overlapPolicy !== undefined && !validOverlapPolicies.has(b.overlapPolicy as string)) {
+-    jsonError(res, 400, 'Field "overlapPolicy" must be "skip", "queue", or "allow"');
+-    return;
+-  }
+-
+-  const input: CreateScheduleInput = {
+-    name: (b.name as string).trim(),
+-    cronExpr: (b.cronExpr as string).trim(),
+-    prompt: (b.prompt as string).trim(),
+-    description: typeof b.description === 'string' ? b.description : undefined,
+-    agentMode: b.agentMode as CreateScheduleInput['agentMode'],
+-    sessionId: typeof b.sessionId === 'string' ? b.sessionId : undefined,
+-    timezone: typeof b.timezone === 'string' ? b.timezone : undefined,
+-    overlapPolicy: b.overlapPolicy as CreateScheduleInput['overlapPolicy'],
+-    maxRetries: typeof b.maxRetries === 'number' ? Math.max(0, b.maxRetries) : undefined,
+-    timeoutSec: typeof b.timeoutSec === 'number' ? Math.max(0, b.timeoutSec) : undefined,
+-    runAt: typeof b.runAt === 'string' ? b.runAt : undefined,
+-  };
+-
++  gatewayConfig: GatewayConfig,
++): void {
++  if (!checkAuth(req, res, gatewayConfig)) return;
+   try {
+-    const task = await scheduler.createTask(input);
+-    jsonOk(res, task, 201);
++    const tasks = scheduler.listTasks();
++    jsonResponse(res, 200, { tasks });
+   } catch (err) {
+-    const msg = err instanceof Error ? err.message : String(err);
+-    if (msg.toLowerCase().includes('unique') || msg.toLowerCase().includes('already exists')) {
+-      jsonError(res, 409, `A task with this name already exists`);
+-    } else if (msg.toLowerCase().includes('invalid cron')) {
+-      jsonError(res, 400, msg);
+-    } else {
+-      jsonError(res, 500, 'Failed to create task');
+-    }
++    errorResponse(res, 500, err instanceof Error ? err.message : 'Failed to list schedules');
+   }
+ }
+ 
+-/**
+- * GET /api/schedules/:id — get task by ID.
+- */
+-export async function handleGetSchedule(
+-  _req: IncomingMessage,
++export function handleGetSchedule(
++  req: IncomingMessage,
+   res: ServerResponse,
++  id: string,
+   scheduler: SchedulerService,
+-  taskId: string,
+-): Promise<void> {
+-  const task = await scheduler.getTask(taskId);
+-  if (!task || task.status === 'deleted') {
+-    jsonError(res, 404, 'Schedule not found');
++  gatewayConfig: GatewayConfig,
++): void {
++  if (!checkAuth(req, res, gatewayConfig)) return;
++  const task = scheduler.getTask(id);
++  if (!task) {
++    errorResponse(res, 404, `Schedule ${id} not found`);
+     return;
+   }
+-  jsonOk(res, task);
++  jsonResponse(res, 200, { task });
+ }
+ 
+-/**
+- * PUT /api/schedules/:id — update task fields.
+- *
+- * Body: { name?, cronExpr?, prompt?, description?, agentMode?, timezone?,
+- *         overlapPolicy?, maxRetries?, timeoutSec? }
+- */
+-export async function handleUpdateSchedule(
++export async function handleCreateSchedule(
+   req: IncomingMessage,
+   res: ServerResponse,
+   scheduler: SchedulerService,
+-  taskId: string,
++  gatewayConfig: GatewayConfig,
+ ): Promise<void> {
+-  let raw: string;
+-  try {
+-    raw = await readBody(req, 32768);
+-  } catch {
+-    jsonError(res, 413, 'Request body too large');
++  if (!checkAuth(req, res, gatewayConfig)) return;
++  const parsed = await readJsonBody(req, createScheduleSchema);
++  if (!parsed.ok) {
++    errorResponse(res, parsed.status, parsed.message, parsed.details);
+     return;
+   }
+-
+-  let body: unknown;
+   try {
+-    body = JSON.parse(raw);
+-  } catch {
+-    jsonError(res, 400, 'Invalid JSON body');
+-    return;
+-  }
+-
+-  if (typeof body !== 'object' || body === null) {
+-    jsonError(res, 400, 'Body must be a JSON object');
+-    return;
++    const task = scheduler.createTask(parsed.data);
++    jsonResponse(res, 201, { task });
++  } catch (err) {
++    const msg = err instanceof Error ? err.message : 'Failed to create schedule';
++    // Surface SQLite UNIQUE constraint violations on `name` as 409 Conflict.
++    if (/UNIQUE constraint failed/i.test(msg)) {
++      errorResponse(res, 409, `A schedule named "${parsed.data.name}" already exists`);
++      return;
++    }
++    // Service-layer fail-fast validation (cron / timezone) → 400, not 500.
++    if (/^Invalid (cron expression|timezone)/i.test(msg)) {
++      errorResponse(res, 400, msg);
++      return;
++    }
++    errorResponse(res, 500, msg);
+   }
++}
+ 
+-  const b = body as Record<string, unknown>;
+-
+-  const validAgentModes = new Set(['orchestrate', 'direct', 'code']);
+-  if (b.agentMode !== undefined && !validAgentModes.has(b.agentMode as string)) {
+-    jsonError(res, 400, 'Field "agentMode" must be "orchestrate", "direct", or "code"');
+-    return;
+-  }
+-  const validOverlapPolicies = new Set(['skip', 'queue', 'allow']);
+-  if (b.overlapPolicy !== undefined && !validOverlapPolicies.has(b.overlapPolicy as string)) {
+-    jsonError(res, 400, 'Field "overlapPolicy" must be "skip", "queue", or "allow"');
++export async function handleUpdateSchedule(
++  req: IncomingMessage,
++  res: ServerResponse,
++  id: string,
++  scheduler: SchedulerService,
++  gatewayConfig: GatewayConfig,
++): Promise<void> {
++  if (!checkAuth(req, res, gatewayConfig)) return;
++  const parsed = await readJsonBody(req, updateScheduleSchema);
++  if (!parsed.ok) {
++    errorResponse(res, parsed.status, parsed.message, parsed.details);
+     return;
+   }
+-
+-  const patch: UpdateScheduleInput = {
+-    ...(typeof b.name === 'string' && { name: b.name.trim() }),
+-    ...(typeof b.description === 'string' && { description: b.description }),
+-    ...(typeof b.cronExpr === 'string' && { cronExpr: b.cronExpr.trim() }),
+-    ...(typeof b.prompt === 'string' && { prompt: b.prompt.trim() }),
+-    ...(b.agentMode !== undefined && { agentMode: b.agentMode as UpdateScheduleInput['agentMode'] }),
+-    ...(typeof b.timezone === 'string' && { timezone: b.timezone }),
+-    ...(b.overlapPolicy !== undefined && { overlapPolicy: b.overlapPolicy as UpdateScheduleInput['overlapPolicy'] }),
+-    ...(typeof b.maxRetries === 'number' && { maxRetries: Math.max(0, b.maxRetries) }),
+-    ...(typeof b.timeoutSec === 'number' && { timeoutSec: Math.max(0, b.timeoutSec) }),
+-  };
+-
+   try {
+-    const updated = await scheduler.updateTask(taskId, patch);
+-    if (!updated) {
+-      jsonError(res, 404, 'Schedule not found');
++    const task = scheduler.updateTask(id, parsed.data);
++    jsonResponse(res, 200, { task });
++  } catch (err) {
++    const msg = err instanceof Error ? err.message : 'Failed to update schedule';
++    if (/UNIQUE constraint failed/i.test(msg)) {
++      errorResponse(res, 409, `A schedule named "${parsed.data.name}" already exists`);
+       return;
+     }
+-    jsonOk(res, updated);
+-  } catch (err) {
+-    const msg = err instanceof Error ? err.message : String(err);
+-    if (msg.toLowerCase().includes('invalid cron')) {
+-      jsonError(res, 400, msg);
+-    } else {
+-      jsonError(res, 500, 'Failed to update task');
++    if (/^Invalid (cron expression|timezone)/i.test(msg)) {
++      errorResponse(res, 400, msg);
++      return;
+     }
++    errorResponse(res, msg.includes('not found') ? 404 : 500, msg);
+   }
+ }
+ 
+-/**
+- * DELETE /api/schedules/:id — soft-delete task.
+- */
+-export async function handleDeleteSchedule(
+-  _req: IncomingMessage,
++export function handleDeleteSchedule(
++  req: IncomingMessage,
+   res: ServerResponse,
++  id: string,
+   scheduler: SchedulerService,
+-  taskId: string,
+-): Promise<void> {
+-  const deleted = await scheduler.deleteTask(taskId);
+-  if (!deleted) {
+-    jsonError(res, 404, 'Schedule not found');
+-    return;
++  gatewayConfig: GatewayConfig,
++): void {
++  if (!checkAuth(req, res, gatewayConfig)) return;
++  try {
++    scheduler.deleteTask(id);
++    jsonResponse(res, 200, { ok: true });
++  } catch (err) {
++    const msg = err instanceof Error ? err.message : 'Failed to delete schedule';
++    errorResponse(res, msg.includes('not found') ? 404 : 500, msg);
+   }
+-  jsonOk(res, { deleted: true, taskId });
+ }
+ 
+-/**
+- * POST /api/schedules/:id/pause — pause an active task.
+- */
+-export async function handlePauseSchedule(
+-  _req: IncomingMessage,
++export function handlePauseSchedule(
++  req: IncomingMessage,
+   res: ServerResponse,
++  id: string,
+   scheduler: SchedulerService,
+-  taskId: string,
+-): Promise<void> {
+-  const task = await scheduler.pauseTask(taskId);
+-  if (!task) {
+-    jsonError(res, 404, 'Schedule not found or not active');
+-    return;
++  gatewayConfig: GatewayConfig,
++): void {
++  if (!checkAuth(req, res, gatewayConfig)) return;
++  try {
++    const task = scheduler.pauseTask(id);
++    jsonResponse(res, 200, { task });
++  } catch (err) {
++    const msg = err instanceof Error ? err.message : 'Failed to pause schedule';
++    errorResponse(res, msg.includes('not found') ? 404 : 500, msg);
+   }
+-  jsonOk(res, task);
+ }
+ 
+-/**
+- * POST /api/schedules/:id/resume — resume a paused task.
+- */
+-export async function handleResumeSchedule(
+-  _req: IncomingMessage,
++export function handleResumeSchedule(
++  req: IncomingMessage,
+   res: ServerResponse,
++  id: string,
+   scheduler: SchedulerService,
+-  taskId: string,
+-): Promise<void> {
+-  const task = await scheduler.resumeTask(taskId);
+-  if (!task) {
+-    jsonError(res, 404, 'Schedule not found or not paused');
+-    return;
++  gatewayConfig: GatewayConfig,
++): void {
++  if (!checkAuth(req, res, gatewayConfig)) return;
++  try {
++    const task = scheduler.resumeTask(id);
++    jsonResponse(res, 200, { task });
++  } catch (err) {
++    const msg = err instanceof Error ? err.message : 'Failed to resume schedule';
++    errorResponse(res, msg.includes('not found') ? 404 : 500, msg);
+   }
+-  jsonOk(res, task);
+ }
+ 
+-/**
+- * POST /api/schedules/:id/trigger — manual fire-and-forget execution.
+- */
+ export function handleTriggerSchedule(
+-  _req: IncomingMessage,
++  req: IncomingMessage,
+   res: ServerResponse,
++  id: string,
+   scheduler: SchedulerService,
+-  taskId: string,
++  gatewayConfig: GatewayConfig,
+ ): void {
+-  scheduler.triggerTask(taskId);
+-  jsonOk(res, { triggered: true, taskId });
++  if (!checkAuth(req, res, gatewayConfig)) return;
++  try {
++    scheduler.triggerTask(id);
++    jsonResponse(res, 202, { ok: true, message: 'Triggered' });
++  } catch (err) {
++    const msg = err instanceof Error ? err.message : 'Failed to trigger schedule';
++    errorResponse(res, msg.includes('not found') ? 404 : 500, msg);
++  }
+ }
+ 
+-/**
+- * GET /api/schedules/:id/executions — execution history.
+- *
+- * Query parameters:
+- *   limit (optional) — max executions (default 50, max 200)
+- */
+-export async function handleGetExecutions(
++export function handleGetExecutions(
+   req: IncomingMessage,
+   res: ServerResponse,
++  id: string,
++  url: URL,
+   scheduler: SchedulerService,
+-  taskId: string,
+-): Promise<void> {
+-  const rawUrl = req.url ?? '/';
+-  const queryStr = rawUrl.split('?')[1] ?? '';
+-  const params = new URLSearchParams(queryStr);
+-  const limit = Math.min(parseIntParam(params, 'limit', 50), 200);
+-
+-  const task = await scheduler.getTask(taskId);
+-  if (!task || task.status === 'deleted') {
+-    jsonError(res, 404, 'Schedule not found');
++  gatewayConfig: GatewayConfig,
++): void {
++  if (!checkAuth(req, res, gatewayConfig)) return;
++  // Strict 404 for unknown schedule id (rather than returning an empty list,
++  // which masks typos and hides real client bugs).
++  if (!scheduler.getTask(id)) {
++    errorResponse(res, 404, `Schedule ${id} not found`);
+     return;
+   }
+-
+-  const executions = await scheduler.getExecutions(taskId, limit);
+-  jsonOk(res, { executions, taskId });
++  const limitRaw = url.searchParams.get('limit');
++  const limit = limitRaw ? Number.parseInt(limitRaw, 10) : 50;
++  try {
++    const executions = scheduler.getExecutions(id, Number.isFinite(limit) ? limit : 50);
++    jsonResponse(res, 200, { executions });
++  } catch (err) {
++    errorResponse(res, 500, err instanceof Error ? err.message : 'Failed to list executions');
++  }
+ }
+ 
+-/**
+- * GET /api/schedules/cron/describe — human-readable cron description.
+- *
+- * Query parameters:
+- *   expr (required) — cron expression to describe
+- */
+ export function handleDescribeCron(
+   req: IncomingMessage,
+   res: ServerResponse,
++  url: URL,
+   scheduler: SchedulerService,
++  gatewayConfig: GatewayConfig,
+ ): void {
+-  const rawUrl = req.url ?? '/';
+-  const queryStr = rawUrl.split('?')[1] ?? '';
+-  const params = new URLSearchParams(queryStr);
+-  const expr = params.get('expr');
+-
++  if (!checkAuth(req, res, gatewayConfig)) return;
++  const expr = url.searchParams.get('expr');
+   if (!expr) {
+-    jsonError(res, 400, 'Missing required query parameter: expr');
++    errorResponse(res, 400, 'Missing required query parameter: expr');
++    return;
++  }
++  // Validate first via Cron — describeCron returns "Invalid expression" on failure.
++  try {
++    new Cron(expr, { paused: true }, () => {});
++  } catch {
++    jsonResponse(res, 200, { description: 'Invalid expression', valid: false });
+     return;
+   }
+-
+   const description = scheduler.describeCron(expr);
+-  jsonOk(res, { expr, description });
++  jsonResponse(res, 200, { description, valid: true });
+ }
+diff --git a/packages/gateway/src/scheduler.ts b/packages/gateway/src/scheduler.ts
+index 2bfe15c..9ea4495 100644
+--- a/packages/gateway/src/scheduler.ts
++++ b/packages/gateway/src/scheduler.ts
+@@ -1,141 +1,218 @@
+ /**
+  * @module scheduler
+- * Core scheduling engine for OrionOmega task automation.
++ * In-process cron scheduler for the OrionOmega gateway.
+  *
+- * Manages cron-based and one-shot scheduled tasks, persists state to SQLite,
+- * and routes task execution through MainAgent.
++ * Owns a map of `croner` jobs that fire scheduled prompts through
++ * `MainAgent.handleMessage()` exactly the same way an interactive chat
++ * message would. Persists schedules and execution history in the unified
++ * SQLite DB so they survive gateway restarts.
++ *
++ * Single-process, in-memory; no distributed coordination. Restart recovery
++ * marks any in-flight execution rows from a prior process as failed before
++ * mounting fresh cron jobs.
+  */
+ 
++import { randomUUID } from 'node:crypto';
+ import { Cron } from 'croner';
+ import cronstrue from 'cronstrue';
+-import { randomUUID } from 'node:crypto';
+-import { eq, ne, desc } from 'drizzle-orm';
++import { desc, eq, ne, sql } from 'drizzle-orm';
+ import {
++  createLogger,
+   getDb,
+   scheduledTasks,
+   taskExecutions,
+-  createLogger,
+ } from '@orionomega/core';
+ import type {
++  MainAgent,
++  ScheduleAgentMode,
+   ScheduledTask,
+-  NewScheduledTask,
+   TaskExecution,
+-  TriggerType,
+ } from '@orionomega/core';
+-import type { MainAgent } from '@orionomega/core';
+ import type { WebSocketHandler } from './websocket.js';
+ 
+ const log = createLogger('scheduler');
+ 
+-// ── Input types ───────────────────────────────────────────────────────────────
++// ── Public input/output types ────────────────────────────────────────────────
+ 
++/** Subset of fields accepted when creating a new scheduled task. */
+ export interface CreateScheduleInput {
+   name: string;
+   description?: string;
+   cronExpr: string;
+   prompt: string;
+-  agentMode?: 'orchestrate' | 'direct' | 'code';
++  agentMode?: ScheduleAgentMode;
+   sessionId?: string;
+   timezone?: string;
+   overlapPolicy?: 'skip' | 'queue' | 'allow';
+   maxRetries?: number;
+   timeoutSec?: number;
++  /** ISO 8601 datetime for one-shot schedules. When set, task auto-pauses after first run. */
+   runAt?: string;
+ }
+ 
++/** Subset of fields accepted on update. All optional. */
+ export interface UpdateScheduleInput {
+   name?: string;
+   description?: string;
+   cronExpr?: string;
+   prompt?: string;
+-  agentMode?: 'orchestrate' | 'direct' | 'code';
++  agentMode?: ScheduleAgentMode;
+   timezone?: string;
+   overlapPolicy?: 'skip' | 'queue' | 'allow';
+   maxRetries?: number;
+   timeoutSec?: number;
+ }
+ 
+-// ── SchedulerService ──────────────────────────────────────────────────────────
++/** Runtime options for the scheduler engine, sourced from `scheduling:` config. */
++export interface SchedulerOptions {
++  /** Default IANA timezone applied to new schedules that don't specify one. */
++  defaultTimezone?: string;
++  /** Maximum scheduled-task executions allowed in flight across all tasks. */
++  maxConcurrent?: number;
++  /** Minimum seconds between consecutive executions of any single task. */
++  minIntervalSec?: number;
++}
++
++// ── Service ──────────────────────────────────────────────────────────────────
+ 
+ export class SchedulerService {
++  /** In-memory map of active cron jobs keyed by task ID. */
+   private jobs = new Map<string, Cron>();
+-  private running = new Set<string>();
++
++  /**
++   * Per-task execution count currently in flight. Used for both:
++   *   • overlap detection (`running.get(id) > 0`)
++   *   • global concurrency cap (sum of all values)
++   * A simple `Set<string>` would undercount when overlapPolicy='allow'
++   * lets the same task run more than once concurrently.
++   */
++  private running = new Map<string, number>();
++
++  /** Whether the service has been started (idempotent guard). */
++  private started = false;
++
++  /** Resolved scheduling options (defaults applied). */
++  readonly options: Required<SchedulerOptions>;
+ 
+   constructor(
+-    private mainAgent: MainAgent,
+-    private wsHandler: WebSocketHandler,
+-  ) {}
++    private readonly mainAgent: Pick<MainAgent, 'handleMessage'>,
++    private readonly wsHandler: Pick<WebSocketHandler, 'broadcast'>,
++    options: SchedulerOptions = {},
++  ) {
++    // Validate the configured default timezone up front. A bad value in
++    // gateway config (e.g. typo'd IANA name) would otherwise propagate into
++    // every task that relies on the default and silently fail to mount.
++    let defaultTz = options.defaultTimezone ?? 'UTC';
++    try {
++      new Intl.DateTimeFormat('en-US', { timeZone: defaultTz });
++    } catch {
++      log.warn(
++        `Invalid scheduling.defaultTimezone "${defaultTz}" in config; falling back to "UTC".`,
++      );
++      defaultTz = 'UTC';
++    }
++    this.options = {
++      defaultTimezone: defaultTz,
++      maxConcurrent: options.maxConcurrent ?? 3,
++      minIntervalSec: options.minIntervalSec ?? 60,
++    };
++  }
++
++  // ── Lifecycle ────────────────────────────────────────────────────────────
+ 
+   /**
+-   * Load active tasks from DB and mount cron jobs.
+-   * Also clears any stale 'running' executions left over from a crash.
++   * Load all active schedules from DB and register cron jobs.
++   * Marks any 'running' executions left over from a prior gateway session
++   * as failed before mounting jobs (so restart recovery is observable).
++   *
++   * Idempotent: calling twice is a no-op.
+    */
+-  async start(): Promise<void> {
++  start(): void {
++    if (this.started) return;
++    this.started = true;
++
+     const db = getDb();
+ 
+-    // Clear stale running executions from previous crash
+-    try {
+-      await db
+-        .update(taskExecutions)
+-        .set({ status: 'failed', error: 'Gateway restarted', completedAt: new Date().toISOString() })
+-        .where(eq(taskExecutions.status, 'running'));
+-    } catch (err) {
+-      log.warn('Failed to clear stale running executions', { error: (err as Error).message });
+-    }
++    // Mark any 'running' executions from a previous gateway session as failed
++    const now = new Date().toISOString();
++    db.update(taskExecutions)
++      .set({
++        status: 'failed',
++        error: 'Gateway restarted during execution',
++        completedAt: now,
++      })
++      .where(eq(taskExecutions.status, 'running'))
++      .run();
+ 
+-    // Load active tasks
+-    let tasks: ScheduledTask[] = [];
+-    try {
+-      tasks = await db
+-        .select()
+-        .from(scheduledTasks)
+-        .where(eq(scheduledTasks.status, 'active'));
+-    } catch (err) {
+-      log.error('Failed to load scheduled tasks from DB', { error: (err as Error).message });
+-      return;
+-    }
++    // Load and mount all active schedules
++    const tasks = db
++      .select()
++      .from(scheduledTasks)
++      .where(eq(scheduledTasks.status, 'active'))
++      .all();
+ 
+     for (const task of tasks) {
+       this.mountJob(task);
+     }
+-
+-    log.info(`Scheduler started — mounted ${tasks.length} task(s)`);
++    log.info(`Scheduler started — ${tasks.length} active task(s) loaded`);
+   }
+ 
+-  /** Stop all cron jobs. */
++  /** Stop all cron jobs. Called during graceful shutdown. */
+   stop(): void {
+     for (const [id, job] of this.jobs) {
+       try {
+         job.stop();
+-      } catch { /* ignore */ }
+-      this.jobs.delete(id);
++      } catch (err) {
++        log.debug(`Error stopping job ${id}`, {
++          error: err instanceof Error ? err.message : String(err),
++        });
++      }
+     }
++    this.jobs.clear();
++    this.running.clear();
++    this.started = false;
+     log.info('Scheduler stopped');
+   }
+ 
+-  /** Validate input, insert into DB, mount cron job, return created task. */
+-  async createTask(input: CreateScheduleInput): Promise<ScheduledTask> {
+-    // Validate cron expression
++  // ── CRUD ─────────────────────────────────────────────────────────────────
++
++  /**
++   * Validate a cron expression by attempting to construct a paused Cron.
++   * Throws with a stable error message on failure.
++   */
++  private static assertValidCron(expr: string): void {
+     try {
+-      const testJob = new Cron(input.cronExpr);
+-      testJob.stop();
++      new Cron(expr, { paused: true }, () => {});
+     } catch (err) {
+-      throw new Error(`Invalid cron expression: ${(err as Error).message}`);
++      const msg = err instanceof Error ? err.message : String(err);
++      throw new Error(`Invalid cron expression: ${msg}`);
+     }
++  }
+ 
++  /**
++   * Validate an IANA timezone string via Intl.DateTimeFormat. Throws on invalid.
++   */
++  private static assertValidTimezone(tz: string): void {
++    try {
++      // Will throw RangeError on invalid IANA name in modern Node.
++      new Intl.DateTimeFormat('en-US', { timeZone: tz });
++    } catch {
++      throw new Error(`Invalid timezone: ${tz}`);
++    }
++  }
++
++  createTask(input: CreateScheduleInput): ScheduledTask {
++    // Fail fast at the service layer so non-REST callers (e.g. CLI, tests,
++    // or future internal seeds) cannot persist an unmountable row that
++    // would silently never fire.
++    SchedulerService.assertValidCron(input.cronExpr);
++    if (input.timezone) SchedulerService.assertValidTimezone(input.timezone);
++
++    const db = getDb();
+     const now = new Date().toISOString();
+     const id = randomUUID();
+ 
+-    // Calculate nextRunAt
+-    let nextRunAt: string | null = null;
+-    try {
+-      const job = new Cron(input.cronExpr, { timezone: input.timezone ?? 'UTC' });
+-      const next = job.nextRun();
+-      nextRunAt = next ? next.toISOString() : null;
+-      job.stop();
+-    } catch { /* ignore — nextRunAt stays null */ }
+-
+-    const newTask: NewScheduledTask = {
++    const row: ScheduledTask = {
+       id,
+       name: input.name,
+       description: input.description ?? '',
+@@ -144,413 +221,453 @@ export class SchedulerService {
+       agentMode: input.agentMode ?? 'orchestrate',
+       sessionId: input.sessionId ?? 'default',
+       status: 'active',
+-      timezone: input.timezone ?? 'UTC',
++      timezone: input.timezone ?? this.options.defaultTimezone,
+       overlapPolicy: input.overlapPolicy ?? 'skip',
+       maxRetries: input.maxRetries ?? 0,
+       timeoutSec: input.timeoutSec ?? 0,
+       createdAt: now,
+       updatedAt: now,
+       lastRunAt: null,
+-      nextRunAt,
++      nextRunAt: null,
+       lastStatus: null,
+       runCount: 0,
+       runAt: input.runAt ?? null,
+     };
+ 
+-    const db = getDb();
+-    await db.insert(scheduledTasks).values(newTask);
+-
+-    const task = await this.getTask(id);
+-    if (!task) throw new Error('Task not found after insert');
++    db.insert(scheduledTasks).values(row).run();
++    this.mountJob(row);
+ 
+-    this.mountJob(task);
+-    log.info(`Task created: ${task.name} (${task.id})`);
+-    return task;
++    // Re-read so the returned row reflects any nextRunAt persisted by mountJob.
++    const persisted = this.getTask(id) ?? row;
++    log.info(`Created schedule: ${persisted.name} (${persisted.cronExpr})`);
++    return persisted;
+   }
+ 
+-  /** Get a task by ID. */
+-  async getTask(id: string): Promise<ScheduledTask | null> {
++  getTask(id: string): ScheduledTask | null {
+     const db = getDb();
+-    const rows = await db
++    const row = db
+       .select()
+       .from(scheduledTasks)
+-      .where(eq(scheduledTasks.id, id));
+-    return rows[0] ?? null;
++      .where(eq(scheduledTasks.id, id))
++      .get();
++    return row ?? null;
+   }
+ 
+-  /** List all non-deleted tasks. */
+-  async listTasks(): Promise<ScheduledTask[]> {
++  listTasks(): ScheduledTask[] {
+     const db = getDb();
+     return db
+       .select()
+       .from(scheduledTasks)
+-      .where(ne(scheduledTasks.status, 'deleted'));
++      .where(ne(scheduledTasks.status, 'deleted'))
++      .all();
+   }
+ 
+-  /** Update task fields, remount cron if schedule/timezone changed. */
+-  async updateTask(id: string, patch: UpdateScheduleInput): Promise<ScheduledTask | null> {
+-    const existing = await this.getTask(id);
+-    if (!existing || existing.status === 'deleted') return null;
+-
+-    // Validate new cron expression if provided
+-    if (patch.cronExpr) {
+-      try {
+-        const testJob = new Cron(patch.cronExpr);
+-        testJob.stop();
+-      } catch (err) {
+-        throw new Error(`Invalid cron expression: ${(err as Error).message}`);
+-      }
+-    }
+-
+-    const now = new Date().toISOString();
+-    const cronChanged = patch.cronExpr !== undefined || patch.timezone !== undefined;
++  updateTask(id: string, patch: UpdateScheduleInput): ScheduledTask {
++    const existing = this.getTask(id);
++    if (!existing) throw new Error(`Schedule ${id} not found`);
+ 
+-    // Recalculate nextRunAt if cron or timezone changed
+-    let nextRunAt = existing.nextRunAt;
+-    if (cronChanged) {
+-      try {
+-        const expr = patch.cronExpr ?? existing.cronExpr;
+-        const tz = patch.timezone ?? existing.timezone;
+-        const job = new Cron(expr, { timezone: tz });
+-        const next = job.nextRun();
+-        nextRunAt = next ? next.toISOString() : null;
+-        job.stop();
+-      } catch { /* keep existing nextRunAt */ }
+-    }
++    // Validate any fields that affect job mounting BEFORE we touch the row.
++    if (patch.cronExpr !== undefined) SchedulerService.assertValidCron(patch.cronExpr);
++    if (patch.timezone !== undefined) SchedulerService.assertValidTimezone(patch.timezone);
+ 
+     const db = getDb();
+-    await db
+-      .update(scheduledTasks)
+-      .set({
+-        ...(patch.name !== undefined && { name: patch.name }),
+-        ...(patch.description !== undefined && { description: patch.description }),
+-        ...(patch.cronExpr !== undefined && { cronExpr: patch.cronExpr }),
+-        ...(patch.prompt !== undefined && { prompt: patch.prompt }),
+-        ...(patch.agentMode !== undefined && { agentMode: patch.agentMode }),
+-        ...(patch.timezone !== undefined && { timezone: patch.timezone }),
+-        ...(patch.overlapPolicy !== undefined && { overlapPolicy: patch.overlapPolicy }),
+-        ...(patch.maxRetries !== undefined && { maxRetries: patch.maxRetries }),
+-        ...(patch.timeoutSec !== undefined && { timeoutSec: patch.timeoutSec }),
+-        ...(cronChanged && { nextRunAt }),
+-        updatedAt: now,
+-      })
+-      .where(eq(scheduledTasks.id, id));
+-
+-    const updated = await this.getTask(id);
+-    if (!updated) return null;
+-
+-    // Remount if cron or timezone changed and task is active
+-    if (cronChanged && updated.status === 'active') {
++    const updates: Record<string, unknown> = {
++      updatedAt: new Date().toISOString(),
++    };
++    if (patch.name !== undefined) updates.name = patch.name;
++    if (patch.description !== undefined) updates.description = patch.description;
++    if (patch.cronExpr !== undefined) updates.cronExpr = patch.cronExpr;
++    if (patch.prompt !== undefined) updates.prompt = patch.prompt;
++    if (patch.agentMode !== undefined) updates.agentMode = patch.agentMode;
++    if (patch.timezone !== undefined) updates.timezone = patch.timezone;
++    if (patch.overlapPolicy !== undefined) updates.overlapPolicy = patch.overlapPolicy;
++    if (patch.maxRetries !== undefined) updates.maxRetries = patch.maxRetries;
++    if (patch.timeoutSec !== undefined) updates.timeoutSec = patch.timeoutSec;
++
++    db.update(scheduledTasks).set(updates).where(eq(scheduledTasks.id, id)).run();
++
++    // If cron, timezone, or runAt changed, remount the job with fresh schedule
++    if (patch.cronExpr !== undefined || patch.timezone !== undefined) {
+       this.unmountJob(id);
+-      this.mountJob(updated);
++      const updated = this.getTask(id);
++      if (updated && updated.status === 'active') {
++        this.mountJob(updated);
++      }
+     }
+ 
+-    log.info(`Task updated: ${updated.name} (${id})`);
+-    return updated;
++    return this.getTask(id)!;
+   }
+ 
+-  /** Soft delete — sets status to 'deleted', unmounts job. */
+-  async deleteTask(id: string): Promise<boolean> {
+-    const existing = await this.getTask(id);
+-    if (!existing || existing.status === 'deleted') return false;
+-
++  deleteTask(id: string): void {
++    const existing = this.getTask(id);
++    if (!existing) throw new Error(`Schedule ${id} not found`);
+     this.unmountJob(id);
+-
+     const db = getDb();
+-    await db
+-      .update(scheduledTasks)
++    // Soft delete — preserves execution history rows
++    db.update(scheduledTasks)
+       .set({ status: 'deleted', updatedAt: new Date().toISOString() })
+-      .where(eq(scheduledTasks.id, id));
+-
+-    log.info(`Task deleted: ${id}`);
+-    return true;
++      .where(eq(scheduledTasks.id, id))
++      .run();
++    log.info(`Deleted schedule ${id} (${existing.name})`);
+   }
+ 
+-  /** Pause task — sets status to 'paused', unmounts job. */
+-  async pauseTask(id: string): Promise<ScheduledTask | null> {
+-    const existing = await this.getTask(id);
+-    if (!existing || existing.status !== 'active') return null;
+-
++  pauseTask(id: string): ScheduledTask {
++    const existing = this.getTask(id);
++    if (!existing) throw new Error(`Schedule ${id} not found`);
+     this.unmountJob(id);
+-
+     const db = getDb();
+-    await db
+-      .update(scheduledTasks)
++    db.update(scheduledTasks)
+       .set({ status: 'paused', updatedAt: new Date().toISOString() })
+-      .where(eq(scheduledTasks.id, id));
+-
+-    log.info(`Task paused: ${id}`);
+-    return this.getTask(id);
++      .where(eq(scheduledTasks.id, id))
++      .run();
++    log.info(`Paused schedule ${existing.name}`);
++    return this.getTask(id)!;
+   }
+ 
+-  /** Resume task — sets status to 'active', mounts job. */
+-  async resumeTask(id: string): Promise<ScheduledTask | null> {
+-    const existing = await this.getTask(id);
+-    if (!existing || existing.status !== 'paused') return null;
+-
++  resumeTask(id: string): ScheduledTask {
++    const existing = this.getTask(id);
++    if (!existing) throw new Error(`Schedule ${id} not found`);
+     const db = getDb();
+-    await db
+-      .update(scheduledTasks)
++    db.update(scheduledTasks)
+       .set({ status: 'active', updatedAt: new Date().toISOString() })
+-      .where(eq(scheduledTasks.id, id));
+-
+-    const updated = await this.getTask(id);
+-    if (!updated) return null;
+-
++      .where(eq(scheduledTasks.id, id))
++      .run();
++    const updated = this.getTask(id)!;
+     this.mountJob(updated);
+-    log.info(`Task resumed: ${id}`);
++    log.info(`Resumed schedule ${updated.name}`);
+     return updated;
+   }
+ 
+-  /** Fire-and-forget manual execution. */
++  /**
++   * Manually trigger a scheduled task immediately.
++   * Returns synchronously — execution is fire-and-forget.
++   */
+   triggerTask(id: string): void {
+-    this.getTask(id).then((task) => {
+-      if (!task || task.status === 'deleted') {
+-        log.warn(`Cannot trigger task — not found or deleted: ${id}`);
+-        return;
+-      }
+-      this.executeTask(task, 'manual').catch((err) => {
+-        log.error(`Manual trigger error for task ${id}`, { error: (err as Error).message });
++    const task = this.getTask(id);
++    if (!task) throw new Error(`Schedule ${id} not found`);
++
++    void this.executeTask(id, 'manual').catch((err) => {
++      log.error(`Manual trigger failed for ${task.name}`, {
++        error: err instanceof Error ? err.message : String(err),
+       });
+-    }).catch((err) => {
+-      log.error(`Failed to fetch task for manual trigger: ${id}`, { error: (err as Error).message });
+     });
+   }
+ 
+-  /** Get execution history for a task. */
+-  async getExecutions(taskId: string, limit = 50): Promise<TaskExecution[]> {
++  getExecutions(taskId: string, limit = 50): TaskExecution[] {
+     const db = getDb();
++    const safeLimit = Math.min(Math.max(1, limit), 200);
+     return db
+       .select()
+       .from(taskExecutions)
+       .where(eq(taskExecutions.taskId, taskId))
+       .orderBy(desc(taskExecutions.startedAt))
+-      .limit(limit);
++      .limit(safeLimit)
++      .all();
+   }
+ 
+-  /** Return human-readable description of a cron expression. */
++  /** Get human-readable description of a cron expression (uses cronstrue). */
+   describeCron(expr: string): string {
+     try {
+-      return cronstrue.toString(expr, { throwExceptionOnParseError: true });
++      return cronstrue.toString(expr, { verbose: true });
+     } catch {
+-      return 'Invalid cron expression';
++      return 'Invalid expression';
+     }
+   }
+ 
+-  // ── Private ─────────────────────────────────────────────────────────────────
++  // ── Internal: Cron Job Mounting ──────────────────────────────────────────
+ 
+-  /** Create and register a Cron instance for a task. */
+   private mountJob(task: ScheduledTask): void {
+-    if (this.jobs.has(task.id)) {
+-      this.unmountJob(task.id);
+-    }
++    if (this.jobs.has(task.id) || task.status !== 'active') return;
++
++    // For one-time tasks, use the runAt date string directly; croner accepts it.
++    const schedule = task.runAt ?? task.cronExpr;
++    // Capture only the ID — executeTask re-reads the latest row from DB so
++    // updates to prompt/agentMode/overlapPolicy/timeoutSec take effect on the
++    // next fire without remounting the job.
++    const taskId = task.id;
++    const taskName = task.name;
+ 
+     try {
+       const job = new Cron(
+-        task.cronExpr,
++        schedule,
+         {
+-          timezone: task.timezone,
+-          protect: true,
+-          catch: (err) => {
+-            log.error(`Cron catch handler for task ${task.id}`, {
++          timezone: task.timezone || this.options.defaultTimezone,
++          // NOTE: croner's `protect` option (overrun protection) is intentionally
++          // OMITTED. Setting it true would suppress every cron-triggered overlap
++          // at the engine layer, which directly contradicts overlapPolicy='allow'
++          // (and partially 'queue'). All overlap decisions are made in
++          // executeTask() — that's the single source of truth for policy.
++          catch: (err: unknown) => {
++            log.error(`Cron error for task ${taskId} (${taskName})`, {
+               error: err instanceof Error ? err.message : String(err),
+             });
+           },
+         },
+         () => {
+-          this.executeTask(task, 'cron').catch((err) => {
+-            log.error(`Execution error for task ${task.id}`, { error: (err as Error).message });
++          void this.executeTask(taskId, 'cron').catch((err) => {
++            log.error(`Execution error for task ${taskId}`, {
++              error: err instanceof Error ? err.message : String(err),
++            });
+           });
+         },
+       );
++
+       this.jobs.set(task.id, job);
+-      log.verbose(`Mounted cron job for task ${task.name} (${task.id}): ${task.cronExpr}`);
++
++      // Persist nextRunAt for the UI / introspection.
++      const nextRun = job.nextRun();
++      if (nextRun) {
++        const db = getDb();
++        db.update(scheduledTasks)
++          .set({ nextRunAt: nextRun.toISOString() })
++          .where(eq(scheduledTasks.id, task.id))
++          .run();
++      }
++
++      log.debug(`Mounted cron job for ${task.name}: ${schedule}`);
+     } catch (err) {
+-      log.error(`Failed to mount cron job for task ${task.id}`, { error: (err as Error).message });
++      log.error(`Failed to mount cron job for task ${task.id} (${task.name})`, {
++        error: err instanceof Error ? err.message : String(err),
++      });
+     }
+   }
+ 
+-  /** Stop and remove the cron job for a task. */
+   private unmountJob(id: string): void {
+     const job = this.jobs.get(id);
+     if (job) {
+-      try { job.stop(); } catch { /* ignore */ }
++      try {
++        job.stop();
++      } catch {
++        /* best-effort */
++      }
+       this.jobs.delete(id);
+     }
+   }
+ 
+-  /** Execute a task: record execution, call MainAgent, update state. */
+-  private async executeTask(task: ScheduledTask, triggerType: TriggerType): Promise<void> {
+-    // Overlap policy: skip if already running and policy is 'skip'
+-    if (this.running.has(task.id) && task.overlapPolicy === 'skip') {
+-      log.info(`Task ${task.id} skipped — already running (overlap policy: skip)`);
++  // ── Internal: Task Execution Pipeline ────────────────────────────────────
+ 
+-      // Record skipped execution
+-      const db = getDb();
+-      await db.insert(taskExecutions).values({
+-        id: randomUUID(),
+-        taskId: task.id,
+-        status: 'skipped',
+-        startedAt: new Date().toISOString(),
+-        completedAt: new Date().toISOString(),
+-        durationSec: 0,
+-        triggerType,
+-      });
++  private async executeTask(
++    taskIdInput: string,
++    triggerType: 'cron' | 'manual',
++  ): Promise<void> {
++    const db = getDb();
++
++    // ── Re-read latest task state ──
++    // Cron callbacks fire long after mountJob captured the task, so we always
++    // refetch by ID to honour live updates to prompt/agentMode/overlapPolicy/
++    // timeoutSec. If the row was deleted/paused since mounting, abort.
++    const task = this.getTask(taskIdInput);
++    if (!task) {
++      log.warn(`Skipping execution: task ${taskIdInput} no longer exists`);
++      return;
++    }
++    if (triggerType === 'cron' && task.status !== 'active') {
++      log.info(`Skipping cron tick for non-active task ${task.name} (${task.status})`);
+       return;
+     }
+ 
+-    const executionId = randomUUID();
+-    const startedAt = new Date().toISOString();
++    const recordSkip = (reason: string): void => {
++      const skippedAt = new Date().toISOString();
++      db.insert(taskExecutions)
++        .values({
++          id: randomUUID(),
++          taskId: task.id,
++          status: 'skipped',
++          startedAt: skippedAt,
++          completedAt: skippedAt,
++          durationSec: 0,
++          triggerType,
++          error: reason,
++        })
++        .run();
++    };
++
++    // ── Concurrency gate (config: scheduling.maxConcurrent) ──
++    // Sum running counts across all tasks so overlapPolicy='allow' fires
++    // count individually toward the global cap.
++    let totalRunning = 0;
++    for (const n of this.running.values()) totalRunning += n;
++    if (totalRunning >= this.options.maxConcurrent) {
++      log.info(
++        `Skipping ${task.name}: maxConcurrent (${this.options.maxConcurrent}) reached (in flight: ${totalRunning})`,
++      );
++      recordSkip(`maxConcurrent (${this.options.maxConcurrent}) reached`);
++      return;
++    }
+ 
+-    this.running.add(task.id);
++    // ── Min-interval gate (config: scheduling.minIntervalSec) ──
++    if (task.lastRunAt && this.options.minIntervalSec > 0) {
++      const elapsedSec =
++        (Date.now() - new Date(task.lastRunAt).getTime()) / 1000;
++      if (elapsedSec < this.options.minIntervalSec) {
++        log.info(
++          `Skipping ${task.name}: minIntervalSec (${this.options.minIntervalSec}s) not elapsed`,
++        );
++        recordSkip(
++          `minIntervalSec (${this.options.minIntervalSec}s) not elapsed`,
++        );
++        return;
++      }
++    }
+ 
+-    const db = getDb();
++    // ── Overlap policy check ──
++    // 'skip' (default) and 'queue' (MVP fallback to skip) both record a
++    // skipped row when the previous run is still active. 'allow' lets it run.
++    if (
++      (task.overlapPolicy === 'skip' || task.overlapPolicy === 'queue') &&
++      (this.running.get(task.id) ?? 0) > 0
++    ) {
++      log.info(`Skipping overlapping execution for ${task.name}`);
++      recordSkip('overlap with previous run');
++      return;
++    }
+ 
+-    try {
+-      // Insert execution record
+-      await db.insert(taskExecutions).values({
++    this.running.set(task.id, (this.running.get(task.id) ?? 0) + 1);
++    const executionId = randomUUID();
++    const startedAt = new Date();
++
++    // ── Insert execution record ──
++    db.insert(taskExecutions)
++      .values({
+         id: executionId,
+         taskId: task.id,
+         status: 'running',
+-        startedAt,
++        startedAt: startedAt.toISOString(),
+         triggerType,
+-      });
++      })
++      .run();
+ 
+-      // Update task lastRunAt
+-      await db
+-        .update(scheduledTasks)
+-        .set({ lastRunAt: startedAt, updatedAt: startedAt })
+-        .where(eq(scheduledTasks.id, task.id));
+-
+-      // Broadcast schedule_triggered
+-      this.wsHandler.broadcast({
+-        id: randomUUID(),
+-        type: 'schedule_triggered',
+-        scheduleTriggered: {
+-          taskId: task.id,
+-          taskName: task.name,
+-          executionId,
+-          triggerType,
+-        },
+-      });
++    // ── Update task last_run_at ──
++    db.update(scheduledTasks)
++      .set({
++        lastRunAt: startedAt.toISOString(),
++        updatedAt: startedAt.toISOString(),
++      })
++      .where(eq(scheduledTasks.id, task.id))
++      .run();
++
++    // ── Broadcast schedule_triggered ──
++    this.wsHandler.broadcast({
++      id: randomUUID(),
++      type: 'schedule_triggered',
++      scheduleTriggered: {
++        taskId: task.id,
++        taskName: task.name,
++        executionId,
++        prompt: task.prompt,
++        firedAt: startedAt.toISOString(),
++        triggerType,
++      },
++    });
++
++    log.info(
++      `Executing scheduled task: ${task.name} [${executionId}] (${triggerType})`,
++    );
+ 
+-      log.info(`Executing task ${task.name} (${task.id})`, { executionId, triggerType });
++    let status: 'completed' | 'failed' | 'timeout' = 'completed';
++    let error: string | null = null;
+ 
+-      // Execute via MainAgent
+-      const agentMode = task.agentMode as 'orchestrate' | 'direct' | 'code' | undefined;
+-      const executePromise = this.mainAgent.handleMessage(
++    try {
++      const executionPromise = this.mainAgent.handleMessage(
+         task.prompt,
+         undefined,
+         undefined,
+-        agentMode,
++        task.agentMode,
+       );
+ 
+-      // Apply timeout if configured
+       if (task.timeoutSec > 0) {
+-        await Promise.race([
+-          executePromise,
+-          new Promise<never>((_, reject) =>
+-            setTimeout(() => reject(new Error('Task execution timed out')), task.timeoutSec * 1000),
+-          ),
+-        ]);
++        const timeoutMs = task.timeoutSec * 1000;
++        let timer: ReturnType<typeof setTimeout> | undefined;
++        try {
++          await Promise.race([
++            executionPromise,
++            new Promise<never>((_, reject) => {
++              timer = setTimeout(
++                () =>
++                  reject(new Error(`Timeout after ${task.timeoutSec}s`)),
++                timeoutMs,
++              );
++            }),
++          ]);
++        } finally {
++          if (timer) clearTimeout(timer);
++        }
+       } else {
+-        await executePromise;
++        await executionPromise;
+       }
++    } catch (err) {
++      const errMsg = err instanceof Error ? err.message : String(err);
++      status = errMsg.startsWith('Timeout after') ? 'timeout' : 'failed';
++      error = errMsg;
++      log.error(`Scheduled task ${task.name} ${status}: ${errMsg}`);
++    } finally {
++      const remaining = (this.running.get(task.id) ?? 1) - 1;
++      if (remaining <= 0) this.running.delete(task.id);
++      else this.running.set(task.id, remaining);
++    }
+ 
+-      const completedAt = new Date().toISOString();
+-      const durationSec = (new Date(completedAt).getTime() - new Date(startedAt).getTime()) / 1000;
++    // ── Finalise execution record ──
++    const completedAt = new Date();
++    const durationSec =
++      (completedAt.getTime() - startedAt.getTime()) / 1000;
+ 
+-      // Update execution record — success
+-      await db
+-        .update(taskExecutions)
+-        .set({ status: 'completed', completedAt, durationSec })
+-        .where(eq(taskExecutions.id, executionId));
++    db.update(taskExecutions)
++      .set({
++        status,
++        completedAt: completedAt.toISOString(),
++        durationSec,
++        error,
++      })
++      .where(eq(taskExecutions.id, executionId))
++      .run();
++
++    // ── Update task metadata ──
++    // Atomic SQL increment for runCount avoids stale-snapshot races when the
++    // same task fires concurrently or was updated between mount and fire.
++    const job = this.jobs.get(task.id);
++    const nextRun = job?.nextRun();
++    db.update(scheduledTasks)
++      .set({
++        lastStatus: status,
++        nextRunAt: nextRun ? nextRun.toISOString() : null,
++        runCount: sql`${scheduledTasks.runCount} + 1`,
++        updatedAt: completedAt.toISOString(),
++      })
++      .where(eq(scheduledTasks.id, task.id))
++      .run();
+ 
+-      // Recalculate nextRunAt
+-      let nextRunAt: string | null = null;
+-      try {
+-        const nextJob = new Cron(task.cronExpr, { timezone: task.timezone });
+-        const next = nextJob.nextRun();
+-        nextRunAt = next ? next.toISOString() : null;
+-        nextJob.stop();
+-      } catch { /* keep null */ }
+-
+-      // Update task metadata
+-      await db
+-        .update(scheduledTasks)
++    // ── One-time tasks: auto-pause after execution ──
++    if (task.runAt) {
++      db.update(scheduledTasks)
+         .set({
+-          lastStatus: 'completed',
+-          nextRunAt,
+-          runCount: task.runCount + 1,
+-          updatedAt: completedAt,
++          status: 'paused',
++          updatedAt: completedAt.toISOString(),
+         })
+-        .where(eq(scheduledTasks.id, task.id));
+-
+-      // Auto-pause one-shot tasks (runAt set)
+-      if (task.runAt) {
+-        this.unmountJob(task.id);
+-        await db
+-          .update(scheduledTasks)
+-          .set({ status: 'paused', updatedAt: completedAt })
+-          .where(eq(scheduledTasks.id, task.id));
+-      }
+-
+-      // Broadcast completion
+-      this.wsHandler.broadcast({
+-        id: randomUUID(),
+-        type: 'schedule_execution_complete',
+-        scheduleExecutionComplete: {
+-          taskId: task.id,
+-          taskName: task.name,
+-          executionId,
+-          status: 'completed',
+-          durationSec,
+-        },
+-      });
+-
+-      log.info(`Task ${task.name} completed in ${durationSec.toFixed(1)}s`, { executionId });
+-    } catch (err) {
+-      const completedAt = new Date().toISOString();
+-      const durationSec = (new Date(completedAt).getTime() - new Date(startedAt).getTime()) / 1000;
+-      const errorMsg = err instanceof Error ? err.message : String(err);
+-      const isTimeout = errorMsg.includes('timed out');
+-      const status = isTimeout ? 'timeout' : 'failed';
+-
+-      log.error(`Task ${task.name} ${status}`, { executionId, error: errorMsg });
++        .where(eq(scheduledTasks.id, task.id))
++        .run();
++      this.unmountJob(task.id);
++    }
+ 
+-      try {
+-        await db
+-          .update(taskExecutions)
+-          .set({ status, completedAt, durationSec, error: errorMsg })
+-          .where(eq(taskExecutions.id, executionId));
+-
+-        await db
+-          .update(scheduledTasks)
+-          .set({
+-            lastStatus: status,
+-            runCount: task.runCount + 1,
+-            updatedAt: completedAt,
+-          })
+-          .where(eq(scheduledTasks.id, task.id));
+-      } catch (dbErr) {
+-        log.error('Failed to update task execution record', { error: (dbErr as Error).message });
+-      }
++    // ── Broadcast execution complete ──
++    // Include the freshly-updated task row so web clients can refresh list
++    // metadata (lastRunAt/lastStatus/nextRunAt/runCount/status) without an
++    // extra REST roundtrip.
++    const updatedTask = this.getTask(task.id);
++    this.wsHandler.broadcast({
++      id: randomUUID(),
++      type: 'schedule_execution_complete',
++      scheduleExecutionComplete: {
++        taskId: task.id,
++        taskName: task.name,
++        executionId,
++        status,
++        durationSec,
++        error,
++        completedAt: completedAt.toISOString(),
++        task: updatedTask ?? undefined,
++      },
++    });
+ 
+-      // Broadcast failure
+-      this.wsHandler.broadcast({
+-        id: randomUUID(),
+-        type: 'schedule_execution_complete',
+-        scheduleExecutionComplete: {
+-          taskId: task.id,
+-          taskName: task.name,
+-          executionId,
+-          status,
+-          durationSec,
+-          error: errorMsg,
+-        },
+-      });
+-    } finally {
+-      this.running.delete(task.id);
+-    }
++    log.info(`Task ${task.name} ${status} in ${durationSec.toFixed(1)}s`);
+   }
+ }
+diff --git a/packages/gateway/src/server.ts b/packages/gateway/src/server.ts
+index 06a06f0..7bd5ba3 100644
+--- a/packages/gateway/src/server.ts
++++ b/packages/gateway/src/server.ts
+@@ -32,14 +32,25 @@ import { handleStatus } from './routes/status.js';
+ import { handleGetConfig, handlePutConfig } from './routes/config.js';
+ import { handleLogsMeta, handleLogsTail, handleLogsStream, handleLogsDownload } from './routes/logs.js';
+ import { handleGetSkills, handlePutSkillConfig, handleGoogleOAuthStart, handleGoogleOAuthStatus, handleGoogleOAuthCallback } from './routes/skills.js';
++import { SchedulerService } from './scheduler.js';
++import {
++  handleListSchedules,
++  handleGetSchedule,
++  handleCreateSchedule,
++  handleUpdateSchedule,
++  handleDeleteSchedule,
++  handlePauseSchedule,
++  handleResumeSchedule,
++  handleTriggerSchedule,
++  handleGetExecutions,
++  handleDescribeCron,
++} from './routes/schedules.js';
+ import { rateLimitRest } from './rate-limit.js';
+ import { setSecurityHeaders } from './security-headers.js';
+ import { handleStartCodingSession, handleGetCodingSession, handleGetCodingSteps, handleCancelCodingSession } from './routes/coding.js';
+ import { setCodingEventStreamer, emitCodingSessionStarted, emitCodingWorkflowStarted, emitCodingStepStarted, emitCodingStepProgress, emitCodingStepCompleted, emitCodingStepFailed, emitCodingReviewStarted, emitCodingReviewCompleted, emitCodingCommitCompleted, emitCodingSessionCompleted } from './coding-events.js';
+ import { FeedService } from './feed/index.js';
+ import { handleGetFeed, handleGetFeedMessage, handlePostFeedMessage, handleGetFeedCount } from './routes/feed.js';
+-import { SchedulerService } from './scheduler.js';
+-import { handleListSchedules, handleCreateSchedule, handleGetSchedule, handleUpdateSchedule, handleDeleteSchedule, handlePauseSchedule, handleResumeSchedule, handleTriggerSchedule, handleGetExecutions, handleDescribeCron } from './routes/schedules.js';
+ 
+ process.on('uncaughtException', (err) => {
+   console.error('[gateway] Uncaught exception:', err);
+@@ -130,7 +141,7 @@ wsHandler.setHindsightStatusProvider(() => ({
+ /** Module-level reference to the MainAgent for shutdown summarization. */
+ let mainAgent: MainAgent | null = null;
+ 
+-/** Module-level reference to the SchedulerService. */
++/** Module-level scheduler. Created after MainAgent is ready and scheduling is enabled. */
+ let scheduler: SchedulerService | null = null;
+ 
+ // ---------------------------------------------------------------------------
+@@ -879,25 +890,30 @@ async function initMainAgent(): Promise<void> {
+     await mainAgent.init();
+     wsHandler.setMainAgent(mainAgent);
+     log.info(' MainAgent connected');
+-  } catch (err) {
+-    log.error('Failed to initialise MainAgent', { error: err instanceof Error ? err.message : String(err) });
+-    return;
+-  }
+-
+-  // Start scheduler after MainAgent is ready
+-  if (!scheduler && mainAgent) {
+-    let schedulingEnabled = true;
+-    try {
+-      const cfg = readConfig();
+-      schedulingEnabled = cfg.scheduling?.enabled ?? true;
+-    } catch { /* use default */ }
+ 
+-    if (schedulingEnabled) {
+-      scheduler = new SchedulerService(mainAgent, wsHandler);
+-      scheduler.start().catch((err) => {
+-        log.error('Scheduler start error', { error: err instanceof Error ? err.message : String(err) });
+-      });
++    // Initialize scheduler after MainAgent is ready (gated by config).
++    if (freshConfig.scheduling?.enabled !== false) {
++      try {
++        scheduler = new SchedulerService(mainAgent, wsHandler, {
++          defaultTimezone: freshConfig.scheduling?.timezone,
++          maxConcurrent: freshConfig.scheduling?.maxConcurrent,
++          minIntervalSec: freshConfig.scheduling?.minIntervalSec,
++        });
++        scheduler.start();
++        log.info(
++          ` Scheduler started (maxConcurrent=${scheduler.options.maxConcurrent}, minIntervalSec=${scheduler.options.minIntervalSec}, timezone=${scheduler.options.defaultTimezone})`,
++        );
++      } catch (err) {
++        log.error('Failed to start scheduler', {
++          error: err instanceof Error ? err.message : String(err),
++        });
++        scheduler = null;
++      }
++    } else {
++      log.info('Scheduler disabled via config (scheduling.enabled = false)');
+     }
++  } catch (err) {
++    log.error('Failed to initialise MainAgent', { error: err instanceof Error ? err.message : String(err) });
+   }
+ }
+ 
+@@ -1257,6 +1273,64 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
+     return;
+   }
+ 
++  // --- Schedules (cron) ---
++  if (pathname.startsWith('/api/schedules')) {
++    if (!scheduler) {
++      res.writeHead(503, { 'Content-Type': 'application/json' });
++      res.end(JSON.stringify({ error: 'Scheduler not available' }));
++      return;
++    }
++
++    if (pathname === '/api/schedules/describe-cron' && method === 'GET') {
++      const u = new URL(rawUrl, 'http://localhost');
++      handleDescribeCron(req, res, u, scheduler, config);
++      return;
++    }
++
++    if (pathname === '/api/schedules' && method === 'GET') {
++      handleListSchedules(req, res, scheduler, config);
++      return;
++    }
++
++    if (pathname === '/api/schedules' && method === 'POST') {
++      handleCreateSchedule(req, res, scheduler, config).catch((err) => {
++        log.error('Create schedule route error', { error: err instanceof Error ? err.message : String(err) });
++        res.writeHead(500, { 'Content-Type': 'application/json' });
++        res.end(JSON.stringify({ error: 'Internal server error' }));
++      });
++      return;
++    }
++
++    const scheduleActionMatch = pathname.match(/^\/api\/schedules\/([a-zA-Z0-9_-]+)\/(pause|resume|trigger|executions)$/);
++    if (scheduleActionMatch) {
++      const id = scheduleActionMatch[1]!;
++      const action = scheduleActionMatch[2]!;
++      if (action === 'pause' && method === 'POST') { handlePauseSchedule(req, res, id, scheduler, config); return; }
++      if (action === 'resume' && method === 'POST') { handleResumeSchedule(req, res, id, scheduler, config); return; }
++      if (action === 'trigger' && method === 'POST') { handleTriggerSchedule(req, res, id, scheduler, config); return; }
++      if (action === 'executions' && method === 'GET') {
++        const u = new URL(rawUrl, 'http://localhost');
++        handleGetExecutions(req, res, id, u, scheduler, config);
++        return;
++      }
++    }
++
++    const scheduleIdMatch = pathname.match(/^\/api\/schedules\/([a-zA-Z0-9_-]+)$/);
++    if (scheduleIdMatch) {
++      const id = scheduleIdMatch[1]!;
++      if (method === 'GET') { handleGetSchedule(req, res, id, scheduler, config); return; }
++      if (method === 'PUT' || method === 'PATCH') {
++        handleUpdateSchedule(req, res, id, scheduler, config).catch((err) => {
++          log.error('Update schedule route error', { error: err instanceof Error ? err.message : String(err) });
++          res.writeHead(500, { 'Content-Type': 'application/json' });
++          res.end(JSON.stringify({ error: 'Internal server error' }));
++        });
++        return;
++      }
++      if (method === 'DELETE') { handleDeleteSchedule(req, res, id, scheduler!, config); return; }
++    }
++  }
++
+   // --- Coding sessions ---
+ 
+   // POST /api/coding/sessions — start a coding session
+@@ -1301,126 +1375,6 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
+     }
+   }
+ 
+-  // --- Scheduled tasks ---
+-
+-  // GET /api/schedules/cron/describe?expr=... — must be matched before /:id routes
+-  if (pathname === '/api/schedules/cron/describe' && method === 'GET') {
+-    if (!scheduler) {
+-      res.writeHead(503, { 'Content-Type': 'application/json' });
+-      res.end(JSON.stringify({ error: 'Scheduler not available' }));
+-      return;
+-    }
+-    handleDescribeCron(req, res, scheduler);
+-    return;
+-  }
+-
+-  // GET /api/schedules | POST /api/schedules
+-  if (pathname === '/api/schedules') {
+-    if (!scheduler) {
+-      res.writeHead(503, { 'Content-Type': 'application/json' });
+-      res.end(JSON.stringify({ error: 'Scheduler not available' }));
+-      return;
+-    }
+-    if (method === 'GET') {
+-      handleListSchedules(req, res, scheduler).catch((err) => {
+-        log.error('List schedules error', { error: err instanceof Error ? err.message : String(err) });
+-        res.writeHead(500, { 'Content-Type': 'application/json' });
+-        res.end(JSON.stringify({ error: 'Internal server error' }));
+-      });
+-      return;
+-    }
+-    if (method === 'POST') {
+-      handleCreateSchedule(req, res, scheduler).catch((err) => {
+-        log.error('Create schedule error', { error: err instanceof Error ? err.message : String(err) });
+-        res.writeHead(500, { 'Content-Type': 'application/json' });
+-        res.end(JSON.stringify({ error: 'Internal server error' }));
+-      });
+-      return;
+-    }
+-  }
+-
+-  // POST /api/schedules/:id/pause|resume|trigger
+-  const scheduleActionMatch = pathname.match(/^\/api\/schedules\/([a-zA-Z0-9_-]+)\/(pause|resume|trigger)$/);
+-  if (scheduleActionMatch && method === 'POST') {
+-    if (!scheduler) {
+-      res.writeHead(503, { 'Content-Type': 'application/json' });
+-      res.end(JSON.stringify({ error: 'Scheduler not available' }));
+-      return;
+-    }
+-    const [, schedId, action] = scheduleActionMatch;
+-    if (action === 'pause') {
+-      handlePauseSchedule(req, res, scheduler, schedId!).catch((err) => {
+-        log.error('Pause schedule error', { error: err instanceof Error ? err.message : String(err) });
+-        res.writeHead(500, { 'Content-Type': 'application/json' });
+-        res.end(JSON.stringify({ error: 'Internal server error' }));
+-      });
+-      return;
+-    }
+-    if (action === 'resume') {
+-      handleResumeSchedule(req, res, scheduler, schedId!).catch((err) => {
+-        log.error('Resume schedule error', { error: err instanceof Error ? err.message : String(err) });
+-        res.writeHead(500, { 'Content-Type': 'application/json' });
+-        res.end(JSON.stringify({ error: 'Internal server error' }));
+-      });
+-      return;
+-    }
+-    if (action === 'trigger') {
+-      handleTriggerSchedule(req, res, scheduler, schedId!);
+-      return;
+-    }
+-  }
+-
+-  // GET /api/schedules/:id/executions
+-  const scheduleExecMatch = pathname.match(/^\/api\/schedules\/([a-zA-Z0-9_-]+)\/executions$/);
+-  if (scheduleExecMatch && method === 'GET') {
+-    if (!scheduler) {
+-      res.writeHead(503, { 'Content-Type': 'application/json' });
+-      res.end(JSON.stringify({ error: 'Scheduler not available' }));
+-      return;
+-    }
+-    handleGetExecutions(req, res, scheduler, scheduleExecMatch[1]!).catch((err) => {
+-      log.error('Get executions error', { error: err instanceof Error ? err.message : String(err) });
+-      res.writeHead(500, { 'Content-Type': 'application/json' });
+-      res.end(JSON.stringify({ error: 'Internal server error' }));
+-    });
+-    return;
+-  }
+-
+-  // GET /api/schedules/:id | PUT /api/schedules/:id | DELETE /api/schedules/:id
+-  const scheduleMatch = pathname.match(/^\/api\/schedules\/([a-zA-Z0-9_-]+)$/);
+-  if (scheduleMatch) {
+-    if (!scheduler) {
+-      res.writeHead(503, { 'Content-Type': 'application/json' });
+-      res.end(JSON.stringify({ error: 'Scheduler not available' }));
+-      return;
+-    }
+-    const schedId = scheduleMatch[1]!;
+-    if (method === 'GET') {
+-      handleGetSchedule(req, res, scheduler, schedId).catch((err) => {
+-        log.error('Get schedule error', { error: err instanceof Error ? err.message : String(err) });
+-        res.writeHead(500, { 'Content-Type': 'application/json' });
+-        res.end(JSON.stringify({ error: 'Internal server error' }));
+-      });
+-      return;
+-    }
+-    if (method === 'PUT') {
+-      handleUpdateSchedule(req, res, scheduler, schedId).catch((err) => {
+-        log.error('Update schedule error', { error: err instanceof Error ? err.message : String(err) });
+-        res.writeHead(500, { 'Content-Type': 'application/json' });
+-        res.end(JSON.stringify({ error: 'Internal server error' }));
+-      });
+-      return;
+-    }
+-    if (method === 'DELETE') {
+-      handleDeleteSchedule(req, res, scheduler, schedId).catch((err) => {
+-        log.error('Delete schedule error', { error: err instanceof Error ? err.message : String(err) });
+-        res.writeHead(500, { 'Content-Type': 'application/json' });
+-        res.end(JSON.stringify({ error: 'Internal server error' }));
+-      });
+-      return;
+-    }
+-  }
+-
+   // --- File commands ---
+   if (pathname === '/api/commands' && method === 'GET') {
+     const fileCmds = commandHandler.getFileCommands();
+diff --git a/packages/gateway/src/types.ts b/packages/gateway/src/types.ts
+index 7b42aa0..40e6f89 100644
+--- a/packages/gateway/src/types.ts
++++ b/packages/gateway/src/types.ts
+@@ -4,6 +4,7 @@
+  */
+ 
+ import type { WebSocket } from 'ws';
++import type { ScheduledTask } from '@orionomega/core';
+ 
+ /** Represents a connected client (TUI or Web). */
+ export interface ClientConnection {
+@@ -268,22 +269,28 @@ export interface ServerMessage {
+   /** Buffered events that occurred while client was disconnected. Present when `type === 'session'`. */
+   bufferedEvents?: unknown[];
+ 
+-  /** Payload when `type === 'schedule_triggered'`. */
++  /** Scheduler fired a task. Present when `type === 'schedule_triggered'`. */
+   scheduleTriggered?: {
+     taskId: string;
+     taskName: string;
+     executionId: string;
++    prompt: string;
++    firedAt: string;
++    /** Source of the trigger — informs UI badging during live runs. */
+     triggerType: 'cron' | 'manual';
+   };
+ 
+-  /** Payload when `type === 'schedule_execution_complete'`. */
++  /** A scheduled task execution finished. Present when `type === 'schedule_execution_complete'`. */
+   scheduleExecutionComplete?: {
+     taskId: string;
+     taskName: string;
+     executionId: string;
+-    status: string;
+-    durationSec?: number;
+-    error?: string;
++    status: 'completed' | 'failed' | 'timeout';
++    durationSec: number;
++    error: string | null;
++    completedAt: string;
++    /** Updated schedule row (lastRunAt/lastStatus/nextRunAt/runCount/status). */
++    task?: ScheduledTask;
+   };
+ 
+   /** Per-run stats for direct (non-DAG) conversation turns. Present when `type === 'direct_complete'`. */
+diff --git a/packages/web/src/components/settings/SchedulesTab.tsx b/packages/web/src/components/settings/SchedulesTab.tsx
+index fcacf02..d1080ee 100644
+--- a/packages/web/src/components/settings/SchedulesTab.tsx
++++ b/packages/web/src/components/settings/SchedulesTab.tsx
+@@ -1,550 +1,685 @@
+ 'use client';
+ 
+-import { useState, useEffect, useCallback } from 'react';
++/**
++ * @module SchedulesTab
++ * Settings sub-tab for managing scheduled (cron) tasks.
++ *
++ * Lists all schedules from the gateway, supports inline create/edit/delete,
++ * pause/resume/trigger actions, and a per-task execution history drawer.
++ * Subscribes to `useSchedulesStore` for live updates from the WS handler.
++ */
++
++import { useCallback, useEffect, useMemo, useState } from 'react';
++import { Plus, Trash2, Play, Pause, Zap, ChevronDown, ChevronRight, Loader2, RefreshCw } from 'lucide-react';
+ import cronstrue from 'cronstrue';
+ import {
+-  Loader2,
+-  AlertCircle,
+-  CheckCircle,
+-  Play,
+-  Pause,
+-  Trash2,
+-  Plus,
+-  ChevronDown,
+-  ChevronUp,
+-  RefreshCw,
+-  Clock,
+-} from 'lucide-react';
+-import { useSchedulesStore, type ScheduledTask, type TaskExecution } from '@/stores/schedules';
+-
+-const TIMEZONES = [
+-  'UTC',
+-  'America/New_York',
+-  'America/Chicago',
+-  'America/Denver',
+-  'America/Los_Angeles',
+-  'Europe/London',
+-  'Europe/Paris',
+-  'Asia/Tokyo',
+-];
+-
+-function describeCron(expr: string): string {
+-  try {
+-    return cronstrue.toString(expr, { verbose: true });
+-  } catch {
+-    return 'Invalid expression';
+-  }
+-}
+-
+-function timeAgo(iso: string): string {
+-  const diff = Date.now() - new Date(iso).getTime();
+-  const mins = Math.floor(diff / 60000);
+-  if (mins < 1) return 'just now';
+-  if (mins < 60) return `${mins}m ago`;
+-  const hours = Math.floor(mins / 60);
+-  if (hours < 24) return `${hours}h ago`;
+-  const days = Math.floor(hours / 24);
+-  return `${days}d ago`;
+-}
+-
+-function timeUntil(iso: string): string {
+-  const diff = new Date(iso).getTime() - Date.now();
+-  if (diff <= 0) return 'soon';
+-  const mins = Math.floor(diff / 60000);
+-  if (mins < 1) return 'in <1m';
+-  if (mins < 60) return `in ${mins}m`;
+-  const hours = Math.floor(mins / 60);
+-  if (hours < 24) return `in ${hours}h`;
+-  const days = Math.floor(hours / 24);
+-  return `in ${days}d`;
+-}
+-
+-function StatusBadge({ status }: { status: ScheduledTask['status'] }) {
+-  const styles: Record<ScheduledTask['status'], string> = {
+-    active: 'bg-green-500/20 text-green-400 border border-green-500/30',
+-    paused: 'bg-amber-500/20 text-amber-400 border border-amber-500/30',
+-    deleted: 'bg-red-500/20 text-red-400 border border-red-500/30',
+-  };
+-  return (
+-    <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${styles[status]}`}>
+-      {status}
+-    </span>
+-  );
+-}
+-
+-function LastStatusDot({ status }: { status: string | null }) {
+-  if (!status) return null;
+-  const color =
+-    status === 'completed' ? 'bg-green-400'
+-    : status === 'failed' ? 'bg-red-400'
+-    : status === 'timeout' ? 'bg-amber-400'
+-    : 'bg-zinc-500';
+-  return (
+-    <span className="flex items-center gap-1 text-xs text-zinc-500">
+-      <span className={`inline-block h-1.5 w-1.5 rounded-full ${color}`} />
+-      {status}
+-    </span>
+-  );
+-}
+-
+-interface CreateFormValues {
++  useSchedulesStore,
++  fetchSchedules,
++  createSchedule,
++  updateSchedule,
++  deleteSchedule,
++  pauseSchedule,
++  resumeSchedule,
++  triggerSchedule,
++  fetchExecutions,
++  type Schedule,
++} from '@/stores/schedules';
++
++interface FormState {
++  id?: string;
+   name: string;
+-  prompt: string;
++  description: string;
+   cronExpr: string;
+-  timezone: string;
++  prompt: string;
+   agentMode: 'orchestrate' | 'direct' | 'code';
++  timezone: string;
+   overlapPolicy: 'skip' | 'queue' | 'allow';
+-  timeoutSec: number;
+   maxRetries: number;
++  timeoutSec: number;
++  /** When set (ISO 8601), task runs once at this time then auto-pauses. Create-only. */
++  runAt: string;
+ }
+ 
+-const DEFAULT_FORM: CreateFormValues = {
++const EMPTY_FORM: FormState = {
+   name: '',
++  description: '',
++  cronExpr: '0 9 * * *',
+   prompt: '',
+-  cronExpr: '0 * * * *',
++  agentMode: 'orchestrate',
+   timezone: 'UTC',
+-  agentMode: 'direct',
+   overlapPolicy: 'skip',
+-  timeoutSec: 300,
+   maxRetries: 0,
++  timeoutSec: 0,
++  runAt: '',
+ };
+ 
+-function CreateForm({ onCreated }: { onCreated: () => void }) {
+-  const [form, setForm] = useState<CreateFormValues>(DEFAULT_FORM);
+-  const [showAdvanced, setShowAdvanced] = useState(false);
+-  const [creating, setCreating] = useState(false);
+-  const [error, setError] = useState<string | null>(null);
++const PRESETS: { label: string; expr: string }[] = [
++  { label: 'Every minute', expr: '* * * * *' },
++  { label: 'Every hour', expr: '0 * * * *' },
++  { label: 'Every day at 9am', expr: '0 9 * * *' },
++  { label: 'Every Monday at 9am', expr: '0 9 * * 1' },
++  { label: 'First of month', expr: '0 0 1 * *' },
++];
+ 
+-  const cronDesc = describeCron(form.cronExpr);
++/**
++ * Curated subset of common IANA timezones. The browser's
++ * `Intl.supportedValuesOf('timeZone')` returns 400+ entries which is
++ * impractical for a single dropdown; fall back to that list when available
++ * so users on more exotic zones still get coverage.
++ */
++const COMMON_TIMEZONES: string[] = [
++  'UTC',
++  'America/Los_Angeles',
++  'America/Denver',
++  'America/Chicago',
++  'America/New_York',
++  'America/Sao_Paulo',
++  'Europe/London',
++  'Europe/Berlin',
++  'Europe/Paris',
++  'Europe/Moscow',
++  'Africa/Cairo',
++  'Asia/Dubai',
++  'Asia/Kolkata',
++  'Asia/Shanghai',
++  'Asia/Tokyo',
++  'Australia/Sydney',
++  'Pacific/Auckland',
++];
+ 
+-  const handleCreate = async () => {
+-    if (!form.name.trim() || !form.prompt.trim() || !form.cronExpr.trim()) {
+-      setError('Name, prompt, and cron expression are required.');
+-      return;
+-    }
+-    setCreating(true);
+-    setError(null);
+-    try {
+-      const res = await fetch('/api/gateway/api/schedules', {
+-        method: 'POST',
+-        headers: { 'Content-Type': 'application/json' },
+-        body: JSON.stringify(form),
+-      });
+-      if (!res.ok) {
+-        const data = await res.json().catch(() => ({}));
+-        throw new Error((data as { error?: string }).error || `HTTP ${res.status}`);
++function getTimezoneOptions(): string[] {
++  try {
++    const intlAny = Intl as unknown as { supportedValuesOf?: (k: string) => string[] };
++    if (typeof intlAny.supportedValuesOf === 'function') {
++      const all = intlAny.supportedValuesOf('timeZone');
++      if (Array.isArray(all) && all.length > 0) {
++        return ['UTC', ...all.filter((t) => t !== 'UTC')];
+       }
+-      setForm(DEFAULT_FORM);
+-      onCreated();
+-    } catch (err) {
+-      setError(err instanceof Error ? err.message : 'Failed to create schedule');
+-    } finally {
+-      setCreating(false);
+     }
+-  };
+-
+-  const field = (label: string, children: React.ReactNode) => (
+-    <div className="flex flex-col gap-1.5 sm:flex-row sm:items-start sm:gap-4">
+-      <label className="min-w-[140px] shrink-0 pt-1.5 text-xs text-zinc-400">{label}</label>
+-      <div className="flex-1">{children}</div>
+-    </div>
+-  );
++  } catch {
++    /* fall through */
++  }
++  return COMMON_TIMEZONES;
++}
+ 
+-  const inputCls = 'w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2.5 md:py-1.5 text-sm md:text-xs text-zinc-100 placeholder-zinc-500 outline-none focus:border-blue-500 transition-colors';
+-  const selectCls = inputCls;
++const TIMEZONE_OPTIONS = getTimezoneOptions();
+ 
+-  return (
+-    <div className="rounded-md border border-zinc-700 bg-zinc-900/60 p-4 space-y-3">
+-      <h4 className="text-xs font-semibold uppercase tracking-wider text-zinc-400">New Scheduled Task</h4>
++/** Mirrors the gateway's createScheduleSchema name regex. */
++const NAME_REGEX = /^[a-zA-Z0-9][a-zA-Z0-9 _-]*$/;
+ 
+-      {error && (
+-        <div className="flex items-center gap-2 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-400">
+-          <AlertCircle size={12} className="shrink-0" />
+-          {error}
+-        </div>
+-      )}
+-
+-      <div className="space-y-2">
+-        {field('Name',
+-          <input
+-            type="text"
+-            value={form.name}
+-            onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+-            placeholder="Daily report"
+-            className={inputCls}
+-          />
+-        )}
+-        {field('Prompt',
+-          <textarea
+-            value={form.prompt}
+-            onChange={(e) => setForm((f) => ({ ...f, prompt: e.target.value }))}
+-            placeholder="Generate a daily summary of..."
+-            rows={3}
+-            className={`${inputCls} resize-y`}
+-          />
+-        )}
+-        {field('Cron Expression',
+-          <div className="space-y-1">
+-            <input
+-              type="text"
+-              value={form.cronExpr}
+-              onChange={(e) => setForm((f) => ({ ...f, cronExpr: e.target.value }))}
+-              placeholder="0 * * * *"
+-              className={`${inputCls} font-mono`}
+-            />
+-            <p className={`text-xs ${cronDesc === 'Invalid expression' ? 'text-red-400' : 'text-zinc-500'}`}>
+-              {cronDesc}
+-            </p>
+-          </div>
+-        )}
+-        {field('Timezone',
+-          <select
+-            value={form.timezone}
+-            onChange={(e) => setForm((f) => ({ ...f, timezone: e.target.value }))}
+-            className={selectCls}
+-          >
+-            {TIMEZONES.map((tz) => (
+-              <option key={tz} value={tz}>{tz}</option>
+-            ))}
+-          </select>
+-        )}
+-        {field('Agent Mode',
+-          <select
+-            value={form.agentMode}
+-            onChange={(e) => setForm((f) => ({ ...f, agentMode: e.target.value as CreateFormValues['agentMode'] }))}
+-            className={selectCls}
+-          >
+-            <option value="orchestrate">Orchestrate</option>
+-            <option value="direct">Direct</option>
+-            <option value="code">Code</option>
+-          </select>
+-        )}
+-      </div>
+-
+-      <button
+-        type="button"
+-        onClick={() => setShowAdvanced((v) => !v)}
+-        className="flex items-center gap-1 text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
+-      >
+-        {showAdvanced ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+-        Advanced options
+-      </button>
+-
+-      {showAdvanced && (
+-        <div className="space-y-2 border-t border-zinc-800 pt-3">
+-          {field('Overlap Policy',
+-            <select
+-              value={form.overlapPolicy}
+-              onChange={(e) => setForm((f) => ({ ...f, overlapPolicy: e.target.value as CreateFormValues['overlapPolicy'] }))}
+-              className={selectCls}
+-            >
+-              <option value="skip">Skip (skip if already running)</option>
+-              <option value="queue">Queue (run after current finishes)</option>
+-              <option value="allow">Allow (run concurrently)</option>
+-            </select>
+-          )}
+-          {field('Timeout (sec)',
+-            <input
+-              type="number"
+-              value={form.timeoutSec}
+-              onChange={(e) => setForm((f) => ({ ...f, timeoutSec: Number(e.target.value) }))}
+-              className={inputCls}
+-              min={0}
+-            />
+-          )}
+-          {field('Max Retries',
+-            <input
+-              type="number"
+-              value={form.maxRetries}
+-              onChange={(e) => setForm((f) => ({ ...f, maxRetries: Number(e.target.value) }))}
+-              className={inputCls}
+-              min={0}
+-              max={10}
+-            />
+-          )}
+-        </div>
+-      )}
++function isCronValid(expr: string): boolean {
++  if (!expr.trim()) return false;
++  try {
++    cronstrue.toString(expr);
++    return true;
++  } catch {
++    return false;
++  }
++}
+ 
+-      <div className="flex justify-end pt-1">
+-        <button
+-          type="button"
+-          onClick={handleCreate}
+-          disabled={creating}
+-          className="flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2.5 md:py-1.5 text-sm md:text-xs font-medium text-white transition-colors hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+-        >
+-          {creating ? <Loader2 size={12} className="animate-spin" /> : <Plus size={12} />}
+-          {creating ? 'Creating...' : 'Create Schedule'}
+-        </button>
+-      </div>
+-    </div>
+-  );
++function describeLocal(expr: string): string {
++  try {
++    return cronstrue.toString(expr, { verbose: false });
++  } catch {
++    return 'Invalid expression';
++  }
+ }
+ 
+-function ExecutionHistory({ taskId }: { taskId: string }) {
+-  const [executions, setExecutions] = useState<TaskExecution[]>([]);
+-  const [loading, setLoading] = useState(true);
+-
+-  useEffect(() => {
+-    let cancelled = false;
+-    fetch(`/api/gateway/api/schedules/${taskId}/executions?limit=10`)
+-      .then((r) => r.json())
+-      .then((data) => {
+-        if (!cancelled) setExecutions((data as { executions?: TaskExecution[] }).executions ?? []);
+-      })
+-      .catch(() => { /* ignore */ })
+-      .finally(() => { if (!cancelled) setLoading(false); });
+-    return () => { cancelled = true; };
+-  }, [taskId]);
+-
+-  if (loading) {
+-    return (
+-      <div className="flex items-center gap-1.5 py-2 text-xs text-zinc-500">
+-        <Loader2 size={10} className="animate-spin" />
+-        Loading history…
+-      </div>
+-    );
++function formatTime(iso: string | null): string {
++  if (!iso) return '—';
++  try {
++    const d = new Date(iso);
++    return d.toLocaleString();
++  } catch {
++    return iso;
+   }
++}
+ 
+-  if (executions.length === 0) {
+-    return <p className="py-2 text-xs text-zinc-600">No executions yet.</p>;
++function statusBadge(status: string | null): { color: string; label: string } {
++  switch (status) {
++    case 'completed': return { color: 'bg-green-700 text-green-200', label: 'OK' };
++    case 'failed': return { color: 'bg-red-700 text-red-200', label: 'Failed' };
++    case 'timeout': return { color: 'bg-amber-700 text-amber-200', label: 'Timeout' };
++    case 'skipped': return { color: 'bg-zinc-700 text-zinc-300', label: 'Skipped' };
++    case 'running': return { color: 'bg-blue-700 text-blue-200', label: 'Running' };
++    default: return { color: 'bg-zinc-800 text-zinc-400', label: status ?? '—' };
+   }
++}
+ 
+-  const statusColor = (s: TaskExecution['status']) => {
+-    if (s === 'completed') return 'text-green-400';
+-    if (s === 'failed') return 'text-red-400';
+-    if (s === 'timeout') return 'text-amber-400';
+-    if (s === 'running') return 'text-blue-400';
+-    return 'text-zinc-500';
+-  };
++export function SchedulesTab() {
++  const schedules = useSchedulesStore((s) => s.schedules);
++  const executions = useSchedulesStore((s) => s.executions);
++  const liveTriggers = useSchedulesStore((s) => s.liveTriggers);
++  const setSchedules = useSchedulesStore((s) => s.setSchedules);
++  const upsertSchedule = useSchedulesStore((s) => s.upsertSchedule);
++  const removeSchedule = useSchedulesStore((s) => s.removeSchedule);
++  const setExecutionsInStore = useSchedulesStore((s) => s.setExecutions);
++
++  const [loading, setLoading] = useState(false);
++  const [error, setError] = useState<string | null>(null);
++  const [showForm, setShowForm] = useState(false);
++  const [form, setForm] = useState<FormState>(EMPTY_FORM);
++  const [submitting, setSubmitting] = useState(false);
++  const [expandedId, setExpandedId] = useState<string | null>(null);
+ 
+-  return (
+-    <table className="w-full text-xs">
+-      <thead>
+-        <tr className="text-zinc-600 border-b border-zinc-800">
+-          <th className="pb-1 text-left font-normal">Status</th>
+-          <th className="pb-1 text-left font-normal">Started</th>
+-          <th className="pb-1 text-left font-normal">Duration</th>
+-          <th className="pb-1 text-left font-normal">Trigger</th>
+-        </tr>
+-      </thead>
+-      <tbody>
+-        {executions.map((ex) => (
+-          <tr key={ex.id} className="border-b border-zinc-800/50 last:border-0">
+-            <td className={`py-1 pr-3 ${statusColor(ex.status)}`}>{ex.status}</td>
+-            <td className="py-1 pr-3 text-zinc-400">{timeAgo(ex.startedAt)}</td>
+-            <td className="py-1 pr-3 text-zinc-400">
+-              {ex.durationSec != null ? `${ex.durationSec}s` : '—'}
+-            </td>
+-            <td className="py-1 text-zinc-500">{ex.triggerType}</td>
+-          </tr>
+-        ))}
+-      </tbody>
+-    </table>
+-  );
+-}
++  const reload = useCallback(async () => {
++    setLoading(true);
++    setError(null);
++    try {
++      const list = await fetchSchedules();
++      setSchedules(list);
++    } catch (err) {
++      setError(err instanceof Error ? err.message : 'Failed to load schedules');
++    } finally {
++      setLoading(false);
++    }
++  }, [setSchedules]);
++
++  useEffect(() => { void reload(); }, [reload]);
+ 
+-function TaskRow({
+-  task,
+-  onAction,
+-}: {
+-  task: ScheduledTask;
+-  onAction: () => void;
+-}) {
+-  const [showHistory, setShowHistory] = useState(false);
+-  const [actioning, setActioning] = useState<string | null>(null);
+-
+-  const doAction = async (action: 'run' | 'pause' | 'resume' | 'delete') => {
+-    setActioning(action);
++  const handleSubmit = useCallback(async () => {
++    const trimmedName = form.name.trim();
++    if (!trimmedName || !form.cronExpr.trim() || !form.prompt.trim()) {
++      setError('Name, cron expression, and prompt are required');
++      return;
++    }
++    if (!NAME_REGEX.test(trimmedName)) {
++      setError(
++        'Name must start with a letter or digit and contain only letters, digits, spaces, hyphens, or underscores',
++      );
++      return;
++    }
++    if (!isCronValid(form.cronExpr)) {
++      setError('Cron expression is invalid');
++      return;
++    }
++    // Validate runAt (one-shot) if provided; must parse to a valid date in the future.
++    let runAtIso: string | undefined;
++    if (!form.id && form.runAt.trim()) {
++      const parsed = new Date(form.runAt);
++      if (Number.isNaN(parsed.getTime())) {
++        setError('Run at: invalid date/time');
++        return;
++      }
++      if (parsed.getTime() <= Date.now()) {
++        setError('Run at: must be in the future');
++        return;
++      }
++      runAtIso = parsed.toISOString();
++    }
++    setSubmitting(true);
++    setError(null);
+     try {
+-      if (action === 'run') {
+-        await fetch(`/api/gateway/api/schedules/${task.id}/run`, { method: 'POST' });
+-      } else if (action === 'delete') {
+-        await fetch(`/api/gateway/api/schedules/${task.id}`, { method: 'DELETE' });
++      const basePayload = {
++        name: trimmedName,
++        description: form.description.trim(),
++        cronExpr: form.cronExpr.trim(),
++        prompt: form.prompt.trim(),
++        agentMode: form.agentMode,
++        timezone: form.timezone,
++        overlapPolicy: form.overlapPolicy,
++        maxRetries: form.maxRetries,
++        timeoutSec: form.timeoutSec,
++      };
++      let task: Schedule;
++      if (form.id) {
++        // runAt is create-only on the server; don't include it on update.
++        task = await updateSchedule(form.id, basePayload);
+       } else {
+-        await fetch(`/api/gateway/api/schedules/${task.id}`, {
+-          method: 'PATCH',
+-          headers: { 'Content-Type': 'application/json' },
+-          body: JSON.stringify({ status: action === 'pause' ? 'paused' : 'active' }),
+-        });
++        task = await createSchedule(
++          runAtIso ? { ...basePayload, runAt: runAtIso } : basePayload,
++        );
+       }
+-      onAction();
+-    } catch { /* ignore */ } finally {
+-      setActioning(null);
++      upsertSchedule(task);
++      setShowForm(false);
++      setForm(EMPTY_FORM);
++    } catch (err) {
++      setError(err instanceof Error ? err.message : 'Failed to save schedule');
++    } finally {
++      setSubmitting(false);
+     }
+-  };
+-
+-  const btnCls = 'flex items-center gap-1 rounded px-2 py-1 text-xs transition-colors disabled:opacity-40';
++  }, [form, upsertSchedule]);
+ 
+-  return (
+-    <div className="rounded-md border border-zinc-800 bg-zinc-900/40 p-3 space-y-2">
+-      <div className="flex items-start justify-between gap-2">
+-        <div className="flex-1 min-w-0">
+-          <div className="flex flex-wrap items-center gap-2 mb-0.5">
+-            <span className="text-sm text-zinc-100 font-medium truncate">{task.name}</span>
+-            <StatusBadge status={task.status} />
+-          </div>
+-          <p className="text-xs text-zinc-500 font-mono">{task.cronExpr}</p>
+-          <p className="text-xs text-zinc-600 mt-0.5">{describeCron(task.cronExpr)}</p>
+-        </div>
+-        <div className="flex items-center gap-1 shrink-0">
+-          <button
+-            type="button"
+-            onClick={() => doAction('run')}
+-            disabled={actioning !== null}
+-            className={`${btnCls} text-blue-400 hover:bg-zinc-700 hover:text-blue-300`}
+-            title="Run now"
+-          >
+-            {actioning === 'run' ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />}
+-          </button>
+-          {task.status === 'active' ? (
+-            <button
+-              type="button"
+-              onClick={() => doAction('pause')}
+-              disabled={actioning !== null}
+-              className={`${btnCls} text-amber-400 hover:bg-zinc-700 hover:text-amber-300`}
+-              title="Pause"
+-            >
+-              {actioning === 'pause' ? <Loader2 size={12} className="animate-spin" /> : <Pause size={12} />}
+-            </button>
+-          ) : (
+-            <button
+-              type="button"
+-              onClick={() => doAction('resume')}
+-              disabled={actioning !== null || task.status === 'deleted'}
+-              className={`${btnCls} text-green-400 hover:bg-zinc-700 hover:text-green-300`}
+-              title="Resume"
+-            >
+-              {actioning === 'resume' ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />}
+-            </button>
+-          )}
+-          <button
+-            type="button"
+-            onClick={() => doAction('delete')}
+-            disabled={actioning !== null}
+-            className={`${btnCls} text-red-400 hover:bg-zinc-700 hover:text-red-300`}
+-            title="Delete"
+-          >
+-            {actioning === 'delete' ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
+-          </button>
+-        </div>
+-      </div>
++  const handleDelete = useCallback(async (id: string) => {
++    if (!confirm('Delete this schedule? Execution history will be preserved.')) return;
++    try {
++      await deleteSchedule(id);
++      removeSchedule(id);
++    } catch (err) {
++      setError(err instanceof Error ? err.message : 'Failed to delete');
++    }
++  }, [removeSchedule]);
+ 
+-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+-        <span className="flex items-center gap-1 text-xs text-zinc-500">
+-          <Clock size={10} />
+-          {task.lastRunAt ? timeAgo(task.lastRunAt) : 'Never run'}
+-        </span>
+-        {task.nextRunAt && (
+-          <span className="text-xs text-zinc-600">{timeUntil(task.nextRunAt)}</span>
+-        )}
+-        <LastStatusDot status={task.lastStatus} />
+-        <span className="text-xs text-zinc-600">{task.runCount} run{task.runCount !== 1 ? 's' : ''}</span>
+-      </div>
++  const handlePause = useCallback(async (id: string) => {
++    try {
++      const task = await pauseSchedule(id);
++      upsertSchedule(task);
++    } catch (err) {
++      setError(err instanceof Error ? err.message : 'Failed to pause');
++    }
++  }, [upsertSchedule]);
+ 
+-      <button
+-        type="button"
+-        onClick={() => setShowHistory((v) => !v)}
+-        className="flex items-center gap-1 text-xs text-zinc-600 hover:text-zinc-400 transition-colors"
+-      >
+-        {showHistory ? <ChevronUp size={10} /> : <ChevronDown size={10} />}
+-        {showHistory ? 'Hide history' : 'Show history'}
+-      </button>
+-
+-      {showHistory && (
+-        <div className="border-t border-zinc-800 pt-2">
+-          <ExecutionHistory taskId={task.id} />
+-        </div>
+-      )}
+-    </div>
+-  );
+-}
++  const handleResume = useCallback(async (id: string) => {
++    try {
++      const task = await resumeSchedule(id);
++      upsertSchedule(task);
++    } catch (err) {
++      setError(err instanceof Error ? err.message : 'Failed to resume');
++    }
++  }, [upsertSchedule]);
+ 
+-export function SchedulesTab() {
+-  const { schedules, loading, error, setSchedules, setLoading, setError } = useSchedulesStore();
+-  const [showCreate, setShowCreate] = useState(false);
++  const handleTrigger = useCallback(async (id: string) => {
++    try {
++      await triggerSchedule(id);
++    } catch (err) {
++      setError(err instanceof Error ? err.message : 'Failed to trigger');
++    }
++  }, []);
+ 
+-  const fetchSchedules = useCallback(async () => {
+-    setLoading(true);
+-    setError(null);
++  const handleExpand = useCallback(async (id: string) => {
++    if (expandedId === id) {
++      setExpandedId(null);
++      return;
++    }
++    setExpandedId(id);
+     try {
+-      const res = await fetch('/api/gateway/api/schedules');
+-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+-      const data = await res.json();
+-      setSchedules((data as { schedules?: ScheduledTask[] }).schedules ?? []);
++      const list = await fetchExecutions(id);
++      setExecutionsInStore(id, list);
+     } catch (err) {
+-      setError(err instanceof Error ? err.message : 'Failed to load schedules');
+-      setLoading(false);
++      setError(err instanceof Error ? err.message : 'Failed to load executions');
+     }
+-  }, [setSchedules, setLoading, setError]);
++  }, [expandedId, setExecutionsInStore]);
+ 
+-  useEffect(() => {
+-    fetchSchedules();
+-  }, [fetchSchedules]);
++  const cronDescription = useMemo(() => describeLocal(form.cronExpr), [form.cronExpr]);
++  const cronValid = useMemo(() => isCronValid(form.cronExpr), [form.cronExpr]);
++  const nameTrimmed = form.name.trim();
++  const nameValid = nameTrimmed.length > 0 && NAME_REGEX.test(nameTrimmed);
++  const promptValid = form.prompt.trim().length > 0;
++  const formValid = nameValid && cronValid && promptValid;
+ 
+   return (
+-    <div className="space-y-4">
++    <div className="flex flex-col gap-4">
+       <div className="flex items-center justify-between">
+-        <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-500 border-b border-zinc-800 pb-2 flex-1">
+-          Scheduled Tasks
+-        </h3>
+-        <div className="flex items-center gap-2 mb-2 ml-4">
++        <div>
++          <h3 className="text-sm font-semibold text-zinc-200">Scheduled Tasks</h3>
++          <p className="text-xs text-zinc-500 mt-1">
++            Run prompts automatically on a cron schedule. Tasks fire through the agent exactly like chat messages.
++          </p>
++        </div>
++        <div className="flex items-center gap-2">
+           <button
+-            type="button"
+-            onClick={fetchSchedules}
++            onClick={reload}
+             disabled={loading}
+-            className="flex items-center gap-1 rounded px-2 py-0.5 text-xs text-zinc-500 transition-colors hover:bg-zinc-700 hover:text-zinc-300 disabled:opacity-50"
++            className="flex items-center gap-1.5 rounded bg-zinc-800 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-700 disabled:opacity-50"
+             title="Refresh"
+           >
+-            <RefreshCw size={10} className={loading ? 'animate-spin' : ''} />
++            <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
+             Refresh
+           </button>
+           <button
+-            type="button"
+-            onClick={() => setShowCreate((v) => !v)}
+-            className="flex items-center gap-1 rounded px-2 py-0.5 text-xs text-zinc-400 transition-colors hover:bg-zinc-700 hover:text-zinc-200"
++            onClick={() => { setForm(EMPTY_FORM); setShowForm(true); }}
++            className="flex items-center gap-1.5 rounded bg-blue-600 px-3 py-1.5 text-xs text-white hover:bg-blue-500"
+           >
+-            <Plus size={10} />
+-            New
++            <Plus size={12} />
++            New schedule
+           </button>
+         </div>
+       </div>
+ 
+-      {showCreate && (
+-        <CreateForm
+-          onCreated={() => {
+-            setShowCreate(false);
+-            fetchSchedules();
+-          }}
+-        />
+-      )}
+-
+       {error && (
+-        <div className="flex items-center gap-2 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-400">
+-          <AlertCircle size={12} className="shrink-0" />
++        <div className="rounded border border-red-700 bg-red-950/40 px-3 py-2 text-xs text-red-300">
+           {error}
+         </div>
+       )}
+ 
+-      {loading && schedules.length === 0 && (
+-        <div className="flex items-center justify-center gap-2 py-8 text-xs text-zinc-500">
+-          <Loader2 size={14} className="animate-spin" />
+-          Loading schedules…
+-        </div>
+-      )}
++      {showForm && (
++        <div className="rounded border border-zinc-700 bg-zinc-900/50 p-4 flex flex-col gap-3">
++          <h4 className="text-sm font-medium text-zinc-200">
++            {form.id ? 'Edit schedule' : 'Create schedule'}
++          </h4>
++
++          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
++            <label className="flex flex-col gap-1">
++              <span className="text-xs text-zinc-400">Name</span>
++              <input
++                type="text"
++                value={form.name}
++                onChange={(e) => setForm({ ...form, name: e.target.value })}
++                placeholder="Daily standup digest"
++                aria-invalid={nameTrimmed.length > 0 && !nameValid}
++                className={`rounded bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200 border outline-none ${
++                  nameTrimmed.length > 0 && !nameValid
++                    ? 'border-red-600 focus:border-red-500'
++                    : 'border-zinc-700 focus:border-blue-500'
++                }`}
++              />
++              {nameTrimmed.length > 0 && !nameValid && (
++                <span className="text-[11px] text-red-400">
++                  Use letters, digits, spaces, hyphens, or underscores. Must start with a letter or digit.
++                </span>
++              )}
++            </label>
++
++            <label className="flex flex-col gap-1">
++              <span className="text-xs text-zinc-400">Cron expression</span>
++              <input
++                type="text"
++                value={form.cronExpr}
++                onChange={(e) => setForm({ ...form, cronExpr: e.target.value })}
++                placeholder="0 9 * * *"
++                aria-invalid={!cronValid}
++                className={`rounded bg-zinc-800 px-2 py-1.5 text-xs font-mono text-zinc-200 border outline-none ${
++                  cronValid ? 'border-zinc-700 focus:border-blue-500' : 'border-red-600 focus:border-red-500'
++                }`}
++              />
++              <span className={`text-[11px] ${cronValid ? 'text-zinc-500' : 'text-red-400'}`}>
++                {cronDescription}
++              </span>
++              <div className="flex flex-wrap gap-1 mt-1">
++                {PRESETS.map((p) => (
++                  <button
++                    key={p.expr}
++                    type="button"
++                    onClick={() => setForm({ ...form, cronExpr: p.expr })}
++                    className="rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200"
++                  >
++                    {p.label}
++                  </button>
++                ))}
++              </div>
++            </label>
++          </div>
+ 
+-      {!loading && schedules.length === 0 && !error && (
+-        <div className="flex flex-col items-center justify-center gap-2 py-8 text-xs text-zinc-600">
+-          <CheckCircle size={20} className="text-zinc-700" />
+-          No scheduled tasks yet. Create one above.
++          <label className="flex flex-col gap-1">
++            <span className="text-xs text-zinc-400">Description (optional)</span>
++            <input
++              type="text"
++              value={form.description}
++              onChange={(e) => setForm({ ...form, description: e.target.value })}
++              className="rounded bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200 border border-zinc-700 focus:border-blue-500 outline-none"
++            />
++          </label>
++
++          <label className="flex flex-col gap-1">
++            <span className="text-xs text-zinc-400">Prompt</span>
++            <textarea
++              value={form.prompt}
++              onChange={(e) => setForm({ ...form, prompt: e.target.value })}
++              placeholder="Summarize yesterday's commits and post to #dev-updates"
++              rows={3}
++              className="rounded bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200 border border-zinc-700 focus:border-blue-500 outline-none resize-y"
++            />
++          </label>
++
++          <label className="flex flex-col gap-1">
++            <span className="text-xs text-zinc-400">Agent mode</span>
++            <select
++              value={form.agentMode}
++              onChange={(e) => setForm({ ...form, agentMode: e.target.value as FormState['agentMode'] })}
++              className="rounded bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200 border border-zinc-700 w-fit"
++            >
++              <option value="orchestrate">orchestrate</option>
++              <option value="direct">direct</option>
++              <option value="code">code</option>
++            </select>
++          </label>
++
++          {/* Collapsible "Advanced" panel groups the optional tuning knobs
++              (timezone, overlap policy, retries, timeout, one-shot runAt)
++              so the form's primary fields stay uncluttered for the common
++              "name + cron + prompt" workflow. */}
++          <details className="rounded border border-zinc-700/60 bg-zinc-800/30 px-3 py-2">
++            <summary className="cursor-pointer text-xs text-zinc-300 select-none">
++              Advanced
++            </summary>
++            <div className="mt-3 grid grid-cols-2 md:grid-cols-4 gap-3">
++              <label className="flex flex-col gap-1">
++                <span className="text-xs text-zinc-400">Timezone</span>
++                <select
++                  value={form.timezone}
++                  onChange={(e) => setForm({ ...form, timezone: e.target.value })}
++                  className="rounded bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200 border border-zinc-700"
++                >
++                  {/* If the current value isn't in the list (legacy data), include it. */}
++                  {!TIMEZONE_OPTIONS.includes(form.timezone) && (
++                    <option value={form.timezone}>{form.timezone}</option>
++                  )}
++                  {TIMEZONE_OPTIONS.map((tz) => (
++                    <option key={tz} value={tz}>{tz}</option>
++                  ))}
++                </select>
++              </label>
++
++              <label className="flex flex-col gap-1">
++                <span className="text-xs text-zinc-400">Overlap policy</span>
++                <select
++                  value={form.overlapPolicy}
++                  onChange={(e) => setForm({ ...form, overlapPolicy: e.target.value as FormState['overlapPolicy'] })}
++                  className="rounded bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200 border border-zinc-700"
++                >
++                  <option value="skip">skip</option>
++                  <option value="queue">queue</option>
++                  <option value="allow">allow</option>
++                </select>
++              </label>
++
++              <label className="flex flex-col gap-1">
++                <span className="text-xs text-zinc-400">Max retries (0–5, reserved)</span>
++                <input
++                  type="number"
++                  min={0}
++                  max={5}
++                  value={form.maxRetries}
++                  onChange={(e) => {
++                    const n = Number.parseInt(e.target.value, 10);
++                    const clamped = Number.isNaN(n) ? 0 : Math.max(0, Math.min(5, n));
++                    setForm({ ...form, maxRetries: clamped });
++                  }}
++                  className="rounded bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200 border border-zinc-700"
++                />
++                <span className="text-[10px] text-zinc-500">
++                  Reserved for future automatic retry support; not yet wired into execution.
++                </span>
++              </label>
++
++              <label className="flex flex-col gap-1">
++                <span className="text-xs text-zinc-400">Timeout (sec, 0 = none)</span>
++                <input
++                  type="number"
++                  min={0}
++                  max={7200}
++                  value={form.timeoutSec}
++                  onChange={(e) => {
++                    const n = Number.parseInt(e.target.value, 10);
++                    const clamped = Number.isNaN(n) ? 0 : Math.max(0, Math.min(7200, n));
++                    setForm({ ...form, timeoutSec: clamped });
++                  }}
++                  className="rounded bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200 border border-zinc-700"
++                />
++              </label>
++            </div>
++
++            {!form.id && (
++              <label className="mt-3 flex flex-col gap-1">
++                <span className="text-xs text-zinc-400">
++                  One-shot run at (optional) — auto-pauses after firing once
++                </span>
++                <input
++                  type="datetime-local"
++                  value={form.runAt}
++                  onChange={(e) => setForm({ ...form, runAt: e.target.value })}
++                  className="rounded bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200 border border-zinc-700 focus:border-blue-500 outline-none w-fit"
++                />
++                <span className="text-[11px] text-zinc-500">
++                  Leave empty for a recurring schedule. When set, the cron expression is ignored on the first fire.
++                </span>
++              </label>
++            )}
++          </details>
++
++          <div className="flex justify-end gap-2 pt-2">
++            <button
++              onClick={() => { setShowForm(false); setForm(EMPTY_FORM); setError(null); }}
++              disabled={submitting}
++              className="rounded bg-zinc-700 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-600 disabled:opacity-50"
++            >
++              Cancel
++            </button>
++            <button
++              onClick={handleSubmit}
++              disabled={submitting || !formValid}
++              title={!formValid ? 'Fix validation errors above to enable' : undefined}
++              className="flex items-center gap-1.5 rounded bg-blue-600 px-3 py-1.5 text-xs text-white hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
++            >
++              {submitting && <Loader2 size={12} className="animate-spin" />}
++              {form.id ? 'Save changes' : 'Create schedule'}
++            </button>
++          </div>
+         </div>
+       )}
+ 
+-      <div className="space-y-2">
+-        {schedules
+-          .filter((t) => t.status !== 'deleted')
+-          .map((task) => (
+-            <TaskRow key={task.id} task={task} onAction={fetchSchedules} />
+-          ))}
++      <div className="flex flex-col gap-2">
++        {schedules.length === 0 && !loading && (
++          <div className="rounded border border-zinc-800 bg-zinc-900/30 px-4 py-6 text-center text-xs text-zinc-500">
++            No scheduled tasks yet. Create one to run prompts on a cron schedule.
++          </div>
++        )}
++
++        {schedules.map((s) => {
++          const isExpanded = expandedId === s.id;
++          const isLive = liveTriggers.has(s.id);
++          const badge = statusBadge(s.lastStatus);
++          const execList = executions[s.id] ?? [];
++          return (
++            <div key={s.id} className="rounded border border-zinc-700 bg-zinc-900/30">
++              <div className="flex items-center gap-3 p-3">
++                <button
++                  onClick={() => handleExpand(s.id)}
++                  className="text-zinc-400 hover:text-zinc-200"
++                  aria-label={isExpanded ? 'Collapse' : 'Expand'}
++                >
++                  {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
++                </button>
++
++                <div className="flex-1 min-w-0">
++                  <div className="flex items-center gap-2 flex-wrap">
++                    <span className="text-sm font-medium text-zinc-200 truncate">{s.name}</span>
++                    <span className={`rounded px-1.5 py-0.5 text-[10px] ${
++                      s.status === 'active' ? 'bg-green-900 text-green-300' :
++                      s.status === 'paused' ? 'bg-amber-900 text-amber-300' :
++                      'bg-zinc-800 text-zinc-400'
++                    }`}>
++                      {s.status}
++                    </span>
++                    {isLive && (
++                      <span className="rounded px-1.5 py-0.5 text-[10px] bg-blue-700 text-blue-200 animate-pulse">
++                        running…
++                      </span>
++                    )}
++                  </div>
++                  <div className="text-[11px] text-zinc-500 mt-0.5 truncate">
++                    <span className="font-mono">{s.cronExpr}</span> · {describeLocal(s.cronExpr)} · {s.timezone}
++                  </div>
++                  <div className="text-[11px] text-zinc-500 mt-0.5">
++                    Next: {formatTime(s.nextRunAt)} · Last: {formatTime(s.lastRunAt)} · Runs: {s.runCount}
++                    {s.lastStatus && <> · <span className={`rounded px-1 ${badge.color}`}>{badge.label}</span></>}
++                  </div>
++                </div>
++
++                <div className="flex items-center gap-1">
++                  <button
++                    onClick={() => handleTrigger(s.id)}
++                    title="Run now"
++                    className="rounded p-1.5 text-zinc-400 hover:bg-zinc-800 hover:text-blue-400"
++                  >
++                    <Zap size={14} />
++                  </button>
++                  {s.status === 'active' ? (
++                    <button
++                      onClick={() => handlePause(s.id)}
++                      title="Pause"
++                      className="rounded p-1.5 text-zinc-400 hover:bg-zinc-800 hover:text-amber-400"
++                    >
++                      <Pause size={14} />
++                    </button>
++                  ) : (
++                    <button
++                      onClick={() => handleResume(s.id)}
++                      title="Resume"
++                      className="rounded p-1.5 text-zinc-400 hover:bg-zinc-800 hover:text-green-400"
++                    >
++                      <Play size={14} />
++                    </button>
++                  )}
++                  <button
++                    onClick={() => {
++                      setForm({
++                        id: s.id,
++                        name: s.name,
++                        description: s.description,
++                        cronExpr: s.cronExpr,
++                        prompt: s.prompt,
++                        agentMode: s.agentMode,
++                        timezone: s.timezone,
++                        overlapPolicy: s.overlapPolicy,
++                        maxRetries: s.maxRetries,
++                        timeoutSec: s.timeoutSec,
++                        runAt: '',
++                      });
++                      setShowForm(true);
++                    }}
++                    className="rounded px-2 py-1 text-[11px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
++                  >
++                    Edit
++                  </button>
++                  <button
++                    onClick={() => handleDelete(s.id)}
++                    title="Delete"
++                    className="rounded p-1.5 text-zinc-400 hover:bg-zinc-800 hover:text-red-400"
++                  >
++                    <Trash2 size={14} />
++                  </button>
++                </div>
++              </div>
++
++              {isExpanded && (
++                <div className="border-t border-zinc-800 px-3 py-2 flex flex-col gap-2">
++                  <div>
++                    <div className="text-[11px] uppercase tracking-wide text-zinc-500 mb-1">Prompt</div>
++                    <div className="text-xs text-zinc-300 whitespace-pre-wrap rounded bg-zinc-950/60 p-2 border border-zinc-800">
++                      {s.prompt}
++                    </div>
++                  </div>
++                  <div>
++                    <div className="text-[11px] uppercase tracking-wide text-zinc-500 mb-1">Recent executions</div>
++                    {execList.length === 0 ? (
++                      <div className="text-xs text-zinc-500 italic">No executions yet.</div>
++                    ) : (
++                      <div className="flex flex-col divide-y divide-zinc-800 rounded border border-zinc-800">
++                        {execList.map((ex) => {
++                          const b = statusBadge(ex.status);
++                          return (
++                            <div key={ex.id} className="flex items-center gap-2 px-2 py-1.5 text-[11px]">
++                              <span className={`rounded px-1.5 py-0.5 ${b.color}`}>{b.label}</span>
++                              <span className="text-zinc-500">{formatTime(ex.startedAt)}</span>
++                              {ex.durationSec !== null && (
++                                <span className="text-zinc-500">· {ex.durationSec.toFixed(1)}s</span>
++                              )}
++                              <span className="text-zinc-600">· {ex.triggerType}</span>
++                              {ex.error && (
++                                <span className="text-red-400 truncate ml-auto" title={ex.error}>{ex.error}</span>
++                              )}
++                            </div>
++                          );
++                        })}
++                      </div>
++                    )}
++                  </div>
++                </div>
++              )}
++            </div>
++          );
++        })}
+       </div>
+     </div>
+   );
+diff --git a/packages/web/src/components/settings/SettingsModal.tsx b/packages/web/src/components/settings/SettingsModal.tsx
+index 12875e2..79b531f 100644
+--- a/packages/web/src/components/settings/SettingsModal.tsx
++++ b/packages/web/src/components/settings/SettingsModal.tsx
+@@ -1007,8 +1007,6 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
+         <div className="flex-1 overflow-y-auto px-4 md:px-6 py-4">
+           {activeTab === 'gateway' ? (
+             <GatewayTab />
+-          ) : activeTab === 'schedules' ? (
+-            <SchedulesTab />
+           ) : loading ? (
+             <div className="flex h-full items-center justify-center">
+               <Loader2 size={20} className="animate-spin text-zinc-500" />
+@@ -1039,6 +1037,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
+               {activeTab === 'omegaclaw' && <OmegaClawTab config={config} onChange={handleChange} models={anthropicModels} modelsLoading={modelsLoading} onRefreshModels={refetchModels} />}
+               {activeTab === 'memory' && <MemoryTab config={config} onChange={handleChange} showRestartWarning={needsRestart} />}
+               {activeTab === 'skills' && <SkillsTab config={config} onChange={handleChange} />}
++              {activeTab === 'schedules' && <SchedulesTab />}
+               {activeTab === 'webui' && <WebUITab config={config} onChange={handleChange} />}
+             </>
+           )}
+diff --git a/packages/web/src/lib/gateway.ts b/packages/web/src/lib/gateway.ts
+index 1233c59..a634e9e 100644
+--- a/packages/web/src/lib/gateway.ts
++++ b/packages/web/src/lib/gateway.ts
+@@ -1363,6 +1363,43 @@ function bindListeners(ws: ReconnectingWebSocket): void {
+         }
+         break;
+       }
++      case 'schedule_triggered': {
++        const t = msg.scheduleTriggered;
++        if (t) {
++          const store = useSchedulesStore.getState();
++          store.markTriggered(t.taskId, t.executionId);
++          store.prependExecution(t.taskId, {
++            id: t.executionId,
++            taskId: t.taskId,
++            status: 'running',
++            startedAt: t.firedAt,
++            completedAt: null,
++            durationSec: null,
++            error: null,
++            // Use the trigger source from the gateway. Older payloads
++            // without this field fall back to 'cron'.
++            triggerType: t.triggerType ?? 'cron',
++          });
++        }
++        break;
++      }
++      case 'schedule_execution_complete': {
++        const c = msg.scheduleExecutionComplete;
++        if (c) {
++          const store = useSchedulesStore.getState();
++          store.clearTriggered(c.taskId, c.executionId);
++          store.updateExecution(c.taskId, c.executionId, {
++            status: c.status,
++            durationSec: c.durationSec,
++            error: c.error,
++            completedAt: c.completedAt,
++          });
++          // Refresh schedule list metadata (lastRunAt, lastStatus, runCount,
++          // nextRunAt, status) when the gateway includes the updated row.
++          if (c.task) store.upsertSchedule(c.task);
++        }
++        break;
++      }
+       case 'pong':
+         if (healthCheckId && msg.id === healthCheckId) {
+           wsReady = true;
+@@ -1386,25 +1423,6 @@ function bindListeners(ws: ReconnectingWebSocket): void {
+         }
+         break;
+       }
+-      case 'schedule_triggered': {
+-        const schedStore = useSchedulesStore.getState();
+-        if (msg.scheduleTriggered) {
+-          schedStore.updateScheduleInList(msg.scheduleTriggered.taskId, {
+-            lastRunAt: msg.scheduleTriggered.firedAt,
+-          });
+-        }
+-        break;
+-      }
+-      case 'schedule_execution_complete': {
+-        const schedStore = useSchedulesStore.getState();
+-        if (msg.scheduleExecutionComplete) {
+-          schedStore.updateScheduleInList(msg.scheduleExecutionComplete.taskId, {
+-            lastStatus: msg.scheduleExecutionComplete.status,
+-            updatedAt: msg.scheduleExecutionComplete.completedAt,
+-          });
+-        }
+-        break;
+-      }
+       default:
+         console.debug('[gateway] unhandled message type:', msg.type, msg);
+     }
+diff --git a/packages/web/src/stores/schedules.ts b/packages/web/src/stores/schedules.ts
+index 49c32ec..5be4c64 100644
+--- a/packages/web/src/stores/schedules.ts
++++ b/packages/web/src/stores/schedules.ts
+@@ -1,6 +1,14 @@
++'use client';
++
++/**
++ * @module stores/schedules
++ * Zustand store for the Schedules (cron) tab in Settings.
++ * Mirrors `ScheduledTask` and `TaskExecution` shapes from the gateway.
++ */
++
+ import { create } from 'zustand';
+ 
+-export interface ScheduledTask {
++export interface Schedule {
+   id: string;
+   name: string;
+   description: string;
+@@ -22,7 +30,7 @@ export interface ScheduledTask {
+   runAt: string | null;
+ }
+ 
+-export interface TaskExecution {
++export interface Execution {
+   id: string;
+   taskId: string;
+   status: 'running' | 'completed' | 'failed' | 'timeout' | 'skipped';
+@@ -34,27 +42,164 @@ export interface TaskExecution {
+ }
+ 
+ interface SchedulesState {
+-  schedules: ScheduledTask[];
++  schedules: Schedule[];
++  executions: Record<string, Execution[]>;
+   loading: boolean;
+   error: string | null;
+-  setSchedules: (schedules: ScheduledTask[]) => void;
+-  updateScheduleInList: (id: string, patch: Partial<ScheduledTask>) => void;
++  /**
++   * In-flight execution IDs keyed by task ID. Tracking per-execution lets us
++   * keep the "running" badge lit while overlapPolicy='allow' has multiple
++   * concurrent runs in flight — the badge clears only when the *last* one
++   * completes.
++   */
++  liveTriggers: Map<string, Set<string>>;
++  setSchedules: (schedules: Schedule[]) => void;
++  upsertSchedule: (schedule: Schedule) => void;
+   removeSchedule: (id: string) => void;
++  setExecutions: (taskId: string, executions: Execution[]) => void;
++  prependExecution: (taskId: string, execution: Execution) => void;
++  updateExecution: (taskId: string, executionId: string, patch: Partial<Execution>) => void;
+   setLoading: (loading: boolean) => void;
+   setError: (error: string | null) => void;
++  markTriggered: (taskId: string, executionId: string) => void;
++  clearTriggered: (taskId: string, executionId: string) => void;
+ }
+ 
+ export const useSchedulesStore = create<SchedulesState>((set) => ({
+   schedules: [],
++  executions: {},
+   loading: false,
+   error: null,
+-  setSchedules: (schedules) => set({ schedules, loading: false, error: null }),
+-  updateScheduleInList: (id, patch) => set((s) => ({
+-    schedules: s.schedules.map((t) => t.id === id ? { ...t, ...patch } : t),
+-  })),
+-  removeSchedule: (id) => set((s) => ({
+-    schedules: s.schedules.filter((t) => t.id !== id),
+-  })),
++  liveTriggers: new Map(),
++  setSchedules: (schedules) => set({ schedules }),
++  upsertSchedule: (schedule) =>
++    set((state) => {
++      const idx = state.schedules.findIndex((s) => s.id === schedule.id);
++      if (idx === -1) return { schedules: [...state.schedules, schedule] };
++      const next = [...state.schedules];
++      next[idx] = schedule;
++      return { schedules: next };
++    }),
++  removeSchedule: (id) =>
++    set((state) => ({ schedules: state.schedules.filter((s) => s.id !== id) })),
++  setExecutions: (taskId, executions) =>
++    set((state) => ({ executions: { ...state.executions, [taskId]: executions } })),
++  prependExecution: (taskId, execution) =>
++    set((state) => {
++      const list = state.executions[taskId] ?? [];
++      return {
++        executions: {
++          ...state.executions,
++          [taskId]: [execution, ...list].slice(0, 50),
++        },
++      };
++    }),
++  updateExecution: (taskId, executionId, patch) =>
++    set((state) => {
++      const list = state.executions[taskId];
++      if (!list) return state;
++      return {
++        executions: {
++          ...state.executions,
++          [taskId]: list.map((e) => (e.id === executionId ? { ...e, ...patch } : e)),
++        },
++      };
++    }),
+   setLoading: (loading) => set({ loading }),
+   setError: (error) => set({ error }),
++  markTriggered: (taskId, executionId) =>
++    set((state) => {
++      const next = new Map(state.liveTriggers);
++      const inflight = new Set(next.get(taskId) ?? []);
++      inflight.add(executionId);
++      next.set(taskId, inflight);
++      return { liveTriggers: next };
++    }),
++  clearTriggered: (taskId, executionId) =>
++    set((state) => {
++      const inflight = state.liveTriggers.get(taskId);
++      if (!inflight || !inflight.has(executionId)) return state;
++      const next = new Map(state.liveTriggers);
++      const updated = new Set(inflight);
++      updated.delete(executionId);
++      if (updated.size === 0) next.delete(taskId);
++      else next.set(taskId, updated);
++      return { liveTriggers: next };
++    }),
+ }));
++
++// ── REST helpers ─────────────────────────────────────────────────────────────
++
++const API_BASE = '/api/gateway/api/schedules';
++
++export async function fetchSchedules(): Promise<Schedule[]> {
++  const res = await fetch(API_BASE);
++  if (!res.ok) throw new Error(`Failed to load schedules: ${res.status}`);
++  const data = (await res.json()) as { tasks: Schedule[] };
++  return data.tasks;
++}
++
++export async function createSchedule(input: Partial<Schedule> & { name: string; cronExpr: string; prompt: string }): Promise<Schedule> {
++  const res = await fetch(API_BASE, {
++    method: 'POST',
++    headers: { 'Content-Type': 'application/json' },
++    body: JSON.stringify(input),
++  });
++  if (!res.ok) {
++    const body = await res.text();
++    throw new Error(`Create failed: ${res.status} ${body}`);
++  }
++  const data = (await res.json()) as { task: Schedule };
++  return data.task;
++}
++
++export async function updateSchedule(id: string, patch: Partial<Schedule>): Promise<Schedule> {
++  const res = await fetch(`${API_BASE}/${encodeURIComponent(id)}`, {
++    method: 'PUT',
++    headers: { 'Content-Type': 'application/json' },
++    body: JSON.stringify(patch),
++  });
++  if (!res.ok) {
++    const body = await res.text();
++    throw new Error(`Update failed: ${res.status} ${body}`);
++  }
++  const data = (await res.json()) as { task: Schedule };
++  return data.task;
++}
++
++export async function deleteSchedule(id: string): Promise<void> {
++  const res = await fetch(`${API_BASE}/${encodeURIComponent(id)}`, { method: 'DELETE' });
++  if (!res.ok) throw new Error(`Delete failed: ${res.status}`);
++}
++
++export async function pauseSchedule(id: string): Promise<Schedule> {
++  const res = await fetch(`${API_BASE}/${encodeURIComponent(id)}/pause`, { method: 'POST' });
++  if (!res.ok) throw new Error(`Pause failed: ${res.status}`);
++  const data = (await res.json()) as { task: Schedule };
++  return data.task;
++}
++
++export async function resumeSchedule(id: string): Promise<Schedule> {
++  const res = await fetch(`${API_BASE}/${encodeURIComponent(id)}/resume`, { method: 'POST' });
++  if (!res.ok) throw new Error(`Resume failed: ${res.status}`);
++  const data = (await res.json()) as { task: Schedule };
++  return data.task;
++}
++
++export async function triggerSchedule(id: string): Promise<void> {
++  const res = await fetch(`${API_BASE}/${encodeURIComponent(id)}/trigger`, { method: 'POST' });
++  if (!res.ok) throw new Error(`Trigger failed: ${res.status}`);
++}
++
++export async function fetchExecutions(id: string, limit = 50): Promise<Execution[]> {
++  const res = await fetch(`${API_BASE}/${encodeURIComponent(id)}/executions?limit=${limit}`);
++  if (!res.ok) throw new Error(`Failed to load executions: ${res.status}`);
++  const data = (await res.json()) as { executions: Execution[] };
++  return data.executions;
++}
++
++export async function describeCron(expr: string): Promise<{ description: string; valid: boolean }> {
++  const res = await fetch(`${API_BASE}/describe-cron?expr=${encodeURIComponent(expr)}`);
++  if (!res.ok) return { description: 'Invalid expression', valid: false };
++  return (await res.json()) as { description: string; valid: boolean };
++}
+diff --git a/replit.md b/replit.md
+index 7d3da61..9b91180 100644
+--- a/replit.md
++++ b/replit.md
+@@ -219,3 +219,14 @@ Artifact file paths produced by DAG nodes are clickable in both `WorkflowSummary
+ - **Store**: `packages/web/src/stores/file-viewer.ts` — Zustand store managing `openFiles` array and `activeFilePath`; `openFile()` sends `file_read` WS message via `requestFileRead()`, deduplicates tabs, handles errors
+ - **Component**: `packages/web/src/components/orchestration/FileViewer.tsx` — tabbed viewer; `.md` files rendered with `MarkdownContent`, others as `<pre>` plaintext; loading/error states inline
+ - **Integration**: "Files" tab appears in OrchestrationPane when files are open, with badge count; clicking artifact paths in chat or workflow summary opens the file and switches to the Files tab
++
++## Scheduled Tasks (Cron)
++
++Cron-driven scheduled prompts dispatched through `MainAgent.handleMessage()`. Configured under `scheduling:` in `~/.orionomega/config.yaml` (see `config.example.yaml`); set `enabled: false` to turn off (REST routes return 503).
++
++- **Persistence**: SQLite tables `scheduled_tasks` and `task_executions` (migration `0003_scheduled_tasks.sql`); Drizzle schema in `packages/core/src/db/schema.ts`
++- **Engine**: `packages/gateway/src/scheduler.ts` — `SchedulerService` uses `croner` for scheduling and `cronstrue` for human-readable descriptions; in-memory `Map<id, Cron>` of mounted jobs; supports `skip` overlap policy (queue falls back to skip in MVP); one-shot tasks (`runAt`) auto-pause after first execution; restart recovery marks any `running` rows as failed on startup
++- **REST API**: `packages/gateway/src/routes/schedules.ts` — Zod-validated endpoints under `/api/schedules`: `GET /` (list), `POST /` (create), `GET/PUT/DELETE /:id`, `POST /:id/pause|resume|trigger`, `GET /:id/executions?limit=`, `GET /describe-cron?expr=`
++- **WebSocket events**: `schedule_triggered` (run started) and `schedule_execution_complete` (run finished with status/error/duration) broadcast to all clients via `ServerMessage` in `packages/gateway/src/types.ts`
++- **Web UI**: "Schedules" tab in `SettingsModal` between Skills and WebUI; `packages/web/src/components/settings/SchedulesTab.tsx` provides create/edit form with preset cron expressions, enable/pause toggle, manual trigger, and execution history drawer; `packages/web/src/stores/schedules.ts` Zustand store + REST helpers; live execution updates via WS handlers in `packages/web/src/lib/gateway.ts`
++- **Tests**: `packages/gateway/src/__tests__/{scheduler,schedules-api}.test.ts` — 29 tests covering CRUD, overlap policy, one-shot auto-pause, restart recovery, WS broadcast wiring, and route validation
