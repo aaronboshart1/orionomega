@@ -11,6 +11,7 @@ import { useSchedulesStore } from '@/stores/schedules';
 import type { ChatMessage } from '@/stores/chat';
 import type { FileAttachment } from '@/components/chat/ChatInput';
 import { uuid } from '@/lib/uuid';
+import { isImageType, isBinaryDocument } from '@/lib/file-types';
 
 const SESSION_KEY = 'orionomega_session_id';
 let statusFetchController: AbortController | null = null;
@@ -1619,8 +1620,9 @@ export function useGateway() {
       if (attachments && attachments.length > 0) {
         const readResults = await Promise.all(
           attachments.map(async (a) => {
-            const isImage = a.type.startsWith('image/');
-            if (isImage) {
+            // Binary formats (images + PDF/DOCX/XLSX/PPTX) are sent as base64 DataURLs.
+            // Text-based files are sent as UTF-8 text.
+            if (isImageType(a.type) || isBinaryDocument(a.type)) {
               const dataUrl = await new Promise<string>((resolve) => {
                 const reader = new FileReader();
                 reader.onloadend = () => resolve(reader.result as string);

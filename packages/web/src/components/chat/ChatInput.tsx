@@ -6,6 +6,12 @@ import { useChatStore } from '@/stores/chat';
 import { formatBytes } from '@/utils/format';
 import { Z } from '@/lib/z-index';
 import { uuid } from '@/lib/uuid';
+import {
+  ACCEPTED_FILE_TYPES,
+  isImageType,
+  isAcceptedFile,
+  getFileIconColor,
+} from '@/lib/file-types';
 
 export interface FileAttachment {
   id: string;
@@ -61,27 +67,6 @@ function useFileCommands() {
 
 const TEXTAREA_MAX_HEIGHT_PX = 256; // matches Tailwind max-h-64
 
-const ACCEPTED_FILE_TYPES = [
-  'image/jpeg',
-  'image/png',
-  'image/gif',
-  'image/webp',
-  'application/pdf',
-  'text/plain',
-  'text/markdown',
-  'text/javascript',
-  'text/typescript',
-  'text/x-python',
-  'text/x-go',
-  'text/x-rust',
-].join(',');
-
-const ACCEPTED_EXTENSIONS = /\.(jpg|jpeg|png|gif|webp|pdf|txt|md|js|ts|jsx|tsx|py|go|rs|css|html|json|yaml|yml|sh|bash|zsh|rb|java|cpp|c|cs|php|swift|kt|scala)$/i;
-
-function isImageType(type: string): boolean {
-  return type.startsWith('image/');
-}
-
 export function ChatInput({ onSend, disabled, modeToggle, costBar }: ChatInputProps) {
   const [input, setInput] = useState('');
   const [showPalette, setShowPalette] = useState(false);
@@ -135,9 +120,7 @@ export function ChatInput({ onSend, disabled, modeToggle, costBar }: ChatInputPr
 
   const addFiles = useCallback((files: FileList | File[]) => {
     const fileArray = Array.from(files);
-    const valid = fileArray.filter(
-      (f) => ACCEPTED_EXTENSIONS.test(f.name) || f.type.startsWith('image/') || f.type === 'application/pdf' || f.type.startsWith('text/'),
-    );
+    const valid = fileArray.filter(isAcceptedFile);
     const newAttachments: FileAttachment[] = valid.map((file) => {
       const id = uuid();
       const previewUrl = isImageType(file.type) ? URL.createObjectURL(file) : undefined;
@@ -436,11 +419,7 @@ export function ChatInput({ onSend, disabled, modeToggle, costBar }: ChatInputPr
                 </>
               ) : (
                 <>
-                  {attachment.type === 'application/pdf' ? (
-                    <FileText size={14} className="shrink-0 text-red-400" aria-hidden="true" />
-                  ) : (
-                    <FileText size={14} className="shrink-0 text-zinc-400" aria-hidden="true" />
-                  )}
+                  <FileText size={14} className={`shrink-0 ${getFileIconColor(attachment.type)}`} aria-hidden="true" />
                   <span className="max-w-[120px] truncate" title={attachment.name}>
                     {attachment.name}
                   </span>
