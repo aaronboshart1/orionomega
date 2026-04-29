@@ -157,8 +157,13 @@ export function runPreChecks(installDir: string | null): PreCheckResult {
   }
 
   // 6. Check network connectivity (can we reach the remote?)
+  // Note: do NOT pass --heads here. --heads filters to refs/heads/* and
+  // treats the trailing arg as a branch-name pattern; HEAD is a symbolic
+  // ref, not a branch name, so the combination always exits 2 ("no
+  // matching refs") even when the remote is fully reachable. Querying
+  // HEAD without --heads correctly resolves the remote's default branch.
   try {
-    execCmd('git ls-remote --exit-code --heads origin HEAD', installDir, 15000);
+    execCmd('git ls-remote --exit-code origin HEAD', installDir, 15000);
   } catch {
     errors.push('Cannot reach git remote "origin" — check network connectivity');
   }
