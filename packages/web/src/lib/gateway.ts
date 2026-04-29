@@ -1737,8 +1737,9 @@ export interface LogsTailParams {
 }
 
 export async function fetchLogsMeta(signal?: AbortSignal): Promise<LogsMeta> {
-  const r = await fetch('/api/gateway/api/logs/meta', { signal });
-  if (!r.ok) throw new Error(`Logs meta failed: HTTP ${r.status}`);
+  const url = '/api/gateway/api/logs/meta';
+  const r = await fetch(url, { signal });
+  if (!r.ok) throw new Error(`Logs meta failed: HTTP ${r.status} (${url})`);
   return r.json() as Promise<LogsMeta>;
 }
 
@@ -1748,8 +1749,9 @@ export async function fetchLogsTail(params: LogsTailParams = {}): Promise<LogsTa
   if (params.level) qs.set('level', params.level);
   if (params.q) qs.set('q', params.q);
   if (params.since) qs.set('since', params.since);
-  const r = await fetch(`/api/gateway/api/logs/tail?${qs}`, { signal: params.signal });
-  if (!r.ok) throw new Error(`Logs tail failed: HTTP ${r.status}`);
+  const url = `/api/gateway/api/logs/tail?${qs}`;
+  const r = await fetch(url, { signal: params.signal });
+  if (!r.ok) throw new Error(`Logs tail failed: HTTP ${r.status} (${url})`);
   return r.json() as Promise<LogsTailResponse>;
 }
 
