@@ -386,6 +386,18 @@ export class Planner {
 ## Context Efficiency
 Workers auto-receive: upstream outputs, Hindsight memories, infra config. Do NOT create discovery nodes for known info.
 
+## Output File Paths (CRITICAL)
+NEVER specify absolute output paths in a worker's \`task\` description.
+Each worker is given a private per-node artifact directory by the orchestrator,
+and its stdout plus any files it writes there are captured automatically and
+surfaced in the run summary.
+- BAD:  "Write the spec to /home/user/task-scheduling-spec.md"
+- BAD:  "Save analysis to ~/notes.md" or "...to /tmp/report.json"
+- GOOD: "Produce a comprehensive implementation specification as markdown."
+- GOOD: "Write the analysis to spec.md" (relative filename only)
+Only mention an absolute path if the *user's original request* explicitly
+named one, in which case quote it verbatim.
+
 ## Token Budgets
 Only set \`tokenBudget\` when you specifically want to *reduce* a worker below the system default.
 Tool-heavy workers (web search, file scanning, large research) burn cache writes fast — leave them

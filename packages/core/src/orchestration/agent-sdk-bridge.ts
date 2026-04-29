@@ -895,7 +895,7 @@ export async function executeCodingAgent(
     // Build the system prompt
     const portInstructions = getPortAvoidanceInstructions(config);
     const runDirInstruction = runDir
-      ? `\n\n## Output Directory\nAll deliverable files (reports, artifacts, generated code, data) should be written to the run output directory: \`${runDir}\`\nThis directory is the canonical location for this workflow run's artifacts. Use it instead of /tmp/ for any output files.\nThe run directory is also available via the ORIONOMEGA_RUN_DIR environment variable.`
+      ? `\n\n## Output Directory (STRICT)\nAll deliverable artifacts (specs, reports, research docs, generated data files) MUST be written under the run output directory: \`${runDir}\`\nThis directory is the canonical location for this workflow run's artifacts and is also exposed via the ORIONOMEGA_RUN_DIR environment variable.\n\nForbidden write locations — NEVER write deliverable artifacts to:\n- \`/home/user/...\`, \`/home/kali/...\`, or any other home directory outside \`${runDir}\`\n- \`/tmp/...\` or other system temp dirs\n- \`~/...\` or shell-expanded home paths\nIf your task description names an absolute output path outside \`${runDir}\`, IGNORE that path and write the file under \`${runDir}\` instead — the orchestrator surfaces files there to the user automatically.\n\nThe only exception is when you are *editing existing source code in the working repository* (your cwd). Source-code edits stay in the repo as normal; standalone documents do not.`
       : '';
     let systemPrompt: string | { type: 'preset'; preset: 'claude_code'; append?: string };
     if (codingConfig.systemPrompt) {

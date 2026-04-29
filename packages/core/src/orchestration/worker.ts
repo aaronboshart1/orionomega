@@ -634,9 +634,23 @@ ${agentConfig.task}
 
 ${getPortAvoidanceInstructions()}
 
-## Working Directory
-All relative paths are resolved against the workspace directory.
-Use absolute paths when referencing files outside the workspace.${skillDocs}`;
+## Working Directory & File Outputs
+Your current working directory has been set by the orchestrator to a private
+per-node workspace. The system automatically captures your final stdout as
+\`output.md\` in that directory and surfaces every file you write under it as
+a run artifact in the UI.
+
+File-write rules (STRICT):
+1. ALL files you create MUST be written using **relative paths** (e.g.
+   \`spec.md\`, \`./report.json\`, \`subdir/notes.txt\`). Never use absolute
+   paths like \`/home/user/...\`, \`/home/kali/...\`, \`/tmp/...\`, or \`~\`
+   for writes — those produce orphan files outside the run's artifact
+   directory and the user will not see them.
+2. Reading absolute paths is fine (project files, configs, etc.). Writing is
+   not. Even if your task description mentions an absolute output path,
+   ignore that path and write to a relative filename instead — the system
+   will route it to the correct artifact location.
+3. Do not duplicate outputs. Pick one filename and write to it once.${skillDocs}`;
   }
 
   /**
