@@ -95,6 +95,22 @@ const MAX_RETRIES = 3;
 const RETRY_DELAYS = [1000, 2000, 4000];
 
 /**
+ * Parse a `Retry-After` header value (HTTP integer-seconds form) into
+ * milliseconds. Returns `null` for missing, malformed, NaN, or non-positive
+ * values so the caller can fall back to its default backoff.
+ *
+ * The HTTP-date form of `Retry-After` is intentionally not supported —
+ * Anthropic returns integer seconds in practice, and falling back to the
+ * fixed schedule for the date form is safer than risking parse drift.
+ */
+function parseRetryAfterMs(headerValue: string | null): number | null {
+  if (!headerValue) return null;
+  const seconds = Number(headerValue.trim());
+  if (!Number.isFinite(seconds) || seconds <= 0) return null;
+  return Math.ceil(seconds * 1000);
+}
+
+/**
  * Anthropic API client using native fetch.
  * Handles retries with exponential backoff for rate limits (429) and server errors (5xx).
  */
@@ -317,6 +333,11 @@ export class AnthropicClient {
 
   /**
    * Fetches the Anthropic API with retry logic for 429 and 5xx errors.
+   *
+   * On 429 responses, the `Retry-After` header (when present and parseable as
+   * a positive integer of seconds) is honoured by sleeping for at least that
+   * long. The fixed `RETRY_DELAYS` schedule remains the floor — we take the
+   * max of the two so a server hint never *shortens* our backoff.
    */
   private async fetchWithRetry(
     body: Record<string, unknown>,
@@ -341,8 +362,17 @@ export class AnthropicClient {
           attempt < MAX_RETRIES &&
           (response.status === 429 || response.status >= 500)
         ) {
-          const delay = RETRY_DELAYS[attempt] ?? 4000;
-          log.warn(`API ${response.status} — retrying in ${delay}ms (attempt ${attempt + 1}/${MAX_RETRIES})`);
+          const baseDelay = RETRY_DELAYS[attempt] ?? 4000;
+          let delay = baseDelay;
+          if (response.status === 429) {
+            const retryAfterMs = parseRetryAfterMs(response.headers.get('retry-after'));
+            if (retryAfterMs !== null) {
+              delay = Math.max(baseDelay, retryAfterMs);
+            }
+          }
+          log.warn(
+            `API ${response.status} — retrying in ${delay}ms (attempt ${attempt + 1}/${MAX_RETRIES})`,
+          );
           await this.sleep(delay);
           continue;
         }

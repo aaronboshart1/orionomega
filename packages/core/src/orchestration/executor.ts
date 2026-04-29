@@ -234,7 +234,7 @@ function resolveNodeTimeoutSec(
       ? TIMEOUT_FLOOR_SEC.TOOL
       : TIMEOUT_FLOOR_SEC.AGENT;
   if (requested < floor) {
-    log.warn(
+    log.info(
       `Node '${node.id}' has timeout=${requested}s below the ${node.type} floor of ${floor}s — clamping up`,
     );
     return floor;

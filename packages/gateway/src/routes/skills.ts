@@ -15,10 +15,12 @@ import {
 import type { SkillManifest } from '@orionomega/skills-sdk';
 import type { SkillConfig, SkillSettingSchema } from '@orionomega/skills-sdk';
 import { SkillSettingType } from '@orionomega/skills-sdk';
-import { readConfig } from '@orionomega/core';
+import { readConfig, createLogger } from '@orionomega/core';
 import type { GatewayConfig } from '../types.js';
 import { readBody } from './utils.js';
 import { checkAuth } from './auth-utils.js';
+
+const log = createLogger('routes/skills');
 
 const MASK_SENTINEL = '[REDACTED]';
 
@@ -34,7 +36,7 @@ function getConfiguredSkillsDir(): string {
     const dir = cfg.skills?.directory;
     if (dir) return dir;
   } catch (err) {
-    console.warn('[skills] Failed to read skills directory from config:', err instanceof Error ? err.message : String(err));
+    log.warn('Failed to read skills directory from config', { error: err instanceof Error ? err.message : String(err) });
   }
   return join(getDefaultSkillsDir(), '..', '.orionomega', 'skills');
 }
@@ -58,7 +60,7 @@ async function loadFromDir(
       }
     }
   } catch (err) {
-    console.warn('[skills] Failed to load skills from directory:', err instanceof Error ? err.message : String(err));
+    log.warn('Failed to load skills from directory', { dir, error: err instanceof Error ? err.message : String(err) });
   }
 }
 
@@ -108,7 +110,7 @@ export function handleGetSkills(
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ skills: results }));
   }).catch((err: unknown) => {
-    console.error('[skills] Failed to list skills:', err instanceof Error ? err.message : String(err));
+    log.error('Failed to list skills', { error: err instanceof Error ? err.message : String(err) });
     res.writeHead(500, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'Internal server error' }));
   });
@@ -196,7 +198,7 @@ export async function handlePutSkillConfig(
     res.end(JSON.stringify({ ok: true, config: safeConfig }));
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Failed to update skill config';
-    console.error('[skills] Failed to update skill config:', message);
+    log.error('Failed to update skill config', { skillName, error: message });
     const status = message.includes('exceeds limit') ? 413 : 400;
     res.writeHead(status, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: status === 413 ? 'Request body too large' : 'Failed to update skill configuration' }));
@@ -229,7 +231,7 @@ export async function handleGoogleOAuthStart(
     res.end(JSON.stringify(parsed));
   } catch {
     const errMsg = result.stderr?.trim() || 'Failed to start OAuth flow';
-    console.error('[skills] Google OAuth start error:', errMsg);
+    log.error('Google OAuth start error', { error: errMsg });
     res.writeHead(500, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: errMsg }));
   }
@@ -285,8 +287,8 @@ export async function handleGoogleOAuthCallback(
         parsed.hostname = '127.0.0.1';
         callbackUrl = parsed.toString();
 
-        console.log('[skills] OAuth callback: replaying full redirect URL against localhost');
-        console.log('[skills] OAuth callback target:', `http://127.0.0.1:${parsed.port || WORKSPACE_MCP_PORT}${parsed.pathname}`);
+        log.info('OAuth callback: replaying full redirect URL against localhost');
+        log.info('OAuth callback target', { target: `http://127.0.0.1:${parsed.port || WORKSPACE_MCP_PORT}${parsed.pathname}` });
       } catch {
         // Not a valid URL — treat the whole string as a bare authorization code
         const code = payload.url.trim();
@@ -296,7 +298,7 @@ export async function handleGoogleOAuthCallback(
           return;
         }
         callbackUrl = `http://127.0.0.1:${WORKSPACE_MCP_PORT}/oauth2callback?code=${encodeURIComponent(code)}`;
-        console.log('[skills] OAuth callback: using bare code, assembled callback URL');
+        log.info('OAuth callback: using bare code, assembled callback URL');
       }
     } else if (payload.code) {
       const code = payload.code.trim();
@@ -306,7 +308,7 @@ export async function handleGoogleOAuthCallback(
         return;
       }
       callbackUrl = `http://127.0.0.1:${WORKSPACE_MCP_PORT}/oauth2callback?code=${encodeURIComponent(code)}`;
-      console.log('[skills] OAuth callback: using code field, assembled callback URL');
+      log.info('OAuth callback: using code field, assembled callback URL');
     }
 
     if (!callbackUrl) {
@@ -315,7 +317,7 @@ export async function handleGoogleOAuthCallback(
       return;
     }
 
-    console.log('[skills] OAuth callback: fetching', callbackUrl.replace(/code=[^&]+/, 'code=<REDACTED>'));
+    log.info('OAuth callback: fetching', { url: callbackUrl.replace(/code=[^&]+/, 'code=<REDACTED>') });
 
     // Replay the OAuth callback against workspace-mcp's local listener
     const proxyRes = await fetch(callbackUrl, {
@@ -326,12 +328,12 @@ export async function handleGoogleOAuthCallback(
 
     // workspace-mcp returns 200 on success, or may redirect (3xx) after storing the token
     if (proxyRes.ok || (proxyRes.status >= 300 && proxyRes.status < 400)) {
-      console.log('[skills] OAuth callback: workspace-mcp returned', proxyRes.status);
+      log.info('OAuth callback: workspace-mcp returned', { status: proxyRes.status });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true, message: 'Authorization code submitted successfully. Check OAuth status.' }));
     } else {
       const errText = await proxyRes.text().catch(() => '');
-      console.error('[skills] OAuth callback: workspace-mcp returned', proxyRes.status, errText.slice(0, 500));
+      log.error('OAuth callback: workspace-mcp returned', { status: proxyRes.status, body: errText.slice(0, 500) });
       res.writeHead(502, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         error: `workspace-mcp callback returned HTTP ${proxyRes.status}`,
@@ -340,7 +342,7 @@ export async function handleGoogleOAuthCallback(
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Failed to proxy OAuth callback';
-    console.error('[skills] Google OAuth callback proxy error:', message);
+    log.error('Google OAuth callback proxy error', { error: message });
     res.writeHead(500, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: message }));
   }
@@ -367,7 +369,7 @@ export function handleGoogleOAuthStatus(
     res.end(JSON.stringify(parsed));
   } catch {
     const errMsg = result.stderr?.trim() || 'Failed to get OAuth status';
-    console.error('[skills] Google OAuth status error:', errMsg);
+    log.error('Google OAuth status error', { error: errMsg });
     res.writeHead(500, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: errMsg }));
   }

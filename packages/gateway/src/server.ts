@@ -44,7 +44,7 @@ import {
   handleGetExecutions,
   handleDescribeCron,
 } from './routes/schedules.js';
-import { rateLimitRest } from './rate-limit.js';
+import { rateLimitRest, startRateLimitCleanup, stopRateLimitCleanup } from './rate-limit.js';
 import { setSecurityHeaders } from './security-headers.js';
 import { handleStartCodingSession, handleGetCodingSession, handleGetCodingSteps, handleCancelCodingSession } from './routes/coding.js';
 import { setCodingEventStreamer, emitCodingSessionStarted, emitCodingWorkflowStarted, emitCodingStepStarted, emitCodingStepProgress, emitCodingStepCompleted, emitCodingStepFailed, emitCodingReviewStarted, emitCodingReviewCompleted, emitCodingCommitCompleted, emitCodingSessionCompleted } from './coding-events.js';
@@ -1647,6 +1647,8 @@ function startListening(): void {
     log.warn('Run `orionomega update --clean` to wipe dist/ and rebuild from the current source.');
   }
 
+  startRateLimitCleanup();
+
   for (let i = 0; i < bindAddresses.length; i++) {
     const address = bindAddresses[i];
     servers[i].listen(config.port, address, () => {
@@ -1677,6 +1679,7 @@ async function shutdown(signal: string): Promise<void> {
   });
 
   clearInterval(hindsightHealthTimer);
+  stopRateLimitCleanup();
   scheduler?.stop();
   wsHandler.shutdown();
   eventStreamer.destroy();

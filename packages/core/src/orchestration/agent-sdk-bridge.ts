@@ -82,8 +82,11 @@ function describeResultError(errorMsg: SDKResultError): string {
       return `max structured-output retries reached${summary ? `: ${summary}` : ''}`;
     case 'error_during_execution':
       return `error during execution${summary ? `: ${summary}` : ''}`;
-    default:
-      return summary || String(subtype);
+    default: {
+      if (summary) return summary;
+      const subtypeStr = subtype ? String(subtype) : 'unknown';
+      return `unknown error (subtype=${subtypeStr})`;
+    }
   }
 }
 

@@ -1,9 +1,11 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { readConfig, writeConfig, auditConfigChange, deepMerge } from '@orionomega/core';
+import { readConfig, writeConfig, auditConfigChange, deepMerge, createLogger } from '@orionomega/core';
 import type { OrionOmegaConfig } from '@orionomega/core';
 import type { GatewayConfig } from '../types.js';
 import { readBody } from './utils.js';
 import { checkAuth } from './auth-utils.js';
+
+const log = createLogger('routes/config');
 
 const VALID_TOP_LEVEL_KEYS = new Set([
   'gateway', 'hindsight', 'models', 'orchestration', 'workspace', 'logging', 'skills', 'autonomous', 'agentSdk', 'webui', 'commands', 'codingMode',
@@ -220,7 +222,7 @@ export function handleGetConfig(
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(masked));
   } catch (err) {
-    console.error('[config] Failed to read config:', err instanceof Error ? err.message : String(err));
+    log.error('Failed to read config', { error: err instanceof Error ? err.message : String(err) });
     res.writeHead(500, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'Internal server error' }));
   }
@@ -279,7 +281,7 @@ export async function handlePutConfig(
     return true;
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Failed to update config';
-    console.error('[config] Failed to update config:', message);
+    log.error('Failed to update config', { error: message });
     const status = message.includes('exceeds limit') ? 413 : 400;
     res.writeHead(status, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: status === 413 ? 'Request body too large' : 'Failed to update configuration' }));

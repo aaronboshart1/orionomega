@@ -4,6 +4,9 @@
  */
 
 import type { WorkerEvent } from './types.js';
+import { createLogger } from '../logging/logger.js';
+
+const log = createLogger('event-bus');
 
 /** Handler function for worker events. */
 export type EventHandler = (event: WorkerEvent) => void | Promise<void>;
@@ -78,26 +81,40 @@ export class EventBus {
       this.bufferStart = (this.bufferStart + 1) % this.bufferSize;
     }
 
-    // Dispatch to channel-specific and wildcard subscribers
-    const targets = [
-      this.channels.get(event.nodeId),
-      this.channels.get(event.workerId),
-      this.channels.get('*'),
+    // Dispatch to channel-specific and wildcard subscribers. Track each
+    // channel key alongside its handler set so subscriber-error logs name
+    // the actual subscription channel ('*' / nodeId / workerId), not just
+    // the event's nodeId — handlers attached to wildcard or workerId
+    // channels would otherwise be misattributed.
+    const targets: Array<readonly [string, Set<EventHandler> | undefined]> = [
+      [event.nodeId, this.channels.get(event.nodeId)],
+      [event.workerId, this.channels.get(event.workerId)],
+      ['*', this.channels.get('*')],
     ];
 
-    for (const handlers of targets) {
+    for (const [channel, handlers] of targets) {
       if (handlers) {
         for (const handler of handlers) {
           try {
             const result = handler(event);
             // Fire-and-forget for async handlers
             if (result && typeof (result as Promise<void>).catch === 'function') {
-              (result as Promise<void>).catch(() => {
-                // Swallow async errors in handlers
+              (result as Promise<void>).catch((err: unknown) => {
+                log.debug('Async event subscriber threw', {
+                  channel,
+                  nodeId: event.nodeId,
+                  workerId: event.workerId,
+                  error: err instanceof Error ? err.message : String(err),
+                });
               });
             }
-          } catch {
-            // Swallow sync errors in handlers
+          } catch (err) {
+            log.debug('Sync event subscriber threw', {
+              channel,
+              nodeId: event.nodeId,
+              workerId: event.workerId,
+              error: err instanceof Error ? err.message : String(err),
+            });
           }
         }
       }
@@ -129,10 +146,18 @@ export class EventBus {
         try {
           const result = handler(event);
           if (result && typeof (result as Promise<void>).catch === 'function') {
-            (result as Promise<void>).catch(() => {});
+            (result as Promise<void>).catch((err: unknown) => {
+              log.debug('Throttled async event subscriber threw', {
+                channel,
+                error: err instanceof Error ? err.message : String(err),
+              });
+            });
           }
-        } catch {
-          // Swallow errors
+        } catch (err) {
+          log.debug('Throttled sync event subscriber threw', {
+            channel,
+            error: err instanceof Error ? err.message : String(err),
+          });
         }
       }
     };

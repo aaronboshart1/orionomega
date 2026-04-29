@@ -43,7 +43,28 @@ function cleanupBuckets(): void {
   }
 }
 
-setInterval(cleanupBuckets, CLEANUP_INTERVAL_MS).unref();
+let cleanupTimer: ReturnType<typeof setInterval> | null = null;
+
+/**
+ * Start the periodic cleanup timer that prunes expired token buckets and
+ * cleared auth trackers. Idempotent — calling twice is a no-op.
+ *
+ * The handle is `.unref()`ed so it never blocks process exit, but
+ * `stopRateLimitCleanup()` should still be called from graceful shutdown so
+ * tests and one-shot processes don't keep a stray timer active.
+ */
+export function startRateLimitCleanup(): void {
+  if (cleanupTimer) return;
+  cleanupTimer = setInterval(cleanupBuckets, CLEANUP_INTERVAL_MS);
+  cleanupTimer.unref();
+}
+
+/** Stop the periodic cleanup timer. Idempotent. */
+export function stopRateLimitCleanup(): void {
+  if (!cleanupTimer) return;
+  clearInterval(cleanupTimer);
+  cleanupTimer = null;
+}
 
 function sendRateLimitResponse(res: ServerResponse, retryAfter: number | string, message: string): void {
   res.writeHead(429, { 'Content-Type': 'application/json', 'Retry-After': String(retryAfter) });

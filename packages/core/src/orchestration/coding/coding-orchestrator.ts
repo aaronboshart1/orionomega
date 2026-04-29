@@ -264,8 +264,18 @@ export class CodingOrchestrator {
       const msg = err instanceof Error ? err.message : String(err);
       log.error('Coding workflow failed', { sessionId, error: msg });
       _emitters?.stepFailed({ nodeId: 'workflow', error: msg });
-      await this._updateSessionStatus(sessionId, 'failed').catch(() => {});
-      await this._updateExecutionStatus(executionId, 'failed', msg).catch(() => {});
+      await this._updateSessionStatus(sessionId, 'failed').catch((updErr) => {
+        log.warn('Failed to mark coding session as failed', {
+          sessionId,
+          error: updErr instanceof Error ? updErr.message : String(updErr),
+        });
+      });
+      await this._updateExecutionStatus(executionId, 'failed', msg).catch((updErr) => {
+        log.warn('Failed to mark workflow execution as failed', {
+          executionId,
+          error: updErr instanceof Error ? updErr.message : String(updErr),
+        });
+      });
       throw err;
     }
   }
@@ -302,8 +312,18 @@ export class CodingOrchestrator {
         const msg = err instanceof Error ? err.message : String(err);
         log.error('Coding workflow failed', { sessionId, error: msg });
         _emitters?.stepFailed({ nodeId: 'workflow', error: msg });
-        this._updateSessionStatus(sessionId, 'failed').catch(() => {});
-        this._updateExecutionStatus(executionId, 'failed', msg).catch(() => {});
+        this._updateSessionStatus(sessionId, 'failed').catch((updErr) => {
+          log.warn('Failed to mark coding session as failed', {
+            sessionId,
+            error: updErr instanceof Error ? updErr.message : String(updErr),
+          });
+        });
+        this._updateExecutionStatus(executionId, 'failed', msg).catch((updErr) => {
+          log.warn('Failed to mark workflow execution as failed', {
+            executionId,
+            error: updErr instanceof Error ? updErr.message : String(updErr),
+          });
+        });
       });
 
     return sessionId;
