@@ -4,6 +4,7 @@
  */
 
 import { writeFileSync, readdirSync, existsSync, mkdirSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join, resolve as resolvePath } from 'node:path';
 import type {
   WorkflowGraph,
@@ -109,6 +110,54 @@ function saveTextOutputIfEmpty(outputDir: string, text: string, filename: string
   } catch {
     return null;
   }
+}
+
+/**
+ * Resolve the OrionOmega install directory roots that CODING_AGENT writes
+ * must never land in. Includes the conventional `~/.orionomega/src` location
+ * and, if discoverable, the install root surfaced by the update command via
+ * `process.env.ORIONOMEGA_INSTALL_DIR`.
+ */
+function getOrionOmegaInstallRoots(): string[] {
+  const roots = new Set<string>();
+  try {
+    roots.add(resolvePath(homedir(), '.orionomega'));
+  } catch { /* ignore */ }
+  const envRoot = process.env.ORIONOMEGA_INSTALL_DIR;
+  if (envRoot) {
+    try { roots.add(resolvePath(envRoot)); } catch { /* ignore */ }
+  }
+  return [...roots];
+}
+
+/**
+ * Returns the subset of `paths` that resolve under any OrionOmega install
+ * root. Used to surface a regression warning if a coding agent ever writes
+ * deliverables back into the install tree.
+ *
+ * Relative paths are resolved against `cwd` (the coding agent's working
+ * directory) when provided, so a Write/Edit that reports `file_path:
+ * "src/foo.md"` is checked against `<cwd>/src/foo.md` rather than
+ * `<process.cwd()>/src/foo.md`. Falls back to process cwd if not provided.
+ */
+function detectInstallDirWrites(paths: string[], cwd?: string): string[] {
+  if (paths.length === 0) return [];
+  const roots = getOrionOmegaInstallRoots();
+  if (roots.length === 0) return [];
+  const offenders: string[] = [];
+  for (const p of paths) {
+    let resolved: string;
+    try {
+      resolved = cwd ? resolvePath(cwd, p) : resolvePath(p);
+    } catch { continue; }
+    for (const root of roots) {
+      if (resolved === root || resolved.startsWith(root + '/')) {
+        offenders.push(resolved);
+        break;
+      }
+    }
+  }
+  return offenders;
 }
 
 function scanForUntrackedFiles(outputDir: string, knownPaths: string[]): string[] {
@@ -817,7 +866,18 @@ export class GraphExecutor {
         const codingOutputDir = `${this.getRunDir()}/${node.id}`;
         try { mkdirSync(codingOutputDir, { recursive: true }); } catch { /* may exist */ }
 
-        // Override the task with context-enriched version
+        // Resolve the cwd for this CODING_AGENT.
+        //
+        // Precedence (highest first):
+        //   1. node.codingAgent.cwd          — explicit per-node user repo
+        //   2. this.config.codingRepoDir     — operator-configured default repo
+        //   3. codingOutputDir                — per-node run output dir (safe default)
+        //
+        // Why the per-node output dir is the default: matching what AGENT/TOOL
+        // nodes already do via WorkerProcess.workspaceDir keeps deliverables
+        // scoped to the run. Previously this fell back to the OrionOmega
+        // install repo (`~/.orionomega/src`) which polluted the install tree
+        // with every coding step's stray files.
         const codingNode: WorkflowNode = {
           ...node,
           codingAgent: {
@@ -943,6 +1003,7 @@ export class GraphExecutor {
               });
             },
             codingAbort.signal,
+            this.getRunDir(),
           );
 
           if (this.stopRequested) {
@@ -974,6 +1035,30 @@ export class GraphExecutor {
           codingOutputPaths.push(...untrackedCoding);
 
           const dedupedCodingPaths = [...new Set(codingOutputPaths)];
+
+          // Regression guard: warn loudly if any tracked path landed inside
+          // the OrionOmega install tree (e.g. ~/.orionomega/src). We do not
+          // auto-move the file — surfacing the issue is sufficient and avoids
+          // racing with files the model is still operating on. Resolve any
+          // relative tracked paths against the coding agent's actual cwd
+          // (not process.cwd()), since Write/Edit often reports file_path
+          // relative to the agent's working directory.
+          const installLeaks = detectInstallDirWrites(
+            dedupedCodingPaths,
+            codingNode.codingAgent?.cwd,
+          );
+          if (installLeaks.length > 0) {
+            const preview = installLeaks.slice(0, 5).join(', ');
+            const more = installLeaks.length > 5 ? ` (+${installLeaks.length - 5} more)` : '';
+            log.warn(
+              `CODING_AGENT '${node.id}' wrote ${installLeaks.length} file(s) into the OrionOmega install dir: ${preview}${more}`,
+            );
+            this.emitOrchestrator(
+              'status',
+              `⚠️ CODING_AGENT '${node.label}' wrote ${installLeaks.length} file(s) into the OrionOmega install dir — these will not appear in the run output. Affected: ${preview}${more}`,
+              { installDirLeaks: installLeaks },
+            );
+          }
 
           this.eventBus.emit({
             workflowId: this.graph.id,

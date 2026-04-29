@@ -208,6 +208,25 @@ export interface OrionOmegaConfig {
   };
 
   /**
+   * Optional coding-mode configuration. Currently used to surface a
+   * user-configured default repo directory for CODING_AGENT nodes.
+   *
+   * If `repoDir` is set, CODING_AGENT nodes that do not declare their own
+   * `codingAgent.cwd` will use this path as their working directory. If it
+   * is left unset (the default), each CODING_AGENT instead works inside its
+   * own per-node output directory under the run dir, so deliverables stay
+   * scoped to the run.
+   *
+   * IMPORTANT: this should point at a real user repo. It must NOT be set to
+   * the OrionOmega install directory (e.g. `~/.orionomega/src`) — doing so
+   * leaks deliverables into the install tree.
+   */
+  coding?: {
+    /** Absolute path to the default repo for CODING_AGENT nodes. */
+    repoDir?: string;
+  };
+
+  /**
    * Task scheduling configuration.
    * Controls the in-process scheduler that fires recurring/one-shot prompts
    * through MainAgent.handleMessage(). All fields are optional and default

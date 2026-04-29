@@ -10,7 +10,6 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { readFileSync, existsSync, statSync, realpathSync } from 'node:fs';
 import { resolve as resolvePath, normalize, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { homedir } from 'node:os';
 import { spawn as spawnProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { readConfig, normalizeBindAddresses, MainAgent, CommandFileLoader, createLogger, setGlobalLogLevel, enableFileLogging, discoverModels, clearModelCache, auditApiRequest, setCodingOrchestatorEmitters, restartWebUI, BUILD_INFO as CORE_BUILD_INFO, getStaleBuildStatus } from '@orionomega/core';
@@ -196,6 +195,16 @@ async function initMainAgent(): Promise<void> {
     return;
   }
 
+  // Resolve the optional user-configured coding repo. We deliberately do NOT
+  // default this to the OrionOmega install dir (~/.orionomega/src) — doing so
+  // caused every CODING_AGENT to inherit the install repo as its cwd, which
+  // polluted the install tree with stray deliverable files. Leave it
+  // undefined unless an operator explicitly opts in via `coding.repoDir`.
+  const configuredCodingRepo = freshConfig.coding?.repoDir;
+  const codingRepoDir = configuredCodingRepo
+    ? resolvePath(configuredCodingRepo)
+    : undefined;
+
   const agentConfig: MainAgentConfig = {
     model: freshConfig.models?.default || 'claude-sonnet-4-20250514',
     cheapModel: freshConfig.models?.cheap || 'claude-haiku-4-5-20251001',
@@ -214,7 +223,7 @@ async function initMainAgent(): Promise<void> {
     commandsDir: freshConfig.commands?.directory,
     hindsight: freshConfig.hindsight,
     autoResume: freshConfig.orchestration?.autoResume ?? false,
-    codingRepoDir: resolvePath(homedir(), '.orionomega', 'src'),
+    ...(codingRepoDir ? { codingRepoDir } : {}),
   };
 
   let currentTextId = randomBytes(8).toString('hex');
