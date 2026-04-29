@@ -148,15 +148,11 @@ export function RunSummaryCard({ dag }: RunSummaryCardProps) {
             />
             <span>Summary</span>
           </button>
-          <div
-            className={`overflow-hidden transition-all duration-200 ease-in-out ${
-              summaryOpen ? 'max-h-[2000px] opacity-100 mt-1.5' : 'max-h-0 opacity-0'
-            }`}
-          >
-            <div className="text-xs text-zinc-300">
+          {summaryOpen && (
+            <div className="mt-1.5 text-xs text-zinc-300">
               <ErrorBoundary><MarkdownContent content={dag.result!} /></ErrorBoundary>
             </div>
-          </div>
+          )}
         </div>
       )}
     </div>

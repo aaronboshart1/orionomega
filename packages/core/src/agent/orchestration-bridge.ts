@@ -871,27 +871,22 @@ ${userTask}`;
 
 
   private extractFinalOutput(result: ExecutionResult): string | null {
-    const MAX_OUTPUT_CHARS = 12_000;
-
-    const truncate = (text: string): string => {
-      const trimmed = text.trim();
-      if (!trimmed) return '';
-      if (trimmed.length > MAX_OUTPUT_CHARS) {
-        return trimmed.slice(0, MAX_OUTPUT_CHARS) + '\n\n…(output truncated)';
-      }
-      return trimmed;
-    };
+    // Return the full final output verbatim. Workers may produce long
+    // research/spec documents and the user must always see the complete
+    // message — never a "(output truncated)" suffix. The chat UI is
+    // responsible for handling long content via scrolling/markdown.
+    const trim = (text: string): string => text.trim();
 
     if (result.nodeFinalResults && Object.keys(result.nodeFinalResults).length > 0) {
       const values = Object.values(result.nodeFinalResults);
       const last = values[values.length - 1];
-      if (last && last.trim()) return truncate(last);
+      if (last && last.trim()) return trim(last);
     }
 
     if (result.nodeOutputs && Object.keys(result.nodeOutputs).length > 0) {
       const entries = Object.values(result.nodeOutputs);
       const last = entries[entries.length - 1];
-      if (last && last.trim()) return truncate(last);
+      if (last && last.trim()) return trim(last);
     }
 
     return null;
