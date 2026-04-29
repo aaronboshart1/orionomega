@@ -10,7 +10,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { z } from 'zod';
 import { Cron } from 'croner';
-import type { SchedulerService } from '../scheduler.js';
+import { SchedulerService } from '../scheduler.js';
 import type { GatewayConfig } from '../types.js';
 import { readBody } from './utils.js';
 import { checkAuth } from './auth-utils.js';
@@ -173,7 +173,10 @@ export async function handleCreateSchedule(
   }
   try {
     const task = scheduler.createTask(parsed.data);
-    jsonResponse(res, 201, { task });
+    const warnings = SchedulerService.computeTaskWarnings(task);
+    const body: Record<string, unknown> = { task };
+    if (warnings.length > 0) body.warnings = warnings;
+    jsonResponse(res, 201, body);
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Failed to create schedule';
     // Surface SQLite UNIQUE constraint violations on `name` as 409 Conflict.
@@ -205,7 +208,10 @@ export async function handleUpdateSchedule(
   }
   try {
     const task = scheduler.updateTask(id, parsed.data);
-    jsonResponse(res, 200, { task });
+    const warnings = SchedulerService.computeTaskWarnings(task);
+    const body: Record<string, unknown> = { task };
+    if (warnings.length > 0) body.warnings = warnings;
+    jsonResponse(res, 200, body);
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Failed to update schedule';
     if (/UNIQUE constraint failed/i.test(msg)) {

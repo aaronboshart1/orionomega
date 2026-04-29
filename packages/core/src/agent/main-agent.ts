@@ -413,6 +413,7 @@ export class MainAgent {
     replyContext?: { messageId: string; content: string; role: string; dagId?: string; workflowId?: string },
     attachments?: { name: string; size: number; type: string; data?: string; textContent?: string }[],
     agentMode?: 'orchestrate' | 'direct' | 'code',
+    externalAbortSignal?: AbortSignal,
   ): Promise<void> {
     if (this.initPromise) {
       await this.initPromise;
@@ -481,6 +482,37 @@ export class MainAgent {
     this.foregroundUserMessage = userContent;
     this.activeAbort = new AbortController();
     const signal = this.activeAbort.signal;
+
+    // Link external abort (e.g. scheduler timeout) to the internal controller
+    // so any consumer that already honours `signal` (streamConversation, etc.)
+    // gets cancelled when the caller aborts. Best-effort for orchestration
+    // paths — the orchestration bridge is also stopped via stopAll() so any
+    // workflow this turn dispatched is wound down.
+    let externalAbortHandler: (() => void) | null = null;
+    if (externalAbortSignal) {
+      const internalAbort = this.activeAbort;
+      const abortFromExternal = () => {
+        if (!internalAbort.signal.aborted) {
+          log.warn('handleMessage: external abort signal fired — aborting active conversation and orchestration');
+          try {
+            internalAbort.abort();
+          } catch { /* ignore */ }
+          try {
+            this.orchestration?.stopAll();
+          } catch (err) {
+            log.debug('orchestration.stopAll() during external abort failed', {
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+        }
+      };
+      if (externalAbortSignal.aborted) {
+        abortFromExternal();
+      } else {
+        externalAbortHandler = abortFromExternal;
+        externalAbortSignal.addEventListener('abort', abortFromExternal, { once: true });
+      }
+    }
 
     if (this.memory.retention) {
       this.memory.retention.evaluateUserMessage(trimmed, this.memory.projectBank ?? undefined).catch((err) => {
@@ -624,6 +656,11 @@ export class MainAgent {
       log.error('handleMessage error', { error: msg });
       this.callbacks.onText(`Something went wrong: ${msg}`, false, true);
     } finally {
+      if (externalAbortHandler && externalAbortSignal) {
+        try {
+          externalAbortSignal.removeEventListener('abort', externalAbortHandler);
+        } catch { /* ignore */ }
+      }
       if (this.foregroundRunId === runId) {
         this.foregroundRunId = null;
       }

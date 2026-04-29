@@ -544,3 +544,187 @@ describe('SchedulerService — live config + concurrency', () => {
     scheduler.stop();
   });
 });
+
+describe('SchedulerService — overlap=queue surfacing (M3)', () => {
+  let dbPath: string;
+
+  beforeEach(() => { dbPath = setupDb(); });
+  afterEach(() => { teardownDb(dbPath); });
+
+  it('records a skipped execution and tags the error with the queue-not-implemented warning', async () => {
+    let resolveFirst: (() => void) | null = null;
+    const { agent, calls } = makeFakeAgent(
+      () => new Promise((resolve) => { resolveFirst = resolve; }),
+    );
+    const { ws } = makeFakeWs();
+    // minIntervalSec=0 so the second trigger isn't filtered by the rate
+    // limiter before reaching the overlap-policy branch under test.
+    const scheduler = new SchedulerService(agent, ws, { minIntervalSec: 0 });
+    scheduler.start();
+
+    const task = scheduler.createTask({
+      name: 'qpolicy', cronExpr: '0 9 * * *', prompt: 'p', overlapPolicy: 'queue',
+    });
+
+    scheduler.triggerTask(task.id);
+    await new Promise((r) => setTimeout(r, 10));
+    scheduler.triggerTask(task.id);
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(calls).toHaveLength(1);
+    const skipped = scheduler.getExecutions(task.id).find((e) => e.status === 'skipped');
+    expect(skipped).toBeDefined();
+    expect(skipped?.error).toMatch(/overlapPolicy 'queue' is not yet implemented/);
+
+    resolveFirst?.();
+    await new Promise((r) => setTimeout(r, 30));
+    scheduler.stop();
+  });
+
+  it('computeTaskWarnings returns the queue warning only when overlapPolicy=queue', () => {
+    expect(SchedulerService.computeTaskWarnings({ overlapPolicy: 'queue' })).toHaveLength(1);
+    expect(SchedulerService.computeTaskWarnings({ overlapPolicy: 'queue' })[0])
+      .toMatch(/queue.*not yet implemented/);
+    expect(SchedulerService.computeTaskWarnings({ overlapPolicy: 'skip' })).toEqual([]);
+    expect(SchedulerService.computeTaskWarnings({ overlapPolicy: 'allow' })).toEqual([]);
+    expect(SchedulerService.computeTaskWarnings({})).toEqual([]);
+  });
+});
+
+describe('SchedulerService — retries (M4)', () => {
+  let dbPath: string;
+
+  beforeEach(() => { dbPath = setupDb(); });
+  afterEach(() => { teardownDb(dbPath); });
+
+  it('retries on failure up to maxRetries and records final failure with attempt count', async () => {
+    const attempts: number[] = [];
+    let n = 0;
+    const agent = {
+      async handleMessage(_prompt: string): Promise<void> {
+        n += 1;
+        attempts.push(n);
+        throw new Error('boom');
+      },
+    };
+    const { ws } = makeFakeWs();
+    const scheduler = new SchedulerService(agent, ws);
+    scheduler.start();
+
+    // maxRetries=2 → 3 total attempts; backoffs are 1s + 2s = 3s.
+    const task = scheduler.createTask({
+      name: 'r-fail', cronExpr: '0 9 * * *', prompt: 'p', maxRetries: 2,
+    });
+
+    scheduler.triggerTask(task.id);
+    // Wait for all attempts + backoffs to settle (1s + 2s + slack).
+    await new Promise((r) => setTimeout(r, 3500));
+
+    expect(attempts).toHaveLength(3);
+    const execs = scheduler.getExecutions(task.id);
+    expect(execs).toHaveLength(1); // one row per trigger
+    expect(execs[0]?.status).toBe('failed');
+    expect(execs[0]?.error).toMatch(/failed after 3 attempts/);
+    scheduler.stop();
+  }, 10_000);
+
+  it('short-circuits the retry loop on success', async () => {
+    let n = 0;
+    const agent = {
+      async handleMessage(_prompt: string): Promise<void> {
+        n += 1;
+        if (n === 1) throw new Error('transient');
+      },
+    };
+    const { ws } = makeFakeWs();
+    const scheduler = new SchedulerService(agent, ws);
+    scheduler.start();
+
+    const task = scheduler.createTask({
+      name: 'r-ok', cronExpr: '0 9 * * *', prompt: 'p', maxRetries: 3,
+    });
+
+    scheduler.triggerTask(task.id);
+    // First attempt fails, then 1s backoff before second attempt succeeds.
+    await new Promise((r) => setTimeout(r, 1500));
+
+    expect(n).toBe(2); // succeeded on retry, did not exhaust the budget
+    const execs = scheduler.getExecutions(task.id);
+    expect(execs).toHaveLength(1);
+    expect(execs[0]?.status).toBe('completed');
+    scheduler.stop();
+  }, 10_000);
+
+  it('default maxRetries=0 means a single attempt and no retries', async () => {
+    let n = 0;
+    const agent = {
+      async handleMessage(_prompt: string): Promise<void> {
+        n += 1;
+        throw new Error('once');
+      },
+    };
+    const { ws } = makeFakeWs();
+    const scheduler = new SchedulerService(agent, ws);
+    scheduler.start();
+
+    const task = scheduler.createTask({ name: 'r-zero', cronExpr: '0 9 * * *', prompt: 'p' });
+    scheduler.triggerTask(task.id);
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(n).toBe(1);
+    const execs = scheduler.getExecutions(task.id);
+    expect(execs[0]?.status).toBe('failed');
+    // No retries → no "failed after N attempts" suffix on the error.
+    expect(execs[0]?.error).not.toMatch(/failed after/);
+    scheduler.stop();
+  });
+});
+
+describe('SchedulerService — timeout abort (H3)', () => {
+  let dbPath: string;
+
+  beforeEach(() => { dbPath = setupDb(); });
+  afterEach(() => { teardownDb(dbPath); });
+
+  it('passes an AbortSignal that fires when the per-attempt timeout elapses', async () => {
+    const aborts: boolean[] = [];
+    const agent = {
+      async handleMessage(
+        _prompt: string,
+        _convId?: string,
+        _msgId?: string,
+        _mode?: string,
+        signal?: AbortSignal,
+      ): Promise<void> {
+        // Resolve when the abort signal fires; if it never fires, the test
+        // will time out and fail (which is the desired regression signal).
+        await new Promise<void>((resolve) => {
+          if (signal?.aborted) {
+            aborts.push(true);
+            resolve();
+            return;
+          }
+          signal?.addEventListener('abort', () => {
+            aborts.push(true);
+            resolve();
+          });
+        });
+        throw new Error('Timeout after 1s'); // mimic the scheduler's timeout error
+      },
+    };
+    const { ws } = makeFakeWs();
+    const scheduler = new SchedulerService(agent, ws);
+    scheduler.start();
+
+    const task = scheduler.createTask({
+      name: 't-abort', cronExpr: '0 9 * * *', prompt: 'p', timeoutSec: 1,
+    });
+    scheduler.triggerTask(task.id);
+    await new Promise((r) => setTimeout(r, 1500));
+
+    expect(aborts).toEqual([true]);
+    const execs = scheduler.getExecutions(task.id);
+    expect(execs[0]?.status).toBe('timeout');
+    scheduler.stop();
+  }, 10_000);
+});

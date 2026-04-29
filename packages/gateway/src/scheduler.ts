@@ -73,6 +73,25 @@ export interface SchedulerOptions {
   minIntervalSec?: number;
 }
 
+// ── Constants ────────────────────────────────────────────────────────────────
+
+/**
+ * User-facing warning surfaced (in API responses, server logs, and runtime
+ * skip records) whenever a task is configured with `overlapPolicy: 'queue'`.
+ * Queueing is not yet implemented — overlapping invocations are skipped, so
+ * we say so explicitly rather than silently degrading to `'skip'`.
+ */
+export const QUEUE_NOT_IMPLEMENTED_WARNING =
+  "overlapPolicy 'queue' is not yet implemented; overlapping runs will be skipped (same behavior as 'skip').";
+
+const RETRY_BASE_BACKOFF_MS = 1000;
+const RETRY_MAX_BACKOFF_MS = 30_000;
+
+function computeRetryBackoffMs(attempt: number): number {
+  // attempt is 1-based for the backoff calculation (first retry gets 1s).
+  return Math.min(RETRY_BASE_BACKOFF_MS * Math.pow(2, attempt - 1), RETRY_MAX_BACKOFF_MS);
+}
+
 // ── Service ──────────────────────────────────────────────────────────────────
 
 export class SchedulerService {
@@ -201,6 +220,19 @@ export class SchedulerService {
     }
   }
 
+  /**
+   * Compute the user-facing warnings for a given task config. Currently only
+   * returns the queue-not-implemented notice; plumbed as a single helper so
+   * the API layer and CRUD callers stay in sync.
+   */
+  static computeTaskWarnings(task: { overlapPolicy?: string | null }): string[] {
+    const warnings: string[] = [];
+    if (task.overlapPolicy === 'queue') {
+      warnings.push(QUEUE_NOT_IMPLEMENTED_WARNING);
+    }
+    return warnings;
+  }
+
   createTask(input: CreateScheduleInput): ScheduledTask {
     // Fail fast at the service layer so non-REST callers (e.g. CLI, tests,
     // or future internal seeds) cannot persist an unmountable row that
@@ -239,6 +271,11 @@ export class SchedulerService {
 
     // Re-read so the returned row reflects any nextRunAt persisted by mountJob.
     const persisted = this.getTask(id) ?? row;
+    if (persisted.overlapPolicy === 'queue') {
+      log.warn(
+        `Schedule ${persisted.name} configured with overlapPolicy='queue': ${QUEUE_NOT_IMPLEMENTED_WARNING}`,
+      );
+    }
     log.info(`Created schedule: ${persisted.name} (${persisted.cronExpr})`);
     return persisted;
   }
@@ -295,7 +332,16 @@ export class SchedulerService {
       }
     }
 
-    return this.getTask(id)!;
+    const persisted = this.getTask(id)!;
+    // Warn whenever the post-update task is configured for 'queue', not only
+    // when the patch itself flipped to 'queue' — touching any field on an
+    // already-queue-configured task should still surface the limitation.
+    if (persisted.overlapPolicy === 'queue') {
+      log.warn(
+        `Schedule ${persisted.name} updated with overlapPolicy='queue': ${QUEUE_NOT_IMPLEMENTED_WARNING}`,
+      );
+    }
+    return persisted;
   }
 
   deleteTask(id: string): void {
@@ -511,15 +557,25 @@ export class SchedulerService {
     }
 
     // ── Overlap policy check ──
-    // 'skip' (default) and 'queue' (MVP fallback to skip) both record a
-    // skipped row when the previous run is still active. 'allow' lets it run.
-    if (
-      (task.overlapPolicy === 'skip' || task.overlapPolicy === 'queue') &&
-      (this.running.get(task.id) ?? 0) > 0
-    ) {
-      log.info(`Skipping overlapping execution for ${task.name}`);
-      recordSkip('overlap with previous run');
-      return;
+    // 'skip' (default) records a skipped row when the previous run is still
+    // active. 'queue' is documented but not yet implemented — it currently
+    // falls back to 'skip' but logs a clear warning so users know their queue
+    // setting is a no-op rather than silently doing nothing. 'allow' is
+    // permitted to run regardless.
+    if ((this.running.get(task.id) ?? 0) > 0) {
+      if (task.overlapPolicy === 'skip') {
+        log.info(`Skipping overlapping execution for ${task.name}`);
+        recordSkip('overlap with previous run');
+        return;
+      }
+      if (task.overlapPolicy === 'queue') {
+        log.warn(
+          `Skipping overlapping execution for ${task.name}: ${QUEUE_NOT_IMPLEMENTED_WARNING}`,
+        );
+        recordSkip(`overlap with previous run (${QUEUE_NOT_IMPLEMENTED_WARNING})`);
+        return;
+      }
+      // overlapPolicy === 'allow' — fall through and run concurrently.
     }
 
     this.running.set(task.id, (this.running.get(task.id) ?? 0) + 1);
@@ -564,42 +620,95 @@ export class SchedulerService {
       `Executing scheduled task: ${task.name} [${executionId}] (${triggerType})`,
     );
 
+    // ── Execution + retry loop ──
+    // One execution row per scheduler trigger (matches existing semantics);
+    // retries re-run the same work without inserting additional rows. The
+    // final row reflects the outcome of the last attempt and the error
+    // string includes the attempt count when retries were exhausted.
+    //
+    // Per task spec: total attempts = maxRetries + 1 (one initial + N retries).
+    // Backoff between retries is min(1000 * 2^(n-1), 30000).
     let status: 'completed' | 'failed' | 'timeout' = 'completed';
     let error: string | null = null;
+    const totalAttempts = Math.max(1, (task.maxRetries ?? 0) + 1);
 
     try {
-      const executionPromise = this.mainAgent.handleMessage(
-        task.prompt,
-        undefined,
-        undefined,
-        task.agentMode,
-      );
-
-      if (task.timeoutSec > 0) {
-        const timeoutMs = task.timeoutSec * 1000;
+      for (let attempt = 1; attempt <= totalAttempts; attempt++) {
+        // ── Best-effort cancellation: AbortController for this attempt ──
+        // mainAgent.handleMessage now accepts an external abort signal that
+        // it links to its internal controller (cancels streamConversation,
+        // stops orchestration). On timeout we abort it AND log loudly so
+        // operators know an unscheduled background run may still be active
+        // even after the recorded row is finalised.
+        const abortController = new AbortController();
         let timer: ReturnType<typeof setTimeout> | undefined;
+        let timedOut = false;
+
+        const executionPromise = this.mainAgent.handleMessage(
+          task.prompt,
+          undefined,
+          undefined,
+          task.agentMode,
+          abortController.signal,
+        );
+
         try {
-          await Promise.race([
-            executionPromise,
-            new Promise<never>((_, reject) => {
-              timer = setTimeout(
-                () =>
-                  reject(new Error(`Timeout after ${task.timeoutSec}s`)),
-                timeoutMs,
-              );
-            }),
-          ]);
+          if (task.timeoutSec > 0) {
+            const timeoutMs = task.timeoutSec * 1000;
+            await Promise.race([
+              executionPromise,
+              new Promise<never>((_, reject) => {
+                timer = setTimeout(() => {
+                  timedOut = true;
+                  log.warn(
+                    `Scheduled task TIMED OUT — aborting execution (best-effort): id=${task.id} name="${task.name}" agentMode=${task.agentMode} attempt=${attempt}/${totalAttempts} timeoutSec=${task.timeoutSec}. ` +
+                    'NOTE: the underlying agent execution may still be running in the background; ' +
+                    'it has been signalled to abort but cooperative cancellation is best-effort.',
+                  );
+                  abortController.abort();
+                  reject(new Error(`Timeout after ${task.timeoutSec}s`));
+                }, timeoutMs);
+              }),
+            ]);
+          } else {
+            await executionPromise;
+          }
+          // Success — short-circuit out of the retry loop.
+          status = 'completed';
+          error = null;
+          if (attempt > 1) {
+            log.info(
+              `Scheduled task ${task.name} succeeded on retry attempt ${attempt}/${totalAttempts}`,
+            );
+          }
+          break;
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          const attemptStatus: 'failed' | 'timeout' =
+            timedOut || errMsg.startsWith('Timeout after') ? 'timeout' : 'failed';
+          status = attemptStatus;
+          error = errMsg;
+
+          if (attempt < totalAttempts) {
+            const backoffMs = computeRetryBackoffMs(attempt);
+            log.warn(
+              `Scheduled task ${task.name} ${attemptStatus} on attempt ${attempt}/${totalAttempts}: ${errMsg} — retrying in ${backoffMs}ms`,
+            );
+            await new Promise<void>((resolve) => setTimeout(resolve, backoffMs));
+          } else {
+            // All attempts exhausted — record final failure.
+            const finalMsg = totalAttempts > 1
+              ? `${errMsg} (failed after ${totalAttempts} attempt${totalAttempts === 1 ? '' : 's'})`
+              : errMsg;
+            error = finalMsg;
+            log.error(
+              `Scheduled task ${task.name} ${attemptStatus} on final attempt ${attempt}/${totalAttempts}: ${errMsg}`,
+            );
+          }
         } finally {
           if (timer) clearTimeout(timer);
         }
-      } else {
-        await executionPromise;
       }
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      status = errMsg.startsWith('Timeout after') ? 'timeout' : 'failed';
-      error = errMsg;
-      log.error(`Scheduled task ${task.name} ${status}: ${errMsg}`);
     } finally {
       const remaining = (this.running.get(task.id) ?? 1) - 1;
       if (remaining <= 0) this.running.delete(task.id);

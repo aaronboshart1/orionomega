@@ -170,6 +170,46 @@ describe('schedules routes', () => {
     expect(JSON.parse(mock.body).task.name).toBe('renamed');
   });
 
+  it('POST /api/schedules with overlapPolicy=queue surfaces a warning in the response', async () => {
+    const body = JSON.stringify({
+      name: 'q-create', cronExpr: '0 9 * * *', prompt: 'p', overlapPolicy: 'queue',
+    });
+    const req = createMockPostReq('/api/schedules', body);
+    const { mock, res } = createMockRes();
+    await handleCreateSchedule(req, res, scheduler, config);
+    expect(mock.statusCode).toBe(201);
+    const parsed = JSON.parse(mock.body) as { task: { overlapPolicy: string }; warnings?: string[] };
+    expect(parsed.task.overlapPolicy).toBe('queue');
+    expect(parsed.warnings).toBeDefined();
+    expect(parsed.warnings?.[0]).toMatch(/queue.*not yet implemented/);
+  });
+
+  it('POST /api/schedules with overlapPolicy=skip omits the warnings field', async () => {
+    const body = JSON.stringify({
+      name: 'skip-create', cronExpr: '0 9 * * *', prompt: 'p', overlapPolicy: 'skip',
+    });
+    const req = createMockPostReq('/api/schedules', body);
+    const { mock, res } = createMockRes();
+    await handleCreateSchedule(req, res, scheduler, config);
+    expect(mock.statusCode).toBe(201);
+    const parsed = JSON.parse(mock.body) as { task: unknown; warnings?: string[] };
+    expect(parsed.warnings).toBeUndefined();
+  });
+
+  it('PUT /api/schedules/:id surfaces the queue warning when switching to queue', async () => {
+    const created = scheduler.createTask({
+      name: 'q-update', cronExpr: '0 9 * * *', prompt: 'p',
+    });
+    const body = JSON.stringify({ overlapPolicy: 'queue' });
+    const req = createMockPostReq(`/api/schedules/${created.id}`, body);
+    const { mock, res } = createMockRes();
+    await handleUpdateSchedule(req, res, created.id, scheduler, config);
+    expect(mock.statusCode).toBe(200);
+    const parsed = JSON.parse(mock.body) as { task: { overlapPolicy: string }; warnings?: string[] };
+    expect(parsed.task.overlapPolicy).toBe('queue');
+    expect(parsed.warnings?.[0]).toMatch(/queue.*not yet implemented/);
+  });
+
   it('DELETE /api/schedules/:id soft-deletes the task', () => {
     const created = scheduler.createTask({
       name: 'to-delete', cronExpr: '0 9 * * *', prompt: 'p',
