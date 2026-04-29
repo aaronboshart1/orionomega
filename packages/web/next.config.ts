@@ -69,6 +69,18 @@ const nextConfig: NextConfig = {
   experimental: {
     optimizePackageImports: ['lucide-react', '@xyflow/react'],
   },
+  async rewrites() {
+    // Forward `/api/gateway/<path>` to the gateway service. The custom server in
+    // `server.mjs` intercepts these requests before they reach Next.js, so this
+    // rewrite is the fallback for `next dev` / `next start` (no custom server).
+    const gatewayUrl = (process.env.GATEWAY_URL || 'http://127.0.0.1:8000').replace(/\/+$/, '');
+    return [
+      {
+        source: '/api/gateway/:path*',
+        destination: `${gatewayUrl}/:path*`,
+      },
+    ];
+  },
   async headers() {
     return [
       {
