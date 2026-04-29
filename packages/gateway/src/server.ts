@@ -12,7 +12,7 @@ import { resolve as resolvePath, normalize, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn as spawnProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { readConfig, normalizeBindAddresses, MainAgent, CommandFileLoader, createLogger, setGlobalLogLevel, enableFileLogging, discoverModels, clearModelCache, auditApiRequest, setCodingOrchestatorEmitters, restartWebUI, BUILD_INFO as CORE_BUILD_INFO, getStaleBuildStatus, getDatabaseStatus } from '@orionomega/core';
+import { readConfig, normalizeBindAddresses, MainAgent, CommandFileLoader, createLogger, setGlobalLogLevel, enableFileLogging, discoverModels, clearModelCache, auditApiRequest, setCodingOrchestatorEmitters, restartWebUI, getDb, BUILD_INFO as CORE_BUILD_INFO, getStaleBuildStatus, getDatabaseStatus } from '@orionomega/core';
 import type { MainAgentConfig, MainAgentCallbacks, LogLevel, PlannerOutput, StaleBuildStatus } from '@orionomega/core';
 import { BUILD_INFO as GATEWAY_BUILD_INFO } from './generated/build-info.js';
 import { setLogLevel as setHindsightLogLevel } from '@orionomega/hindsight';
@@ -98,6 +98,22 @@ try {
   };
   hindsightUrl = 'http://localhost:8888';
   log.warn('Could not load config from @orionomega/core — using defaults');
+}
+
+// ---------------------------------------------------------------------------
+// Database Migrations (H4)
+// ---------------------------------------------------------------------------
+// Run pending SQL migrations BEFORE constructing any service that touches
+// the database. Without this, services would race against migrations and
+// fail with "no such table" errors (~493 historical occurrences in the
+// audit). If migrations fail we exit non-zero rather than starting in a
+// broken state.
+try {
+  getDb(); // triggers runMigrations(); throws if any migration fails
+  log.info('[startup] Database migrations applied');
+} catch (err) {
+  console.error('[gateway] FATAL: Database migration failed:', err);
+  process.exit(1);
 }
 
 // ---------------------------------------------------------------------------
@@ -1540,6 +1556,18 @@ delete process.env.ORIONOMEGA_RESTART_DELAY;
 let activeListeners = 0;
 let failedListeners = 0;
 
+/**
+ * C2: Module-scoped registry of pending bind-retry timers so the shutdown
+ * sequence can clear them. Without this, an EADDRINUSE retry could fire
+ * mid-shutdown and call `srv.listen(...)` *after* the server was supposed
+ * to be torn down — that is what produced the "all bind addresses failed"
+ * fatal crashes (78 of them in the audit) immediately after a SIGTERM.
+ */
+const pendingBindRetryTimers = new Set<ReturnType<typeof setTimeout>>();
+
+/** Set to true on shutdown so retry handlers stop scheduling new attempts. */
+let shuttingDown = false;
+
 function setupServerForAddress(address: string): import('node:http').Server {
   const srv = createServer(handleRequest);
   servers.push(srv);
@@ -1549,6 +1577,7 @@ function setupServerForAddress(address: string): import('node:http').Server {
   const MAX_LISTEN_ATTEMPTS = 10;
 
   srv.on('error', (err: NodeJS.ErrnoException) => {
+    if (shuttingDown) return; // C2: drop late errors during shutdown
     if (err.code === 'EADDRINUSE') {
       listenAttempts++;
       if (listenAttempts >= MAX_LISTEN_ATTEMPTS) {
@@ -1560,9 +1589,12 @@ function setupServerForAddress(address: string): import('node:http').Server {
       log.warn(`Port ${config.port} on ${address} in use — retrying in 2 s… (attempt ${listenAttempts}/${MAX_LISTEN_ATTEMPTS})`);
       if (!retryTimer) {
         retryTimer = setTimeout(() => {
+          pendingBindRetryTimers.delete(retryTimer!);
           retryTimer = null;
+          if (shuttingDown) return; // race: shutdown started while we slept
           srv.listen(config.port, address);
         }, 2000);
+        pendingBindRetryTimers.add(retryTimer);
       }
     } else {
       log.error(`Server error on ${address}`, { error: err.message, code: err.code });
@@ -1680,64 +1712,132 @@ if (restartDelay > 0) {
 // Graceful Shutdown
 // ---------------------------------------------------------------------------
 
-async function shutdown(signal: string): Promise<void> {
-  log.info(` ${signal} received — shutting down gracefully…`);
+/**
+ * Hard upper bound on the entire shutdown sequence.
+ *
+ * C2: Once this expires we stop waiting and kill the process anyway. This
+ * prevents the "shutdown hangs forever" state that previously held the
+ * port and caused the next process to crash on rebind.
+ */
+const SHUTDOWN_DEADLINE_MS = 5000;
 
-  wsHandler.broadcast({
-    id: randomBytes(8).toString('hex'),
-    type: 'command_result',
-    commandResult: { command: 'restart', success: true, message: 'Gateway restarting…' },
-  });
-
-  clearInterval(hindsightHealthTimer);
-  stopRateLimitCleanup();
-  scheduler?.stop();
-  wsHandler.shutdown();
-  eventStreamer.destroy();
-
-  const serversClosed = new Promise<void>((resolve) => {
-    let closed = 0;
-    const total = servers.length;
-    if (total === 0) { resolve(); return; }
-    for (const srv of servers) {
-      srv.close(() => {
-        closed++;
-        if (closed >= total) {
-          log.info(' All servers closed — port released.');
-          resolve();
-        }
-      });
-    }
-  });
-
-  await Promise.race([
-    serversClosed,
-    new Promise<void>((resolve) => setTimeout(() => {
-      log.warn(' Server close timed out after 3 s — port may still be held.');
-      resolve();
-    }, 3000)),
+/** Race a promise against a timeout, resolving on either path. */
+function withDeadline<T>(p: Promise<T>, ms: number, label: string): Promise<void> {
+  return Promise.race([
+    p.then(() => undefined),
+    new Promise<void>((resolve) => {
+      const t = setTimeout(() => {
+        log.warn(`${label} did not finish within ${ms}ms — moving on`);
+        resolve();
+      }, ms);
+      t.unref?.();
+    }),
   ]);
+}
 
-  if (mainAgent) {
+let shutdownInProgress: Promise<void> | null = null;
+
+async function shutdown(signal: string): Promise<void> {
+  // Make shutdown idempotent: a second SIGTERM during shutdown should not
+  // restart the sequence.
+  if (shutdownInProgress) return shutdownInProgress;
+
+  shutdownInProgress = (async () => {
+    log.info(` ${signal} received — shutting down gracefully…`);
+    shuttingDown = true;
+
+    // C2: Stop accepting new work IMMEDIATELY.
+    // Clear any pending bind-retry timers so they cannot fire mid-shutdown
+    // and try to re-listen on the port we're about to release.
+    for (const t of pendingBindRetryTimers) clearTimeout(t);
+    pendingBindRetryTimers.clear();
+    clearInterval(hindsightHealthTimer);
+    stopRateLimitCleanup();
+    scheduler?.stop();
+    eventStreamer.destroy();
+
+    // Notify clients (best-effort, before tearing down the WS server).
     try {
-      await Promise.race([
-        mainAgent.summarizeSession(),
-        new Promise<void>((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000)),
-      ]);
-      log.info('Session summarized during shutdown');
-    } catch (err) {
-      log.warn('Session summarization failed during shutdown', {
-        error: err instanceof Error ? err.message : String(err),
+      wsHandler.broadcast({
+        id: randomBytes(8).toString('hex'),
+        type: 'command_result',
+        commandResult: { command: 'restart', success: true, message: 'Gateway restarting…' },
       });
+    } catch {
+      // ignore broadcast errors during shutdown
     }
-  }
 
-  sessionManager.shutdown();
-  stateStore.shutdown();
-  feedService.destroy();
+    // C2: Run the slow bits in PARALLEL with a single hard deadline.
+    //   - WebSocket close + force-terminate stragglers
+    //   - HTTP server close
+    //   - Session summarization (was previously sequential, doubling the
+    //     shutdown budget)
+    const wsClosed = wsHandler.shutdown(1500);
 
-  log.info(' Shutdown complete.');
-  process.exit(0);
+    const serversClosed = new Promise<void>((resolve) => {
+      const total = servers.length;
+      if (total === 0) { resolve(); return; }
+      let closed = 0;
+      for (const srv of servers) {
+        srv.close(() => {
+          closed++;
+          if (closed >= total) resolve();
+        });
+        // Force-close any keep-alive connections so srv.close() can complete
+        // promptly. Without this, an idle HTTP keep-alive socket can hold
+        // server.close pending until its keep-alive timeout (often 5+s),
+        // which is what produced the "Server close timed out after 3s" logs.
+        try {
+          (srv as unknown as { closeAllConnections?: () => void }).closeAllConnections?.();
+        } catch {
+          // ignore — best effort
+        }
+      }
+    });
+
+    const summaryDone = mainAgent
+      ? mainAgent.summarizeSession().then(
+          () => log.info('Session summarized during shutdown'),
+          (err) => log.warn('Session summarization failed during shutdown', {
+            error: err instanceof Error ? err.message : String(err),
+          }),
+        )
+      : Promise.resolve();
+
+    await withDeadline(
+      Promise.all([wsClosed, serversClosed, summaryDone]),
+      SHUTDOWN_DEADLINE_MS,
+      'Shutdown',
+    );
+
+    // After the deadline, force-close any HTTP connections that are still
+    // hanging on regardless of whether srv.close() returned. Belt-and-braces
+    // protection so the port is reliably released.
+    for (const srv of servers) {
+      try {
+        (srv as unknown as { closeAllConnections?: () => void }).closeAllConnections?.();
+      } catch {
+        // ignore
+      }
+    }
+    log.info(' All servers closed — port released.');
+
+    // Final cleanup — synchronous, runs after the deadline.
+    try { sessionManager.shutdown(); } catch (err) {
+      log.warn('sessionManager.shutdown failed', { error: err instanceof Error ? err.message : String(err) });
+    }
+    try { stateStore.shutdown(); } catch (err) {
+      log.warn('stateStore.shutdown failed', { error: err instanceof Error ? err.message : String(err) });
+    }
+    try { feedService.destroy(); } catch (err) {
+      log.warn('feedService.destroy failed', { error: err instanceof Error ? err.message : String(err) });
+    }
+
+    log.info(' Shutdown complete.');
+    process.exit(0);
+  })();
+
+  return shutdownInProgress;
 }
 
 process.on('SIGTERM', () => shutdown('SIGTERM'));

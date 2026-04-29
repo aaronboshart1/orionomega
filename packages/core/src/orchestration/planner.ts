@@ -139,17 +139,29 @@ export class Planner {
       }
     }
 
-    const systemPrompt = this.buildPlannerPrompt(task, context, discoveredModels, appConfig.models.default, infraContext);
+    // C1: Build the prompt with a token-budget guard so we never blow past
+    // the planner model's input limit. If the assembled prompt is too large
+    // we trim the lowest-priority sections first (infraContext → memories →
+    // files); if it's still too large we hard-truncate.
+    const systemPrompt = this.buildBoundedPlannerPrompt({
+      task,
+      context,
+      discoveredModels,
+      mainModel: appConfig.models.default,
+      infraContext,
+    });
 
     try {
       log.info(`Planning task with model ${model}: "${task.slice(0, 80)}..."`);
 
+      // M1: Drop the deprecated `temperature` field — Claude 4+ models reject
+      // it with a 400 error, which previously dropped us into the single-node
+      // fallback plan on every orchestration.
       const response = await client.createMessage({
         model,
         messages: [{ role: 'user', content: task }],
         system: systemPrompt,
         maxTokens: 16384,
-        temperature: 0.2,
       });
 
       // Extract text content from response
@@ -336,6 +348,90 @@ export class Planner {
    * @param context - Optional additional context (memories, skills, files).
    * @returns The complete system prompt string.
    */
+  /**
+   * C1: Maximum character budget for the planner system prompt + task.
+   *
+   * The planner runs on Opus (1M token input limit). At ~3.5 chars/token a
+   * 1M-token request is ~3.5M chars; we cap at 2.4M chars (~685k tokens) to
+   * keep generous headroom for the user's task body and model output. This
+   * stops the runaway 2.8M–4.1M-token requests that previously got rejected
+   * and forced every plan into the single-node fallback.
+   */
+  private static readonly MAX_PROMPT_CHARS = 2_400_000;
+
+  /**
+   * C1: Assemble the planner prompt with a token-budget guard.
+   *
+   * If the combined prompt exceeds `MAX_PROMPT_CHARS`, we trim the
+   * lowest-priority sections first:
+   *   1. infraContext (largest and least essential — recallable later)
+   *   2. memories
+   *   3. workspace files
+   * If after dropping all three we're still over budget, the prompt is
+   * hard-truncated. Each step is logged so operators can spot context
+   * pressure in the logs.
+   */
+  buildBoundedPlannerPrompt(args: {
+    task: string;
+    context?: { memories?: string[]; availableSkills?: string[]; workspaceFiles?: string[] };
+    discoveredModels?: DiscoveredModel[];
+    mainModel?: string;
+    infraContext?: string;
+  }): string {
+    const { task, discoveredModels, mainModel } = args;
+    let { context, infraContext } = args;
+    const budget = Planner.MAX_PROMPT_CHARS;
+
+    let prompt = this.buildPlannerPrompt(task, context, discoveredModels, mainModel, infraContext);
+    if (prompt.length <= budget) return prompt;
+
+    // 1) Drop infraContext.
+    if (infraContext) {
+      log.warn('Planner prompt over budget — dropping infra context', {
+        promptChars: prompt.length,
+        budgetChars: budget,
+        infraContextChars: infraContext.length,
+      });
+      infraContext = undefined;
+      prompt = this.buildPlannerPrompt(task, context, discoveredModels, mainModel, infraContext);
+      if (prompt.length <= budget) return prompt;
+    }
+
+    // 2) Drop memories.
+    if (context?.memories?.length) {
+      log.warn('Planner prompt still over budget — dropping memories', {
+        promptChars: prompt.length,
+        budgetChars: budget,
+        memoryCount: context.memories.length,
+      });
+      context = { ...context, memories: [] };
+      prompt = this.buildPlannerPrompt(task, context, discoveredModels, mainModel, infraContext);
+      if (prompt.length <= budget) return prompt;
+    }
+
+    // 3) Drop workspace files.
+    if (context?.workspaceFiles?.length) {
+      log.warn('Planner prompt still over budget — dropping workspace files', {
+        promptChars: prompt.length,
+        budgetChars: budget,
+        fileCount: context.workspaceFiles.length,
+      });
+      context = { ...context, workspaceFiles: [] };
+      prompt = this.buildPlannerPrompt(task, context, discoveredModels, mainModel, infraContext);
+      if (prompt.length <= budget) return prompt;
+    }
+
+    // 4) Hard truncate as a last resort. Preserve the head of the prompt
+    //    (rules, schema, model guide) and append a marker so the LLM is told
+    //    the trailing context was cut.
+    log.warn('Planner prompt still over budget after dropping context — hard truncating', {
+      promptChars: prompt.length,
+      budgetChars: budget,
+    });
+    const marker = '\n\n[context truncated to fit model input budget]\n';
+    return prompt.slice(0, Math.max(0, budget - marker.length)) + marker;
+  }
+
   buildPlannerPrompt(
     task: string,
     context?: object,
@@ -546,11 +642,12 @@ If the error is unfixable (e.g. missing API key, permission denied), return an e
       if (!apiKey) return null;
       const client = new AnthropicClient(apiKey);
 
+      // M1: Drop the deprecated `temperature` field — Claude 4+ models reject
+      // requests that send it (this is a second occurrence — see plan() above).
       const response = await client.createMessage({
         model: this.config.model,
         messages: [{ role: 'user', content: prompt }],
         maxTokens: 2048,
-        temperature: 0,
       });
 
       const text = response.content

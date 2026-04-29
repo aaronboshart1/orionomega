@@ -23,12 +23,60 @@ const INITIAL_BACKOFF_MS = 500;
 /** F14: Debounce window — max 1 summary per 5-minute window. */
 const DEBOUNCE_WINDOW_MS = 5 * 60 * 1000;
 
+/**
+ * C1: Maximum character budget for the assembled summary prompt.
+ *
+ * Haiku accepts up to ~200k input tokens; using a conservative 4 chars/token
+ * ratio that's ~800k chars of headroom. We cap at 500k chars to keep room for
+ * the system framing, response, and tokenization variance, so the request can
+ * never blow past the model's input limit (which previously caused every
+ * summary attempt to fail silently and let the conversation history grow
+ * unbounded).
+ */
+const MAX_PROMPT_CHARS = 500_000;
+
+/** Marker injected when older messages are dropped. */
+const TRUNCATION_MARKER = '[earlier messages truncated]';
+
 const SUMMARY_PROMPT = `Summarize this conversation in 2-4 sentences. Focus on:
 - What was accomplished
 - Key decisions made
 - Next steps or open items
 
 Be concise and factual. No preamble.`;
+
+/**
+ * C1: Build a conversation transcript that fits within `maxChars`.
+ *
+ * Renders messages from newest → oldest, stops once the budget would be
+ * exceeded, and prepends a truncation marker if any messages were dropped.
+ * Preserves the most recent messages because they carry the freshest context
+ * and are most useful for the summary.
+ */
+function buildBoundedTranscript(
+  messages: { role: string; content: string }[],
+  maxChars: number,
+): { text: string; truncated: boolean; keptCount: number } {
+  const rendered: string[] = [];
+  let total = 0;
+  let kept = 0;
+
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]!;
+    const line = `[${m.role}]: ${m.content}`;
+    // Account for the "\n\n" separator we will join with.
+    const cost = line.length + (rendered.length > 0 ? 2 : 0);
+    if (total + cost > maxChars) break;
+    rendered.unshift(line);
+    total += cost;
+    kept++;
+  }
+
+  const truncated = kept < messages.length;
+  const body = rendered.join('\n\n');
+  const text = truncated ? `${TRUNCATION_MARKER}\n\n${body}` : body;
+  return { text, truncated, keptCount: kept };
+}
 
 /**
  * Retry an async operation with exponential backoff.
@@ -145,10 +193,28 @@ export class SessionSummarizer {
     }
 
     try {
-      const conversationText = messages
-        .map((m) => `[${m.role}]: ${m.content}`)
-        .join('\n\n');
+      // C1: Bound the transcript so the prompt cannot exceed the model's
+      // input limit. Account for the surrounding framing (SUMMARY_PROMPT and
+      // separators) when computing the budget.
+      const framingOverhead = SUMMARY_PROMPT.length + '\n\n---\n\n'.length + 1024;
+      const transcriptBudget = Math.max(1024, MAX_PROMPT_CHARS - framingOverhead);
+      const { text: conversationText, truncated, keptCount } = buildBoundedTranscript(
+        messages,
+        transcriptBudget,
+      );
 
+      if (truncated) {
+        log.warn('Session summary input truncated to fit model context', {
+          totalMessages: messages.length,
+          keptMessages: keptCount,
+          droppedMessages: messages.length - keptCount,
+          transcriptChars: conversationText.length,
+          budgetChars: transcriptBudget,
+        });
+      }
+
+      // C1/M1: Drop the deprecated `temperature` field — Claude 4+ models
+      // reject it with a 400 error.
       const response = await this.anthropic.createMessage({
         model: this.model,
         messages: [
@@ -158,7 +224,6 @@ export class SessionSummarizer {
           },
         ],
         maxTokens: 512,
-        temperature: 0,
       });
 
       const summary = response.content

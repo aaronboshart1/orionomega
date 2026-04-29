@@ -620,6 +620,45 @@ export class PersistenceService {
   }
 
   /**
+   * H4: Persist a workflow row + an initial workflow event in a single
+   * transaction.
+   *
+   * `workflow_events.workflow_id` has a FOREIGN KEY → `workflows.id`. When
+   * the upsert and the event insert ran as two separate statements they
+   * could be interleaved with another connection's read, producing
+   * `FOREIGN KEY constraint failed` errors at workflow-dispatch time
+   * (~65 occurrences in the audit). Wrapping both in a single transaction
+   * guarantees the parent row is visible before the child insert runs.
+   *
+   * Callers should prefer this over calling `upsertWorkflow` followed by
+   * `appendWorkflowEvent` for the dispatch event.
+   */
+  persistWorkflowWithEvent(workflow: WorkflowInput, event: WorkflowEventInput): void {
+    try {
+      // Use the underlying better-sqlite3 transaction wrapper directly.
+      // db.transaction(fn) returns a function that runs `fn` atomically when
+      // invoked, so we capture and immediately call it.
+      const rawDb = (
+        this.db as unknown as {
+          session: { client: { transaction: (fn: () => void) => () => void } };
+        }
+      ).session.client;
+      const tx = rawDb.transaction(() => {
+        this.upsertWorkflow(workflow);
+        this.appendWorkflowEvent(event);
+      });
+      tx();
+    } catch (err) {
+      log.error('[persistence:persistWorkflowWithEvent] Failed', {
+        workflowId: workflow.id,
+        eventId: event.id,
+        error: (err as Error).message,
+      });
+      throw err;
+    }
+  }
+
+  /**
    * Get all workflow events for a workflow, ordered by seq.
    */
   getWorkflowEvents(workflowId: string): WorkflowEvent[] {

@@ -145,22 +145,60 @@ export class WebSocketHandler {
 
   /**
    * Gracefully shut down all connections and clean up timers.
+   *
+   * C2: Returns a Promise that resolves when the WebSocket server has fully
+   * closed. Sends a 1001 close frame, then schedules a short fallback that
+   * calls `terminate()` on any connection that hasn't completed the close
+   * handshake. Without this fallback, half-closed sockets can hold the
+   * underlying HTTP server open indefinitely, which is what produced the
+   * `server.close timed out` warnings on shutdown.
+   *
+   * @param graceMs - How long to wait after sending close frames before
+   *                  force-terminating remaining sockets. Defaults to 1500ms.
    */
-  shutdown(): void {
+  shutdown(graceMs = 1500): Promise<void> {
     if (this.pingTimer) {
       clearInterval(this.pingTimer);
       this.pingTimer = null;
     }
 
-    for (const conn of this.connections.values()) {
+    // Snapshot the live connections so we can terminate stragglers later.
+    const conns = Array.from(this.connections.values());
+
+    // 1) Send the polite close frame.
+    for (const conn of conns) {
       try {
         conn.ws.close(1001, 'Server shutting down');
       } catch {
         // ignore close errors during shutdown
       }
     }
-    this.connections.clear();
-    this.wss.close();
+
+    return new Promise<void>((resolve) => {
+      // 2) Force-terminate stragglers after the grace window.
+      const forceTimer = setTimeout(() => {
+        for (const conn of conns) {
+          const state = conn.ws.readyState;
+          if (state !== WebSocket.CLOSED) {
+            try {
+              conn.ws.terminate();
+            } catch {
+              // ignore — best effort
+            }
+          }
+        }
+      }, graceMs);
+      // Don't keep the event loop alive just for this fallback.
+      forceTimer.unref?.();
+
+      // 3) Close the underlying server. The callback fires once every
+      //    upgraded socket is gone.
+      this.wss.close(() => {
+        clearTimeout(forceTimer);
+        this.connections.clear();
+        resolve();
+      });
+    });
   }
 
   /** Get the number of active connections. */
