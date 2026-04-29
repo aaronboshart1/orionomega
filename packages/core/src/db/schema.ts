@@ -308,17 +308,31 @@ export const clientState = sqliteTable(
 
 // ── Scheduled Tasks ──────────────────────────────────────────────────────────
 
+/**
+ * Persisted schedule definitions for recurring/one-time agent task execution.
+ * Mounted in-process by the gateway's SchedulerService at startup; survives
+ * restarts via this table.
+ */
 export const scheduledTasks = sqliteTable('scheduled_tasks', {
   id: text('id').primaryKey(),
   name: text('name').notNull().unique(),
   description: text('description').notNull().default(''),
   cronExpr: text('cron_expr').notNull(),
   prompt: text('prompt').notNull(),
-  agentMode: text('agent_mode').$type<'orchestrate' | 'direct' | 'code'>().notNull().default('orchestrate'),
+  agentMode: text('agent_mode')
+    .$type<'orchestrate' | 'direct' | 'code'>()
+    .notNull()
+    .default('orchestrate'),
   sessionId: text('session_id').notNull().default('default'),
-  status: text('status').$type<'active' | 'paused' | 'deleted'>().notNull().default('active'),
+  status: text('status')
+    .$type<'active' | 'paused' | 'deleted'>()
+    .notNull()
+    .default('active'),
   timezone: text('timezone').notNull().default('UTC'),
-  overlapPolicy: text('overlap_policy').$type<'skip' | 'queue' | 'allow'>().notNull().default('skip'),
+  overlapPolicy: text('overlap_policy')
+    .$type<'skip' | 'queue' | 'allow'>()
+    .notNull()
+    .default('skip'),
   maxRetries: integer('max_retries').notNull().default(0),
   timeoutSec: integer('timeout_sec').notNull().default(0),
   createdAt: text('created_at').notNull(),
@@ -330,13 +344,22 @@ export const scheduledTasks = sqliteTable('scheduled_tasks', {
   runAt: text('run_at'),
 });
 
+/** Execution history for scheduled tasks. */
 export const taskExecutions = sqliteTable('task_executions', {
   id: text('id').primaryKey(),
-  taskId: text('task_id').notNull().references(() => scheduledTasks.id, { onDelete: 'cascade' }),
-  status: text('status').$type<'running' | 'completed' | 'failed' | 'timeout' | 'skipped'>().notNull().default('running'),
+  taskId: text('task_id')
+    .notNull()
+    .references(() => scheduledTasks.id, { onDelete: 'cascade' }),
+  status: text('status')
+    .$type<'running' | 'completed' | 'failed' | 'timeout' | 'skipped'>()
+    .notNull()
+    .default('running'),
   startedAt: text('started_at').notNull(),
   completedAt: text('completed_at'),
   durationSec: real('duration_sec'),
   error: text('error'),
-  triggerType: text('trigger_type').$type<'cron' | 'manual'>().notNull().default('cron'),
+  triggerType: text('trigger_type')
+    .$type<'cron' | 'manual'>()
+    .notNull()
+    .default('cron'),
 });

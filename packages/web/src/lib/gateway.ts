@@ -1363,6 +1363,43 @@ function bindListeners(ws: ReconnectingWebSocket): void {
         }
         break;
       }
+      case 'schedule_triggered': {
+        const t = msg.scheduleTriggered;
+        if (t) {
+          const store = useSchedulesStore.getState();
+          store.markTriggered(t.taskId, t.executionId);
+          store.prependExecution(t.taskId, {
+            id: t.executionId,
+            taskId: t.taskId,
+            status: 'running',
+            startedAt: t.firedAt,
+            completedAt: null,
+            durationSec: null,
+            error: null,
+            // Use the trigger source from the gateway. Older payloads
+            // without this field fall back to 'cron'.
+            triggerType: t.triggerType ?? 'cron',
+          });
+        }
+        break;
+      }
+      case 'schedule_execution_complete': {
+        const c = msg.scheduleExecutionComplete;
+        if (c) {
+          const store = useSchedulesStore.getState();
+          store.clearTriggered(c.taskId, c.executionId);
+          store.updateExecution(c.taskId, c.executionId, {
+            status: c.status,
+            durationSec: c.durationSec,
+            error: c.error,
+            completedAt: c.completedAt,
+          });
+          // Refresh schedule list metadata (lastRunAt, lastStatus, runCount,
+          // nextRunAt, status) when the gateway includes the updated row.
+          if (c.task) store.upsertSchedule(c.task);
+        }
+        break;
+      }
       case 'pong':
         if (healthCheckId && msg.id === healthCheckId) {
           wsReady = true;
@@ -1383,25 +1420,6 @@ function bindListeners(ws: ReconnectingWebSocket): void {
       case 'presence': {
         if (typeof msg.count === 'number') {
           useConnectionStore.getState().setPresenceCount(msg.count);
-        }
-        break;
-      }
-      case 'schedule_triggered': {
-        const schedStore = useSchedulesStore.getState();
-        if (msg.scheduleTriggered) {
-          schedStore.updateScheduleInList(msg.scheduleTriggered.taskId, {
-            lastRunAt: msg.scheduleTriggered.firedAt,
-          });
-        }
-        break;
-      }
-      case 'schedule_execution_complete': {
-        const schedStore = useSchedulesStore.getState();
-        if (msg.scheduleExecutionComplete) {
-          schedStore.updateScheduleInList(msg.scheduleExecutionComplete.taskId, {
-            lastStatus: msg.scheduleExecutionComplete.status,
-            updatedAt: msg.scheduleExecutionComplete.completedAt,
-          });
         }
         break;
       }

@@ -219,3 +219,14 @@ Artifact file paths produced by DAG nodes are clickable in both `WorkflowSummary
 - **Store**: `packages/web/src/stores/file-viewer.ts` — Zustand store managing `openFiles` array and `activeFilePath`; `openFile()` sends `file_read` WS message via `requestFileRead()`, deduplicates tabs, handles errors
 - **Component**: `packages/web/src/components/orchestration/FileViewer.tsx` — tabbed viewer; `.md` files rendered with `MarkdownContent`, others as `<pre>` plaintext; loading/error states inline
 - **Integration**: "Files" tab appears in OrchestrationPane when files are open, with badge count; clicking artifact paths in chat or workflow summary opens the file and switches to the Files tab
+
+## Scheduled Tasks (Cron)
+
+Cron-driven scheduled prompts dispatched through `MainAgent.handleMessage()`. Configured under `scheduling:` in `~/.orionomega/config.yaml` (see `config.example.yaml`); set `enabled: false` to turn off (REST routes return 503).
+
+- **Persistence**: SQLite tables `scheduled_tasks` and `task_executions` (migration `0003_scheduled_tasks.sql`); Drizzle schema in `packages/core/src/db/schema.ts`
+- **Engine**: `packages/gateway/src/scheduler.ts` — `SchedulerService` uses `croner` for scheduling and `cronstrue` for human-readable descriptions; in-memory `Map<id, Cron>` of mounted jobs; supports `skip` overlap policy (queue falls back to skip in MVP); one-shot tasks (`runAt`) auto-pause after first execution; restart recovery marks any `running` rows as failed on startup
+- **REST API**: `packages/gateway/src/routes/schedules.ts` — Zod-validated endpoints under `/api/schedules`: `GET /` (list), `POST /` (create), `GET/PUT/DELETE /:id`, `POST /:id/pause|resume|trigger`, `GET /:id/executions?limit=`, `GET /describe-cron?expr=`
+- **WebSocket events**: `schedule_triggered` (run started) and `schedule_execution_complete` (run finished with status/error/duration) broadcast to all clients via `ServerMessage` in `packages/gateway/src/types.ts`
+- **Web UI**: "Schedules" tab in `SettingsModal` between Skills and WebUI; `packages/web/src/components/settings/SchedulesTab.tsx` provides create/edit form with preset cron expressions, enable/pause toggle, manual trigger, and execution history drawer; `packages/web/src/stores/schedules.ts` Zustand store + REST helpers; live execution updates via WS handlers in `packages/web/src/lib/gateway.ts`
+- **Tests**: `packages/gateway/src/__tests__/{scheduler,schedules-api}.test.ts` — 29 tests covering CRUD, overlap policy, one-shot auto-pause, restart recovery, WS broadcast wiring, and route validation

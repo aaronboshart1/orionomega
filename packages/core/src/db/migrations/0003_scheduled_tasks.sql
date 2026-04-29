@@ -1,4 +1,8 @@
--- Scheduled task definitions
+-- Migration: 0003_scheduled_tasks
+-- Adds tables for the agent task scheduler: scheduled_tasks holds the
+-- recurring/one-shot schedule definitions, task_executions records each
+-- run (cron or manual) for history/audit purposes.
+
 CREATE TABLE IF NOT EXISTS scheduled_tasks (
   id              TEXT    PRIMARY KEY,
   name            TEXT    NOT NULL UNIQUE,
@@ -24,7 +28,6 @@ CREATE TABLE IF NOT EXISTS scheduled_tasks (
 CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_status ON scheduled_tasks(status);
 CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_next_run ON scheduled_tasks(next_run_at);
 
--- Execution history
 CREATE TABLE IF NOT EXISTS task_executions (
   id              TEXT    PRIMARY KEY,
   task_id         TEXT    NOT NULL REFERENCES scheduled_tasks(id) ON DELETE CASCADE,

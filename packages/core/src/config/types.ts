@@ -166,17 +166,6 @@ export interface OrionOmegaConfig {
     additionalDirectories?: string[];
   };
 
-  scheduling?: {
-    /** Whether task scheduling is enabled. Default: true. */
-    enabled: boolean;
-    /** Default timezone for scheduled tasks. Default: 'UTC'. */
-    timezone: string;
-    /** Maximum number of concurrently running scheduled tasks. Default: 3. */
-    maxConcurrent: number;
-    /** Minimum interval in seconds between any two executions of the same task. Default: 60. */
-    minIntervalSec: number;
-  };
-
   /** Coding Mode configuration — transforms OrionOmega into an autonomous coding system. */
   codingMode: {
     /** Whether Coding Mode is active. Default: true. */
@@ -216,5 +205,24 @@ export interface OrionOmegaConfig {
      * 1.0 = default budget; 2.0 = double; 0.5 = half.
      */
     budgetMultiplier: number;
+  };
+
+  /**
+   * Task scheduling configuration.
+   * Controls the in-process scheduler that fires recurring/one-shot prompts
+   * through MainAgent.handleMessage(). All fields are optional and default
+   * to sensible values; the scheduler runs with defaults if this section is
+   * absent. Set `enabled: false` to disable the scheduler entirely (REST
+   * routes will return 503 in that case).
+   */
+  scheduling?: {
+    /** Whether the scheduler engine is enabled. Default: true. */
+    enabled?: boolean;
+    /** Default IANA timezone for new schedules. Default: 'UTC'. */
+    timezone?: string;
+    /** Maximum concurrent scheduled-task executions. Default: 3. */
+    maxConcurrent?: number;
+    /** Minimum interval between executions of any single task (seconds). Default: 60. */
+    minIntervalSec?: number;
   };
 }

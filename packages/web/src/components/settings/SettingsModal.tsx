@@ -1007,8 +1007,6 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
         <div className="flex-1 overflow-y-auto px-4 md:px-6 py-4">
           {activeTab === 'gateway' ? (
             <GatewayTab />
-          ) : activeTab === 'schedules' ? (
-            <SchedulesTab />
           ) : loading ? (
             <div className="flex h-full items-center justify-center">
               <Loader2 size={20} className="animate-spin text-zinc-500" />
@@ -1039,6 +1037,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
               {activeTab === 'omegaclaw' && <OmegaClawTab config={config} onChange={handleChange} models={anthropicModels} modelsLoading={modelsLoading} onRefreshModels={refetchModels} />}
               {activeTab === 'memory' && <MemoryTab config={config} onChange={handleChange} showRestartWarning={needsRestart} />}
               {activeTab === 'skills' && <SkillsTab config={config} onChange={handleChange} />}
+              {activeTab === 'schedules' && <SchedulesTab />}
               {activeTab === 'webui' && <WebUITab config={config} onChange={handleChange} />}
             </>
           )}

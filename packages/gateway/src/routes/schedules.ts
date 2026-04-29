@@ -1,349 +1,338 @@
 /**
  * @module routes/schedules
- * REST API handlers for scheduled task management.
+ * REST endpoints for managing scheduled tasks (cron jobs).
  *
- * Routes (all prefixed with /api/schedules):
- *   GET    /                    — list all non-deleted tasks
- *   POST   /                    — create a new task
- *   GET    /:id                 — get task by ID
- *   PUT    /:id                 — update task
- *   DELETE /:id                 — soft-delete task
- *   POST   /:id/pause           — pause task
- *   POST   /:id/resume          — resume task
- *   POST   /:id/trigger         — manual trigger
- *   GET    /:id/executions      — execution history
- *   GET    /cron/describe       — describe cron expression (?expr=...)
+ * All handlers expect a `SchedulerService` instance — when scheduling is
+ * disabled in config the calling site in `server.ts` should NOT register
+ * these routes, so service availability is the caller's responsibility.
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { z } from 'zod';
+import { Cron } from 'croner';
+import type { SchedulerService } from '../scheduler.js';
+import type { GatewayConfig } from '../types.js';
 import { readBody } from './utils.js';
-import type { SchedulerService, CreateScheduleInput, UpdateScheduleInput } from '../scheduler.js';
+import { checkAuth } from './auth-utils.js';
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ── Schemas ──────────────────────────────────────────────────────────────────
 
-function jsonOk(res: ServerResponse, body: unknown, status = 200): void {
-  const payload = JSON.stringify(body);
+const cronExprSchema = z
+  .string()
+  .min(1, 'cronExpr is required')
+  .refine(
+    (expr) => {
+      try {
+        new Cron(expr, { paused: true }, () => {});
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    { message: 'Invalid cron expression' },
+  );
+
+const isoDateTimeSchema = z
+  .string()
+  .refine((s) => !Number.isNaN(Date.parse(s)), {
+    message: 'Must be a valid ISO 8601 datetime',
+  });
+
+/**
+ * Spec rule: name must start alphanumeric and contain only letters, digits,
+ * spaces, hyphens, and underscores. Bound length to 100 chars.
+ */
+const nameSchema = z
+  .string()
+  .min(1)
+  .max(100)
+  .regex(
+    /^[a-zA-Z0-9][a-zA-Z0-9 _-]*$/,
+    'Name must start with alphanumeric and contain only letters, digits, spaces, hyphens, or underscores',
+  );
+
+const timezoneSchema = z.string().min(1).max(64);
+
+const createScheduleSchema = z.object({
+  name: nameSchema,
+  description: z.string().max(500).optional(),
+  cronExpr: cronExprSchema,
+  prompt: z.string().min(1).max(10_000),
+  agentMode: z.enum(['orchestrate', 'direct', 'code']).optional(),
+  sessionId: z.string().max(128).optional(),
+  timezone: timezoneSchema.optional(),
+  overlapPolicy: z.enum(['skip', 'queue', 'allow']).optional(),
+  maxRetries: z.number().int().min(0).max(5).optional(),
+  timeoutSec: z.number().int().min(0).max(7_200).optional(),
+  // One-shot run timestamp must be in the future at submission time so that
+  // a stale form (or replayed request) cannot enqueue a task that would
+  // immediately fire the moment it's mounted. Parity with the UI guard.
+  runAt: isoDateTimeSchema
+    .refine((iso) => Date.parse(iso) > Date.now(), {
+      message: 'runAt must be a future timestamp',
+    })
+    .optional(),
+});
+
+const updateScheduleSchema = z.object({
+  name: nameSchema.optional(),
+  description: z.string().max(500).optional(),
+  cronExpr: cronExprSchema.optional(),
+  prompt: z.string().min(1).max(10_000).optional(),
+  agentMode: z.enum(['orchestrate', 'direct', 'code']).optional(),
+  timezone: timezoneSchema.optional(),
+  overlapPolicy: z.enum(['skip', 'queue', 'allow']).optional(),
+  maxRetries: z.number().int().min(0).max(5).optional(),
+  timeoutSec: z.number().int().min(0).max(7_200).optional(),
+});
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+function jsonResponse(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { 'Content-Type': 'application/json' });
-  res.end(payload);
+  res.end(JSON.stringify(body));
 }
 
-function jsonError(res: ServerResponse, status: number, message: string): void {
-  res.writeHead(status, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify({ error: message }));
+function errorResponse(res: ServerResponse, status: number, message: string, details?: unknown): void {
+  jsonResponse(res, status, details === undefined ? { error: message } : { error: message, details });
 }
 
-function parseIntParam(params: URLSearchParams, key: string, defaultVal: number): number {
-  const raw = params.get(key);
-  if (!raw) return defaultVal;
-  const n = parseInt(raw, 10);
-  return isNaN(n) ? defaultVal : n;
+async function readJsonBody<T>(
+  req: IncomingMessage,
+  schema: z.ZodSchema<T>,
+): Promise<{ ok: true; data: T } | { ok: false; status: number; message: string; details?: unknown }> {
+  try {
+    const body = await readBody(req);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(body);
+    } catch {
+      return { ok: false, status: 400, message: 'Invalid JSON body' };
+    }
+    const result = schema.safeParse(parsed);
+    if (!result.success) {
+      return {
+        ok: false,
+        status: 400,
+        message: 'Validation failed',
+        details: result.error.flatten(),
+      };
+    }
+    return { ok: true, data: result.data };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Failed to read body';
+    const status = message.includes('exceeds limit') ? 413 : 400;
+    return { ok: false, status, message };
+  }
 }
 
 // ── Handlers ─────────────────────────────────────────────────────────────────
 
-/**
- * GET /api/schedules — list all non-deleted tasks.
- */
-export async function handleListSchedules(
-  _req: IncomingMessage,
+export function handleListSchedules(
+  req: IncomingMessage,
   res: ServerResponse,
   scheduler: SchedulerService,
-): Promise<void> {
-  const tasks = await scheduler.listTasks();
-  jsonOk(res, { tasks });
+  gatewayConfig: GatewayConfig,
+): void {
+  if (!checkAuth(req, res, gatewayConfig)) return;
+  try {
+    const tasks = scheduler.listTasks();
+    jsonResponse(res, 200, { tasks });
+  } catch (err) {
+    errorResponse(res, 500, err instanceof Error ? err.message : 'Failed to list schedules');
+  }
 }
 
-/**
- * POST /api/schedules — create a new scheduled task.
- *
- * Body: { name, cronExpr, prompt, description?, agentMode?, timezone?,
- *         overlapPolicy?, maxRetries?, timeoutSec?, runAt? }
- */
+export function handleGetSchedule(
+  req: IncomingMessage,
+  res: ServerResponse,
+  id: string,
+  scheduler: SchedulerService,
+  gatewayConfig: GatewayConfig,
+): void {
+  if (!checkAuth(req, res, gatewayConfig)) return;
+  const task = scheduler.getTask(id);
+  if (!task) {
+    errorResponse(res, 404, `Schedule ${id} not found`);
+    return;
+  }
+  jsonResponse(res, 200, { task });
+}
+
 export async function handleCreateSchedule(
   req: IncomingMessage,
   res: ServerResponse,
   scheduler: SchedulerService,
+  gatewayConfig: GatewayConfig,
 ): Promise<void> {
-  let raw: string;
+  if (!checkAuth(req, res, gatewayConfig)) return;
+  const parsed = await readJsonBody(req, createScheduleSchema);
+  if (!parsed.ok) {
+    errorResponse(res, parsed.status, parsed.message, parsed.details);
+    return;
+  }
   try {
-    raw = await readBody(req, 32768);
-  } catch {
-    jsonError(res, 413, 'Request body too large');
-    return;
-  }
-
-  let body: unknown;
-  try {
-    body = JSON.parse(raw);
-  } catch {
-    jsonError(res, 400, 'Invalid JSON body');
-    return;
-  }
-
-  if (typeof body !== 'object' || body === null) {
-    jsonError(res, 400, 'Body must be a JSON object');
-    return;
-  }
-
-  const b = body as Record<string, unknown>;
-
-  if (typeof b.name !== 'string' || !b.name.trim()) {
-    jsonError(res, 400, 'Field "name" is required and must be a non-empty string');
-    return;
-  }
-  if (typeof b.cronExpr !== 'string' || !b.cronExpr.trim()) {
-    jsonError(res, 400, 'Field "cronExpr" is required and must be a non-empty string');
-    return;
-  }
-  if (typeof b.prompt !== 'string' || !b.prompt.trim()) {
-    jsonError(res, 400, 'Field "prompt" is required and must be a non-empty string');
-    return;
-  }
-
-  const validAgentModes = new Set(['orchestrate', 'direct', 'code']);
-  if (b.agentMode !== undefined && !validAgentModes.has(b.agentMode as string)) {
-    jsonError(res, 400, 'Field "agentMode" must be "orchestrate", "direct", or "code"');
-    return;
-  }
-  const validOverlapPolicies = new Set(['skip', 'queue', 'allow']);
-  if (b.overlapPolicy !== undefined && !validOverlapPolicies.has(b.overlapPolicy as string)) {
-    jsonError(res, 400, 'Field "overlapPolicy" must be "skip", "queue", or "allow"');
-    return;
-  }
-
-  const input: CreateScheduleInput = {
-    name: (b.name as string).trim(),
-    cronExpr: (b.cronExpr as string).trim(),
-    prompt: (b.prompt as string).trim(),
-    description: typeof b.description === 'string' ? b.description : undefined,
-    agentMode: b.agentMode as CreateScheduleInput['agentMode'],
-    sessionId: typeof b.sessionId === 'string' ? b.sessionId : undefined,
-    timezone: typeof b.timezone === 'string' ? b.timezone : undefined,
-    overlapPolicy: b.overlapPolicy as CreateScheduleInput['overlapPolicy'],
-    maxRetries: typeof b.maxRetries === 'number' ? Math.max(0, b.maxRetries) : undefined,
-    timeoutSec: typeof b.timeoutSec === 'number' ? Math.max(0, b.timeoutSec) : undefined,
-    runAt: typeof b.runAt === 'string' ? b.runAt : undefined,
-  };
-
-  try {
-    const task = await scheduler.createTask(input);
-    jsonOk(res, task, 201);
+    const task = scheduler.createTask(parsed.data);
+    jsonResponse(res, 201, { task });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (msg.toLowerCase().includes('unique') || msg.toLowerCase().includes('already exists')) {
-      jsonError(res, 409, `A task with this name already exists`);
-    } else if (msg.toLowerCase().includes('invalid cron')) {
-      jsonError(res, 400, msg);
-    } else {
-      jsonError(res, 500, 'Failed to create task');
+    const msg = err instanceof Error ? err.message : 'Failed to create schedule';
+    // Surface SQLite UNIQUE constraint violations on `name` as 409 Conflict.
+    if (/UNIQUE constraint failed/i.test(msg)) {
+      errorResponse(res, 409, `A schedule named "${parsed.data.name}" already exists`);
+      return;
     }
+    // Service-layer fail-fast validation (cron / timezone) → 400, not 500.
+    if (/^Invalid (cron expression|timezone)/i.test(msg)) {
+      errorResponse(res, 400, msg);
+      return;
+    }
+    errorResponse(res, 500, msg);
   }
 }
 
-/**
- * GET /api/schedules/:id — get task by ID.
- */
-export async function handleGetSchedule(
-  _req: IncomingMessage,
-  res: ServerResponse,
-  scheduler: SchedulerService,
-  taskId: string,
-): Promise<void> {
-  const task = await scheduler.getTask(taskId);
-  if (!task || task.status === 'deleted') {
-    jsonError(res, 404, 'Schedule not found');
-    return;
-  }
-  jsonOk(res, task);
-}
-
-/**
- * PUT /api/schedules/:id — update task fields.
- *
- * Body: { name?, cronExpr?, prompt?, description?, agentMode?, timezone?,
- *         overlapPolicy?, maxRetries?, timeoutSec? }
- */
 export async function handleUpdateSchedule(
   req: IncomingMessage,
   res: ServerResponse,
+  id: string,
   scheduler: SchedulerService,
-  taskId: string,
+  gatewayConfig: GatewayConfig,
 ): Promise<void> {
-  let raw: string;
+  if (!checkAuth(req, res, gatewayConfig)) return;
+  const parsed = await readJsonBody(req, updateScheduleSchema);
+  if (!parsed.ok) {
+    errorResponse(res, parsed.status, parsed.message, parsed.details);
+    return;
+  }
   try {
-    raw = await readBody(req, 32768);
-  } catch {
-    jsonError(res, 413, 'Request body too large');
-    return;
-  }
-
-  let body: unknown;
-  try {
-    body = JSON.parse(raw);
-  } catch {
-    jsonError(res, 400, 'Invalid JSON body');
-    return;
-  }
-
-  if (typeof body !== 'object' || body === null) {
-    jsonError(res, 400, 'Body must be a JSON object');
-    return;
-  }
-
-  const b = body as Record<string, unknown>;
-
-  const validAgentModes = new Set(['orchestrate', 'direct', 'code']);
-  if (b.agentMode !== undefined && !validAgentModes.has(b.agentMode as string)) {
-    jsonError(res, 400, 'Field "agentMode" must be "orchestrate", "direct", or "code"');
-    return;
-  }
-  const validOverlapPolicies = new Set(['skip', 'queue', 'allow']);
-  if (b.overlapPolicy !== undefined && !validOverlapPolicies.has(b.overlapPolicy as string)) {
-    jsonError(res, 400, 'Field "overlapPolicy" must be "skip", "queue", or "allow"');
-    return;
-  }
-
-  const patch: UpdateScheduleInput = {
-    ...(typeof b.name === 'string' && { name: b.name.trim() }),
-    ...(typeof b.description === 'string' && { description: b.description }),
-    ...(typeof b.cronExpr === 'string' && { cronExpr: b.cronExpr.trim() }),
-    ...(typeof b.prompt === 'string' && { prompt: b.prompt.trim() }),
-    ...(b.agentMode !== undefined && { agentMode: b.agentMode as UpdateScheduleInput['agentMode'] }),
-    ...(typeof b.timezone === 'string' && { timezone: b.timezone }),
-    ...(b.overlapPolicy !== undefined && { overlapPolicy: b.overlapPolicy as UpdateScheduleInput['overlapPolicy'] }),
-    ...(typeof b.maxRetries === 'number' && { maxRetries: Math.max(0, b.maxRetries) }),
-    ...(typeof b.timeoutSec === 'number' && { timeoutSec: Math.max(0, b.timeoutSec) }),
-  };
-
-  try {
-    const updated = await scheduler.updateTask(taskId, patch);
-    if (!updated) {
-      jsonError(res, 404, 'Schedule not found');
+    const task = scheduler.updateTask(id, parsed.data);
+    jsonResponse(res, 200, { task });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Failed to update schedule';
+    if (/UNIQUE constraint failed/i.test(msg)) {
+      errorResponse(res, 409, `A schedule named "${parsed.data.name}" already exists`);
       return;
     }
-    jsonOk(res, updated);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (msg.toLowerCase().includes('invalid cron')) {
-      jsonError(res, 400, msg);
-    } else {
-      jsonError(res, 500, 'Failed to update task');
+    if (/^Invalid (cron expression|timezone)/i.test(msg)) {
+      errorResponse(res, 400, msg);
+      return;
     }
+    errorResponse(res, msg.includes('not found') ? 404 : 500, msg);
   }
 }
 
-/**
- * DELETE /api/schedules/:id — soft-delete task.
- */
-export async function handleDeleteSchedule(
-  _req: IncomingMessage,
-  res: ServerResponse,
-  scheduler: SchedulerService,
-  taskId: string,
-): Promise<void> {
-  const deleted = await scheduler.deleteTask(taskId);
-  if (!deleted) {
-    jsonError(res, 404, 'Schedule not found');
-    return;
-  }
-  jsonOk(res, { deleted: true, taskId });
-}
-
-/**
- * POST /api/schedules/:id/pause — pause an active task.
- */
-export async function handlePauseSchedule(
-  _req: IncomingMessage,
-  res: ServerResponse,
-  scheduler: SchedulerService,
-  taskId: string,
-): Promise<void> {
-  const task = await scheduler.pauseTask(taskId);
-  if (!task) {
-    jsonError(res, 404, 'Schedule not found or not active');
-    return;
-  }
-  jsonOk(res, task);
-}
-
-/**
- * POST /api/schedules/:id/resume — resume a paused task.
- */
-export async function handleResumeSchedule(
-  _req: IncomingMessage,
-  res: ServerResponse,
-  scheduler: SchedulerService,
-  taskId: string,
-): Promise<void> {
-  const task = await scheduler.resumeTask(taskId);
-  if (!task) {
-    jsonError(res, 404, 'Schedule not found or not paused');
-    return;
-  }
-  jsonOk(res, task);
-}
-
-/**
- * POST /api/schedules/:id/trigger — manual fire-and-forget execution.
- */
-export function handleTriggerSchedule(
-  _req: IncomingMessage,
-  res: ServerResponse,
-  scheduler: SchedulerService,
-  taskId: string,
-): void {
-  scheduler.triggerTask(taskId);
-  jsonOk(res, { triggered: true, taskId });
-}
-
-/**
- * GET /api/schedules/:id/executions — execution history.
- *
- * Query parameters:
- *   limit (optional) — max executions (default 50, max 200)
- */
-export async function handleGetExecutions(
+export function handleDeleteSchedule(
   req: IncomingMessage,
   res: ServerResponse,
+  id: string,
   scheduler: SchedulerService,
-  taskId: string,
-): Promise<void> {
-  const rawUrl = req.url ?? '/';
-  const queryStr = rawUrl.split('?')[1] ?? '';
-  const params = new URLSearchParams(queryStr);
-  const limit = Math.min(parseIntParam(params, 'limit', 50), 200);
-
-  const task = await scheduler.getTask(taskId);
-  if (!task || task.status === 'deleted') {
-    jsonError(res, 404, 'Schedule not found');
-    return;
+  gatewayConfig: GatewayConfig,
+): void {
+  if (!checkAuth(req, res, gatewayConfig)) return;
+  try {
+    scheduler.deleteTask(id);
+    jsonResponse(res, 200, { ok: true });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Failed to delete schedule';
+    errorResponse(res, msg.includes('not found') ? 404 : 500, msg);
   }
-
-  const executions = await scheduler.getExecutions(taskId, limit);
-  jsonOk(res, { executions, taskId });
 }
 
-/**
- * GET /api/schedules/cron/describe — human-readable cron description.
- *
- * Query parameters:
- *   expr (required) — cron expression to describe
- */
+export function handlePauseSchedule(
+  req: IncomingMessage,
+  res: ServerResponse,
+  id: string,
+  scheduler: SchedulerService,
+  gatewayConfig: GatewayConfig,
+): void {
+  if (!checkAuth(req, res, gatewayConfig)) return;
+  try {
+    const task = scheduler.pauseTask(id);
+    jsonResponse(res, 200, { task });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Failed to pause schedule';
+    errorResponse(res, msg.includes('not found') ? 404 : 500, msg);
+  }
+}
+
+export function handleResumeSchedule(
+  req: IncomingMessage,
+  res: ServerResponse,
+  id: string,
+  scheduler: SchedulerService,
+  gatewayConfig: GatewayConfig,
+): void {
+  if (!checkAuth(req, res, gatewayConfig)) return;
+  try {
+    const task = scheduler.resumeTask(id);
+    jsonResponse(res, 200, { task });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Failed to resume schedule';
+    errorResponse(res, msg.includes('not found') ? 404 : 500, msg);
+  }
+}
+
+export function handleTriggerSchedule(
+  req: IncomingMessage,
+  res: ServerResponse,
+  id: string,
+  scheduler: SchedulerService,
+  gatewayConfig: GatewayConfig,
+): void {
+  if (!checkAuth(req, res, gatewayConfig)) return;
+  try {
+    scheduler.triggerTask(id);
+    jsonResponse(res, 202, { ok: true, message: 'Triggered' });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Failed to trigger schedule';
+    errorResponse(res, msg.includes('not found') ? 404 : 500, msg);
+  }
+}
+
+export function handleGetExecutions(
+  req: IncomingMessage,
+  res: ServerResponse,
+  id: string,
+  url: URL,
+  scheduler: SchedulerService,
+  gatewayConfig: GatewayConfig,
+): void {
+  if (!checkAuth(req, res, gatewayConfig)) return;
+  // Strict 404 for unknown schedule id (rather than returning an empty list,
+  // which masks typos and hides real client bugs).
+  if (!scheduler.getTask(id)) {
+    errorResponse(res, 404, `Schedule ${id} not found`);
+    return;
+  }
+  const limitRaw = url.searchParams.get('limit');
+  const limit = limitRaw ? Number.parseInt(limitRaw, 10) : 50;
+  try {
+    const executions = scheduler.getExecutions(id, Number.isFinite(limit) ? limit : 50);
+    jsonResponse(res, 200, { executions });
+  } catch (err) {
+    errorResponse(res, 500, err instanceof Error ? err.message : 'Failed to list executions');
+  }
+}
+
 export function handleDescribeCron(
   req: IncomingMessage,
   res: ServerResponse,
+  url: URL,
   scheduler: SchedulerService,
+  gatewayConfig: GatewayConfig,
 ): void {
-  const rawUrl = req.url ?? '/';
-  const queryStr = rawUrl.split('?')[1] ?? '';
-  const params = new URLSearchParams(queryStr);
-  const expr = params.get('expr');
-
+  if (!checkAuth(req, res, gatewayConfig)) return;
+  const expr = url.searchParams.get('expr');
   if (!expr) {
-    jsonError(res, 400, 'Missing required query parameter: expr');
+    errorResponse(res, 400, 'Missing required query parameter: expr');
     return;
   }
-
+  // Validate first via Cron — describeCron returns "Invalid expression" on failure.
+  try {
+    new Cron(expr, { paused: true }, () => {});
+  } catch {
+    jsonResponse(res, 200, { description: 'Invalid expression', valid: false });
+    return;
+  }
   const description = scheduler.describeCron(expr);
-  jsonOk(res, { expr, description });
+  jsonResponse(res, 200, { description, valid: true });
 }

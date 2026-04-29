@@ -1,0 +1,8 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "GU8fyGT6mGbDA3Ymf6FV_"
+uri = "file://.local/exports/scheduler-round2.patch.txt"
+type = "text"
+title = "scheduler-round2.patch (rename to .patch after download)"

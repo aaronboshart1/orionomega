@@ -100,19 +100,34 @@ export type NewRunHistory = InferInsertModel<typeof runHistory>;
 export type ClientState = InferSelectModel<typeof clientState>;
 export type NewClientState = InferInsertModel<typeof clientState>;
 
-// ── Scheduled Tasks ───────────────────────────────────────────────────────────
+// ── Scheduled Tasks ──────────────────────────────────────────────────────────
 
+/** Row as returned by SELECT on scheduled_tasks. */
 export type ScheduledTask = InferSelectModel<typeof scheduledTasks>;
+
+/** Row shape for INSERT into scheduled_tasks. */
 export type NewScheduledTask = InferInsertModel<typeof scheduledTasks>;
 
-export type ScheduledTaskStatus = 'active' | 'paused' | 'deleted';
+/** Lifecycle status for a scheduled task definition. */
+export type ScheduleStatus = 'active' | 'paused' | 'deleted';
+
+/** Agent routing mode for a scheduled task. */
+export type ScheduleAgentMode = 'orchestrate' | 'direct' | 'code';
+
+/** Overlap policy when a task fires while a previous run is still running. */
 export type OverlapPolicy = 'skip' | 'queue' | 'allow';
 
+/** Row as returned by SELECT on task_executions. */
 export type TaskExecution = InferSelectModel<typeof taskExecutions>;
+
+/** Row shape for INSERT into task_executions. */
 export type NewTaskExecution = InferInsertModel<typeof taskExecutions>;
 
-export type TaskExecutionStatus = 'running' | 'completed' | 'failed' | 'timeout' | 'skipped';
-export type TriggerType = 'cron' | 'manual';
+/** Lifecycle status of a single task execution. */
+export type ExecutionStatus = 'running' | 'completed' | 'failed' | 'timeout' | 'skipped';
+
+/** How an execution was triggered (cron tick or manual API trigger). */
+export type ExecutionTriggerType = 'cron' | 'manual';
 
 // ── Composite helpers ─────────────────────────────────────────────────────────
 

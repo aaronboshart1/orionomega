@@ -1,550 +1,685 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+/**
+ * @module SchedulesTab
+ * Settings sub-tab for managing scheduled (cron) tasks.
+ *
+ * Lists all schedules from the gateway, supports inline create/edit/delete,
+ * pause/resume/trigger actions, and a per-task execution history drawer.
+ * Subscribes to `useSchedulesStore` for live updates from the WS handler.
+ */
+
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Plus, Trash2, Play, Pause, Zap, ChevronDown, ChevronRight, Loader2, RefreshCw } from 'lucide-react';
 import cronstrue from 'cronstrue';
 import {
-  Loader2,
-  AlertCircle,
-  CheckCircle,
-  Play,
-  Pause,
-  Trash2,
-  Plus,
-  ChevronDown,
-  ChevronUp,
-  RefreshCw,
-  Clock,
-} from 'lucide-react';
-import { useSchedulesStore, type ScheduledTask, type TaskExecution } from '@/stores/schedules';
+  useSchedulesStore,
+  fetchSchedules,
+  createSchedule,
+  updateSchedule,
+  deleteSchedule,
+  pauseSchedule,
+  resumeSchedule,
+  triggerSchedule,
+  fetchExecutions,
+  type Schedule,
+} from '@/stores/schedules';
 
-const TIMEZONES = [
-  'UTC',
-  'America/New_York',
-  'America/Chicago',
-  'America/Denver',
-  'America/Los_Angeles',
-  'Europe/London',
-  'Europe/Paris',
-  'Asia/Tokyo',
+interface FormState {
+  id?: string;
+  name: string;
+  description: string;
+  cronExpr: string;
+  prompt: string;
+  agentMode: 'orchestrate' | 'direct' | 'code';
+  timezone: string;
+  overlapPolicy: 'skip' | 'queue' | 'allow';
+  maxRetries: number;
+  timeoutSec: number;
+  /** When set (ISO 8601), task runs once at this time then auto-pauses. Create-only. */
+  runAt: string;
+}
+
+const EMPTY_FORM: FormState = {
+  name: '',
+  description: '',
+  cronExpr: '0 9 * * *',
+  prompt: '',
+  agentMode: 'orchestrate',
+  timezone: 'UTC',
+  overlapPolicy: 'skip',
+  maxRetries: 0,
+  timeoutSec: 0,
+  runAt: '',
+};
+
+const PRESETS: { label: string; expr: string }[] = [
+  { label: 'Every minute', expr: '* * * * *' },
+  { label: 'Every hour', expr: '0 * * * *' },
+  { label: 'Every day at 9am', expr: '0 9 * * *' },
+  { label: 'Every Monday at 9am', expr: '0 9 * * 1' },
+  { label: 'First of month', expr: '0 0 1 * *' },
 ];
 
-function describeCron(expr: string): string {
+/**
+ * Curated subset of common IANA timezones. The browser's
+ * `Intl.supportedValuesOf('timeZone')` returns 400+ entries which is
+ * impractical for a single dropdown; fall back to that list when available
+ * so users on more exotic zones still get coverage.
+ */
+const COMMON_TIMEZONES: string[] = [
+  'UTC',
+  'America/Los_Angeles',
+  'America/Denver',
+  'America/Chicago',
+  'America/New_York',
+  'America/Sao_Paulo',
+  'Europe/London',
+  'Europe/Berlin',
+  'Europe/Paris',
+  'Europe/Moscow',
+  'Africa/Cairo',
+  'Asia/Dubai',
+  'Asia/Kolkata',
+  'Asia/Shanghai',
+  'Asia/Tokyo',
+  'Australia/Sydney',
+  'Pacific/Auckland',
+];
+
+function getTimezoneOptions(): string[] {
   try {
-    return cronstrue.toString(expr, { verbose: true });
+    const intlAny = Intl as unknown as { supportedValuesOf?: (k: string) => string[] };
+    if (typeof intlAny.supportedValuesOf === 'function') {
+      const all = intlAny.supportedValuesOf('timeZone');
+      if (Array.isArray(all) && all.length > 0) {
+        return ['UTC', ...all.filter((t) => t !== 'UTC')];
+      }
+    }
+  } catch {
+    /* fall through */
+  }
+  return COMMON_TIMEZONES;
+}
+
+const TIMEZONE_OPTIONS = getTimezoneOptions();
+
+/** Mirrors the gateway's createScheduleSchema name regex. */
+const NAME_REGEX = /^[a-zA-Z0-9][a-zA-Z0-9 _-]*$/;
+
+function isCronValid(expr: string): boolean {
+  if (!expr.trim()) return false;
+  try {
+    cronstrue.toString(expr);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function describeLocal(expr: string): string {
+  try {
+    return cronstrue.toString(expr, { verbose: false });
   } catch {
     return 'Invalid expression';
   }
 }
 
-function timeAgo(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime();
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  return `${days}d ago`;
-}
-
-function timeUntil(iso: string): string {
-  const diff = new Date(iso).getTime() - Date.now();
-  if (diff <= 0) return 'soon';
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return 'in <1m';
-  if (mins < 60) return `in ${mins}m`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `in ${hours}h`;
-  const days = Math.floor(hours / 24);
-  return `in ${days}d`;
-}
-
-function StatusBadge({ status }: { status: ScheduledTask['status'] }) {
-  const styles: Record<ScheduledTask['status'], string> = {
-    active: 'bg-green-500/20 text-green-400 border border-green-500/30',
-    paused: 'bg-amber-500/20 text-amber-400 border border-amber-500/30',
-    deleted: 'bg-red-500/20 text-red-400 border border-red-500/30',
-  };
-  return (
-    <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${styles[status]}`}>
-      {status}
-    </span>
-  );
-}
-
-function LastStatusDot({ status }: { status: string | null }) {
-  if (!status) return null;
-  const color =
-    status === 'completed' ? 'bg-green-400'
-    : status === 'failed' ? 'bg-red-400'
-    : status === 'timeout' ? 'bg-amber-400'
-    : 'bg-zinc-500';
-  return (
-    <span className="flex items-center gap-1 text-xs text-zinc-500">
-      <span className={`inline-block h-1.5 w-1.5 rounded-full ${color}`} />
-      {status}
-    </span>
-  );
-}
-
-interface CreateFormValues {
-  name: string;
-  prompt: string;
-  cronExpr: string;
-  timezone: string;
-  agentMode: 'orchestrate' | 'direct' | 'code';
-  overlapPolicy: 'skip' | 'queue' | 'allow';
-  timeoutSec: number;
-  maxRetries: number;
-}
-
-const DEFAULT_FORM: CreateFormValues = {
-  name: '',
-  prompt: '',
-  cronExpr: '0 * * * *',
-  timezone: 'UTC',
-  agentMode: 'direct',
-  overlapPolicy: 'skip',
-  timeoutSec: 300,
-  maxRetries: 0,
-};
-
-function CreateForm({ onCreated }: { onCreated: () => void }) {
-  const [form, setForm] = useState<CreateFormValues>(DEFAULT_FORM);
-  const [showAdvanced, setShowAdvanced] = useState(false);
-  const [creating, setCreating] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const cronDesc = describeCron(form.cronExpr);
-
-  const handleCreate = async () => {
-    if (!form.name.trim() || !form.prompt.trim() || !form.cronExpr.trim()) {
-      setError('Name, prompt, and cron expression are required.');
-      return;
-    }
-    setCreating(true);
-    setError(null);
-    try {
-      const res = await fetch('/api/gateway/api/schedules', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(form),
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error((data as { error?: string }).error || `HTTP ${res.status}`);
-      }
-      setForm(DEFAULT_FORM);
-      onCreated();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create schedule');
-    } finally {
-      setCreating(false);
-    }
-  };
-
-  const field = (label: string, children: React.ReactNode) => (
-    <div className="flex flex-col gap-1.5 sm:flex-row sm:items-start sm:gap-4">
-      <label className="min-w-[140px] shrink-0 pt-1.5 text-xs text-zinc-400">{label}</label>
-      <div className="flex-1">{children}</div>
-    </div>
-  );
-
-  const inputCls = 'w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2.5 md:py-1.5 text-sm md:text-xs text-zinc-100 placeholder-zinc-500 outline-none focus:border-blue-500 transition-colors';
-  const selectCls = inputCls;
-
-  return (
-    <div className="rounded-md border border-zinc-700 bg-zinc-900/60 p-4 space-y-3">
-      <h4 className="text-xs font-semibold uppercase tracking-wider text-zinc-400">New Scheduled Task</h4>
-
-      {error && (
-        <div className="flex items-center gap-2 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-400">
-          <AlertCircle size={12} className="shrink-0" />
-          {error}
-        </div>
-      )}
-
-      <div className="space-y-2">
-        {field('Name',
-          <input
-            type="text"
-            value={form.name}
-            onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-            placeholder="Daily report"
-            className={inputCls}
-          />
-        )}
-        {field('Prompt',
-          <textarea
-            value={form.prompt}
-            onChange={(e) => setForm((f) => ({ ...f, prompt: e.target.value }))}
-            placeholder="Generate a daily summary of..."
-            rows={3}
-            className={`${inputCls} resize-y`}
-          />
-        )}
-        {field('Cron Expression',
-          <div className="space-y-1">
-            <input
-              type="text"
-              value={form.cronExpr}
-              onChange={(e) => setForm((f) => ({ ...f, cronExpr: e.target.value }))}
-              placeholder="0 * * * *"
-              className={`${inputCls} font-mono`}
-            />
-            <p className={`text-xs ${cronDesc === 'Invalid expression' ? 'text-red-400' : 'text-zinc-500'}`}>
-              {cronDesc}
-            </p>
-          </div>
-        )}
-        {field('Timezone',
-          <select
-            value={form.timezone}
-            onChange={(e) => setForm((f) => ({ ...f, timezone: e.target.value }))}
-            className={selectCls}
-          >
-            {TIMEZONES.map((tz) => (
-              <option key={tz} value={tz}>{tz}</option>
-            ))}
-          </select>
-        )}
-        {field('Agent Mode',
-          <select
-            value={form.agentMode}
-            onChange={(e) => setForm((f) => ({ ...f, agentMode: e.target.value as CreateFormValues['agentMode'] }))}
-            className={selectCls}
-          >
-            <option value="orchestrate">Orchestrate</option>
-            <option value="direct">Direct</option>
-            <option value="code">Code</option>
-          </select>
-        )}
-      </div>
-
-      <button
-        type="button"
-        onClick={() => setShowAdvanced((v) => !v)}
-        className="flex items-center gap-1 text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
-      >
-        {showAdvanced ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-        Advanced options
-      </button>
-
-      {showAdvanced && (
-        <div className="space-y-2 border-t border-zinc-800 pt-3">
-          {field('Overlap Policy',
-            <select
-              value={form.overlapPolicy}
-              onChange={(e) => setForm((f) => ({ ...f, overlapPolicy: e.target.value as CreateFormValues['overlapPolicy'] }))}
-              className={selectCls}
-            >
-              <option value="skip">Skip (skip if already running)</option>
-              <option value="queue">Queue (run after current finishes)</option>
-              <option value="allow">Allow (run concurrently)</option>
-            </select>
-          )}
-          {field('Timeout (sec)',
-            <input
-              type="number"
-              value={form.timeoutSec}
-              onChange={(e) => setForm((f) => ({ ...f, timeoutSec: Number(e.target.value) }))}
-              className={inputCls}
-              min={0}
-            />
-          )}
-          {field('Max Retries',
-            <input
-              type="number"
-              value={form.maxRetries}
-              onChange={(e) => setForm((f) => ({ ...f, maxRetries: Number(e.target.value) }))}
-              className={inputCls}
-              min={0}
-              max={10}
-            />
-          )}
-        </div>
-      )}
-
-      <div className="flex justify-end pt-1">
-        <button
-          type="button"
-          onClick={handleCreate}
-          disabled={creating}
-          className="flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2.5 md:py-1.5 text-sm md:text-xs font-medium text-white transition-colors hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          {creating ? <Loader2 size={12} className="animate-spin" /> : <Plus size={12} />}
-          {creating ? 'Creating...' : 'Create Schedule'}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function ExecutionHistory({ taskId }: { taskId: string }) {
-  const [executions, setExecutions] = useState<TaskExecution[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    let cancelled = false;
-    fetch(`/api/gateway/api/schedules/${taskId}/executions?limit=10`)
-      .then((r) => r.json())
-      .then((data) => {
-        if (!cancelled) setExecutions((data as { executions?: TaskExecution[] }).executions ?? []);
-      })
-      .catch(() => { /* ignore */ })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, [taskId]);
-
-  if (loading) {
-    return (
-      <div className="flex items-center gap-1.5 py-2 text-xs text-zinc-500">
-        <Loader2 size={10} className="animate-spin" />
-        Loading history…
-      </div>
-    );
+function formatTime(iso: string | null): string {
+  if (!iso) return '—';
+  try {
+    const d = new Date(iso);
+    return d.toLocaleString();
+  } catch {
+    return iso;
   }
-
-  if (executions.length === 0) {
-    return <p className="py-2 text-xs text-zinc-600">No executions yet.</p>;
-  }
-
-  const statusColor = (s: TaskExecution['status']) => {
-    if (s === 'completed') return 'text-green-400';
-    if (s === 'failed') return 'text-red-400';
-    if (s === 'timeout') return 'text-amber-400';
-    if (s === 'running') return 'text-blue-400';
-    return 'text-zinc-500';
-  };
-
-  return (
-    <table className="w-full text-xs">
-      <thead>
-        <tr className="text-zinc-600 border-b border-zinc-800">
-          <th className="pb-1 text-left font-normal">Status</th>
-          <th className="pb-1 text-left font-normal">Started</th>
-          <th className="pb-1 text-left font-normal">Duration</th>
-          <th className="pb-1 text-left font-normal">Trigger</th>
-        </tr>
-      </thead>
-      <tbody>
-        {executions.map((ex) => (
-          <tr key={ex.id} className="border-b border-zinc-800/50 last:border-0">
-            <td className={`py-1 pr-3 ${statusColor(ex.status)}`}>{ex.status}</td>
-            <td className="py-1 pr-3 text-zinc-400">{timeAgo(ex.startedAt)}</td>
-            <td className="py-1 pr-3 text-zinc-400">
-              {ex.durationSec != null ? `${ex.durationSec}s` : '—'}
-            </td>
-            <td className="py-1 text-zinc-500">{ex.triggerType}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
-  );
 }
 
-function TaskRow({
-  task,
-  onAction,
-}: {
-  task: ScheduledTask;
-  onAction: () => void;
-}) {
-  const [showHistory, setShowHistory] = useState(false);
-  const [actioning, setActioning] = useState<string | null>(null);
-
-  const doAction = async (action: 'run' | 'pause' | 'resume' | 'delete') => {
-    setActioning(action);
-    try {
-      if (action === 'run') {
-        await fetch(`/api/gateway/api/schedules/${task.id}/run`, { method: 'POST' });
-      } else if (action === 'delete') {
-        await fetch(`/api/gateway/api/schedules/${task.id}`, { method: 'DELETE' });
-      } else {
-        await fetch(`/api/gateway/api/schedules/${task.id}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ status: action === 'pause' ? 'paused' : 'active' }),
-        });
-      }
-      onAction();
-    } catch { /* ignore */ } finally {
-      setActioning(null);
-    }
-  };
-
-  const btnCls = 'flex items-center gap-1 rounded px-2 py-1 text-xs transition-colors disabled:opacity-40';
-
-  return (
-    <div className="rounded-md border border-zinc-800 bg-zinc-900/40 p-3 space-y-2">
-      <div className="flex items-start justify-between gap-2">
-        <div className="flex-1 min-w-0">
-          <div className="flex flex-wrap items-center gap-2 mb-0.5">
-            <span className="text-sm text-zinc-100 font-medium truncate">{task.name}</span>
-            <StatusBadge status={task.status} />
-          </div>
-          <p className="text-xs text-zinc-500 font-mono">{task.cronExpr}</p>
-          <p className="text-xs text-zinc-600 mt-0.5">{describeCron(task.cronExpr)}</p>
-        </div>
-        <div className="flex items-center gap-1 shrink-0">
-          <button
-            type="button"
-            onClick={() => doAction('run')}
-            disabled={actioning !== null}
-            className={`${btnCls} text-blue-400 hover:bg-zinc-700 hover:text-blue-300`}
-            title="Run now"
-          >
-            {actioning === 'run' ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />}
-          </button>
-          {task.status === 'active' ? (
-            <button
-              type="button"
-              onClick={() => doAction('pause')}
-              disabled={actioning !== null}
-              className={`${btnCls} text-amber-400 hover:bg-zinc-700 hover:text-amber-300`}
-              title="Pause"
-            >
-              {actioning === 'pause' ? <Loader2 size={12} className="animate-spin" /> : <Pause size={12} />}
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={() => doAction('resume')}
-              disabled={actioning !== null || task.status === 'deleted'}
-              className={`${btnCls} text-green-400 hover:bg-zinc-700 hover:text-green-300`}
-              title="Resume"
-            >
-              {actioning === 'resume' ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />}
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={() => doAction('delete')}
-            disabled={actioning !== null}
-            className={`${btnCls} text-red-400 hover:bg-zinc-700 hover:text-red-300`}
-            title="Delete"
-          >
-            {actioning === 'delete' ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
-          </button>
-        </div>
-      </div>
-
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-        <span className="flex items-center gap-1 text-xs text-zinc-500">
-          <Clock size={10} />
-          {task.lastRunAt ? timeAgo(task.lastRunAt) : 'Never run'}
-        </span>
-        {task.nextRunAt && (
-          <span className="text-xs text-zinc-600">{timeUntil(task.nextRunAt)}</span>
-        )}
-        <LastStatusDot status={task.lastStatus} />
-        <span className="text-xs text-zinc-600">{task.runCount} run{task.runCount !== 1 ? 's' : ''}</span>
-      </div>
-
-      <button
-        type="button"
-        onClick={() => setShowHistory((v) => !v)}
-        className="flex items-center gap-1 text-xs text-zinc-600 hover:text-zinc-400 transition-colors"
-      >
-        {showHistory ? <ChevronUp size={10} /> : <ChevronDown size={10} />}
-        {showHistory ? 'Hide history' : 'Show history'}
-      </button>
-
-      {showHistory && (
-        <div className="border-t border-zinc-800 pt-2">
-          <ExecutionHistory taskId={task.id} />
-        </div>
-      )}
-    </div>
-  );
+function statusBadge(status: string | null): { color: string; label: string } {
+  switch (status) {
+    case 'completed': return { color: 'bg-green-700 text-green-200', label: 'OK' };
+    case 'failed': return { color: 'bg-red-700 text-red-200', label: 'Failed' };
+    case 'timeout': return { color: 'bg-amber-700 text-amber-200', label: 'Timeout' };
+    case 'skipped': return { color: 'bg-zinc-700 text-zinc-300', label: 'Skipped' };
+    case 'running': return { color: 'bg-blue-700 text-blue-200', label: 'Running' };
+    default: return { color: 'bg-zinc-800 text-zinc-400', label: status ?? '—' };
+  }
 }
 
 export function SchedulesTab() {
-  const { schedules, loading, error, setSchedules, setLoading, setError } = useSchedulesStore();
-  const [showCreate, setShowCreate] = useState(false);
+  const schedules = useSchedulesStore((s) => s.schedules);
+  const executions = useSchedulesStore((s) => s.executions);
+  const liveTriggers = useSchedulesStore((s) => s.liveTriggers);
+  const setSchedules = useSchedulesStore((s) => s.setSchedules);
+  const upsertSchedule = useSchedulesStore((s) => s.upsertSchedule);
+  const removeSchedule = useSchedulesStore((s) => s.removeSchedule);
+  const setExecutionsInStore = useSchedulesStore((s) => s.setExecutions);
 
-  const fetchSchedules = useCallback(async () => {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [showForm, setShowForm] = useState(false);
+  const [form, setForm] = useState<FormState>(EMPTY_FORM);
+  const [submitting, setSubmitting] = useState(false);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  const reload = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch('/api/gateway/api/schedules');
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      setSchedules((data as { schedules?: ScheduledTask[] }).schedules ?? []);
+      const list = await fetchSchedules();
+      setSchedules(list);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load schedules');
+    } finally {
       setLoading(false);
     }
-  }, [setSchedules, setLoading, setError]);
+  }, [setSchedules]);
 
-  useEffect(() => {
-    fetchSchedules();
-  }, [fetchSchedules]);
+  useEffect(() => { void reload(); }, [reload]);
+
+  const handleSubmit = useCallback(async () => {
+    const trimmedName = form.name.trim();
+    if (!trimmedName || !form.cronExpr.trim() || !form.prompt.trim()) {
+      setError('Name, cron expression, and prompt are required');
+      return;
+    }
+    if (!NAME_REGEX.test(trimmedName)) {
+      setError(
+        'Name must start with a letter or digit and contain only letters, digits, spaces, hyphens, or underscores',
+      );
+      return;
+    }
+    if (!isCronValid(form.cronExpr)) {
+      setError('Cron expression is invalid');
+      return;
+    }
+    // Validate runAt (one-shot) if provided; must parse to a valid date in the future.
+    let runAtIso: string | undefined;
+    if (!form.id && form.runAt.trim()) {
+      const parsed = new Date(form.runAt);
+      if (Number.isNaN(parsed.getTime())) {
+        setError('Run at: invalid date/time');
+        return;
+      }
+      if (parsed.getTime() <= Date.now()) {
+        setError('Run at: must be in the future');
+        return;
+      }
+      runAtIso = parsed.toISOString();
+    }
+    setSubmitting(true);
+    setError(null);
+    try {
+      const basePayload = {
+        name: trimmedName,
+        description: form.description.trim(),
+        cronExpr: form.cronExpr.trim(),
+        prompt: form.prompt.trim(),
+        agentMode: form.agentMode,
+        timezone: form.timezone,
+        overlapPolicy: form.overlapPolicy,
+        maxRetries: form.maxRetries,
+        timeoutSec: form.timeoutSec,
+      };
+      let task: Schedule;
+      if (form.id) {
+        // runAt is create-only on the server; don't include it on update.
+        task = await updateSchedule(form.id, basePayload);
+      } else {
+        task = await createSchedule(
+          runAtIso ? { ...basePayload, runAt: runAtIso } : basePayload,
+        );
+      }
+      upsertSchedule(task);
+      setShowForm(false);
+      setForm(EMPTY_FORM);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save schedule');
+    } finally {
+      setSubmitting(false);
+    }
+  }, [form, upsertSchedule]);
+
+  const handleDelete = useCallback(async (id: string) => {
+    if (!confirm('Delete this schedule? Execution history will be preserved.')) return;
+    try {
+      await deleteSchedule(id);
+      removeSchedule(id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to delete');
+    }
+  }, [removeSchedule]);
+
+  const handlePause = useCallback(async (id: string) => {
+    try {
+      const task = await pauseSchedule(id);
+      upsertSchedule(task);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to pause');
+    }
+  }, [upsertSchedule]);
+
+  const handleResume = useCallback(async (id: string) => {
+    try {
+      const task = await resumeSchedule(id);
+      upsertSchedule(task);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to resume');
+    }
+  }, [upsertSchedule]);
+
+  const handleTrigger = useCallback(async (id: string) => {
+    try {
+      await triggerSchedule(id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to trigger');
+    }
+  }, []);
+
+  const handleExpand = useCallback(async (id: string) => {
+    if (expandedId === id) {
+      setExpandedId(null);
+      return;
+    }
+    setExpandedId(id);
+    try {
+      const list = await fetchExecutions(id);
+      setExecutionsInStore(id, list);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load executions');
+    }
+  }, [expandedId, setExecutionsInStore]);
+
+  const cronDescription = useMemo(() => describeLocal(form.cronExpr), [form.cronExpr]);
+  const cronValid = useMemo(() => isCronValid(form.cronExpr), [form.cronExpr]);
+  const nameTrimmed = form.name.trim();
+  const nameValid = nameTrimmed.length > 0 && NAME_REGEX.test(nameTrimmed);
+  const promptValid = form.prompt.trim().length > 0;
+  const formValid = nameValid && cronValid && promptValid;
 
   return (
-    <div className="space-y-4">
+    <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-500 border-b border-zinc-800 pb-2 flex-1">
-          Scheduled Tasks
-        </h3>
-        <div className="flex items-center gap-2 mb-2 ml-4">
+        <div>
+          <h3 className="text-sm font-semibold text-zinc-200">Scheduled Tasks</h3>
+          <p className="text-xs text-zinc-500 mt-1">
+            Run prompts automatically on a cron schedule. Tasks fire through the agent exactly like chat messages.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
           <button
-            type="button"
-            onClick={fetchSchedules}
+            onClick={reload}
             disabled={loading}
-            className="flex items-center gap-1 rounded px-2 py-0.5 text-xs text-zinc-500 transition-colors hover:bg-zinc-700 hover:text-zinc-300 disabled:opacity-50"
+            className="flex items-center gap-1.5 rounded bg-zinc-800 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-700 disabled:opacity-50"
             title="Refresh"
           >
-            <RefreshCw size={10} className={loading ? 'animate-spin' : ''} />
+            <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
             Refresh
           </button>
           <button
-            type="button"
-            onClick={() => setShowCreate((v) => !v)}
-            className="flex items-center gap-1 rounded px-2 py-0.5 text-xs text-zinc-400 transition-colors hover:bg-zinc-700 hover:text-zinc-200"
+            onClick={() => { setForm(EMPTY_FORM); setShowForm(true); }}
+            className="flex items-center gap-1.5 rounded bg-blue-600 px-3 py-1.5 text-xs text-white hover:bg-blue-500"
           >
-            <Plus size={10} />
-            New
+            <Plus size={12} />
+            New schedule
           </button>
         </div>
       </div>
 
-      {showCreate && (
-        <CreateForm
-          onCreated={() => {
-            setShowCreate(false);
-            fetchSchedules();
-          }}
-        />
-      )}
-
       {error && (
-        <div className="flex items-center gap-2 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-400">
-          <AlertCircle size={12} className="shrink-0" />
+        <div className="rounded border border-red-700 bg-red-950/40 px-3 py-2 text-xs text-red-300">
           {error}
         </div>
       )}
 
-      {loading && schedules.length === 0 && (
-        <div className="flex items-center justify-center gap-2 py-8 text-xs text-zinc-500">
-          <Loader2 size={14} className="animate-spin" />
-          Loading schedules…
+      {showForm && (
+        <div className="rounded border border-zinc-700 bg-zinc-900/50 p-4 flex flex-col gap-3">
+          <h4 className="text-sm font-medium text-zinc-200">
+            {form.id ? 'Edit schedule' : 'Create schedule'}
+          </h4>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <label className="flex flex-col gap-1">
+              <span className="text-xs text-zinc-400">Name</span>
+              <input
+                type="text"
+                value={form.name}
+                onChange={(e) => setForm({ ...form, name: e.target.value })}
+                placeholder="Daily standup digest"
+                aria-invalid={nameTrimmed.length > 0 && !nameValid}
+                className={`rounded bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200 border outline-none ${
+                  nameTrimmed.length > 0 && !nameValid
+                    ? 'border-red-600 focus:border-red-500'
+                    : 'border-zinc-700 focus:border-blue-500'
+                }`}
+              />
+              {nameTrimmed.length > 0 && !nameValid && (
+                <span className="text-[11px] text-red-400">
+                  Use letters, digits, spaces, hyphens, or underscores. Must start with a letter or digit.
+                </span>
+              )}
+            </label>
+
+            <label className="flex flex-col gap-1">
+              <span className="text-xs text-zinc-400">Cron expression</span>
+              <input
+                type="text"
+                value={form.cronExpr}
+                onChange={(e) => setForm({ ...form, cronExpr: e.target.value })}
+                placeholder="0 9 * * *"
+                aria-invalid={!cronValid}
+                className={`rounded bg-zinc-800 px-2 py-1.5 text-xs font-mono text-zinc-200 border outline-none ${
+                  cronValid ? 'border-zinc-700 focus:border-blue-500' : 'border-red-600 focus:border-red-500'
+                }`}
+              />
+              <span className={`text-[11px] ${cronValid ? 'text-zinc-500' : 'text-red-400'}`}>
+                {cronDescription}
+              </span>
+              <div className="flex flex-wrap gap-1 mt-1">
+                {PRESETS.map((p) => (
+                  <button
+                    key={p.expr}
+                    type="button"
+                    onClick={() => setForm({ ...form, cronExpr: p.expr })}
+                    className="rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200"
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+            </label>
+          </div>
+
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-zinc-400">Description (optional)</span>
+            <input
+              type="text"
+              value={form.description}
+              onChange={(e) => setForm({ ...form, description: e.target.value })}
+              className="rounded bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200 border border-zinc-700 focus:border-blue-500 outline-none"
+            />
+          </label>
+
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-zinc-400">Prompt</span>
+            <textarea
+              value={form.prompt}
+              onChange={(e) => setForm({ ...form, prompt: e.target.value })}
+              placeholder="Summarize yesterday's commits and post to #dev-updates"
+              rows={3}
+              className="rounded bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200 border border-zinc-700 focus:border-blue-500 outline-none resize-y"
+            />
+          </label>
+
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-zinc-400">Agent mode</span>
+            <select
+              value={form.agentMode}
+              onChange={(e) => setForm({ ...form, agentMode: e.target.value as FormState['agentMode'] })}
+              className="rounded bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200 border border-zinc-700 w-fit"
+            >
+              <option value="orchestrate">orchestrate</option>
+              <option value="direct">direct</option>
+              <option value="code">code</option>
+            </select>
+          </label>
+
+          {/* Collapsible "Advanced" panel groups the optional tuning knobs
+              (timezone, overlap policy, retries, timeout, one-shot runAt)
+              so the form's primary fields stay uncluttered for the common
+              "name + cron + prompt" workflow. */}
+          <details className="rounded border border-zinc-700/60 bg-zinc-800/30 px-3 py-2">
+            <summary className="cursor-pointer text-xs text-zinc-300 select-none">
+              Advanced
+            </summary>
+            <div className="mt-3 grid grid-cols-2 md:grid-cols-4 gap-3">
+              <label className="flex flex-col gap-1">
+                <span className="text-xs text-zinc-400">Timezone</span>
+                <select
+                  value={form.timezone}
+                  onChange={(e) => setForm({ ...form, timezone: e.target.value })}
+                  className="rounded bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200 border border-zinc-700"
+                >
+                  {/* If the current value isn't in the list (legacy data), include it. */}
+                  {!TIMEZONE_OPTIONS.includes(form.timezone) && (
+                    <option value={form.timezone}>{form.timezone}</option>
+                  )}
+                  {TIMEZONE_OPTIONS.map((tz) => (
+                    <option key={tz} value={tz}>{tz}</option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="flex flex-col gap-1">
+                <span className="text-xs text-zinc-400">Overlap policy</span>
+                <select
+                  value={form.overlapPolicy}
+                  onChange={(e) => setForm({ ...form, overlapPolicy: e.target.value as FormState['overlapPolicy'] })}
+                  className="rounded bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200 border border-zinc-700"
+                >
+                  <option value="skip">skip</option>
+                  <option value="queue">queue</option>
+                  <option value="allow">allow</option>
+                </select>
+              </label>
+
+              <label className="flex flex-col gap-1">
+                <span className="text-xs text-zinc-400">Max retries (0–5, reserved)</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={5}
+                  value={form.maxRetries}
+                  onChange={(e) => {
+                    const n = Number.parseInt(e.target.value, 10);
+                    const clamped = Number.isNaN(n) ? 0 : Math.max(0, Math.min(5, n));
+                    setForm({ ...form, maxRetries: clamped });
+                  }}
+                  className="rounded bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200 border border-zinc-700"
+                />
+                <span className="text-[10px] text-zinc-500">
+                  Reserved for future automatic retry support; not yet wired into execution.
+                </span>
+              </label>
+
+              <label className="flex flex-col gap-1">
+                <span className="text-xs text-zinc-400">Timeout (sec, 0 = none)</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={7200}
+                  value={form.timeoutSec}
+                  onChange={(e) => {
+                    const n = Number.parseInt(e.target.value, 10);
+                    const clamped = Number.isNaN(n) ? 0 : Math.max(0, Math.min(7200, n));
+                    setForm({ ...form, timeoutSec: clamped });
+                  }}
+                  className="rounded bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200 border border-zinc-700"
+                />
+              </label>
+            </div>
+
+            {!form.id && (
+              <label className="mt-3 flex flex-col gap-1">
+                <span className="text-xs text-zinc-400">
+                  One-shot run at (optional) — auto-pauses after firing once
+                </span>
+                <input
+                  type="datetime-local"
+                  value={form.runAt}
+                  onChange={(e) => setForm({ ...form, runAt: e.target.value })}
+                  className="rounded bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200 border border-zinc-700 focus:border-blue-500 outline-none w-fit"
+                />
+                <span className="text-[11px] text-zinc-500">
+                  Leave empty for a recurring schedule. When set, the cron expression is ignored on the first fire.
+                </span>
+              </label>
+            )}
+          </details>
+
+          <div className="flex justify-end gap-2 pt-2">
+            <button
+              onClick={() => { setShowForm(false); setForm(EMPTY_FORM); setError(null); }}
+              disabled={submitting}
+              className="rounded bg-zinc-700 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-600 disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleSubmit}
+              disabled={submitting || !formValid}
+              title={!formValid ? 'Fix validation errors above to enable' : undefined}
+              className="flex items-center gap-1.5 rounded bg-blue-600 px-3 py-1.5 text-xs text-white hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {submitting && <Loader2 size={12} className="animate-spin" />}
+              {form.id ? 'Save changes' : 'Create schedule'}
+            </button>
+          </div>
         </div>
       )}
 
-      {!loading && schedules.length === 0 && !error && (
-        <div className="flex flex-col items-center justify-center gap-2 py-8 text-xs text-zinc-600">
-          <CheckCircle size={20} className="text-zinc-700" />
-          No scheduled tasks yet. Create one above.
-        </div>
-      )}
+      <div className="flex flex-col gap-2">
+        {schedules.length === 0 && !loading && (
+          <div className="rounded border border-zinc-800 bg-zinc-900/30 px-4 py-6 text-center text-xs text-zinc-500">
+            No scheduled tasks yet. Create one to run prompts on a cron schedule.
+          </div>
+        )}
 
-      <div className="space-y-2">
-        {schedules
-          .filter((t) => t.status !== 'deleted')
-          .map((task) => (
-            <TaskRow key={task.id} task={task} onAction={fetchSchedules} />
-          ))}
+        {schedules.map((s) => {
+          const isExpanded = expandedId === s.id;
+          const isLive = liveTriggers.has(s.id);
+          const badge = statusBadge(s.lastStatus);
+          const execList = executions[s.id] ?? [];
+          return (
+            <div key={s.id} className="rounded border border-zinc-700 bg-zinc-900/30">
+              <div className="flex items-center gap-3 p-3">
+                <button
+                  onClick={() => handleExpand(s.id)}
+                  className="text-zinc-400 hover:text-zinc-200"
+                  aria-label={isExpanded ? 'Collapse' : 'Expand'}
+                >
+                  {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                </button>
+
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-sm font-medium text-zinc-200 truncate">{s.name}</span>
+                    <span className={`rounded px-1.5 py-0.5 text-[10px] ${
+                      s.status === 'active' ? 'bg-green-900 text-green-300' :
+                      s.status === 'paused' ? 'bg-amber-900 text-amber-300' :
+                      'bg-zinc-800 text-zinc-400'
+                    }`}>
+                      {s.status}
+                    </span>
+                    {isLive && (
+                      <span className="rounded px-1.5 py-0.5 text-[10px] bg-blue-700 text-blue-200 animate-pulse">
+                        running…
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-[11px] text-zinc-500 mt-0.5 truncate">
+                    <span className="font-mono">{s.cronExpr}</span> · {describeLocal(s.cronExpr)} · {s.timezone}
+                  </div>
+                  <div className="text-[11px] text-zinc-500 mt-0.5">
+                    Next: {formatTime(s.nextRunAt)} · Last: {formatTime(s.lastRunAt)} · Runs: {s.runCount}
+                    {s.lastStatus && <> · <span className={`rounded px-1 ${badge.color}`}>{badge.label}</span></>}
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => handleTrigger(s.id)}
+                    title="Run now"
+                    className="rounded p-1.5 text-zinc-400 hover:bg-zinc-800 hover:text-blue-400"
+                  >
+                    <Zap size={14} />
+                  </button>
+                  {s.status === 'active' ? (
+                    <button
+                      onClick={() => handlePause(s.id)}
+                      title="Pause"
+                      className="rounded p-1.5 text-zinc-400 hover:bg-zinc-800 hover:text-amber-400"
+                    >
+                      <Pause size={14} />
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => handleResume(s.id)}
+                      title="Resume"
+                      className="rounded p-1.5 text-zinc-400 hover:bg-zinc-800 hover:text-green-400"
+                    >
+                      <Play size={14} />
+                    </button>
+                  )}
+                  <button
+                    onClick={() => {
+                      setForm({
+                        id: s.id,
+                        name: s.name,
+                        description: s.description,
+                        cronExpr: s.cronExpr,
+                        prompt: s.prompt,
+                        agentMode: s.agentMode,
+                        timezone: s.timezone,
+                        overlapPolicy: s.overlapPolicy,
+                        maxRetries: s.maxRetries,
+                        timeoutSec: s.timeoutSec,
+                        runAt: '',
+                      });
+                      setShowForm(true);
+                    }}
+                    className="rounded px-2 py-1 text-[11px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+                  >
+                    Edit
+                  </button>
+                  <button
+                    onClick={() => handleDelete(s.id)}
+                    title="Delete"
+                    className="rounded p-1.5 text-zinc-400 hover:bg-zinc-800 hover:text-red-400"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              </div>
+
+              {isExpanded && (
+                <div className="border-t border-zinc-800 px-3 py-2 flex flex-col gap-2">
+                  <div>
+                    <div className="text-[11px] uppercase tracking-wide text-zinc-500 mb-1">Prompt</div>
+                    <div className="text-xs text-zinc-300 whitespace-pre-wrap rounded bg-zinc-950/60 p-2 border border-zinc-800">
+                      {s.prompt}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] uppercase tracking-wide text-zinc-500 mb-1">Recent executions</div>
+                    {execList.length === 0 ? (
+                      <div className="text-xs text-zinc-500 italic">No executions yet.</div>
+                    ) : (
+                      <div className="flex flex-col divide-y divide-zinc-800 rounded border border-zinc-800">
+                        {execList.map((ex) => {
+                          const b = statusBadge(ex.status);
+                          return (
+                            <div key={ex.id} className="flex items-center gap-2 px-2 py-1.5 text-[11px]">
+                              <span className={`rounded px-1.5 py-0.5 ${b.color}`}>{b.label}</span>
+                              <span className="text-zinc-500">{formatTime(ex.startedAt)}</span>
+                              {ex.durationSec !== null && (
+                                <span className="text-zinc-500">· {ex.durationSec.toFixed(1)}s</span>
+                              )}
+                              <span className="text-zinc-600">· {ex.triggerType}</span>
+                              {ex.error && (
+                                <span className="text-red-400 truncate ml-auto" title={ex.error}>{ex.error}</span>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
     </div>
   );

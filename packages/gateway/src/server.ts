@@ -32,14 +32,25 @@ import { handleStatus } from './routes/status.js';
 import { handleGetConfig, handlePutConfig } from './routes/config.js';
 import { handleLogsMeta, handleLogsTail, handleLogsStream, handleLogsDownload } from './routes/logs.js';
 import { handleGetSkills, handlePutSkillConfig, handleGoogleOAuthStart, handleGoogleOAuthStatus, handleGoogleOAuthCallback } from './routes/skills.js';
+import { SchedulerService } from './scheduler.js';
+import {
+  handleListSchedules,
+  handleGetSchedule,
+  handleCreateSchedule,
+  handleUpdateSchedule,
+  handleDeleteSchedule,
+  handlePauseSchedule,
+  handleResumeSchedule,
+  handleTriggerSchedule,
+  handleGetExecutions,
+  handleDescribeCron,
+} from './routes/schedules.js';
 import { rateLimitRest } from './rate-limit.js';
 import { setSecurityHeaders } from './security-headers.js';
 import { handleStartCodingSession, handleGetCodingSession, handleGetCodingSteps, handleCancelCodingSession } from './routes/coding.js';
 import { setCodingEventStreamer, emitCodingSessionStarted, emitCodingWorkflowStarted, emitCodingStepStarted, emitCodingStepProgress, emitCodingStepCompleted, emitCodingStepFailed, emitCodingReviewStarted, emitCodingReviewCompleted, emitCodingCommitCompleted, emitCodingSessionCompleted } from './coding-events.js';
 import { FeedService } from './feed/index.js';
 import { handleGetFeed, handleGetFeedMessage, handlePostFeedMessage, handleGetFeedCount } from './routes/feed.js';
-import { SchedulerService } from './scheduler.js';
-import { handleListSchedules, handleCreateSchedule, handleGetSchedule, handleUpdateSchedule, handleDeleteSchedule, handlePauseSchedule, handleResumeSchedule, handleTriggerSchedule, handleGetExecutions, handleDescribeCron } from './routes/schedules.js';
 
 process.on('uncaughtException', (err) => {
   console.error('[gateway] Uncaught exception:', err);
@@ -130,7 +141,7 @@ wsHandler.setHindsightStatusProvider(() => ({
 /** Module-level reference to the MainAgent for shutdown summarization. */
 let mainAgent: MainAgent | null = null;
 
-/** Module-level reference to the SchedulerService. */
+/** Module-level scheduler. Created after MainAgent is ready and scheduling is enabled. */
 let scheduler: SchedulerService | null = null;
 
 // ---------------------------------------------------------------------------
@@ -879,25 +890,30 @@ async function initMainAgent(): Promise<void> {
     await mainAgent.init();
     wsHandler.setMainAgent(mainAgent);
     log.info(' MainAgent connected');
+
+    // Initialize scheduler after MainAgent is ready (gated by config).
+    if (freshConfig.scheduling?.enabled !== false) {
+      try {
+        scheduler = new SchedulerService(mainAgent, wsHandler, {
+          defaultTimezone: freshConfig.scheduling?.timezone,
+          maxConcurrent: freshConfig.scheduling?.maxConcurrent,
+          minIntervalSec: freshConfig.scheduling?.minIntervalSec,
+        });
+        scheduler.start();
+        log.info(
+          ` Scheduler started (maxConcurrent=${scheduler.options.maxConcurrent}, minIntervalSec=${scheduler.options.minIntervalSec}, timezone=${scheduler.options.defaultTimezone})`,
+        );
+      } catch (err) {
+        log.error('Failed to start scheduler', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+        scheduler = null;
+      }
+    } else {
+      log.info('Scheduler disabled via config (scheduling.enabled = false)');
+    }
   } catch (err) {
     log.error('Failed to initialise MainAgent', { error: err instanceof Error ? err.message : String(err) });
-    return;
-  }
-
-  // Start scheduler after MainAgent is ready
-  if (!scheduler && mainAgent) {
-    let schedulingEnabled = true;
-    try {
-      const cfg = readConfig();
-      schedulingEnabled = cfg.scheduling?.enabled ?? true;
-    } catch { /* use default */ }
-
-    if (schedulingEnabled) {
-      scheduler = new SchedulerService(mainAgent, wsHandler);
-      scheduler.start().catch((err) => {
-        log.error('Scheduler start error', { error: err instanceof Error ? err.message : String(err) });
-      });
-    }
   }
 }
 
@@ -1257,6 +1273,64 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
     return;
   }
 
+  // --- Schedules (cron) ---
+  if (pathname.startsWith('/api/schedules')) {
+    if (!scheduler) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Scheduler not available' }));
+      return;
+    }
+
+    if (pathname === '/api/schedules/describe-cron' && method === 'GET') {
+      const u = new URL(rawUrl, 'http://localhost');
+      handleDescribeCron(req, res, u, scheduler, config);
+      return;
+    }
+
+    if (pathname === '/api/schedules' && method === 'GET') {
+      handleListSchedules(req, res, scheduler, config);
+      return;
+    }
+
+    if (pathname === '/api/schedules' && method === 'POST') {
+      handleCreateSchedule(req, res, scheduler, config).catch((err) => {
+        log.error('Create schedule route error', { error: err instanceof Error ? err.message : String(err) });
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Internal server error' }));
+      });
+      return;
+    }
+
+    const scheduleActionMatch = pathname.match(/^\/api\/schedules\/([a-zA-Z0-9_-]+)\/(pause|resume|trigger|executions)$/);
+    if (scheduleActionMatch) {
+      const id = scheduleActionMatch[1]!;
+      const action = scheduleActionMatch[2]!;
+      if (action === 'pause' && method === 'POST') { handlePauseSchedule(req, res, id, scheduler, config); return; }
+      if (action === 'resume' && method === 'POST') { handleResumeSchedule(req, res, id, scheduler, config); return; }
+      if (action === 'trigger' && method === 'POST') { handleTriggerSchedule(req, res, id, scheduler, config); return; }
+      if (action === 'executions' && method === 'GET') {
+        const u = new URL(rawUrl, 'http://localhost');
+        handleGetExecutions(req, res, id, u, scheduler, config);
+        return;
+      }
+    }
+
+    const scheduleIdMatch = pathname.match(/^\/api\/schedules\/([a-zA-Z0-9_-]+)$/);
+    if (scheduleIdMatch) {
+      const id = scheduleIdMatch[1]!;
+      if (method === 'GET') { handleGetSchedule(req, res, id, scheduler, config); return; }
+      if (method === 'PUT' || method === 'PATCH') {
+        handleUpdateSchedule(req, res, id, scheduler, config).catch((err) => {
+          log.error('Update schedule route error', { error: err instanceof Error ? err.message : String(err) });
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Internal server error' }));
+        });
+        return;
+      }
+      if (method === 'DELETE') { handleDeleteSchedule(req, res, id, scheduler!, config); return; }
+    }
+  }
+
   // --- Coding sessions ---
 
   // POST /api/coding/sessions — start a coding session
@@ -1294,126 +1368,6 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
     if (method === 'DELETE') {
       handleCancelCodingSession(req, res, codingSessionMatch[1]!).catch((err) => {
         log.error('Coding session cancel route error', { error: err instanceof Error ? err.message : String(err) });
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Internal server error' }));
-      });
-      return;
-    }
-  }
-
-  // --- Scheduled tasks ---
-
-  // GET /api/schedules/cron/describe?expr=... — must be matched before /:id routes
-  if (pathname === '/api/schedules/cron/describe' && method === 'GET') {
-    if (!scheduler) {
-      res.writeHead(503, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Scheduler not available' }));
-      return;
-    }
-    handleDescribeCron(req, res, scheduler);
-    return;
-  }
-
-  // GET /api/schedules | POST /api/schedules
-  if (pathname === '/api/schedules') {
-    if (!scheduler) {
-      res.writeHead(503, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Scheduler not available' }));
-      return;
-    }
-    if (method === 'GET') {
-      handleListSchedules(req, res, scheduler).catch((err) => {
-        log.error('List schedules error', { error: err instanceof Error ? err.message : String(err) });
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Internal server error' }));
-      });
-      return;
-    }
-    if (method === 'POST') {
-      handleCreateSchedule(req, res, scheduler).catch((err) => {
-        log.error('Create schedule error', { error: err instanceof Error ? err.message : String(err) });
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Internal server error' }));
-      });
-      return;
-    }
-  }
-
-  // POST /api/schedules/:id/pause|resume|trigger
-  const scheduleActionMatch = pathname.match(/^\/api\/schedules\/([a-zA-Z0-9_-]+)\/(pause|resume|trigger)$/);
-  if (scheduleActionMatch && method === 'POST') {
-    if (!scheduler) {
-      res.writeHead(503, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Scheduler not available' }));
-      return;
-    }
-    const [, schedId, action] = scheduleActionMatch;
-    if (action === 'pause') {
-      handlePauseSchedule(req, res, scheduler, schedId!).catch((err) => {
-        log.error('Pause schedule error', { error: err instanceof Error ? err.message : String(err) });
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Internal server error' }));
-      });
-      return;
-    }
-    if (action === 'resume') {
-      handleResumeSchedule(req, res, scheduler, schedId!).catch((err) => {
-        log.error('Resume schedule error', { error: err instanceof Error ? err.message : String(err) });
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Internal server error' }));
-      });
-      return;
-    }
-    if (action === 'trigger') {
-      handleTriggerSchedule(req, res, scheduler, schedId!);
-      return;
-    }
-  }
-
-  // GET /api/schedules/:id/executions
-  const scheduleExecMatch = pathname.match(/^\/api\/schedules\/([a-zA-Z0-9_-]+)\/executions$/);
-  if (scheduleExecMatch && method === 'GET') {
-    if (!scheduler) {
-      res.writeHead(503, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Scheduler not available' }));
-      return;
-    }
-    handleGetExecutions(req, res, scheduler, scheduleExecMatch[1]!).catch((err) => {
-      log.error('Get executions error', { error: err instanceof Error ? err.message : String(err) });
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Internal server error' }));
-    });
-    return;
-  }
-
-  // GET /api/schedules/:id | PUT /api/schedules/:id | DELETE /api/schedules/:id
-  const scheduleMatch = pathname.match(/^\/api\/schedules\/([a-zA-Z0-9_-]+)$/);
-  if (scheduleMatch) {
-    if (!scheduler) {
-      res.writeHead(503, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Scheduler not available' }));
-      return;
-    }
-    const schedId = scheduleMatch[1]!;
-    if (method === 'GET') {
-      handleGetSchedule(req, res, scheduler, schedId).catch((err) => {
-        log.error('Get schedule error', { error: err instanceof Error ? err.message : String(err) });
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Internal server error' }));
-      });
-      return;
-    }
-    if (method === 'PUT') {
-      handleUpdateSchedule(req, res, scheduler, schedId).catch((err) => {
-        log.error('Update schedule error', { error: err instanceof Error ? err.message : String(err) });
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Internal server error' }));
-      });
-      return;
-    }
-    if (method === 'DELETE') {
-      handleDeleteSchedule(req, res, scheduler, schedId).catch((err) => {
-        log.error('Delete schedule error', { error: err instanceof Error ? err.message : String(err) });
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Internal server error' }));
       });

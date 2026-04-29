@@ -4,6 +4,7 @@
  */
 
 import type { WebSocket } from 'ws';
+import type { ScheduledTask } from '@orionomega/core';
 
 /** Represents a connected client (TUI or Web). */
 export interface ClientConnection {
@@ -268,22 +269,28 @@ export interface ServerMessage {
   /** Buffered events that occurred while client was disconnected. Present when `type === 'session'`. */
   bufferedEvents?: unknown[];
 
-  /** Payload when `type === 'schedule_triggered'`. */
+  /** Scheduler fired a task. Present when `type === 'schedule_triggered'`. */
   scheduleTriggered?: {
     taskId: string;
     taskName: string;
     executionId: string;
+    prompt: string;
+    firedAt: string;
+    /** Source of the trigger — informs UI badging during live runs. */
     triggerType: 'cron' | 'manual';
   };
 
-  /** Payload when `type === 'schedule_execution_complete'`. */
+  /** A scheduled task execution finished. Present when `type === 'schedule_execution_complete'`. */
   scheduleExecutionComplete?: {
     taskId: string;
     taskName: string;
     executionId: string;
-    status: string;
-    durationSec?: number;
-    error?: string;
+    status: 'completed' | 'failed' | 'timeout';
+    durationSec: number;
+    error: string | null;
+    completedAt: string;
+    /** Updated schedule row (lastRunAt/lastStatus/nextRunAt/runCount/status). */
+    task?: ScheduledTask;
   };
 
   /** Per-run stats for direct (non-DAG) conversation turns. Present when `type === 'direct_complete'`. */
