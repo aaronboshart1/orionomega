@@ -80,6 +80,32 @@ export class Planner {
       ? (pickModelByTier(discoveredModels, 'sonnet')?.id ?? appConfig.models.default)
       : appConfig.models.default;
 
+    // Coerce planner-supplied model names to real, discoverable models. The
+    // planner LLM occasionally hallucinates IDs (e.g. "claude-opus-4-7" when
+    // only "claude-opus-4-6" exists). Passing a fake model to Claude Code makes
+    // the spawned process exit immediately with code 1, which surfaces to the
+    // user as "Coding agent error: Claude Code process exited with code 1".
+    const coerceModel = (raw: unknown): string => {
+      const id = raw == null ? '' : String(raw).trim();
+      if (!id) return defaultWorkerModel;
+      if (discoveredModels.length === 0) return id;
+      if (discoveredModels.some((m) => m.id === id)) return id;
+      const lower = id.toLowerCase();
+      const inferredTier: 'opus' | 'sonnet' | 'haiku' | null =
+        lower.includes('opus') ? 'opus'
+        : lower.includes('sonnet') ? 'sonnet'
+        : lower.includes('haiku') ? 'haiku'
+        : null;
+      const replacement = inferredTier
+        ? (pickModelByTier(discoveredModels, inferredTier)?.id ?? defaultWorkerModel)
+        : defaultWorkerModel;
+      log.warn(
+        `Planner picked unknown model "${id}" — substituting "${replacement}"` +
+        (inferredTier ? ` (inferred ${inferredTier} tier)` : ' (default worker model)'),
+      );
+      return replacement;
+    };
+
     let infraContext: string | undefined = preRecalledContext;
     if (!infraContext && !isExternalAction(task)) {
       try {
@@ -176,7 +202,7 @@ export class Planner {
             : undefined,
           agent: n.agent
             ? {
-                model: String(
+                model: coerceModel(
                   (n.agent as Record<string, unknown>).model ?? defaultWorkerModel,
                 ),
                 task: String(
@@ -220,7 +246,7 @@ export class Planner {
                 const ca = n.codingAgent as Record<string, unknown>;
                 return {
                   task: String(ca.task ?? ''),
-                  model: ca.model ? String(ca.model) : undefined,
+                  model: ca.model ? coerceModel(ca.model) : undefined,
                   cwd: ca.cwd ? String(ca.cwd) : undefined,
                   additionalDirectories: Array.isArray(ca.additionalDirectories)
                     ? (ca.additionalDirectories as string[])
@@ -253,7 +279,7 @@ export class Planner {
                         status: 'pending' as const,
                         agent: b.agent
                           ? {
-                              model: String((b.agent as Record<string, unknown>).model ?? defaultWorkerModel),
+                              model: coerceModel((b.agent as Record<string, unknown>).model ?? defaultWorkerModel),
                               task: String((b.agent as Record<string, unknown>).task ?? ''),
                             }
                           : undefined,
@@ -261,7 +287,7 @@ export class Planner {
                           ? {
                               task: String((b.codingAgent as Record<string, unknown>).task ?? ''),
                               model: (b.codingAgent as Record<string, unknown>).model
-                                ? String((b.codingAgent as Record<string, unknown>).model)
+                                ? coerceModel((b.codingAgent as Record<string, unknown>).model)
                                 : undefined,
                               cwd: (b.codingAgent as Record<string, unknown>).cwd
                                 ? String((b.codingAgent as Record<string, unknown>).cwd)
