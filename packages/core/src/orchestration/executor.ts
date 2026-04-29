@@ -1319,7 +1319,6 @@ export class GraphExecutor {
               content: `${condition.judgePrompt}\n\n## Loop Output (iteration ${iteration}):\n${output}\n\nRespond with ONLY "CONTINUE" or "EXIT".`,
             }],
             maxTokens: 8,
-            temperature: 0,
           });
 
           const text = response.content
@@ -1505,7 +1504,6 @@ export class GraphExecutor {
         system: 'You are a concise summarizer. Compress the following worker output into key findings, decisions, and data points. Preserve all actionable information, file paths, URLs, code snippets, and specific values. Remove verbose logging, repeated information, and filler text. Output ONLY the compressed summary.',
         messages: [{ role: 'user', content: `Worker "${label}" produced the following output:\n\n${output}` }],
         maxTokens: 2048,
-        temperature: 0,
       });
 
       const summary = response.content

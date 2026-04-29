@@ -181,7 +181,6 @@ export async function classifyIntent(
       system: CLASSIFY_PROMPT,
       messages: [{ role: 'user', content: message }],
       maxTokens: 8,
-      temperature: 0,
     });
 
     const text = response.content?.[0]?.text?.trim().toUpperCase() ?? 'ORCHESTRATE';
@@ -391,7 +390,6 @@ export async function streamConversation(opts: {
       system: systemPrompt,
       messages,
       maxTokens,
-      temperature: 0.7,
       tools: MAIN_AGENT_TOOLS,
     });
 

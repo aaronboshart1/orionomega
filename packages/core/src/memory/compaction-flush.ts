@@ -96,7 +96,6 @@ export class CompactionFlush {
           },
         ],
         maxTokens: 4096,
-        temperature: 0,
       });
 
       // Extract text from response
