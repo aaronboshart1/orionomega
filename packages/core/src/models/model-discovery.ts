@@ -149,19 +149,32 @@ export function buildModelGuide(models: DiscoveredModel[], mainModel: string): s
     grouped[m.tier].push(m);
   }
 
+  // Prefer the user's chosen main model as the canonical pick for its tier.
+  // Otherwise the planner LLM will always reach for the *newest* model in each
+  // tier, which can be a freshly-released model the rest of the toolchain
+  // (Claude Code CLI, prompt parameters, billing) does not yet support.
+  const mainTier = inferTier(mainModel);
+  const preferredForTier = (tier: 'opus' | 'sonnet' | 'haiku'): DiscoveredModel | undefined => {
+    if (tier === mainTier) {
+      const explicit = grouped[tier].find((m) => m.id === mainModel);
+      if (explicit) return explicit;
+    }
+    return grouped[tier][0];
+  };
+
   const lines: string[] = ['Available models (from Anthropic API — pick from this list only):'];
 
-  if (grouped.opus.length > 0) {
-    const best = grouped.opus[0];
-    lines.push(`  - ${best.id} (${best.displayName}) — HEAVYWEIGHT: complex reasoning, planning, creative writing. Use sparingly.`);
+  const opusBest = preferredForTier('opus');
+  if (opusBest) {
+    lines.push(`  - ${opusBest.id} (${opusBest.displayName}) — HEAVYWEIGHT: complex reasoning, planning, creative writing. Use sparingly.`);
   }
-  if (grouped.sonnet.length > 0) {
-    const best = grouped.sonnet[0];
-    lines.push(`  - ${best.id} (${best.displayName}) — MIDWEIGHT: code generation, analysis, writing. Good default for most workers.`);
+  const sonnetBest = preferredForTier('sonnet');
+  if (sonnetBest) {
+    lines.push(`  - ${sonnetBest.id} (${sonnetBest.displayName}) — MIDWEIGHT: code generation, analysis, writing. Good default for most workers.`);
   }
-  if (grouped.haiku.length > 0) {
-    const best = grouped.haiku[0];
-    lines.push(`  - ${best.id} (${best.displayName}) — LIGHTWEIGHT: data gathering, simple lookups, formatting. Fast and cheap.`);
+  const haikuBest = preferredForTier('haiku');
+  if (haikuBest) {
+    lines.push(`  - ${haikuBest.id} (${haikuBest.displayName}) — LIGHTWEIGHT: data gathering, simple lookups, formatting. Fast and cheap.`);
   }
 
   lines.push('');
@@ -170,6 +183,7 @@ export function buildModelGuide(models: DiscoveredModel[], mainModel: string): s
   lines.push('  - Use lightweight (haiku-tier) for retrieval, data fetching, and simple transforms.');
   lines.push('  - Use heavyweight (opus-tier) only when the task genuinely requires deep reasoning.');
   lines.push(`  - The main agent model is "${mainModel}" — use this as the fallback if unsure.`);
+  lines.push('  - Pick model IDs ONLY from the list above. Do not invent newer or older variants.');
 
   return lines.join('\n');
 }
