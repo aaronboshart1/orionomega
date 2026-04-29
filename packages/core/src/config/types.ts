@@ -166,6 +166,17 @@ export interface OrionOmegaConfig {
     additionalDirectories?: string[];
   };
 
+  scheduling?: {
+    /** Whether task scheduling is enabled. Default: true. */
+    enabled: boolean;
+    /** Default timezone for scheduled tasks. Default: 'UTC'. */
+    timezone: string;
+    /** Maximum number of concurrently running scheduled tasks. Default: 3. */
+    maxConcurrent: number;
+    /** Minimum interval in seconds between any two executions of the same task. Default: 60. */
+    minIntervalSec: number;
+  };
+
   /** Coding Mode configuration — transforms OrionOmega into an autonomous coding system. */
   codingMode: {
     /** Whether Coding Mode is active. Default: true. */

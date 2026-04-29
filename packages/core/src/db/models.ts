@@ -18,7 +18,9 @@ import type {
   memoryEvents,
   messages,
   runHistory,
+  scheduledTasks,
   sessions,
+  taskExecutions,
   workflowEvents,
   workflowExecutions,
   workflows,
@@ -97,6 +99,20 @@ export type NewRunHistory = InferInsertModel<typeof runHistory>;
 
 export type ClientState = InferSelectModel<typeof clientState>;
 export type NewClientState = InferInsertModel<typeof clientState>;
+
+// ── Scheduled Tasks ───────────────────────────────────────────────────────────
+
+export type ScheduledTask = InferSelectModel<typeof scheduledTasks>;
+export type NewScheduledTask = InferInsertModel<typeof scheduledTasks>;
+
+export type ScheduledTaskStatus = 'active' | 'paused' | 'deleted';
+export type OverlapPolicy = 'skip' | 'queue' | 'allow';
+
+export type TaskExecution = InferSelectModel<typeof taskExecutions>;
+export type NewTaskExecution = InferInsertModel<typeof taskExecutions>;
+
+export type TaskExecutionStatus = 'running' | 'completed' | 'failed' | 'timeout' | 'skipped';
+export type TriggerType = 'cron' | 'manual';
 
 // ── Composite helpers ─────────────────────────────────────────────────────────
 

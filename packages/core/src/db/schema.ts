@@ -305,3 +305,38 @@ export const clientState = sqliteTable(
   },
   (table) => [primaryKey({ columns: [table.clientId, table.sessionId] })],
 );
+
+// ── Scheduled Tasks ──────────────────────────────────────────────────────────
+
+export const scheduledTasks = sqliteTable('scheduled_tasks', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull().unique(),
+  description: text('description').notNull().default(''),
+  cronExpr: text('cron_expr').notNull(),
+  prompt: text('prompt').notNull(),
+  agentMode: text('agent_mode').$type<'orchestrate' | 'direct' | 'code'>().notNull().default('orchestrate'),
+  sessionId: text('session_id').notNull().default('default'),
+  status: text('status').$type<'active' | 'paused' | 'deleted'>().notNull().default('active'),
+  timezone: text('timezone').notNull().default('UTC'),
+  overlapPolicy: text('overlap_policy').$type<'skip' | 'queue' | 'allow'>().notNull().default('skip'),
+  maxRetries: integer('max_retries').notNull().default(0),
+  timeoutSec: integer('timeout_sec').notNull().default(0),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+  lastRunAt: text('last_run_at'),
+  nextRunAt: text('next_run_at'),
+  lastStatus: text('last_status'),
+  runCount: integer('run_count').notNull().default(0),
+  runAt: text('run_at'),
+});
+
+export const taskExecutions = sqliteTable('task_executions', {
+  id: text('id').primaryKey(),
+  taskId: text('task_id').notNull().references(() => scheduledTasks.id, { onDelete: 'cascade' }),
+  status: text('status').$type<'running' | 'completed' | 'failed' | 'timeout' | 'skipped'>().notNull().default('running'),
+  startedAt: text('started_at').notNull(),
+  completedAt: text('completed_at'),
+  durationSec: real('duration_sec'),
+  error: text('error'),
+  triggerType: text('trigger_type').$type<'cron' | 'manual'>().notNull().default('cron'),
+});

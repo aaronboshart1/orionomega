@@ -7,6 +7,7 @@ import { useChatStore } from '@/stores/chat';
 import { useConnectionStore } from '@/stores/connection';
 import { useAgentModeStore } from '@/stores/agent-mode';
 import { useCodingModeStore } from '@/stores/coding-mode';
+import { useSchedulesStore } from '@/stores/schedules';
 import type { ChatMessage } from '@/stores/chat';
 import type { FileAttachment } from '@/components/chat/ChatInput';
 import { uuid } from '@/lib/uuid';
@@ -1382,6 +1383,25 @@ function bindListeners(ws: ReconnectingWebSocket): void {
       case 'presence': {
         if (typeof msg.count === 'number') {
           useConnectionStore.getState().setPresenceCount(msg.count);
+        }
+        break;
+      }
+      case 'schedule_triggered': {
+        const schedStore = useSchedulesStore.getState();
+        if (msg.scheduleTriggered) {
+          schedStore.updateScheduleInList(msg.scheduleTriggered.taskId, {
+            lastRunAt: msg.scheduleTriggered.firedAt,
+          });
+        }
+        break;
+      }
+      case 'schedule_execution_complete': {
+        const schedStore = useSchedulesStore.getState();
+        if (msg.scheduleExecutionComplete) {
+          schedStore.updateScheduleInList(msg.scheduleExecutionComplete.taskId, {
+            lastStatus: msg.scheduleExecutionComplete.status,
+            updatedAt: msg.scheduleExecutionComplete.completedAt,
+          });
         }
         break;
       }

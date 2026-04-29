@@ -177,7 +177,9 @@ export interface ServerMessage {
     | 'hindsight_status' | 'memory_event' | 'memory_history'
     | 'coding_event'
     | 'direct_complete'
-    | 'session';
+    | 'session'
+    | 'schedule_triggered'
+    | 'schedule_execution_complete';
   /** Identifies which workflow this message relates to (events, status updates, plans). */
   workflowId?: string;
   /** Monotonically increasing event sequence number from PersistenceService. */
@@ -265,6 +267,24 @@ export interface ServerMessage {
   sessionId?: string;
   /** Buffered events that occurred while client was disconnected. Present when `type === 'session'`. */
   bufferedEvents?: unknown[];
+
+  /** Payload when `type === 'schedule_triggered'`. */
+  scheduleTriggered?: {
+    taskId: string;
+    taskName: string;
+    executionId: string;
+    triggerType: 'cron' | 'manual';
+  };
+
+  /** Payload when `type === 'schedule_execution_complete'`. */
+  scheduleExecutionComplete?: {
+    taskId: string;
+    taskName: string;
+    executionId: string;
+    status: string;
+    durationSec?: number;
+    error?: string;
+  };
 
   /** Per-run stats for direct (non-DAG) conversation turns. Present when `type === 'direct_complete'`. */
   directComplete?: {

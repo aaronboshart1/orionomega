@@ -218,3 +218,18 @@ commands:
   # Directory containing custom slash command files (*.md).
   # Default: ~/orionomega/commands
   directory: ~/orionomega/commands
+
+# ── Task Scheduling ──────────────────────────────────────────────────────────
+scheduling:
+  # Enable or disable the task scheduler. Default: true
+  enabled: true
+
+  # Default timezone for scheduled tasks. Default: UTC
+  timezone: UTC
+
+  # Maximum number of scheduled tasks that may run concurrently. Default: 3
+  maxConcurrent: 3
+
+  # Minimum seconds that must elapse between two executions of the same task.
+  # Guards against runaway schedules with very short cron intervals. Default: 60
+  minIntervalSec: 60

@@ -30,6 +30,8 @@
     "@orionomega/hindsight": "workspace:*",
     "@orionomega/skills-sdk": "workspace:*",
     "better-sqlite3": "^12.8.0",
+    "croner": "^10.0.1",
+    "cronstrue": "^3.14.0",
     "drizzle-orm": "^0.45.2",
     "lru-cache": "^11.3.2",
     "ws": "^8.18.0",

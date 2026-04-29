@@ -6,9 +6,10 @@ import { X, Eye, EyeOff, Save, Loader2, CheckCircle, AlertCircle, ChevronDown, R
 import { TabGroup, type TabDef } from '../shared/TabGroup';
 import { SkillsTab as SkillsSettingsTab } from './SkillsSettings';
 import { GatewayTab } from './GatewayTab';
+import { SchedulesTab } from './SchedulesTab';
 import { Z } from '@/lib/z-index';
 
-type TabId = 'omegaclaw' | 'memory' | 'skills' | 'webui' | 'gateway';
+type TabId = 'omegaclaw' | 'memory' | 'skills' | 'schedules' | 'webui' | 'gateway';
 
 interface SettingsModalProps {
   open: boolean;
@@ -781,7 +782,7 @@ function WebUITab({
 }
 
 function getTabValidity(config: ConfigData | null): Record<TabId, boolean> {
-  if (!config) return { omegaclaw: false, memory: false, skills: false, webui: false, gateway: true };
+  if (!config) return { omegaclaw: false, memory: false, skills: false, schedules: true, webui: false, gateway: true };
 
   const apiKey = String(getNestedValue(config, 'models.apiKey') ?? '');
   const defaultModel = String(getNestedValue(config, 'models.default') ?? '');
@@ -798,13 +799,14 @@ function getTabValidity(config: ConfigData | null): Record<TabId, boolean> {
   const webuiPort = Number(getNestedValue(config, 'webui.port') ?? 0);
   const webuiValid = webuiPort > 0 && webuiPort <= 65535;
 
-  return { omegaclaw: omegaclawValid, memory: memoryValid, skills: skillsValid, webui: webuiValid, gateway: true };
+  return { omegaclaw: omegaclawValid, memory: memoryValid, skills: skillsValid, schedules: true, webui: webuiValid, gateway: true };
 }
 
 const TABS: { id: TabId; label: string }[] = [
   { id: 'omegaclaw', label: 'OmegaClaw' },
   { id: 'memory', label: 'Memory' },
   { id: 'skills', label: 'Skills' },
+  { id: 'schedules', label: 'Schedules' },
   { id: 'webui', label: 'WebUI' },
   { id: 'gateway', label: 'Gateway' },
 ];
@@ -1005,6 +1007,8 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
         <div className="flex-1 overflow-y-auto px-4 md:px-6 py-4">
           {activeTab === 'gateway' ? (
             <GatewayTab />
+          ) : activeTab === 'schedules' ? (
+            <SchedulesTab />
           ) : loading ? (
             <div className="flex h-full items-center justify-center">
               <Loader2 size={20} className="animate-spin text-zinc-500" />
