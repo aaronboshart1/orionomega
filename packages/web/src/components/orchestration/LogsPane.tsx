@@ -376,8 +376,15 @@ export function LogsPane() {
               <XCircle size={10} /> {error}
               <button
                 type="button"
+                onClick={() => { setError(null); void loadAll(effectiveLevel); }}
+                className="ml-auto rounded border border-red-500/40 px-1.5 py-0.5 text-red-300 hover:bg-red-500/10"
+              >
+                Retry
+              </button>
+              <button
+                type="button"
                 onClick={() => setError(null)}
-                className="ml-auto text-zinc-500 hover:text-zinc-300"
+                className="text-zinc-500 hover:text-zinc-300"
                 aria-label="Dismiss error"
               >
                 <X size={11} />
