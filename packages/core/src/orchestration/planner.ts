@@ -387,13 +387,16 @@ export class Planner {
 Workers auto-receive: upstream outputs, Hindsight memories, infra config. Do NOT create discovery nodes for known info.
 
 ## Token Budgets
-Retrieval: 50K-100K tokens (lightweight). Analysis: 100K-200K (midweight). Complex reasoning: 200K-400K (heavyweight).
+Only set \`tokenBudget\` when you specifically want to *reduce* a worker below the system default.
+Tool-heavy workers (web search, file scanning, large research) burn cache writes fast — leave them
+unbounded so the system default applies. If you do set one, use realistic ranges:
+retrieval/quick lookups 200K-400K, analysis 500K-800K, deep multi-step research 1M+.
 
 ## Output: JSON
 The \`estimatedTime\` field is the *expected* total runtime of the entire plan in seconds.
 Per-node \`timeout\` values are *budgets* that must comfortably exceed expected runtimes (see rule 7).
 \`\`\`json
-{"reasoning":"...","estimatedCost":0.05,"estimatedTime":600,"summary":"...","nodes":[{"id":"...","type":"AGENT|TOOL|ROUTER|JOIN|CODING_AGENT|LOOP","label":"...","dependsOn":[],"timeout":600,"retries":1,"agent":{"model":"...","task":"...","tokenBudget":200000,"skillIds":["linear"]},"codingAgent":{"task":"...","model":"...","allowedTools":["Read","Write","Edit","Bash","Glob","Grep"],"maxTurns":30},"tool":{"name":"BINARY","params":{}},"router":{"condition":"key","routes":{"val":"node-id","default":"node-id"}},"loop":{"body":[...],"maxIterations":5,"exitCondition":{"type":"all_pass|output_match|llm_judge"},"carryForward":true}}]}
+{"reasoning":"...","estimatedCost":0.05,"estimatedTime":600,"summary":"...","nodes":[{"id":"...","type":"AGENT|TOOL|ROUTER|JOIN|CODING_AGENT|LOOP","label":"...","dependsOn":[],"timeout":600,"retries":1,"agent":{"model":"...","task":"...","skillIds":["linear"]},"codingAgent":{"task":"...","model":"...","allowedTools":["Read","Write","Edit","Bash","Glob","Grep"],"maxTurns":30},"tool":{"name":"BINARY","params":{}},"router":{"condition":"key","routes":{"val":"node-id","default":"node-id"}},"loop":{"body":[...],"maxIterations":5,"exitCondition":{"type":"all_pass|output_match|llm_judge"},"carryForward":true}}]}
 \`\`\`
 Note: For a CODING_AGENT node specifically, set \`timeout: 1800\` (or higher) — never 120 or 300.
 Include only the relevant config key per node type (agent/tool/router/codingAgent/loop). Every node: id, type, label, dependsOn.

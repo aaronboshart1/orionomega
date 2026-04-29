@@ -236,19 +236,31 @@ export interface AgentExecutionResult {
 
 /**
  * Converts a token budget to a rough USD estimate for the given model.
- * Uses input-token cost rates with a 4x multiplier to account for output tokens.
+ *
+ * The budget is meant to bound total *cost*, but real workers spend their
+ * tokens across four very differently priced lanes: input, output, cache
+ * read, cache write. For tool-heavy workers (research with web_search /
+ * web_fetch, repeated tool round-trips), cache writes dominate — they're
+ * billed at ~3.75× input — so a small linear multiplier on input cost is
+ * wildly off and silently kills workers mid-run with `error_max_budget_usd`.
+ *
+ * Empirical: a sonnet research worker with `tokenBudget: 200_000` was
+ * burning ~$2.40 in real cache traffic alone, so the prior 4× multiplier
+ * misrepresented the budget by roughly an order of magnitude.
+ *
+ * The conversion uses a 12× multiplier as a closer upper bound that covers
+ * a typical mix of input + output + cache traffic, and the floor/cap are
+ * raised so per-node budgets aren't crushed for legitimate research workers.
  */
 function tokenBudgetToUsd(tokenBudget: number, model: string): number {
   const lower = model.toLowerCase();
-  // Cost per million input tokens (approximate current rates)
   let costPerMillion: number;
   if (lower.includes('haiku')) costPerMillion = 1.0;
   else if (lower.includes('opus')) costPerMillion = 5.0;
-  else costPerMillion = 3.0; // sonnet default
+  else costPerMillion = 3.0;
 
-  // Multiply by 4 to account for output tokens and safety margin
-  const estimated = (tokenBudget / 1_000_000) * costPerMillion * 4;
-  return Math.max(1.0, Math.min(estimated, 50.0)); // Cap: $1 min, $50 max
+  const estimated = (tokenBudget / 1_000_000) * costPerMillion * 12;
+  return Math.max(5.0, Math.min(estimated, 100.0));
 }
 
 // ── P5: Skill MCP server ─────────────────────────────────────────────
