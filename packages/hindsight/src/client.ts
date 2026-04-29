@@ -34,6 +34,42 @@ const BUDGET_TIER_MAX_TOKENS: Record<string, number> = {
   high: 8192,
 };
 
+/** Circuit-breaker state for the Hindsight client. */
+export type CircuitState = 'closed' | 'open' | 'half-open';
+
+/** Snapshot of the Hindsight client's health for `/api/health`. */
+export interface HindsightStatus {
+  /**
+   * Rolled-up health verdict for operator dashboards:
+   * - `up`     — breaker closed, last request succeeded, no suppressed endpoints.
+   * - `degraded` — breaker closed but the server is rejecting some endpoints
+   *   (e.g. mental-models not implemented, or an auth error on the last call).
+   * - `down`   — breaker is open or half-open; requests are being short-circuited.
+   */
+  status: 'up' | 'down' | 'degraded';
+  /** Whether the last completed request succeeded at the transport level. */
+  connected: boolean;
+  /** Current circuit-breaker state. */
+  circuitState: CircuitState;
+  /** Number of consecutive transport-level failures recorded. */
+  failureCount: number;
+  /** Most recent error string (network or 5xx), if any. */
+  lastError: string | null;
+  /** Endpoint associated with `lastError`, if any. */
+  lastErrorEndpoint: string | null;
+  /** ISO timestamp when the breaker was last opened, if currently open. */
+  openedAt: string | null;
+  /** Whether mental-models support has been confirmed unavailable for this session. */
+  mentalModelsAvailable: boolean | null;
+  /**
+   * Endpoints currently being suppressed because the server keeps returning
+   * 404/405/501 for them (i.e. the deployed Hindsight version doesn't
+   * implement them). Populated by the per-endpoint suppressor — see
+   * `_suppressedEndpoints` for details.
+   */
+  suppressedEndpoints: Array<{ key: string; status: number; until: string }>;
+}
+
 export class HindsightClient {
   private readonly baseUrl: string;
   private readonly namespace: string;
@@ -44,6 +80,53 @@ export class HindsightClient {
   private _banksCache: BankInfo[] | null = null;
   private _banksCacheTime = 0;
   private static readonly BANKS_CACHE_TTL_MS = 60_000;
+
+  // ── Circuit breaker ─────────────────────────────────────────────────
+  /**
+   * Trips after this many consecutive transport-level failures (network errors
+   * or 5xx). 4xx responses do not increment the counter — those mean the
+   * server is up and chose to reject the request, not that it is unhealthy.
+   */
+  private static readonly CIRCUIT_FAILURE_THRESHOLD = 5;
+  /** Wait this long before allowing a single half-open probe request. */
+  private static readonly CIRCUIT_COOLDOWN_MS = 60_000;
+
+  private _circuitState: CircuitState = 'closed';
+  private _failureCount = 0;
+  private _lastError: string | null = null;
+  private _lastErrorEndpoint: string | null = null;
+  /**
+   * HTTP status code attached to `_lastError`, if it came from a non-OK
+   * response. 0 for transport/network failures. Cleared on the next
+   * successful request. Used by `getStatus()` so auth errors (401/403)
+   * surface as `degraded` even though the connection is technically up.
+   */
+  private _lastErrorStatus = 0;
+  private _circuitOpenedAt = 0;
+  /**
+   * True while a half-open probe request is in flight. Concurrent callers
+   * see this and short-circuit instead of all racing the server during the
+   * recovery window — only one probe gets to decide whether the breaker
+   * closes again.
+   */
+  private _halfOpenProbeInFlight = false;
+  /** Set once the capability probe finishes; null while unknown. */
+  private _mentalModelsAvailable: boolean | null = null;
+
+  // ── Per-endpoint suppression ────────────────────────────────────────
+  /**
+   * Status codes that signal an endpoint isn't implemented by this server
+   * and is therefore not worth retrying for a while. Repeated 404/405/501
+   * was the dominant noise source before this task — once an endpoint has
+   * returned one of these `SUPPRESS_AFTER_HITS` times in a row, we mark it
+   * as suppressed and short-circuit subsequent calls until the TTL
+   * expires (or a successful call to that key clears it).
+   */
+  private static readonly SUPPRESSIBLE_STATUSES = new Set([404, 405, 501]);
+  private static readonly SUPPRESS_AFTER_HITS = 2;
+  private static readonly SUPPRESS_TTL_MS = 5 * 60_000;
+  private _endpointHitCounts = new Map<string, { status: number; count: number; message: string }>();
+  private _suppressedEndpoints = new Map<string, { status: number; until: number; message: string }>();
 
   /** Callback invoked when I/O activity state changes (busy/idle or connected/disconnected). */
   onActivity?: (status: { connected: boolean; busy: boolean }) => void;
@@ -56,6 +139,108 @@ export class HindsightClient {
 
   /** Whether the last request succeeded (connection is alive). */
   get connected(): boolean { return this._connected; }
+
+  /** Current circuit-breaker state. */
+  get circuitState(): CircuitState { return this._circuitState; }
+
+  /**
+   * Snapshot of overall client health. Safe to call from `/api/health` —
+   * does not perform any I/O. Used by the gateway to surface a structured
+   * `system.hindsight` block without grepping logs.
+   */
+  getStatus(): HindsightStatus {
+    // Strip expired suppression entries lazily so the returned snapshot
+    // doesn't surface stale data, and so suppressedEndpoints reflects what
+    // would actually be enforced if a request fired right now.
+    this.pruneExpiredSuppressions();
+
+    const suppressedEndpoints = Array.from(this._suppressedEndpoints.entries()).map(
+      ([key, entry]) => ({
+        key,
+        status: entry.status,
+        until: new Date(entry.until).toISOString(),
+      }),
+    );
+
+    // Roll up the verdict for operator dashboards. `down` wins over
+    // `degraded` wins over `up` — the most-broken signal dominates.
+    let status: 'up' | 'down' | 'degraded' = 'up';
+    if (this._circuitState !== 'closed') {
+      status = 'down';
+    } else if (
+      suppressedEndpoints.length > 0 ||
+      this._mentalModelsAvailable === false ||
+      (!this._connected && this._lastError !== null) ||
+      // Auth errors don't trip the breaker (the connection is fine, the
+      // credentials aren't), but they're operator-actionable and should
+      // not be reported as 'up'. Cleared on the next successful request.
+      this._lastErrorStatus === 401 ||
+      this._lastErrorStatus === 403 ||
+      // Any transport/5xx failure streak below the trip threshold should
+      // still surface as degraded — the breaker trips at
+      // CIRCUIT_FAILURE_THRESHOLD, but operators want visibility into
+      // partial degradation before that point. Reset to 0 by recordSuccess
+      // (or by any 4xx, which proves the server is reachable).
+      this._failureCount > 0
+    ) {
+      status = 'degraded';
+    }
+
+    return {
+      status,
+      connected: this._connected,
+      circuitState: this._circuitState,
+      failureCount: this._failureCount,
+      lastError: this._lastError,
+      lastErrorEndpoint: this._lastErrorEndpoint,
+      openedAt: this._circuitOpenedAt > 0 && this._circuitState !== 'closed'
+        ? new Date(this._circuitOpenedAt).toISOString()
+        : null,
+      mentalModelsAvailable: this._mentalModelsAvailable,
+      suppressedEndpoints,
+    };
+  }
+
+  /**
+   * Build the suppression bucket key for a request. Identifiers in the path
+   * (bank IDs, mental-model IDs, namespaces) are normalised to `:id` so
+   * that, e.g., 404s on every per-bank `mental-models/foo` URL collapse
+   * onto a single suppression entry rather than spawning one per bank.
+   *
+   * Note: we deliberately do NOT normalise the segment after `/memories/`
+   * — the only sub-path used there is `/memories/recall`, which is an
+   * action name, not an identifier. Treating it as `:id` would conflate
+   * a 404 on the recall endpoint with theoretical per-memory-ID lookups.
+   */
+  private suppressionKey(method: string, path: string): string {
+    const normalised = path
+      .replace(/\/v1\/[^/]+/g, '/v1/:ns')
+      .replace(/\/banks\/[^/]+/g, '/banks/:id')
+      .replace(/\/mental-models\/[^/]+/g, '/mental-models/:id');
+    return `${method} ${normalised}`;
+  }
+
+  /** Remove suppression entries whose TTL has elapsed. */
+  private pruneExpiredSuppressions(): void {
+    const now = Date.now();
+    for (const [key, entry] of this._suppressedEndpoints) {
+      if (entry.until <= now) this._suppressedEndpoints.delete(key);
+    }
+  }
+
+  /**
+   * Whether the deployed Hindsight server exposes mental-model endpoints.
+   * Returns null until the capability probe has run.
+   */
+  get mentalModelsAvailable(): boolean | null { return this._mentalModelsAvailable; }
+
+  /**
+   * Mark mental-models support as available/unavailable for the session.
+   * Called by the memory bridge after the capability probe.
+   */
+  setMentalModelsAvailable(available: boolean): void {
+    this._mentalModelsAvailable = available;
+  }
 
   /**
    * Create a new Hindsight client.
@@ -651,6 +836,57 @@ export class HindsightClient {
     path: string,
     body?: unknown,
   ): Promise<T> {
+    const endpoint = `${method} ${path}`;
+    const suppressKey = this.suppressionKey(method, path);
+
+    // Per-endpoint suppression gate. When the server has repeatedly told us
+    // this endpoint isn't implemented (404/405/501), short-circuit to avoid
+    // hammering it with identical requests for the suppression TTL. This
+    // is the dominant source of startup-noise warnings the task targets.
+    const suppressed = this._suppressedEndpoints.get(suppressKey);
+    if (suppressed && suppressed.until > Date.now()) {
+      const remaining = Math.ceil((suppressed.until - Date.now()) / 1000);
+      // Debug only — operators can see suppression in /api/health.
+      log.debug(`Suppressed Hindsight request: ${endpoint}`, {
+        suppressedFor: `${remaining}s`,
+        cachedStatus: suppressed.status,
+        cachedMessage: suppressed.message,
+      });
+      throw new HindsightError(suppressed.message, suppressed.status, endpoint);
+    }
+    if (suppressed && suppressed.until <= Date.now()) {
+      // TTL elapsed — drop the entry and let the request through to retry.
+      this._suppressedEndpoints.delete(suppressKey);
+    }
+
+    // Circuit-breaker gate. When open, short-circuit until the cool-down
+    // elapses, then transition to half-open and allow exactly one probe
+    // request through. The transition log is emitted once per state change
+    // (not on every short-circuited call) to keep the log volume bounded
+    // when a downstream Hindsight service stays unreachable for a while.
+    if (this._circuitState === 'open') {
+      const elapsed = Date.now() - this._circuitOpenedAt;
+      if (elapsed < HindsightClient.CIRCUIT_COOLDOWN_MS) {
+        const remaining = Math.ceil((HindsightClient.CIRCUIT_COOLDOWN_MS - elapsed) / 1000);
+        const msg = `Hindsight circuit breaker open (retry in ~${remaining}s, last error: ${this._lastError ?? 'unknown'})`;
+        throw new HindsightError(msg, 0, endpoint);
+      }
+      this._circuitState = 'half-open';
+      this._halfOpenProbeInFlight = true;
+      log.info(`Hindsight circuit breaker half-open — probing with ${endpoint}`);
+    } else if (this._circuitState === 'half-open') {
+      // Another caller is already probing the upstream. Short-circuit so
+      // we don't all hit the server simultaneously and either spam it on
+      // recovery or all fail together on a still-broken backend.
+      if (this._halfOpenProbeInFlight) {
+        const msg = `Hindsight circuit breaker probing (last error: ${this._lastError ?? 'unknown'})`;
+        throw new HindsightError(msg, 0, endpoint);
+      }
+      // No probe in flight (the previous one resolved without re-opening
+      // or closing the breaker yet — should be rare). Take the slot.
+      this._halfOpenProbeInFlight = true;
+    }
+
     const url = `${this.baseUrl}${path}`;
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (this.apiKey) {
@@ -678,8 +914,11 @@ export class HindsightClient {
       this._connected = false;
       this.emitActivity();
       const msg = err instanceof Error ? err.message : 'Network error';
-      log.error(`Hindsight request failed: ${method} ${path}`, { error: msg });
-      throw new HindsightError(msg, 0, `${method} ${path}`);
+      // Network failures are rare and important — keep these at warn so
+      // they show up in default logs. The breaker handles repeat noise.
+      log.warn(`Hindsight request failed: ${method} ${path}`, { error: msg });
+      this.recordFailure(endpoint, msg, /* transport */ true, /* status */ 0);
+      throw new HindsightError(msg, 0, endpoint);
     }
 
     if (!res.ok) {
@@ -698,13 +937,45 @@ export class HindsightClient {
       } catch {
         message = res.statusText;
       }
-      log.error(`Hindsight API error: ${method} ${path} → ${res.status}`, { message });
-      throw new HindsightError(message, res.status, `${method} ${path}`);
+
+      // Tiered logging: most 4xx outcomes are not operator-actionable
+      // from this layer (the bridge code logs domain context separately).
+      // Only auth/forbidden and 5xx need to surface at warn or higher.
+      // 404/405/501 are the noisiest "endpoint not implemented" responses
+      // and are also fed into the per-endpoint suppressor below so callers
+      // stop hammering them.
+      if (res.status === 401 || res.status === 403) {
+        log.warn(`Hindsight auth error: ${method} ${path} → ${res.status}`, { message });
+      } else if (res.status >= 500) {
+        log.warn(`Hindsight server error: ${method} ${path} → ${res.status}`, { message });
+      } else {
+        log.debug(`Hindsight API rejected: ${method} ${path} → ${res.status}`, { message });
+      }
+
+      // Only 5xx responses indicate the server itself is unhealthy. 4xx means
+      // the server is up and rejected the request — that's a client problem,
+      // and tripping the breaker on it would mask the underlying bug.
+      const isServerError = res.status >= 500;
+      this.recordFailure(endpoint, `${res.status} ${message}`, isServerError, res.status);
+
+      // If this status code looks like "endpoint not implemented", increment
+      // the per-endpoint hit counter and promote it to a suppression entry
+      // once it's been seen enough times in a row.
+      if (HindsightClient.SUPPRESSIBLE_STATUSES.has(res.status)) {
+        this.recordSuppressibleHit(suppressKey, res.status, message, endpoint);
+      } else {
+        // A different rejection clears any prior streak so we don't promote
+        // unrelated 404s from a transient bug into a long suppression window.
+        this._endpointHitCounts.delete(suppressKey);
+      }
+
+      throw new HindsightError(message, res.status, endpoint);
     }
 
     this._activeOps--;
     this._connected = true;
     this.emitActivity();
+    this.recordSuccess(suppressKey);
 
     // Some endpoints return no body (204, etc.)
     const text = await res.text();
@@ -712,5 +983,117 @@ export class HindsightClient {
       return undefined as T;
     }
     return JSON.parse(text) as T;
+  }
+
+  /**
+   * Record a successful request against the circuit breaker. Closes the
+   * breaker if it was half-open and resets the consecutive-failure counter.
+   * Also clears any per-endpoint suppression for the recovered key — if the
+   * server now responds successfully, it has clearly started implementing
+   * (or fixed) the endpoint we were avoiding.
+   */
+  private recordSuccess(suppressKey?: string): void {
+    if (this._circuitState !== 'closed') {
+      log.info(`Hindsight circuit breaker closed (recovered after ${this._failureCount} failure(s))`);
+    }
+    this._circuitState = 'closed';
+    this._failureCount = 0;
+    this._circuitOpenedAt = 0;
+    // Always release the half-open probe slot so the next caller is not
+    // permanently locked out. If the breaker was already closed this is a
+    // no-op (the flag was already false).
+    this._halfOpenProbeInFlight = false;
+    // Clear the last-error status so /api/health stops reporting an old
+    // auth or rejection issue once a healthy request succeeds. We keep
+    // `_lastError` (the message) for diagnostic context.
+    this._lastErrorStatus = 0;
+    if (suppressKey) {
+      this._endpointHitCounts.delete(suppressKey);
+      if (this._suppressedEndpoints.delete(suppressKey)) {
+        log.info(`Hindsight endpoint un-suppressed after success: ${suppressKey}`);
+      }
+    }
+  }
+
+  /**
+   * Track a 404/405/501 response and promote the endpoint to a suppression
+   * entry once it has been seen `SUPPRESS_AFTER_HITS` times in a row. We
+   * gate on a streak (rather than a single hit) so a one-off 404 against
+   * an endpoint that only sometimes returns one — e.g. a freshly created
+   * bank that hasn't propagated — doesn't disable subsequent calls.
+   */
+  private recordSuppressibleHit(
+    suppressKey: string,
+    status: number,
+    message: string,
+    endpoint: string,
+  ): void {
+    const prior = this._endpointHitCounts.get(suppressKey);
+    const nextCount = prior && prior.status === status ? prior.count + 1 : 1;
+    this._endpointHitCounts.set(suppressKey, { status, count: nextCount, message });
+
+    if (nextCount >= HindsightClient.SUPPRESS_AFTER_HITS && !this._suppressedEndpoints.has(suppressKey)) {
+      const until = Date.now() + HindsightClient.SUPPRESS_TTL_MS;
+      this._suppressedEndpoints.set(suppressKey, { status, until, message });
+      log.warn(
+        `Hindsight endpoint suppressed for ${HindsightClient.SUPPRESS_TTL_MS / 60_000}m after ${nextCount} consecutive ${status} responses`,
+        { endpoint, key: suppressKey, message },
+      );
+    }
+  }
+
+  /**
+   * Record a failed request against the circuit breaker. Only counts
+   * transport-level failures (network errors, 5xx). 4xx errors update
+   * `_lastError` for diagnostics but do not advance the counter.
+   */
+  private recordFailure(
+    endpoint: string,
+    message: string,
+    transportFailure: boolean,
+    status: number,
+  ): void {
+    this._lastError = message;
+    this._lastErrorEndpoint = endpoint;
+    this._lastErrorStatus = status;
+
+    // A non-transport failure (4xx) is a *successful probe of the server
+    // itself* — the server is up, it just rejected the request. Treat it
+    // the same way as a 2xx for breaker purposes: reset the consecutive-
+    // failure streak so transport failures separated by 4xx don't slowly
+    // accumulate into a false trip, and close the breaker if we were
+    // half-open. The probe slot is released either way.
+    if (!transportFailure) {
+      if (this._circuitState === 'half-open') {
+        this._circuitState = 'closed';
+        this._circuitOpenedAt = 0;
+        log.info(`Hindsight circuit breaker closed (server responded with ${message})`);
+      }
+      this._failureCount = 0;
+      this._halfOpenProbeInFlight = false;
+      return;
+    }
+
+    this._failureCount++;
+    const wasHalfOpen = this._circuitState === 'half-open';
+
+    if (wasHalfOpen) {
+      // The probe failed at the transport level — re-open for another cooldown.
+      this._circuitState = 'open';
+      this._circuitOpenedAt = Date.now();
+      this._halfOpenProbeInFlight = false;
+      log.warn(`Hindsight circuit breaker re-opened after failed half-open probe`, {
+        endpoint, error: message, failureCount: this._failureCount,
+      });
+      return;
+    }
+
+    if (this._circuitState === 'closed' && this._failureCount >= HindsightClient.CIRCUIT_FAILURE_THRESHOLD) {
+      this._circuitState = 'open';
+      this._circuitOpenedAt = Date.now();
+      log.warn(`Hindsight circuit breaker opened after ${this._failureCount} consecutive failures — suppressing requests for ${HindsightClient.CIRCUIT_COOLDOWN_MS / 1000}s`, {
+        endpoint, error: message,
+      });
+    }
   }
 }

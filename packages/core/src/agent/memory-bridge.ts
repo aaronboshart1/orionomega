@@ -99,6 +99,23 @@ export class MemoryBridge {
   get banks(): BankManager | null { return this.bankManager; }
 
   /**
+   * Snapshot of Hindsight client health (circuit state, last error, etc.)
+   * for the gateway's `/api/health` endpoint. Returns `null` when memory
+   * is not configured for this session.
+   */
+  getHindsightStatus() {
+    return this.hindsightClient?.getStatus() ?? null;
+  }
+
+  /**
+   * Snapshot of session-summariser health for `/api/health`. Returns
+   * `null` when memory is not configured (no summariser was constructed).
+   */
+  getSummarizerStatus() {
+    return this.sessionSummarizer?.getStatus() ?? null;
+  }
+
+  /**
    * Initialise the Hindsight memory subsystem.
    *
    * Creates all memory components, bootstraps context, and starts retention.
@@ -166,8 +183,13 @@ export class MemoryBridge {
       // F7: Seed mental models on first run. The refresh callback only updates
       // existing models — if they were never created, every bootstrap attempt
       // returns 404. Seed them once so subsequent refreshes work.
+      // Fire-and-forget: any failure here is non-fatal. The capability probe
+      // inside the seeder already handles "endpoint not supported" with a
+      // single info log, so this catch only fires on truly unexpected errors
+      // and is intentionally logged at debug to avoid noise.
       this.seedMentalModelsIfNeeded().catch((err) => {
-        log.warn('Mental model seeding failed', {
+        log.debug('Mental model seeding failed', {
+          endpoint: 'seedMentalModelsIfNeeded',
           error: err instanceof Error ? err.message : String(err),
         });
       });
@@ -183,11 +205,15 @@ export class MemoryBridge {
       };
 
       // Trigger mental model refresh after every successful retention.
+      // Skip entirely when the capability probe disabled mental models for
+      // the session — otherwise we'd issue a 404 on every successful retain.
       this.retentionEngine.onAfterRetain = (bankId: string, context: string) => {
+        if (this.hindsightClient?.mentalModelsAvailable === false) return;
         this.mentalModelManager?.onRetain(bankId, context).catch((err) => {
-          log.warn('Mental model refresh failed after retention', {
+          log.debug('Mental model refresh failed after retention', {
             bankId,
             context,
+            endpoint: 'mentalModelManager.onRetain',
             error: err instanceof Error ? err.message : String(err),
           });
         });
@@ -262,7 +288,10 @@ export class MemoryBridge {
         memories.push(result.results.map((m) => m.content).join('\n\n'));
       }
     } catch (err) {
-      log.warn('Core bank recall failed for planning', {
+      // Recall is best-effort — failures are surfaced via the circuit
+      // breaker and /api/health, so per-call noise is unhelpful here.
+      log.debug('Core bank recall failed for planning', {
+        endpoint: 'POST /v1/<ns>/banks/core/memories/recall',
         error: err instanceof Error ? err.message : String(err),
       });
     }
@@ -276,8 +305,9 @@ export class MemoryBridge {
           memories.push(result.results.map((m) => m.content).join('\n\n'));
         }
       } catch (err) {
-        log.warn('Project bank recall failed for planning', {
+        log.debug('Project bank recall failed for planning', {
           bank: this.activeProjectBank,
+          endpoint: `POST /v1/<ns>/banks/${this.activeProjectBank}/memories/recall`,
           error: err instanceof Error ? err.message : String(err),
         });
       }
@@ -417,8 +447,9 @@ export class MemoryBridge {
           memories.push(...result.results.map((m) => m.content));
         }
       } catch (err) {
-        log.warn('Architect recall: project bank failed', {
+        log.debug('Architect recall: project bank failed', {
           bank: this.activeProjectBank,
+          endpoint: `POST /v1/<ns>/banks/${this.activeProjectBank}/memories/recall`,
           error: err instanceof Error ? err.message : String(err),
         });
       }
@@ -432,7 +463,8 @@ export class MemoryBridge {
         memories.push(...result.results.map((m) => m.content));
       }
     } catch (err) {
-      log.warn('Architect recall: core bank failed', {
+      log.debug('Architect recall: core bank failed', {
+        endpoint: 'POST /v1/<ns>/banks/core/memories/recall',
         error: err instanceof Error ? err.message : String(err),
       });
     }
@@ -589,9 +621,16 @@ export class MemoryBridge {
 
   /**
    * F7: Seed mental models if they don't exist yet.
-   * GET each model — if 404, trigger a refresh to create it.
-   * This ensures the first session creates the models so that
-   * subsequent onRetain refreshes can update them.
+   *
+   * Before doing anything, run a single capability probe: if the deployed
+   * Hindsight server doesn't expose the mental-models endpoint at all
+   * (older versions return 404 for every GET / refresh), short-circuit
+   * the whole subsystem with a single info log and skip seeding entirely.
+   * Otherwise iterate the known models and create them via refresh when
+   * GET returns 404.
+   *
+   * The probe avoids the previous behaviour of issuing 6 noisy 404s on
+   * every startup against a server that simply never supported the feature.
    */
   private async seedMentalModelsIfNeeded(): Promise<void> {
     if (!this.hindsightClient || !this.mentalModelManager) return;
@@ -602,20 +641,74 @@ export class MemoryBridge {
       { bankId: 'infra', modelId: 'infra-map' },
     ];
 
-    for (const { bankId, modelId } of models) {
+    // Capability probe: try to GET the first model. If the server returns
+    // 404 *and* a follow-up refresh also 404s, the endpoint isn't supported
+    // — disable mental-models for the session.
+    const [probe, ...rest] = models;
+    if (!probe) return;
+
+    let probeSucceeded = false;
+    try {
+      await this.hindsightClient.getMentalModel(probe.bankId, probe.modelId);
+      probeSucceeded = true;
+    } catch (err) {
+      const status = (err as { statusCode?: number })?.statusCode ?? 0;
+      if (status === 404) {
+        try {
+          await this.hindsightClient.refreshMentalModel(probe.bankId, probe.modelId);
+          log.info('Seeded mental model via refresh', { bankId: probe.bankId, modelId: probe.modelId });
+          this.onMemoryEvent?.('bootstrap', `Seeded mental model: ${probe.modelId}`, probe.bankId);
+          probeSucceeded = true;
+        } catch (refreshErr) {
+          const refreshStatus = (refreshErr as { statusCode?: number })?.statusCode ?? 0;
+          if (refreshStatus === 404) {
+            this.hindsightClient.setMentalModelsAvailable(false);
+            log.info('Hindsight server does not expose mental-model endpoints — skipping seeding for this session', {
+              probedEndpoint: `GET /v1/<ns>/banks/${probe.bankId}/mental-models/${probe.modelId}`,
+            });
+            this.onMemoryEvent?.('bootstrap', 'Mental models unavailable on this Hindsight version');
+            return;
+          }
+          // Other failures (network, 5xx) — also disable for the session
+          // rather than retry on every model below.
+          this.hindsightClient.setMentalModelsAvailable(false);
+          log.info('Mental-model capability probe failed — skipping seeding for this session', {
+            error: refreshErr instanceof Error ? refreshErr.message : String(refreshErr),
+          });
+          return;
+        }
+      } else {
+        // Network or 5xx during probe — short-circuit, the breaker will
+        // handle visibility and we don't want to try the remaining 2 models.
+        this.hindsightClient.setMentalModelsAvailable(false);
+        log.info('Mental-model capability probe failed — skipping seeding for this session', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+        return;
+      }
+    }
+
+    if (probeSucceeded) {
+      this.hindsightClient.setMentalModelsAvailable(true);
+    }
+
+    for (const { bankId, modelId } of rest) {
       try {
         await this.hindsightClient.getMentalModel(bankId, modelId);
-        // Model exists, no seeding needed
-      } catch (_err) {
-        // Model doesn't exist (404) — trigger refresh to create it
+      } catch (err) {
+        const status = (err as { statusCode?: number })?.statusCode ?? 0;
+        if (status !== 404) continue;
         try {
           await this.hindsightClient.refreshMentalModel(bankId, modelId);
           log.info('Seeded mental model via refresh', { bankId, modelId });
           this.onMemoryEvent?.('bootstrap', `Seeded mental model: ${modelId}`, bankId);
         } catch (refreshErr) {
-          log.warn('Failed to seed mental model', {
+          // Per-model failures after the probe succeeded are diagnostic noise
+          // — log at debug so they're discoverable without flooding.
+          log.debug('Failed to seed mental model', {
             bankId,
             modelId,
+            endpoint: `POST /v1/<ns>/banks/${bankId}/mental-models/${modelId}/refresh`,
             error: refreshErr instanceof Error ? refreshErr.message : String(refreshErr),
           });
         }

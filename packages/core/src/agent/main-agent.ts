@@ -147,6 +147,25 @@ export class MainAgent {
   private readonly orchestration: OrchestrationBridge;
   private initPromise: Promise<void> | null = null;
 
+  /**
+   * Snapshot of Hindsight client health (circuit breaker state, last error,
+   * consecutive failures). Surfaced via the gateway's `/api/health` so that
+   * operators can see memory-subsystem state without reading logs. Returns
+   * `null` when memory is not configured.
+   */
+  getHindsightStatus() {
+    return this.memory.getHindsightStatus();
+  }
+
+  /**
+   * Snapshot of session-summariser health (success/failure counts, last
+   * error, last success/failure timestamps). Surfaced via `/api/health`.
+   * Returns `null` when memory is not configured.
+   */
+  getSummarizerStatus() {
+    return this.memory.getSummarizerStatus();
+  }
+
   private context: ContextAssembler;
   private cachedSystemPrompt: string | null = null;
   private cumulativeInputTokens = 0;
@@ -261,8 +280,12 @@ export class MainAgent {
         });
         log.info('Conversation bank created in Hindsight', { bank: convBank });
       } catch (err) {
-        log.warn('Failed to create conversation bank (may already exist)', {
+        // Bank-already-exists is the common case; transport problems show up
+        // in /api/health via the circuit breaker. Log at debug so the noise
+        // floor stays low while diagnostics remain available.
+        log.debug('Failed to create conversation bank (may already exist)', {
           bank: convBank,
+          endpoint: `PUT /v1/<ns>/banks/${convBank}`,
           error: err instanceof Error ? err.message : String(err),
         });
       }

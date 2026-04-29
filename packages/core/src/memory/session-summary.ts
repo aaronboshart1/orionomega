@@ -63,6 +63,22 @@ async function withRetry<T>(
   throw lastError;
 }
 
+/** Snapshot of summarizer health for the structured /api/health response. */
+export interface SummarizerStatus {
+  /** 'ok' when the last summary attempt succeeded (or none has run yet). */
+  status: 'ok' | 'degraded';
+  /** Most recent error message, if the last attempt failed. */
+  lastError: string | null;
+  /** ISO timestamp of the last successful summary, or null if never. */
+  lastSuccessAt: string | null;
+  /** ISO timestamp of the last failed summary, or null if never. */
+  lastFailureAt: string | null;
+  /** Total successful summaries completed in this process. */
+  successCount: number;
+  /** Total failed summaries in this process. */
+  failureCount: number;
+}
+
 /**
  * Generates concise session summaries and retains them to Hindsight
  * for continuity across sessions.
@@ -71,11 +87,30 @@ export class SessionSummarizer {
   /** F14: Timestamp of last successful summary for debounce. */
   private lastSummaryTime = 0;
 
+  // Tracked for /api/health so operators can tell at a glance whether
+  // summarisation has started failing without grepping logs.
+  private _lastError: string | null = null;
+  private _lastFailureAt = 0;
+  private _successCount = 0;
+  private _failureCount = 0;
+
   constructor(
     private readonly hs: HindsightClient,
     private readonly anthropic: AnthropicClient,
     private readonly model: string,
   ) {}
+
+  /** Snapshot of summariser health for the gateway's /api/health endpoint. */
+  getStatus(): SummarizerStatus {
+    return {
+      status: this._lastError && this._lastFailureAt > this.lastSummaryTime ? 'degraded' : 'ok',
+      lastError: this._lastError,
+      lastSuccessAt: this.lastSummaryTime > 0 ? new Date(this.lastSummaryTime).toISOString() : null,
+      lastFailureAt: this._lastFailureAt > 0 ? new Date(this._lastFailureAt).toISOString() : null,
+      successCount: this._successCount,
+      failureCount: this._failureCount,
+    };
+  }
 
   /**
    * Generate and retain a session summary from conversation messages.
@@ -162,9 +197,14 @@ export class SessionSummarizer {
 
       // F14: Update debounce timestamp on success
       this.lastSummaryTime = Date.now();
+      this._successCount++;
+      this._lastError = null;
     } catch (err) {
+      this._failureCount++;
+      this._lastFailureAt = Date.now();
+      this._lastError = err instanceof Error ? err.message : String(err);
       log.warn('Session summary failed after retries', {
-        error: err instanceof Error ? err.message : String(err),
+        error: this._lastError,
       });
     }
   }

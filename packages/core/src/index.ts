@@ -118,6 +118,7 @@ export {
   closeDb,
   codingSessions,
   events,
+  getDatabaseStatus,
   getDb,
   memoryEvents,
   messages,
@@ -131,6 +132,8 @@ export {
   workflows,
   workflowSteps,
 } from './db/index.js';
+export type { DatabaseStatus } from './db/index.js';
+export type { SummarizerStatus } from './memory/session-summary.js';
 export type {
   ArchitectReview,
   BuildTestStatus,

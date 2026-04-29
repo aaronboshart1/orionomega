@@ -201,8 +201,12 @@ export class ContextAssembler {
     this.saveToDisk();
 
     if (this.hs && this.conversationBank) {
+      // Fire-and-forget: never block the hot path on Hindsight. Failures
+      // are surfaced via the circuit breaker / health endpoint, so this
+      // catch is logged at debug to keep startup logs clean.
       this.retainMessage(msg).catch((err) => {
-        log.warn('Failed to retain message to Hindsight', {
+        log.debug('Failed to retain message to Hindsight', {
+          endpoint: `POST /v1/<ns>/banks/${this.conversationBank}/memories`,
           error: err instanceof Error ? err.message : String(err),
         });
       });

@@ -75,3 +75,7 @@ export { closeDb, getDb } from './client.js';
 
 // Migration runner (exposed for CLI/test usage)
 export { runMigrations } from './migrate.js';
+
+// Database health helpers (exposed for /api/health surfacing)
+export { getDatabaseStatus } from './health.js';
+export type { DatabaseStatus } from './health.js';

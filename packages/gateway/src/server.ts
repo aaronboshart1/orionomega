@@ -12,7 +12,7 @@ import { resolve as resolvePath, normalize, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn as spawnProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { readConfig, normalizeBindAddresses, MainAgent, CommandFileLoader, createLogger, setGlobalLogLevel, enableFileLogging, discoverModels, clearModelCache, auditApiRequest, setCodingOrchestatorEmitters, restartWebUI, BUILD_INFO as CORE_BUILD_INFO, getStaleBuildStatus } from '@orionomega/core';
+import { readConfig, normalizeBindAddresses, MainAgent, CommandFileLoader, createLogger, setGlobalLogLevel, enableFileLogging, discoverModels, clearModelCache, auditApiRequest, setCodingOrchestatorEmitters, restartWebUI, BUILD_INFO as CORE_BUILD_INFO, getStaleBuildStatus, getDatabaseStatus } from '@orionomega/core';
 import type { MainAgentConfig, MainAgentCallbacks, LogLevel, PlannerOutput, StaleBuildStatus } from '@orionomega/core';
 import { BUILD_INFO as GATEWAY_BUILD_INFO } from './generated/build-info.js';
 import { setLogLevel as setHindsightLogLevel } from '@orionomega/hindsight';
@@ -1040,7 +1040,18 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
 
   // --- Health ---
   if (pathname === '/api/health' && method === 'GET') {
-    handleHealth(req, res, startTime);
+    handleHealth(req, res, startTime, {
+      // Each provider returns null when its subsystem isn't wired up yet
+      // (e.g. before MainAgent.init() finishes, or when memory is disabled).
+      // null is treated as "not configured", not as a failure.
+      hindsight: () => mainAgent?.getHindsightStatus() ?? null,
+      // getDatabaseStatus() handles its own errors and returns
+      // status: 'down' with lastError for any DB problem (including
+      // failure to open the file or a missing schema_migrations table),
+      // so we don't need a wrapper try/catch here.
+      database: () => getDatabaseStatus(),
+      summarizer: () => mainAgent?.getSummarizerStatus() ?? null,
+    });
     return;
   }
 
