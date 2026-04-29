@@ -806,9 +806,15 @@ function bindListeners(ws: ReconnectingWebSocket): void {
           const bytes = new Uint8Array(buffer);
           // Check for 'ZLIB' magic prefix (0x5A 0x4C 0x49 0x42)
           if (bytes.length > 4 && bytes[0] === 0x5A && bytes[1] === 0x4C && bytes[2] === 0x49 && bytes[3] === 0x42) {
-            // Decompress using DecompressionStream (standard Web API)
+            // Decompress using DecompressionStream (standard Web API).
+            // The gateway sends *raw* deflate (RFC 1951) — no zlib header,
+            // no adler32 trailer — because Safari's `'deflate'` decoder
+            // mishandles the zlib wrapper and throws "Extra bytes past the
+            // end" on the trailer. `'deflate-raw'` is decoded identically
+            // across Chrome, Firefox, and Safari. Must stay in sync with
+            // the gateway-side `deflateRawSync` call.
             const compressed = bytes.slice(4);
-            const ds = new DecompressionStream('deflate');
+            const ds = new DecompressionStream('deflate-raw');
             const writer = ds.writable.getWriter();
             writer.write(compressed);
             writer.close();

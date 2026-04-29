@@ -59,7 +59,7 @@ Client                          Gateway
 
 **State snapshot optimization**: Only the most recent 200 messages are sent over WebSocket. The snapshot includes `pagination` hints so the client can lazy-load older messages via `GET /api/sessions/:id/activity`.
 
-**Compression**: Messages >64KB are compressed with zlib deflate before sending, with a `ZLIB` magic prefix so the client can detect and decompress.
+**Compression**: Messages >64KB are compressed with raw deflate (RFC 1951, via `deflateRawSync`) before sending, with a `ZLIB` 4-byte magic prefix so the client can detect and decompress (`DecompressionStream('deflate-raw')`). Raw deflate is used instead of zlib-wrapped deflate because Safari's `DecompressionStream('deflate')` mishandles the zlib trailer and throws "Extra bytes past the end".
 
 **Event buffering**: When no clients are connected, events are buffered in memory (up to 500). On reconnect, buffered events are drained and delivered.
 

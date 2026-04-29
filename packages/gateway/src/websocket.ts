@@ -25,7 +25,7 @@
  *
  * Large message optimization:
  * - State snapshots are paginated (only recent messages sent over WS)
- * - Messages >64KB are compressed with zlib before sending
+ * - Messages >64KB are compressed with raw deflate (RFC 1951) before sending
  * - Virtual scrolling hints included for large activity logs
  */
 
@@ -34,7 +34,7 @@ import type { IncomingMessage } from 'node:http';
 import { auditAuthEvent, readConfig } from '@orionomega/core';
 import type { Server as HTTPServer } from 'node:http';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { deflateSync } from 'node:zlib';
+import { deflateRawSync } from 'node:zlib';
 import { URL } from 'node:url';
 import { existsSync, readFileSync, statSync, realpathSync } from 'node:fs';
 import { resolve as resolvePath, normalize } from 'node:path';
@@ -1000,10 +1000,15 @@ export class WebSocketHandler {
   /**
    * Safely send a ServerMessage over a WebSocket.
    *
-   * Large messages (>COMPRESS_THRESHOLD_BYTES) are compressed using zlib deflate
-   * before sending to reduce bandwidth usage on reconnection snapshots and
-   * large history payloads. The message is wrapped with a `compressed: true`
-   * flag so the client knows to decompress.
+   * Large messages (>COMPRESS_THRESHOLD_BYTES) are compressed using raw
+   * deflate (RFC 1951) before sending to reduce bandwidth usage on
+   * reconnection snapshots and large history payloads. The compressed payload
+   * is sent as a binary frame with a 4-byte `ZLIB` magic prefix so the client
+   * can detect it and route to the matching `DecompressionStream('deflate-raw')`
+   * decoder. Raw deflate is used instead of zlib-wrapped deflate (RFC 1950)
+   * because Safari's `DecompressionStream('deflate')` mishandles the zlib
+   * adler32 trailer and throws "Extra bytes past the end", which would
+   * permanently break the WebSocket connection.
    */
   private send(ws: WebSocket, message: ServerMessage): void {
     try {
@@ -1020,7 +1025,14 @@ export class WebSocketHandler {
       // Compress large messages to reduce bandwidth (state snapshots, large histories)
       if (json.length > COMPRESS_THRESHOLD_BYTES) {
         try {
-          const compressed = deflateSync(Buffer.from(json, 'utf-8'));
+          // Use *raw* deflate (RFC 1951) — no zlib header, no adler32 trailer.
+          // Safari's `DecompressionStream('deflate')` mishandles zlib-wrapped
+          // streams (RFC 1950) and throws "Extra bytes past the end" on the
+          // adler32 trailer, killing the WebSocket. Raw deflate is decoded
+          // identically across Chrome, Firefox, and Safari via
+          // `DecompressionStream('deflate-raw')`. Do NOT switch back to
+          // `deflateSync` without also switching the client.
+          const compressed = deflateRawSync(Buffer.from(json, 'utf-8'));
           // Send as binary frame with a 4-byte 'ZLIB' magic prefix so client can detect
           const prefix = Buffer.from('ZLIB');
           const frame = Buffer.concat([prefix, compressed]);
