@@ -54,6 +54,13 @@ export interface CommonTemplateParams {
    * to the underlying templates that need it.
    */
   validationTimeoutMs?: number;
+  /**
+   * Optional list of relevant prior architecture decisions / coding-run
+   * memories recalled from Hindsight. Currently consumed by the
+   * feature-implementation template's architect prompt; other templates
+   * accept and ignore it for forward-compat.
+   */
+  priorDecisions?: string[];
 }
 
 // ── Template loader ───────────────────────────────────────────────────────────
@@ -78,6 +85,7 @@ export function loadCodingTemplate(
     validationCommands,
     validationMaxRetries,
     validationTimeoutMs,
+    priorDecisions,
   } = params;
 
   switch (template) {
@@ -112,6 +120,7 @@ export function loadCodingTemplate(
         validationCommands,
         validationMaxRetries,
         validationTimeoutMs,
+        priorDecisions,
       } as FeatureImplementationParams);
 
     case 'bug-fix':

@@ -183,6 +183,27 @@ export const architectReviews = sqliteTable('architect_reviews', {
 
   /** ISO 8601 timestamp when the review was recorded. */
   reviewedAt: text('reviewed_at').notNull(),
+
+  /**
+   * Requirements (goals) extracted from the user task by the architect,
+   * serialised as JSON `Requirement[]`. Null when the architect did not
+   * emit a structured requirements list (legacy rows / fallback path).
+   */
+  requirements: text('requirements'),
+
+  /**
+   * Per-requirement verdicts from the goal-verification step, serialised
+   * as JSON `RequirementVerdict[]`. Null when goal verification was not
+   * run (e.g. no requirements, or no LLM client available).
+   */
+  goalVerdicts: text('goal_verdicts'),
+
+  /**
+   * How many prior-decision memories were recalled from Hindsight and
+   * injected into the architect's planning context. Useful for
+   * observability and for grading whether memory is being effective.
+   */
+  priorDecisionsCount: integer('prior_decisions_count'),
 });
 
 // ── Unified Persistence Tables ─────────────────────────────────────────────────

@@ -383,6 +383,133 @@ export class MemoryBridge {
     }
   }
 
+  /**
+   * Coding-Mode-specific recall: pulls prior architecture decisions, design
+   * notes, and previous coding-run records relevant to the current task from
+   * the active project bank. Falls back to a regular project-bank recall when
+   * the project bank is missing.
+   *
+   * Always returns an array of memory content strings (possibly empty). Never
+   * throws — recall failures are logged and treated as "no prior decisions
+   * found" so the architect step can continue.
+   */
+  async recallForArchitect(task: string): Promise<string[]> {
+    if (!this.hindsightClient) return [];
+    if (isExternalAction(task)) return [];
+
+    // Bias the query toward design/architecture context. The Hindsight server
+    // matches semantically, so we phrase the query with the kinds of memory
+    // categories we expect to find (architecture, decision, plan, requirement,
+    // verdict).
+    const archQuery =
+      `architecture decisions, design notes, prior coding plans, requirements, ` +
+      `goal verdicts, retain context for: ${task}`;
+
+    const start = Date.now();
+    const memories: string[] = [];
+    let totalResults = 0;
+
+    if (this.activeProjectBank) {
+      try {
+        const result = await this.hindsightClient.recall(this.activeProjectBank, archQuery, { maxTokens: 3072 });
+        totalResults += result.results.length;
+        if (result.results.length) {
+          memories.push(...result.results.map((m) => m.content));
+        }
+      } catch (err) {
+        log.warn('Architect recall: project bank failed', {
+          bank: this.activeProjectBank,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    // Always also query core for cross-project architectural patterns.
+    try {
+      const result = await this.hindsightClient.recall('core', archQuery, { maxTokens: 1024 });
+      totalResults += result.results.length;
+      if (result.results.length) {
+        memories.push(...result.results.map((m) => m.content));
+      }
+    } catch (err) {
+      log.warn('Architect recall: core bank failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    const durationMs = Date.now() - start;
+    this.onMemoryEvent?.(
+      'recall',
+      `Architect recall: ${totalResults} prior decisions in ${durationMs}ms`,
+      this.activeProjectBank ?? 'core',
+      { totalResults, durationMs, queryKind: 'architect' },
+    );
+
+    return memories;
+  }
+
+  /**
+   * Persist the outcome of a coding run — task, requirements list, and
+   * per-requirement verdicts — to the active project bank so subsequent
+   * architect calls can recall it. No-op when memory is not initialised.
+   *
+   * The payload is stored as a single memory item with context
+   * `coding-run` so downstream recall can filter / weight it.
+   */
+  async retainCodingRun(payload: {
+    task: string;
+    requirements: Array<{ id: string; description: string; acceptance?: string }>;
+    verdicts: Array<{ requirementId: string; status: string; evidence: string; confidence: number }>;
+    decision: string;
+    priorDecisionsCount?: number;
+  }): Promise<void> {
+    if (!this.hindsightClient) return;
+    const bankId = this.activeProjectBank ?? this.config.hindsight?.defaultBank ?? 'core';
+
+    // Format as a markdown-friendly block so future recalls show usefully
+    // when concatenated alongside other memories.
+    const lines: string[] = [];
+    lines.push('## Coding-mode run');
+    lines.push(`Task: ${payload.task.slice(0, 800)}`);
+    lines.push(`Decision: ${payload.decision}`);
+    if (typeof payload.priorDecisionsCount === 'number') {
+      lines.push(`Prior decisions consulted: ${payload.priorDecisionsCount}`);
+    }
+    if (payload.requirements.length > 0) {
+      lines.push('');
+      lines.push('### Requirements');
+      for (const r of payload.requirements) {
+        lines.push(`- [${r.id}] ${r.description}${r.acceptance ? ` (acceptance: ${r.acceptance})` : ''}`);
+      }
+    }
+    if (payload.verdicts.length > 0) {
+      lines.push('');
+      lines.push('### Verdicts');
+      for (const v of payload.verdicts) {
+        lines.push(`- [${v.requirementId}] status=${v.status} confidence=${v.confidence.toFixed(2)} — ${v.evidence.slice(0, 240)}`);
+      }
+    }
+
+    try {
+      await this.hindsightClient.retainOne(bankId, lines.join('\n'), 'coding-run');
+      this.onMemoryEvent?.(
+        'retain',
+        `Persisted coding run (${payload.requirements.length} requirement(s), ${payload.verdicts.length} verdict(s))`,
+        bankId,
+        {
+          requirementsCount: payload.requirements.length,
+          verdictsCount: payload.verdicts.length,
+          decision: payload.decision,
+        },
+      );
+    } catch (err) {
+      log.warn('Failed to retain coding run', {
+        bank: bankId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   async storeSessionAnchor(anchor: SessionAnchor): Promise<void> {
     if (!this.sessionBootstrap) return;
     try {

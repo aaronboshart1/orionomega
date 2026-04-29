@@ -14,6 +14,13 @@ export interface FeatureImplementationParams {
   task: string;
   /** Working directory for all agents. */
   cwd: string;
+  /**
+   * Optional list of relevant prior architecture decisions / coding-run
+   * memories recalled from Hindsight. When non-empty, the architect prompt
+   * surfaces them under a "Prior Architecture Decisions" section so the
+   * design step doesn't relitigate work that was already settled.
+   */
+  priorDecisions?: string[];
   /** Model IDs for each role (resolved by CodingModelResolver). */
   models: {
     scanner: string;
@@ -74,7 +81,23 @@ export function buildFeatureImplementationTemplate(
     validationCommands = [],
     validationMaxRetries = 2,
     validationTimeoutMs = 300_000,
+    priorDecisions = [],
   } = params;
+
+  // Render prior decisions (if any) into a bounded markdown block to avoid
+  // blowing past the architect model's context window with raw memory dumps.
+  const priorDecisionsBlock =
+    priorDecisions.length === 0
+      ? ''
+      : `\n\n## Prior Architecture Decisions (recalled from memory)\n` +
+        `Consult these before designing — do not relitigate settled choices unless the new task explicitly requires it.\n\n` +
+        priorDecisions
+          .slice(0, 8)
+          .map((d, i) => {
+            const trimmed = d.length > 1500 ? d.slice(0, 1500) + '\n...[truncated]' : d;
+            return `### Decision ${i + 1}\n${trimmed}`;
+          })
+          .join('\n\n');
 
   // ── Layer 0: Codebase Scanner ───────────────────────────────────────────────
 
@@ -116,19 +139,33 @@ export function buildFeatureImplementationTemplate(
   const architectTask = `You are the architect for this feature implementation.
 
 ## Feature Request
-${task}
+${task}${priorDecisionsBlock}
 
 ## Instructions
 1. Review the codebase scan output from the previous node.
-2. Design a clear implementation approach.
-3. Identify which files need to be created or modified.
-4. Divide the work into 2–4 independent "chunks" that can be implemented in parallel.
+2. **Extract concrete requirements** from the user's task — every distinct goal,
+   behavior, or acceptance criterion the user expects. Each requirement must be
+   independently checkable after implementation.
+3. Design a clear implementation approach.
+4. Identify which files need to be created or modified.
+5. Divide the work into 2–4 independent "chunks" that can be implemented in parallel.
    - Each chunk should own a non-overlapping set of files.
    - Minimize shared files (move shared utilities to a separate chunk if possible).
-5. Output a JSON object with this exact structure:
+6. **Map every requirement to one or more chunks** via the chunk's \`coveredBy\`
+   list (use chunk \`id\` values). A requirement that no chunk covers is a
+   planning bug — fix the design or add a chunk before emitting the JSON.
+7. Output a JSON object with this exact structure:
 \`\`\`json
 {
   "approach": "...",
+  "requirements": [
+    {
+      "id": "req-1",
+      "description": "What the user wants — one short sentence.",
+      "acceptance": "Concrete, observable signal that this requirement is met.",
+      "coveredBy": ["chunk-0"]
+    }
+  ],
   "fileChanges": [
     { "path": "...", "action": "create|modify|delete", "description": "...", "cluster": 0 }
   ],
@@ -148,7 +185,11 @@ ${task}
   "risks": ["..."],
   "testStrategy": "..."
 }
-\`\`\``;
+\`\`\`
+
+The \`requirements\` array is mandatory and must contain at least one entry. The
+post-implementation reviewer will grade each requirement individually and force
+a retask if any is unmet — so be specific and observable.`;
 
   const architectCodingConfig: CodingNodeConfig = {
     task: architectTask,

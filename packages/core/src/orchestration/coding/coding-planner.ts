@@ -149,12 +149,15 @@ export class CodingPlanner {
    * @param task - Natural language task description.
    * @param template - Pre-selected template (from selectTemplate).
    * @param profile - Codebase scan output (may be a stub if scanner hasn't run yet).
+   * @param opts - Optional planning context (e.g. prior decisions recalled
+   *   from Hindsight to thread into the architect prompt).
    * @returns CodingPlannerOutput with nodes, budget, and model assignments.
    */
   plan(
     task: string,
     template: CodingDAGTemplate,
     profile: CodebaseScanOutput,
+    opts?: { priorDecisions?: string[] },
   ): CodingPlannerOutput {
     // 1. Check template is enabled
     if (!this.config.templates[template]) {
@@ -225,6 +228,7 @@ export class CodingPlanner {
       validationCommands: validationCmds,
       validationMaxRetries: 2,
       validationTimeoutMs: this.validationTimeoutMs,
+      priorDecisions: opts?.priorDecisions,
     });
 
     // 5. Build model assignment map (node ID → {model, thinking})

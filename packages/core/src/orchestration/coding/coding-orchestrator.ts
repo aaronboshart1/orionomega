@@ -24,7 +24,15 @@ import { codingSessions, workflowExecutions, workflowSteps, architectReviews } f
 import { eq } from 'drizzle-orm';
 import { CodingPlanner, matchCodingIntent } from './coding-planner.js';
 import { ValidationLoop, detectValidationCommands } from './validation-loop.js';
-import type { CodingModeConfig, CodebaseScanOutput, ValidationConfig } from './coding-types.js';
+import type {
+  CodingModeConfig,
+  CodebaseScanOutput,
+  ValidationConfig,
+  Requirement,
+  RequirementVerdict,
+} from './coding-types.js';
+import type { MemoryBridge } from '../../agent/memory-bridge.js';
+import type { AnthropicClient } from '../../anthropic/client.js';
 
 // ── Proper module imports (replacing raw execSync) ────────────────────────────
 import {
@@ -104,6 +112,28 @@ export interface CodingOrchestratorConfig {
    * monorepo users from raising the budget without editing template code.
    */
   validationTimeoutSec?: number;
+  /**
+   * Optional Hindsight-backed memory bridge. When provided, the architect
+   * step recalls prior decisions before planning, and the end of each run
+   * persists the plan + per-requirement verdicts back to the project bank.
+   */
+  memoryBridge?: MemoryBridge;
+  /**
+   * Optional Anthropic client used for (a) extracting concrete requirements
+   * from the task during the plan step, and (b) the per-requirement
+   * goal-verification check inside the architect-reviewer. When omitted,
+   * the orchestrator gracefully degrades: planning falls back to a single
+   * synthetic requirement, and goal verification produces `unknown`
+   * verdicts (which are non-blocking).
+   */
+  anthropic?: AnthropicClient;
+  /**
+   * Cheap/fast Claude model used for requirement extraction and
+   * goal-verification. Defaults to `highPowerModel` when omitted, but
+   * passing a smaller model here meaningfully cuts cost on these short,
+   * structured-output calls.
+   */
+  cheapModel?: string;
 }
 
 // ── DAG step definitions ──────────────────────────────────────────────────────
@@ -394,7 +424,24 @@ export class CodingOrchestrator {
 
     // ── Step 3: Design implementation plan (high-power model) ─────────────
     let implementationPlan = '';
+    let priorDecisions: string[] = [];
+    let requirements: Requirement[] = [];
     await this._runStep(executionId, 'plan', 'Design implementation plan', 'architect', progress, async () => {
+      // 3a. Recall prior decisions from Hindsight (best-effort).
+      if (this.cfg.memoryBridge) {
+        progress?.onStepProgress('plan', 'Recalling prior architecture decisions…', 10);
+        _emitters?.stepProgress({ nodeId: 'plan', message: 'Recalling prior architecture decisions…', percentage: 10 });
+        try {
+          priorDecisions = await this.cfg.memoryBridge.recallForArchitect(taskDescription);
+        } catch (err) {
+          // recallForArchitect already swallows individual recall failures,
+          // but defend against future regressions so planning never aborts
+          // because memory was unavailable.
+          log.warn('Architect memory recall failed', { error: err instanceof Error ? err.message : String(err) });
+          priorDecisions = [];
+        }
+      }
+
       progress?.onStepProgress('plan', 'Generating implementation plan…', 30);
       _emitters?.stepProgress({ nodeId: 'plan', message: 'Generating implementation plan…', percentage: 30 });
 
@@ -410,7 +457,9 @@ export class CodingOrchestrator {
         // Use real scan output if available, otherwise build a stub
         const profile = codebaseScanOutput ?? this._buildStubProfile(analysisText);
         const selectedTemplate = planner.selectTemplate(taskDescription);
-        const planOutput = planner.plan(taskDescription, selectedTemplate, profile);
+        const planOutput = planner.plan(taskDescription, selectedTemplate, profile, {
+          priorDecisions,
+        });
 
         implementationPlan = [
           `Template: ${planOutput.template}`,
@@ -419,18 +468,62 @@ export class CodingOrchestrator {
           `Fan-out pending: ${planOutput.fanOutPending}`,
         ].join(', ');
 
-        progress?.onStepProgress('plan', 'Plan ready', 100);
-        _emitters?.stepProgress({ nodeId: 'plan', message: 'Plan ready', percentage: 100 });
+        progress?.onStepProgress('plan', 'Plan ready', 70);
+        _emitters?.stepProgress({ nodeId: 'plan', message: 'Plan ready', percentage: 70 });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         log.warn('CodingPlanner failed, using task description as plan', { error: msg });
         implementationPlan = `Fallback plan: ${taskDescription}`;
-        progress?.onStepProgress('plan', 'Plan complete (fallback)', 100);
-        _emitters?.stepProgress({ nodeId: 'plan', message: 'Plan complete (fallback)', percentage: 100 });
+        progress?.onStepProgress('plan', 'Plan complete (fallback)', 70);
+        _emitters?.stepProgress({ nodeId: 'plan', message: 'Plan complete (fallback)', percentage: 70 });
       }
 
-      stepResults.push({ nodeId: 'plan', label: 'Design implementation plan', status: 'completed', output: implementationPlan });
-      return implementationPlan;
+      // 3b. Extract requirements from the user's task. We deliberately do
+      // this *outside* the architect template (which only runs in DAG mode)
+      // so the linear orchestrator path also enforces goal coverage.
+      progress?.onStepProgress('plan', 'Extracting concrete requirements…', 85);
+      _emitters?.stepProgress({ nodeId: 'plan', message: 'Extracting concrete requirements…', percentage: 85 });
+      requirements = await this._extractRequirements(taskDescription, priorDecisions);
+
+      // 3c. Coverage check — every requirement must have at least one
+      // chunk/file change "covering" it. The linear orchestrator does not
+      // produce explicit chunks (the architect template does), so the
+      // implicit covering "chunk" is the single implementation step.
+      // We mark each requirement as covered by `implement`. The check is
+      // primarily a guardrail against the future: if a downstream change
+      // returns a requirement with `coveredBy: []`, fail loudly.
+      const uncovered = requirements.filter(
+        (r) => Array.isArray(r.coveredBy) && r.coveredBy.length === 0,
+      );
+      if (uncovered.length > 0) {
+        const msg = `Plan-coverage check failed: ${uncovered.length} requirement(s) have no covering chunk: ` +
+          uncovered.map((r) => `[${r.id}] ${r.description}`).join('; ');
+        log.error(msg);
+        throw new Error(msg);
+      }
+      // Default-cover any requirement that came back without an explicit
+      // coveredBy list (the linear path only has one implementer step).
+      for (const r of requirements) {
+        if (!Array.isArray(r.coveredBy) || r.coveredBy.length === 0) {
+          r.coveredBy = ['implement'];
+        }
+      }
+
+      const summary = [
+        implementationPlan,
+        `Prior decisions: ${priorDecisions.length}`,
+        `Requirements: ${requirements.length}`,
+      ].join(', ');
+
+      progress?.onStepProgress('plan', `Plan ready (${requirements.length} requirement(s))`, 100);
+      _emitters?.stepProgress({
+        nodeId: 'plan',
+        message: `Plan ready (${requirements.length} requirement(s), ${priorDecisions.length} prior decision(s))`,
+        percentage: 100,
+      });
+
+      stepResults.push({ nodeId: 'plan', label: 'Design implementation plan', status: 'completed', output: summary });
+      return summary;
     });
 
     // ── Step 4: Implementation loop (Claude Agent SDK) ─────────────────────
@@ -439,17 +532,40 @@ export class CodingOrchestrator {
       progress?.onStepProgress('implement', 'Starting coding agent…', 5);
       _emitters?.stepProgress({ nodeId: 'implement', message: 'Starting coding agent…', percentage: 5 });
 
-      // Build a rich task prompt with codebase context
+      // Build a rich task prompt with codebase context. Prior decisions
+      // and the explicit requirements list are appended so the implementer
+      // is operating from the same goals the reviewer will grade against.
+      const priorDecisionsBlock = priorDecisions.length === 0
+        ? ''
+        : '\n\n## Prior Architecture Decisions (from memory)\n' +
+          priorDecisions
+            .slice(0, 6)
+            .map((d, i) => {
+              const trimmed = d.length > 1200 ? d.slice(0, 1200) + '\n...[truncated]' : d;
+              return `### Decision ${i + 1}\n${trimmed}`;
+            })
+            .join('\n\n');
+
+      const requirementsBlock = requirements.length === 0
+        ? ''
+        : '\n\n## Requirements (each must be satisfied)\n' +
+          requirements
+            .map((r) => `- **[${r.id}]** ${r.description}\n  - Acceptance: ${r.acceptance}`)
+            .join('\n');
+
       const contextParts: string[] = [
         `# Coding Task\n\n${taskDescription}`,
+        priorDecisionsBlock,
         '',
         `## Codebase Analysis\n\n${analysisText}`,
         '',
         `## Implementation Plan\n\n${implementationPlan}`,
+        requirementsBlock,
         '',
         '## Instructions',
         '- Read the relevant source files before making changes.',
         '- Make targeted, surgical changes — do NOT refactor or rewrite working code unless asked.',
+        '- Ensure every requirement above is satisfied; the reviewer will grade them individually and force a retry if any is unmet.',
         '- After implementing, verify your changes compile/build correctly.',
         '- If tests exist, run them to ensure nothing is broken.',
         `- Working directory: ${targetDir}`,
@@ -562,6 +678,7 @@ export class CodingOrchestrator {
 
     // ── Step 5: Architect review ───────────────────────────────────────────
     const reviewIteration = 1;
+    let goalVerdicts: RequirementVerdict[] = [];
 
     await this._runStep(executionId, 'review', 'Architect review', 'reviewer', progress, async () => {
       _emitters?.reviewStarted({ iteration: reviewIteration });
@@ -578,7 +695,17 @@ export class CodingOrchestrator {
         report = await generateReviewReport(targetDir, {
           changedFiles: [...filesModified, ...filesCreated],
           timeoutMs: validationTimeoutMs,
+          // Goal-verification context: when both `requirements` and
+          // `anthropic` are present, the reviewer LLM-grades each goal
+          // against the build/test evidence and forces a `retask` if any
+          // requirement comes back `unmet`.
+          requirements,
+          anthropic: this.cfg.anthropic,
+          model: this.cfg.cheapModel ?? this.cfg.highPowerModel,
+          taskDescription,
+          implementationOutput,
         });
+        goalVerdicts = report.goalVerdicts ?? [];
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         log.warn('Architect review failed, approving by default', { error: msg });
@@ -594,6 +721,14 @@ export class CodingOrchestrator {
           decision: 'approve',
           feedback: `Review failed (${msg}). Auto-approved.`,
           reviewedAt: now(),
+          // Persist the goal-tracking fields on this branch too so that
+          // every architect_reviews row carries a consistent shape — the
+          // requirements list (if extraction had succeeded) and the
+          // priorDecisionsCount remain useful audit data even when the
+          // mechanical review itself crashed; verdicts are simply absent.
+          requirements: requirements.length > 0 ? JSON.stringify(requirements) : null,
+          goalVerdicts: null,
+          priorDecisionsCount: priorDecisions.length,
         });
 
         const output = `Review failed (${msg}). Auto-approved.`;
@@ -607,7 +742,9 @@ export class CodingOrchestrator {
       progress?.onStepProgress('review', 'Evaluating results…', 80);
       _emitters?.stepProgress({ nodeId: 'review', message: 'Evaluating results…', percentage: 80 });
 
-      // Map review decision to our enum
+      // Map review decision to our enum. The reviewer already converts an
+      // unmet requirement into outcome=retask via makeDecision, so we only
+      // need to forward the decision here.
       const outcome = report.decision.outcome;
       if (outcome === 'approve' || outcome === 'approve_with_warnings') {
         reviewDecision = 'approve';
@@ -620,6 +757,10 @@ export class CodingOrchestrator {
         : outcome === 'approve_with_warnings' ? 75
         : 50;
 
+      const unmetCount = goalVerdicts.filter((v) => v.status === 'unmet').length;
+      const partialCount = goalVerdicts.filter((v) => v.status === 'partially-met').length;
+      const metCount = goalVerdicts.filter((v) => v.status === 'met').length;
+
       await this.db.insert(architectReviews).values({
         id: uuid(),
         workflowExecutionId: executionId,
@@ -630,6 +771,12 @@ export class CodingOrchestrator {
         decision: outcome === 'retask' ? 'retask' : 'approve',
         feedback: report.summary,
         reviewedAt: now(),
+        // Persisted for downstream UIs and for cross-run analysis. JSON
+        // strings keep the schema additive — no migrations of existing
+        // rows needed because the columns are nullable.
+        requirements: requirements.length > 0 ? JSON.stringify(requirements) : null,
+        goalVerdicts: goalVerdicts.length > 0 ? JSON.stringify(goalVerdicts) : null,
+        priorDecisionsCount: priorDecisions.length,
       });
 
       _emitters?.reviewCompleted({
@@ -643,14 +790,34 @@ export class CodingOrchestrator {
           blockers: report.blockers.length,
           suggestions: report.suggestions.length,
           iteration: reviewIteration,
+          requirementsCount: requirements.length,
+          goalsMet: metCount,
+          goalsPartial: partialCount,
+          goalsUnmet: unmetCount,
+          priorDecisionsCount: priorDecisions.length,
+          // Trimmed verdict list — keeps the websocket payload bounded
+          // while still surfacing per-goal status to the UI.
+          goalVerdicts: goalVerdicts.map((v) => ({
+            requirementId: v.requirementId,
+            status: v.status,
+            confidence: v.confidence,
+            evidence: v.evidence.slice(0, 240),
+          })),
         },
       });
+
+      const goalsLine = requirements.length > 0
+        ? `Goals: ${metCount}/${requirements.length} met` +
+          (partialCount > 0 ? `, ${partialCount} partial` : '') +
+          (unmetCount > 0 ? `, ${unmetCount} unmet` : '')
+        : '';
 
       const output = [
         `Decision: ${outcome} (confidence: ${(report.decision.confidence * 100).toFixed(0)}%)`,
         `Build: ${report.buildPassed ? 'PASS' : 'FAIL'}`,
         `Tests: ${report.testsPassed ? `PASS (${report.testResults.length} suite(s))` : 'FAIL'}`,
         `Complexity: ${report.qualityMetrics.complexityTier}`,
+        goalsLine,
         report.blockers.length > 0 ? `Blockers: ${report.blockers.map(b => b.description.slice(0, 80)).join('; ')}` : '',
         report.suggestions.length > 0 ? `Suggestions: ${report.suggestions.length}` : '',
       ].filter(Boolean).join('\n');
@@ -765,6 +932,23 @@ export class CodingOrchestrator {
     await this._updateSessionStatus(sessionId, 'completed');
     await this._updateExecutionStatus(executionId, 'completed');
 
+    // Persist the run to Hindsight so a future architect step can recall it.
+    // Best-effort — the helper itself swallows failures, but defend against
+    // a missing memory bridge so this stays a no-op when memory is disabled.
+    if (this.cfg.memoryBridge) {
+      await this.cfg.memoryBridge.retainCodingRun({
+        task: taskDescription,
+        requirements,
+        verdicts: goalVerdicts,
+        decision: reviewDecision,
+        priorDecisionsCount: priorDecisions.length,
+      }).catch((err) => {
+        log.warn('retainCodingRun failed (non-fatal)', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+    }
+
     _emitters?.sessionCompleted({
       summary: `Coding session complete. Template: ${template}. Commit: ${commitHash.slice(0, 8) || 'none'}.`,
       filesModified: filesModified.length > 0 ? filesModified : undefined,
@@ -846,6 +1030,120 @@ export class CodingOrchestrator {
   }
 
   // ── Helpers ─────────────────────────────────────────────────────────────────
+
+  /**
+   * LLM-extract a concrete requirements list from the user's task. Used by
+   * the linear orchestrator path (the DAG architect template embeds an
+   * equivalent prompt inline).
+   *
+   * Failure semantics (the user explicitly asked for goal coverage to gate
+   * planning):
+   *   - No Anthropic client configured → emit a single synthetic requirement
+   *     covering the task itself. This is the only acceptable degraded mode:
+   *     the orchestrator is configured to run without an LLM extractor.
+   *   - Anthropic client present but the LLM call, JSON parse, or shape
+   *     validation fails → THROW. The plan step will surface this as a
+   *     proper failure rather than silently approving with a synthetic
+   *     requirement that always passes coverage.
+   */
+  private async _extractRequirements(
+    task: string,
+    priorDecisions: string[],
+  ): Promise<Requirement[]> {
+    if (!this.cfg.anthropic) {
+      log.warn(
+        'No Anthropic client configured — emitting a single synthetic requirement; ' +
+        'goal verification will be degraded (non-blocking unknown verdicts)',
+      );
+      return [
+        {
+          id: 'req-task',
+          description: task.length > 200 ? task.slice(0, 200) + '…' : task,
+          acceptance: 'The user-described task is implemented and the build/tests pass.',
+          coveredBy: ['implement'],
+        },
+      ];
+    }
+
+    const model = this.cfg.cheapModel ?? this.cfg.highPowerModel;
+    const priorBlock = priorDecisions.length === 0
+      ? '(no prior decisions recalled)'
+      : priorDecisions
+          .slice(0, 4)
+          .map((d, i) => {
+            const trimmed = d.length > 600 ? d.slice(0, 600) + '...' : d;
+            return `Decision ${i + 1}:\n${trimmed}`;
+          })
+          .join('\n\n');
+
+    const system =
+      'You extract a list of independently-checkable requirements from a ' +
+      "user's coding task. Each requirement must have: a stable id (e.g. " +
+      '"req-1"), a one-sentence description of what must be done, and a ' +
+      'concrete acceptance criterion (an observable signal a reviewer can ' +
+      'use to decide it was satisfied). Respond with JSON only — no prose, ' +
+      'no code fences. Aim for 1–6 requirements.';
+
+    const user =
+      `# User task\n${task}\n\n` +
+      `# Prior architecture decisions (context only — do not invent goals from these)\n${priorBlock}\n\n` +
+      `# Output schema\n` +
+      `{ "requirements": [ { "id": "req-1", "description": "...", "acceptance": "..." } ] }`;
+
+    let resp;
+    try {
+      resp = await this.cfg.anthropic.createMessage({
+        model,
+        system,
+        messages: [{ role: 'user', content: user }],
+        maxTokens: 2048,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(`Requirement extraction LLM call failed: ${msg}`);
+    }
+
+    const text = resp.content
+      .filter((b) => b.type === 'text')
+      .map((b) => (b as { text: string }).text)
+      .join('\n')
+      .trim();
+
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      throw new Error('Requirement extraction returned no parseable JSON');
+    }
+
+    let parsed: { requirements?: Array<Partial<Requirement>> };
+    try {
+      parsed = JSON.parse(jsonMatch[0]) as { requirements?: Array<Partial<Requirement>> };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(`Requirement extraction JSON parse failed: ${msg}`);
+    }
+
+    const raw = Array.isArray(parsed.requirements) ? parsed.requirements : [];
+    const cleaned: Requirement[] = [];
+    for (let i = 0; i < raw.length; i++) {
+      const r = raw[i];
+      if (!r || typeof r.description !== 'string' || r.description.length === 0) continue;
+      cleaned.push({
+        id: typeof r.id === 'string' && r.id.length > 0 ? r.id : `req-${i + 1}`,
+        description: r.description,
+        acceptance: typeof r.acceptance === 'string' && r.acceptance.length > 0
+          ? r.acceptance
+          : 'Implementation matches the requirement description and the build/tests pass.',
+        coveredBy: Array.isArray(r.coveredBy) ? r.coveredBy.map(String) : ['implement'],
+      });
+    }
+
+    if (cleaned.length === 0) {
+      throw new Error('Requirement extraction returned zero valid requirements');
+    }
+
+    log.info(`Extracted ${cleaned.length} requirement(s) from task`);
+    return cleaned;
+  }
 
   /**
    * Build a stub CodebaseScanOutput from the lightweight analysis string.

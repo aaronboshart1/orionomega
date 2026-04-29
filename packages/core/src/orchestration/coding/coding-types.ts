@@ -154,10 +154,53 @@ export interface FanOutDecision {
   maxParallelism: number;
 }
 
+/**
+ * A single concrete goal/requirement extracted from the user's task.
+ * Used by the architect for plan-coverage checks and by the architect-reviewer
+ * for per-goal post-implementation verification.
+ */
+export interface Requirement {
+  /** Stable identifier (e.g. "req-1"). Used to map verdicts back. */
+  id: string;
+  /** Short human-readable description of what must be done. */
+  description: string;
+  /** Concrete acceptance criteria — what makes this requirement "met". */
+  acceptance: string;
+  /**
+   * Chunk IDs (or file change indices) that the architect mapped this
+   * requirement to. Used by the planner to enforce coverage.
+   */
+  coveredBy?: string[];
+}
+
+/**
+ * Per-requirement verdict produced by the architect-reviewer after the
+ * implementation loop has run. Used to force a `retask` when any required
+ * goal is unmet, even when build/tests pass mechanically.
+ */
+export interface RequirementVerdict {
+  /** Matches Requirement.id. */
+  requirementId: string;
+  /** Echo of the original description for downstream UIs. */
+  description: string;
+  /** Verdict from the goal-verification check. */
+  status: 'met' | 'partially-met' | 'unmet' | 'unknown';
+  /** Free-text evidence (file paths, log snippets, reasoning) that justified the verdict. */
+  evidence: string;
+  /** Reviewer confidence in this verdict (0.0–1.0). */
+  confidence: number;
+}
+
 /** Output produced by the architect node. */
 export interface ArchitectureDesignOutput {
   /** Prose description of the implementation approach. */
   approach: string;
+  /**
+   * Concrete requirements extracted from the user's task. Every requirement
+   * must be mapped to at least one fan-out chunk or file change before the
+   * planner releases the plan to the implementers; otherwise planning fails.
+   */
+  requirements: Requirement[];
   /** File-level change plan. */
   fileChanges: Array<{
     path: string;
