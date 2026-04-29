@@ -458,10 +458,27 @@ export class MemoryBridge {
    */
   async retainCodingRun(payload: {
     task: string;
-    requirements: Array<{ id: string; description: string; acceptance?: string }>;
+    requirements: Array<{ id: string; description: string; acceptance?: string; coveredBy?: string[] }>;
     verdicts: Array<{ requirementId: string; status: string; evidence: string; confidence: number }>;
     decision: string;
     priorDecisionsCount?: number;
+    /**
+     * Full architect plan for the run. Persisting the structured plan
+     * (approach, file changes, fan-out, requirement→chunk mapping)
+     * lets future architect calls recall not only what was decided but
+     * how the work was decomposed — needed by the linear and DAG paths
+     * to avoid re-deriving the same plan on related follow-up tasks.
+     */
+    plan?: {
+      approach?: string;
+      template?: string;
+      nodes?: Array<{ id: string; type: string; label?: string }>;
+      fileChanges?: Array<{ path: string; action: string; description?: string; cluster?: number }>;
+      fanOut?: { chunks?: Array<{ id: string; label?: string; fileCluster?: string[]; task?: string }>; maxParallelism?: number };
+      filesModified?: string[];
+      filesCreated?: string[];
+      budgetEstimateUsd?: number;
+    };
   }): Promise<void> {
     if (!this.hindsightClient) return;
     const bankId = this.activeProjectBank ?? this.config.hindsight?.defaultBank ?? 'core';
@@ -475,11 +492,59 @@ export class MemoryBridge {
     if (typeof payload.priorDecisionsCount === 'number') {
       lines.push(`Prior decisions consulted: ${payload.priorDecisionsCount}`);
     }
+
+    if (payload.plan) {
+      lines.push('');
+      lines.push('### Plan');
+      if (payload.plan.template) lines.push(`Template: ${payload.plan.template}`);
+      if (payload.plan.approach) lines.push(`Approach: ${payload.plan.approach.slice(0, 1200)}`);
+      if (typeof payload.plan.budgetEstimateUsd === 'number') {
+        lines.push(`Estimated budget: $${payload.plan.budgetEstimateUsd.toFixed(2)}`);
+      }
+      if (payload.plan.nodes && payload.plan.nodes.length > 0) {
+        lines.push(`Nodes (${payload.plan.nodes.length}): ` +
+          payload.plan.nodes.map((n) => `${n.id}[${n.type}]`).join(', '));
+      }
+      if (payload.plan.fileChanges && payload.plan.fileChanges.length > 0) {
+        lines.push('File changes:');
+        for (const fc of payload.plan.fileChanges.slice(0, 60)) {
+          const desc = fc.description ? ` — ${fc.description.slice(0, 160)}` : '';
+          const cluster = typeof fc.cluster === 'number' ? ` (cluster ${fc.cluster})` : '';
+          lines.push(`  - ${fc.action} ${fc.path}${cluster}${desc}`);
+        }
+        if (payload.plan.fileChanges.length > 60) {
+          lines.push(`  ... (+${payload.plan.fileChanges.length - 60} more file changes)`);
+        }
+      }
+      if (payload.plan.fanOut?.chunks && payload.plan.fanOut.chunks.length > 0) {
+        lines.push(`Fan-out (parallelism=${payload.plan.fanOut.maxParallelism ?? 1}):`);
+        for (const c of payload.plan.fanOut.chunks.slice(0, 12)) {
+          const files = c.fileCluster && c.fileCluster.length > 0
+            ? ` files=${c.fileCluster.slice(0, 8).join(',')}${c.fileCluster.length > 8 ? '…' : ''}`
+            : '';
+          lines.push(`  - ${c.id}: ${c.label ?? ''}${files}`);
+        }
+      }
+      if (payload.plan.filesModified && payload.plan.filesModified.length > 0) {
+        lines.push(`Files modified (${payload.plan.filesModified.length}): ` +
+          payload.plan.filesModified.slice(0, 30).join(', ') +
+          (payload.plan.filesModified.length > 30 ? `, +${payload.plan.filesModified.length - 30} more` : ''));
+      }
+      if (payload.plan.filesCreated && payload.plan.filesCreated.length > 0) {
+        lines.push(`Files created (${payload.plan.filesCreated.length}): ` +
+          payload.plan.filesCreated.slice(0, 30).join(', ') +
+          (payload.plan.filesCreated.length > 30 ? `, +${payload.plan.filesCreated.length - 30} more` : ''));
+      }
+    }
+
     if (payload.requirements.length > 0) {
       lines.push('');
       lines.push('### Requirements');
       for (const r of payload.requirements) {
-        lines.push(`- [${r.id}] ${r.description}${r.acceptance ? ` (acceptance: ${r.acceptance})` : ''}`);
+        const cover = r.coveredBy && r.coveredBy.length > 0
+          ? ` (coveredBy: ${r.coveredBy.slice(0, 10).join(', ')})`
+          : '';
+        lines.push(`- [${r.id}] ${r.description}${r.acceptance ? ` (acceptance: ${r.acceptance})` : ''}${cover}`);
       }
     }
     if (payload.verdicts.length > 0) {

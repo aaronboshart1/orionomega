@@ -170,6 +170,14 @@ export interface ReviewOptions {
   taskDescription?: string;
   /** Implementation agent output (may include diffs/summaries). */
   implementationOutput?: string;
+  /**
+   * Bounded content snippets from the changed files, supplied by the
+   * orchestrator (which owns the cwd and can decide which files matter).
+   * Without this, the goal verifier only sees filenames and is forced to
+   * grade requirements against build/test output alone — too weak to
+   * detect "the build passes but the feature isn't implemented" cases.
+   */
+  fileSnippets?: Array<{ path: string; content: string; truncated: boolean }>;
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -641,6 +649,14 @@ export async function verifyRequirements(
   evidence: {
     taskDescription?: string;
     changedFiles: string[];
+    /**
+     * Bounded content snippets from the changed files. Filenames alone do
+     * not let the LLM see whether a requirement's acceptance criteria is
+     * actually satisfied in code; including a few KB per file gives the
+     * verifier real evidence to grade against. The orchestrator builds
+     * this list (it owns the cwd); pass [] when no content is available.
+     */
+    fileSnippets?: Array<{ path: string; content: string; truncated: boolean }>;
     buildResult: CommandCheckResult | null;
     testResults: CommandCheckResult[];
     implementationOutput?: string;
@@ -687,6 +703,21 @@ export async function verifyRequirements(
     : evidence.changedFiles.slice(0, 200).map((f) => `- ${f}`).join('\n') +
       (evidence.changedFiles.length > 200 ? `\n... (+${evidence.changedFiles.length - 200} more)` : '');
 
+  // Bounded content snippets from the most relevant changed files. Without
+  // this, the verifier only sees filenames and is forced to assume the file
+  // contents satisfy the requirements — defeating the strictness rule in
+  // the system prompt. Each snippet is already capped to GOAL_CHECK_*
+  // budgets by the caller, but we re-truncate defensively here.
+  const snippets = evidence.fileSnippets ?? [];
+  const snippetsBlock = snippets.length === 0
+    ? '(no file contents available — verify against filenames + build/test output only)'
+    : snippets.map((s) => (
+        `### ${s.path}${s.truncated ? ' (truncated)' : ''}\n` +
+        '```\n' +
+        truncBlock(s.content) +
+        '\n```'
+      )).join('\n\n');
+
   const reqsBlock = requirements
     .map((r, i) => `${i + 1}. id=${r.id}\n   description: ${r.description}\n   acceptance: ${r.acceptance}`)
     .join('\n');
@@ -710,7 +741,8 @@ export async function verifyRequirements(
   const user =
     `# Original user task\n${taskBlock}\n\n` +
     `# Requirements to grade\n${reqsBlock}\n\n` +
-    `# Changed files\n${filesBlock}\n\n` +
+    `# Changed files (paths)\n${filesBlock}\n\n` +
+    `# Changed file contents\n${snippetsBlock}\n\n` +
     `# Build output\n${buildBlock}\n\n` +
     `# Test output\n${testBlock}\n\n` +
     `# Implementation agent output\n${implBlock}\n\n` +
@@ -892,6 +924,7 @@ export async function generateReviewReport(
     {
       taskDescription: opts.taskDescription,
       changedFiles,
+      fileSnippets: opts.fileSnippets,
       buildResult,
       testResults,
       implementationOutput: opts.implementationOutput,

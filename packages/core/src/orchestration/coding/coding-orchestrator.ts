@@ -27,6 +27,7 @@ import { ValidationLoop, detectValidationCommands } from './validation-loop.js';
 import type {
   CodingModeConfig,
   CodebaseScanOutput,
+  CodingPlannerOutput,
   ValidationConfig,
   Requirement,
   RequirementVerdict,
@@ -78,7 +79,7 @@ export interface CodingEventEmitters {
   workflowStarted: (payload: { workflowId: string; template: string; nodeCount: number }) => void;
   stepStarted: (payload: { nodeId: string; label: string; type: string }) => void;
   stepProgress: (payload: { nodeId: string; message: string; percentage: number }) => void;
-  stepCompleted: (payload: { nodeId: string; status: 'success'; outputSummary: string }) => void;
+  stepCompleted: (payload: { nodeId: string; status: 'success'; outputSummary: string; metadata?: Record<string, unknown> }) => void;
   stepFailed: (payload: { nodeId: string; error: string }) => void;
   reviewStarted: (payload: { iteration: number }) => void;
   reviewCompleted: (payload: { decision: 'approve' | 'reject' | 'request-changes'; feedback: string; metrics?: Record<string, unknown> }) => void;
@@ -426,6 +427,9 @@ export class CodingOrchestrator {
     let implementationPlan = '';
     let priorDecisions: string[] = [];
     let requirements: Requirement[] = [];
+    // Captured planner output for end-of-run Hindsight retention. Stays
+    // null when the planner falls back to the prose-only path.
+    let capturedPlanOutput: CodingPlannerOutput | null = null;
     await this._runStep(executionId, 'plan', 'Design implementation plan', 'architect', progress, async () => {
       // 3a. Recall prior decisions from Hindsight (best-effort).
       if (this.cfg.memoryBridge) {
@@ -460,6 +464,7 @@ export class CodingOrchestrator {
         const planOutput = planner.plan(taskDescription, selectedTemplate, profile, {
           priorDecisions,
         });
+        capturedPlanOutput = planOutput;
 
         implementationPlan = [
           `Template: ${planOutput.template}`,
@@ -524,6 +529,28 @@ export class CodingOrchestrator {
 
       stepResults.push({ nodeId: 'plan', label: 'Design implementation plan', status: 'completed', output: summary });
       return summary;
+    },
+    // metadataProvider — attaches structured plan visibility (recalled
+    // prior-decision snippets, full requirement objects, template/nodes/
+    // budget) to the standard stepCompleted emit. We pass this through
+    // _runStep instead of emitting a second stepCompleted to avoid any
+    // event-counting consumers double-counting completion.
+    () => {
+      const po = capturedPlanOutput as CodingPlannerOutput | null;
+      return {
+        priorDecisions: priorDecisions.slice(0, 8).map((d) => d.length > 600 ? d.slice(0, 600) + '…' : d),
+        priorDecisionsCount: priorDecisions.length,
+        requirements: requirements.map((r) => ({
+          id: r.id,
+          description: r.description,
+          acceptance: r.acceptance,
+          coveredBy: r.coveredBy ?? [],
+        })),
+        template: po?.template,
+        nodeCount: po?.nodes.length,
+        estimatedBudgetUsd: po?.budgetAllocation.estimated,
+        fanOutPending: po?.fanOutPending ?? false,
+      };
     });
 
     // ── Step 4: Implementation loop (Claude Agent SDK) ─────────────────────
@@ -692,6 +719,16 @@ export class CodingOrchestrator {
         // letting the user raise this without editing template code is the
         // whole point of plumbing the value through.
         const validationTimeoutMs = (this.cfg.validationTimeoutSec ?? 300) * 1000;
+
+        // Read bounded content snippets from changed files so the goal
+        // verifier can grade requirements against actual code, not just
+        // filenames. Filename-only evidence is not strict enough to catch
+        // "build passes but feature missing" — see review critique #3.
+        const fileSnippets = await this._readFileSnippets(
+          targetDir,
+          [...filesModified, ...filesCreated],
+        );
+
         report = await generateReviewReport(targetDir, {
           changedFiles: [...filesModified, ...filesCreated],
           timeoutMs: validationTimeoutMs,
@@ -700,6 +737,7 @@ export class CodingOrchestrator {
           // against the build/test evidence and forces a `retask` if any
           // requirement comes back `unmet`.
           requirements,
+          fileSnippets,
           anthropic: this.cfg.anthropic,
           model: this.cfg.cheapModel ?? this.cfg.highPowerModel,
           taskDescription,
@@ -935,13 +973,68 @@ export class CodingOrchestrator {
     // Persist the run to Hindsight so a future architect step can recall it.
     // Best-effort — the helper itself swallows failures, but defend against
     // a missing memory bridge so this stays a no-op when memory is disabled.
+    // We persist the FULL plan structure (template, nodes, budget, file
+    // changes if any, fan-out chunks if any) plus the actual files that
+    // were modified/created, so a future architect call can recall both
+    // what was decided and how the work decomposed.
     if (this.cfg.memoryBridge) {
+      // Enrich each requirement's coveredBy with the actual files the
+      // implementation touched. The linear path's only "chunk" is the
+      // single implementation step, so before this enrichment every
+      // requirement claimed `coveredBy: ['implement']` — useful as a
+      // structural marker but uninformative for forensic recall. We keep
+      // the structural marker and append a bounded list of real files so
+      // future architect calls can answer "which files relate to this
+      // goal?" without re-deriving the mapping.
+      const allChangedFiles = [...filesModified, ...filesCreated];
+      const requirementsForRetain = requirements.map((r) => ({
+        ...r,
+        coveredBy: allChangedFiles.length > 0
+          ? Array.from(new Set([...(r.coveredBy ?? ['implement']), ...allChangedFiles.slice(0, 20)]))
+          : (r.coveredBy ?? ['implement']),
+      }));
+
       await this.cfg.memoryBridge.retainCodingRun({
         task: taskDescription,
-        requirements,
+        requirements: requirementsForRetain,
         verdicts: goalVerdicts,
         decision: reviewDecision,
         priorDecisionsCount: priorDecisions.length,
+        plan: ((): {
+          template?: string;
+          approach: string;
+          nodes?: Array<{ id: string; type: string; label: string }>;
+          fanOut?: undefined;
+          filesModified: string[];
+          filesCreated: string[];
+          budgetEstimateUsd?: number;
+        } => {
+          // Cast widens the type back: TS narrows `capturedPlanOutput` to
+          // `null` after the closure-bound assignment in the plan step
+          // (control-flow analysis doesn't follow callbacks), which would
+          // make the truthy branch `never`. The cast restores the union.
+          const po = capturedPlanOutput as CodingPlannerOutput | null;
+          if (po) {
+            return {
+              template: po.template,
+              approach: implementationPlan,
+              nodes: po.nodes.map((n) => ({
+                id: n.id,
+                type: n.type,
+                label: n.label,
+              })),
+              fanOut: undefined,
+              filesModified,
+              filesCreated,
+              budgetEstimateUsd: po.budgetAllocation.estimated,
+            };
+          }
+          return {
+            approach: implementationPlan,
+            filesModified,
+            filesCreated,
+          };
+        })(),
       }).catch((err) => {
         log.warn('retainCodingRun failed (non-fatal)', {
           error: err instanceof Error ? err.message : String(err),
@@ -982,6 +1075,15 @@ export class CodingOrchestrator {
     type: string,
     progress: CodingProgressCallback | undefined,
     fn: () => Promise<string>,
+    /**
+     * Optional lambda that supplies a structured metadata object to attach
+     * to the stepCompleted emit. Runs only on successful completion. Lets
+     * a caller enrich the standard event with structured data (e.g. the
+     * full plan, prior decisions, requirements) without emitting a second
+     * stepCompleted event — which would risk double-counting in any
+     * consumer that aggregates by event arrival rather than by nodeId.
+     */
+    metadataProvider?: () => Record<string, unknown>,
   ): Promise<void> {
     const stepId = uuid();
     const stepStartedAt = now();
@@ -1013,7 +1115,26 @@ export class CodingOrchestrator {
         .where(eq(workflowSteps.id, stepId));
 
       progress?.onStepCompleted(nodeId, output.slice(0, 200));
-      _emitters?.stepCompleted({ nodeId, status: 'success', outputSummary: output.slice(0, 200) });
+      let extraMetadata: Record<string, unknown> | undefined;
+      if (metadataProvider) {
+        try {
+          extraMetadata = metadataProvider();
+        } catch (metaErr) {
+          // The structured metadata is informational; never let a builder
+          // bug fail the whole step. Log and continue with the unenriched
+          // event so consumers still receive completion.
+          log.warn('stepCompleted metadata provider threw, emitting without metadata', {
+            nodeId,
+            error: metaErr instanceof Error ? metaErr.message : String(metaErr),
+          });
+        }
+      }
+      _emitters?.stepCompleted({
+        nodeId,
+        status: 'success',
+        outputSummary: output.slice(0, 200),
+        ...(extraMetadata ? { metadata: extraMetadata } : {}),
+      });
       log.info(`Step completed: ${label}`, { nodeId });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -1146,9 +1267,67 @@ export class CodingOrchestrator {
   }
 
   /**
-   * Build a stub CodebaseScanOutput from the lightweight analysis string.
-   * Used when the full codebase-analyzer fails.
+   * Read bounded content snippets from a list of file paths so the
+   * architect-reviewer's goal verifier can grade requirements against
+   * actual code (not just filenames). Bounds are intentionally
+   * conservative: at most 12 files, ~6KB each, totalling ~72KB worst-case
+   * — well under any reasonable model context window when combined with
+   * build/test logs. Files larger than the per-file cap are truncated and
+   * marked `truncated: true`. Read failures (missing file, permission
+   * denied, binary contents) are silently skipped — the verifier already
+   * tolerates an empty snippets list.
    */
+  private async _readFileSnippets(
+    cwd: string,
+    files: string[],
+  ): Promise<Array<{ path: string; content: string; truncated: boolean }>> {
+    if (files.length === 0) return [];
+    const fs = await import('node:fs/promises');
+    const path = await import('node:path');
+
+    const MAX_FILES = 12;
+    const MAX_BYTES_PER_FILE = 6 * 1024;
+    // Deduplicate (filesModified ∩ filesCreated can overlap if the
+    // implementer reports the same path twice) and cap.
+    const unique = Array.from(new Set(files)).slice(0, MAX_FILES);
+
+    const out: Array<{ path: string; content: string; truncated: boolean }> = [];
+    for (const rel of unique) {
+      try {
+        // Defence-in-depth against path traversal: refuse any path that
+        // resolves outside cwd. This shouldn't happen in practice (the
+        // implementer reports relative paths it actually wrote into cwd)
+        // but the cost of the check is trivial and the failure mode of
+        // skipping a malicious entry is benign.
+        const abs = path.resolve(cwd, rel);
+        const cwdResolved = path.resolve(cwd);
+        if (!abs.startsWith(cwdResolved + path.sep) && abs !== cwdResolved) {
+          continue;
+        }
+        const stat = await fs.stat(abs);
+        if (!stat.isFile()) continue;
+        const truncated = stat.size > MAX_BYTES_PER_FILE;
+        if (truncated) {
+          const handle = await fs.open(abs, 'r');
+          try {
+            const buf = Buffer.alloc(MAX_BYTES_PER_FILE);
+            await handle.read(buf, 0, MAX_BYTES_PER_FILE, 0);
+            out.push({ path: rel, content: buf.toString('utf8'), truncated: true });
+          } finally {
+            await handle.close();
+          }
+        } else {
+          const content = await fs.readFile(abs, 'utf8');
+          out.push({ path: rel, content, truncated: false });
+        }
+      } catch {
+        // Missing/binary/permission-denied files are skipped — verifier
+        // already handles a partial or empty snippets list.
+      }
+    }
+    return out;
+  }
+
   private _buildStubProfile(analysisText: string): CodebaseScanOutput {
     const fileCountMatch = analysisText.match(/Files found:\s*(\d+)/i) ?? analysisText.match(/Total files:\s*(\d+)/i);
     const fileCount = fileCountMatch ? parseInt(fileCountMatch[1], 10) : 20;
