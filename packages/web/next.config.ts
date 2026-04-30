@@ -72,7 +72,13 @@ const nextConfig: NextConfig = {
   async rewrites() {
     // Forward `/api/gateway/<path>` to the gateway service. The custom server in
     // `server.mjs` intercepts these requests before they reach Next.js, so this
-    // rewrite is the fallback for `next dev` / `next start` (no custom server).
+    // rewrite is only the fallback for `next dev` / `next start` (no custom
+    // server). When the custom server is running it sets ORIONOMEGA_CUSTOM_SERVER=1,
+    // and we must NOT register the rewrite — otherwise Next.js auto-installs an
+    // http-proxy upgrade listener on the custom server's HTTP server that
+    // duplicates the WebSocket proxy and causes clients to disconnect with
+    // code=1002 (RSV1 must be clear).
+    if (process.env.ORIONOMEGA_CUSTOM_SERVER === '1') return [];
     const gatewayUrl = (process.env.GATEWAY_URL || 'http://127.0.0.1:8000').replace(/\/+$/, '');
     return [
       {

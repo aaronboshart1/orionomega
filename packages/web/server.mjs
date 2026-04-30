@@ -9,6 +9,13 @@ import next from 'next';
 
 const dev = process.env.NODE_ENV !== 'production';
 
+// Signal to next.config.ts that the custom server is handling /api/gateway/*
+// proxying itself, so its rewrite-based fallback proxy must NOT be installed.
+// Without this, Next.js auto-attaches its own http-proxy upgrade listener for
+// the rewrite, which double-proxies WebSocket upgrades to the gateway and
+// causes clients to disconnect with code=1002 (RSV1 must be clear).
+process.env.ORIONOMEGA_CUSTOM_SERVER = '1';
+
 function parseArgs() {
   const args = process.argv.slice(2);
   let host = null;
