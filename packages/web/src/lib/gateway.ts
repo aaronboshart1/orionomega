@@ -801,48 +801,79 @@ function bindListeners(ws: ReconnectingWebSocket): void {
       // The gateway compresses messages >64KB to reduce bandwidth.
       if (raw.data instanceof ArrayBuffer || raw.data instanceof Blob) {
         // Binary frame — check for ZLIB compression prefix
+        const decompress = async (
+          compressed: Uint8Array,
+          format: 'deflate-raw' | 'deflate',
+        ): Promise<string> => {
+          const ds = new DecompressionStream(format);
+          // Drain the readable side CONCURRENTLY with feeding the writable
+          // side. If we awaited write() before starting to read, web-streams
+          // backpressure could stall write() forever on large (>64KB) frames
+          // — the gateway compresses messages above that threshold, so the
+          // common case would deadlock. Starting the read first lets data
+          // flow through.
+          const textPromise = new Response(ds.readable).text();
+          const writer = ds.writable.getWriter();
+          const writePromise = (async () => {
+            await writer.write(compressed as BufferSource);
+            await writer.close();
+          })();
+          // Promise.all attaches handlers to BOTH promises before either can
+          // reject, so neither becomes an unhandled rejection — which would
+          // otherwise propagate up and (in some browsers) tear down the WS.
+          const [, text] = await Promise.all([writePromise, textPromise]);
+          return text;
+        };
+
         const handleBinary = async (data: ArrayBuffer | Blob) => {
           const buffer = data instanceof Blob ? await data.arrayBuffer() : data;
           const bytes = new Uint8Array(buffer);
           // Check for 'ZLIB' magic prefix (0x5A 0x4C 0x49 0x42)
           if (bytes.length > 4 && bytes[0] === 0x5A && bytes[1] === 0x4C && bytes[2] === 0x49 && bytes[3] === 0x42) {
-            // Decompress using DecompressionStream (standard Web API).
-            // The gateway sends *raw* deflate (RFC 1951) — no zlib header,
-            // no adler32 trailer — because Safari's `'deflate'` decoder
-            // mishandles the zlib wrapper and throws "Extra bytes past the
-            // end" on the trailer. `'deflate-raw'` is decoded identically
-            // across Chrome, Firefox, and Safari. Must stay in sync with
-            // the gateway-side `deflateRawSync` call.
+            // Try `deflate-raw` first (current gateway format — RFC 1951, no
+            // zlib header). Fall back to `deflate` (RFC 1950, zlib-wrapped)
+            // for resilience against gateway/web version mismatch where the
+            // gateway is still running the older `deflateSync` build.
+            // `deflate-raw` is what avoids Safari's "Extra bytes past the end"
+            // bug on the zlib trailer; the fallback is just a safety net.
             const compressed = bytes.slice(4);
-            const ds = new DecompressionStream('deflate-raw');
-            const writer = ds.writable.getWriter();
-            writer.write(compressed);
-            writer.close();
-            const reader = ds.readable.getReader();
-            const chunks: Uint8Array[] = [];
-            for (;;) {
-              const { done, value } = await reader.read();
-              if (done) break;
-              chunks.push(value);
+            let json: string;
+            try {
+              json = await decompress(compressed, 'deflate-raw');
+            } catch (rawErr) {
+              try {
+                json = await decompress(compressed, 'deflate');
+                console.warn('[gateway] WS binary frame used legacy zlib format — gateway and web bundle versions may be out of sync. Run `orionomega update --clean` and hard-refresh.');
+              } catch (zlibErr) {
+                const head = Array.from(compressed.slice(0, 8)).map((b) => b.toString(16).padStart(2, '0')).join(' ');
+                console.error('[gateway] Failed to decompress WS binary frame in either format', {
+                  rawError: rawErr instanceof Error ? rawErr.message : String(rawErr),
+                  zlibError: zlibErr instanceof Error ? zlibErr.message : String(zlibErr),
+                  byteLength: compressed.length,
+                  head,
+                });
+                return; // Drop this frame but keep the WS alive.
+              }
             }
-            const totalLength = chunks.reduce((sum, c) => sum + c.length, 0);
-            const result = new Uint8Array(totalLength);
-            let offset = 0;
-            for (const chunk of chunks) {
-              result.set(chunk, offset);
-              offset += chunk.length;
+            // Validate JSON, then re-dispatch as a synthetic text event.
+            try {
+              JSON.parse(json);
+            } catch (parseErr) {
+              console.error('[gateway] Decompressed WS frame is not valid JSON', parseErr);
+              return;
             }
-            const json = new TextDecoder().decode(result);
-            // Validate the decompressed data is valid JSON before re-dispatching
-            JSON.parse(json);
-            // Re-dispatch as a synthetic text message event
             const synthetic = new MessageEvent('message', { data: json });
             if (ws.onmessage) ws.onmessage(synthetic);
             return;
           }
           // Not compressed — try parsing as UTF-8 JSON
           const text = new TextDecoder().decode(bytes);
-          JSON.parse(text); // Validate JSON
+          try {
+            JSON.parse(text);
+          } catch (parseErr) {
+            console.warn('[gateway] Received non-JSON binary WS frame, ignoring', parseErr);
+            return;
+          }
           const synthetic = new MessageEvent('message', { data: text });
           if (ws.onmessage) ws.onmessage(synthetic);
         };
