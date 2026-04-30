@@ -2,7 +2,7 @@
 
 import { useState, useMemo, useCallback } from 'react';
 import {
-  X, ChevronDown, Clock, Cpu,
+  X, ChevronDown, Check, Clock, Cpu,
   ArrowRight, ChevronRight, AlertCircle,
 } from 'lucide-react';
 import { useOrchestrationStore, type WorkerEvent, type WorkerEventType } from '@/stores/orchestration';
