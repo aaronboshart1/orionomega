@@ -25,7 +25,8 @@
  *
  * Large message optimization:
  * - State snapshots are paginated (only recent messages sent over WS)
- * - Messages >64KB are compressed with raw deflate (RFC 1951) before sending
+ * - Binary-frame compression is currently DISABLED — see COMPRESS_THRESHOLD_BYTES
+ *   below. All outgoing messages are sent as JSON text frames.
  * - Virtual scrolling hints included for large activity logs
  */
 
@@ -60,8 +61,18 @@ const PING_INTERVAL_MS = 30_000;
 /**
  * Threshold (bytes) above which outgoing WS messages are compressed.
  * Only applies to JSON-serialized messages sent via the `send()` method.
+ *
+ * DISABLED (set to Infinity): the binary-frame compression path has produced
+ * recurring, hard-to-diagnose decompression failures across browsers and
+ * gateway/web bundle versions (see the chain of fixes through Task #141 and
+ * the cross-browser regression that followed). Snapshots are capped at
+ * SNAPSHOT_MAX_MESSAGES below, and the connection is local/Tailscale, so the
+ * bandwidth savings are not worth the failure modes. The web client still
+ * has the binary-frame handler so re-enabling later is a one-line change,
+ * but until that handler is covered by an end-to-end browser test we leave
+ * compression off.
  */
-const COMPRESS_THRESHOLD_BYTES = 64 * 1024;
+const COMPRESS_THRESHOLD_BYTES = Number.POSITIVE_INFINITY;
 
 /**
  * Maximum messages to include in WebSocket state snapshots.
@@ -1000,15 +1011,12 @@ export class WebSocketHandler {
   /**
    * Safely send a ServerMessage over a WebSocket.
    *
-   * Large messages (>COMPRESS_THRESHOLD_BYTES) are compressed using raw
-   * deflate (RFC 1951) before sending to reduce bandwidth usage on
-   * reconnection snapshots and large history payloads. The compressed payload
-   * is sent as a binary frame with a 4-byte `ZLIB` magic prefix so the client
-   * can detect it and route to the matching `DecompressionStream('deflate-raw')`
-   * decoder. Raw deflate is used instead of zlib-wrapped deflate (RFC 1950)
-   * because Safari's `DecompressionStream('deflate')` mishandles the zlib
-   * adler32 trailer and throws "Extra bytes past the end", which would
-   * permanently break the WebSocket connection.
+   * Outgoing messages are sent as JSON text frames. The binary-frame
+   * compression branch below (gated by COMPRESS_THRESHOLD_BYTES, currently
+   * Number.POSITIVE_INFINITY) is intentionally unreachable at runtime — it
+   * is kept for one-line re-enable should we ever ship the missing
+   * end-to-end browser test that covers cross-browser deflate decoding.
+   * See the COMPRESS_THRESHOLD_BYTES doc-comment for context.
    */
   private send(ws: WebSocket, message: ServerMessage): void {
     try {
