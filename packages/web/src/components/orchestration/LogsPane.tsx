@@ -26,6 +26,7 @@ import {
   type LogsMeta,
   type LogsStreamHandle,
 } from '@/lib/gateway';
+import { formatBytes, formatTime } from '@/utils/format';
 
 const LEVELS: readonly LogLevel[] = ['error', 'warn', 'info', 'verbose', 'debug'];
 const LEVEL_ORDER: Record<LogLevel, number> = { error: 0, warn: 1, info: 2, verbose: 3, debug: 4 };
@@ -48,23 +49,6 @@ const LEVEL_ICON: Record<LogLevel, React.ReactNode> = {
 
 const MAX_BUFFER_LINES = 50_000;
 const INITIAL_TAIL_LINES = 500;
-
-function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
-  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
-}
-
-function formatTime(iso: string): string {
-  if (!iso) return '';
-  try {
-    const d = new Date(iso);
-    return d.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
-  } catch {
-    return iso.slice(11, 19);
-  }
-}
 
 function LogRow({ line }: { line: ParsedLogLine }) {
   const [expanded, setExpanded] = useState(false);

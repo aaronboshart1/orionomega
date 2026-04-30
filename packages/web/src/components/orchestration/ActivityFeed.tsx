@@ -19,8 +19,10 @@ import {
   Square,
   Info,
   Filter,
+  ArrowDown,
 } from 'lucide-react';
 import { useOrchestrationStore, type WorkerEvent, type WorkerEventType } from '@/stores/orchestration';
+import { formatTime } from '@/utils/format';
 
 const typeIcons: Record<string, React.ReactNode> = {
   thinking: <Brain size={12} aria-hidden className="text-purple-400" />,
@@ -78,15 +80,6 @@ const typeLabels: Record<WorkerEventType, string> = {
 };
 
 const defaultIcon = <BarChart3 size={12} aria-hidden className="text-zinc-400" />;
-
-function formatTime(ts: string) {
-  try {
-    const d = new Date(ts);
-    return d.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
-  } catch {
-    return '--:--:--';
-  }
-}
 
 function truncateParams(params: Record<string, unknown> | undefined, maxLen = 60): string {
   if (!params) return '';
@@ -216,7 +209,7 @@ function EventContent({ event }: { event: WorkerEvent }) {
   }
 }
 
-function EventRow({ event }: { event: WorkerEvent }) {
+export function EventRow({ event }: { event: WorkerEvent }) {
   const icon = typeIcons[event.type] || defaultIcon;
 
   const isError = event.type === 'error';
@@ -322,6 +315,7 @@ export function ActivityFeed() {
   const [filterOpen, setFilterOpen] = useState(false);
   const [activeTypes, setActiveTypes] = useState<Set<WorkerEventType> | null>(null);
   const [nodeFilter, setNodeFilter] = useState<string | null>(null);
+  const [isScrolledUp, setIsScrolledUp] = useState(false);
 
   const availableNodes = useMemo(() => {
     const ids = new Set(events.map((e) => e.workerId));
@@ -364,7 +358,15 @@ export function ActivityFeed() {
     const el = scrollContainerRef.current;
     if (!el) return;
     const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    userScrolledUpRef.current = distanceFromBottom > 50;
+    const scrolledUp = distanceFromBottom > 50;
+    userScrolledUpRef.current = scrolledUp;
+    setIsScrolledUp(scrolledUp);
+  }, []);
+
+  const scrollToBottom = useCallback(() => {
+    userScrolledUpRef.current = false;
+    setIsScrolledUp(false);
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, []);
 
   useEffect(() => {
@@ -453,11 +455,23 @@ export function ActivityFeed() {
         />
       )}
       {!collapsed && (
-        <div className="flex-1 overflow-y-auto" ref={scrollContainerRef} onScroll={handleScroll}>
-          {filteredEvents.map((event, i) => (
-            <EventRow key={`${event.timestamp}-${event.type}-${i}`} event={event} />
-          ))}
-          <div ref={bottomRef} />
+        <div className="relative flex-1 min-h-0 overflow-hidden">
+          <div className="h-full overflow-y-auto" ref={scrollContainerRef} onScroll={handleScroll}>
+            {filteredEvents.map((event, i) => (
+              <EventRow key={`${event.timestamp}-${event.type}-${i}`} event={event} />
+            ))}
+            <div ref={bottomRef} />
+          </div>
+          {isScrolledUp && (
+            <button
+              type="button"
+              onClick={scrollToBottom}
+              className="absolute bottom-3 right-3 z-10 flex items-center gap-1.5 rounded-full bg-blue-600 px-3 py-1.5 text-xs font-medium text-white shadow-lg hover:bg-blue-500 transition-colors"
+            >
+              <ArrowDown size={11} />
+              Jump to bottom
+            </button>
+          )}
         </div>
       )}
     </div>

@@ -261,6 +261,13 @@ export function OrchestrationPane() {
         <div className="flex-1 min-h-0 overflow-hidden">
           <LogsPane />
         </div>
+      ) : workflowIds.length === 0 ? (
+        <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center px-6">
+          <div className="text-sm text-zinc-400">No workflows yet</div>
+          <div className="max-w-xs text-xs text-zinc-600">
+            Start a workflow by sending a message in the chat. Orchestration graphs, activity, and summaries will appear here.
+          </div>
+        </div>
       ) : (
         <>
           <div className="flex-[4] min-h-0 border-b border-zinc-800 relative overflow-hidden">

@@ -1,14 +1,15 @@
 'use client';
 
-import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
+import { useState, useMemo, useCallback } from 'react';
 import {
-  X, ChevronDown, Copy, Check, Clock, Cpu,
+  X, ChevronDown, Clock, Cpu,
   ArrowRight, ChevronRight, AlertCircle,
 } from 'lucide-react';
 import { useOrchestrationStore, type WorkerEvent, type WorkerEventType } from '@/stores/orchestration';
 import { TabGroup } from '../shared/TabGroup';
+import { CopyButton } from '../shared/CopyButton';
+import { EventRow } from './ActivityFeed';
 import { formatElapsed } from '@/utils/format';
-import { copyToClipboard } from '@/utils/clipboard';
 
 type Tab = 'activity' | 'reasoning' | 'tools' | 'output' | 'info';
 
@@ -34,40 +35,6 @@ function detectLang(filePath?: string): string {
     yml: 'yaml', md: 'markdown', css: 'css', html: 'html', sql: 'sql',
   };
   return langMap[ext] || ext;
-}
-
-function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    return () => {
-      if (timerRef.current !== null) clearTimeout(timerRef.current);
-    };
-  }, []);
-
-  const handleCopy = useCallback(() => {
-    copyToClipboard(text).then((ok) => {
-      if (!ok) return;
-      setCopied(true);
-      if (timerRef.current !== null) clearTimeout(timerRef.current);
-      timerRef.current = setTimeout(() => {
-        timerRef.current = null;
-        setCopied(false);
-      }, 2000);
-    });
-  }, [text]);
-
-  return (
-    <button
-      type="button"
-      onClick={handleCopy}
-      className="rounded p-1 text-zinc-500 hover:bg-zinc-700 hover:text-zinc-300 transition-colors"
-      title="Copy to clipboard"
-    >
-      {copied ? <Check size={12} className="text-green-400" /> : <Copy size={12} />}
-    </button>
-  );
 }
 
 function ToolResultContent({ call, result }: { call: WorkerEvent; result?: WorkerEvent }) {
@@ -323,22 +290,12 @@ export function WorkerDetail() {
           {/* Content */}
           <div className="flex-1 overflow-y-auto p-4">
         {activeTab === 'activity' && (
-          <div className="space-y-1 font-mono text-xs">
+          <div className="-mx-4 -mt-4">
             {workerEvents.length === 0 ? (
-              <p className="text-zinc-600">No events yet</p>
+              <p className="px-4 pt-4 text-xs text-zinc-600">No events yet</p>
             ) : (
               workerEvents.map((ev, i) => (
-                <div key={i} className={`flex gap-2 text-zinc-400 ${
-                  ev.type === 'error' ? 'text-red-400' : ev.type === 'warning' ? 'text-amber-400' : ''
-                }`}>
-                  <span className="shrink-0 text-zinc-600">
-                    {new Date(ev.timestamp).toLocaleTimeString('en-US', { hour12: false })}
-                  </span>
-                  <span className={`text-zinc-500 ${
-                    ev.type === 'error' ? '!text-red-500' : ev.type === 'tool_call' ? '!text-yellow-500' : ''
-                  }`}>[{ev.type}]</span>
-                  <span className="truncate">{ev.message || ev.tool?.summary || ev.thinking?.slice(0, 60) || ''}</span>
-                </div>
+                <EventRow key={`${ev.timestamp}-${ev.type}-${i}`} event={ev} />
               ))
             )}
           </div>

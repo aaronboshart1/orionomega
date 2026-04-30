@@ -1,10 +1,11 @@
 'use client';
 
-import { useMemo, useCallback } from 'react';
+import { useMemo, useCallback, useEffect } from 'react';
 import {
   ReactFlow,
   Background,
   Controls,
+  MiniMap,
   type Node,
   type Edge,
   useNodesState,
@@ -115,8 +116,17 @@ export function DAGVisualization() {
     return computeLayout(inlineNodesToGraphNodes(activeDag.nodes));
   }, [graphState, activeWorkflowId, inlineDAGs]);
 
-  const [, , onNodesChange] = useNodesState(rfNodes);
-  const [, , onEdgesChange] = useEdgesState(rfEdges);
+  const [nodes, setNodes, onNodesChange] = useNodesState(rfNodes);
+  const [edges, setEdges, onEdgesChange] = useEdgesState(rfEdges);
+
+  // Sync store-derived nodes/edges into React Flow's internal state on every change
+  useEffect(() => {
+    setNodes(rfNodes);
+  }, [rfNodes, setNodes]);
+
+  useEffect(() => {
+    setEdges(rfEdges);
+  }, [rfEdges, setEdges]);
 
   const onNodeClick = useCallback(
     (_: React.MouseEvent, node: Node) => {
@@ -135,8 +145,8 @@ export function DAGVisualization() {
 
   return (
     <ReactFlow
-      nodes={rfNodes}
-      edges={rfEdges}
+      nodes={nodes}
+      edges={edges}
       onNodesChange={onNodesChange}
       onEdgesChange={onEdgesChange}
       onNodeClick={onNodeClick}
@@ -150,6 +160,19 @@ export function DAGVisualization() {
         showInteractive={false}
         position="bottom-right"
         className="!bg-zinc-800 !border-zinc-700 !shadow-lg !bottom-[52px] !right-4 [&>button]:!bg-zinc-800 [&>button]:!border-zinc-700 [&>button]:!text-zinc-400 [&>button:hover]:!bg-zinc-700"
+      />
+      <MiniMap
+        nodeColor={(n) => {
+          const status = (n.data as { status?: string }).status;
+          if (status === 'running') return '#3b82f6';
+          if (status === 'done') return '#22c55e';
+          if (status === 'error') return '#ef4444';
+          return '#52525b';
+        }}
+        maskColor="rgba(9,9,11,0.7)"
+        position="top-right"
+        className="!bg-zinc-900 !border !border-zinc-700 !rounded-md !shadow-lg"
+        style={{ width: 120, height: 70 }}
       />
     </ReactFlow>
   );

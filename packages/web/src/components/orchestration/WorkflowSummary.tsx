@@ -7,7 +7,7 @@ import { useFileViewerStore } from '@/stores/file-viewer';
 import type { ModelUsageEntry } from '@/stores/orchestration';
 import { MarkdownContent } from '../chat/MarkdownContent';
 
-import { formatElapsed, formatTokens as fmtTokens } from '@/utils/format';
+import { formatElapsed, formatTokens as fmtTokens, formatCost } from '@/utils/format';
 
 const statusBadge: Record<string, { bg: string; text: string }> = {
   planning: { bg: 'bg-yellow-500/10', text: 'text-yellow-500' },
@@ -48,7 +48,7 @@ function ModelUsageTable({ models, totalCostUsd }: { models: ModelUsageEntry[]; 
           <span className="text-right text-zinc-400">{fmtTokens(m.outputTokens)}</span>
           <span className="text-right text-zinc-500">{fmtTokens(m.cacheReadTokens)}</span>
           <span className="text-right text-zinc-500">{fmtTokens(m.cacheCreationTokens)}</span>
-          <span className="text-right text-zinc-300">${m.costUsd.toFixed(4)}</span>
+          <span className="text-right text-zinc-300">{formatCost(m.costUsd)}</span>
         </div>
       ))}
       <div className="border-t border-zinc-700/50" />
@@ -58,7 +58,7 @@ function ModelUsageTable({ models, totalCostUsd }: { models: ModelUsageEntry[]; 
         <span className="text-right text-zinc-300">{fmtTokens(totals.output)}</span>
         <span className="text-right text-zinc-400">{fmtTokens(totals.cacheR)}</span>
         <span className="text-right text-zinc-400">{fmtTokens(totals.cacheW)}</span>
-        <span className="text-right text-green-400">${totalCostUsd?.toFixed(4) ?? '0.0000'}</span>
+        <span className="text-right text-green-400">{totalCostUsd !== undefined ? formatCost(totalCostUsd) : '$0.00'}</span>
       </div>
     </div>
   );
@@ -93,10 +93,17 @@ export function WorkflowSummary() {
     };
   }, [graphState]);
 
+  const hasActiveInlineDAG = useMemo(() => {
+    if (activeWorkflowId && inlineDAGs[activeWorkflowId]) return true;
+    return Object.values(inlineDAGs).some(
+      (d) => d.status !== 'complete' && d.status !== 'error' && d.status !== 'stopped',
+    );
+  }, [inlineDAGs, activeWorkflowId]);
+
   if (!graphState && !completedDAG) {
     return (
       <div className="flex h-full items-center justify-center text-xs text-zinc-600">
-        No active workflow
+        {hasActiveInlineDAG ? 'Initializing workflow\u2026' : 'No active workflow'}
       </div>
     );
   }
@@ -119,7 +126,7 @@ export function WorkflowSummary() {
             <span className="shrink-0 text-xs text-zinc-500">{completedDAG.workerCount} worker{completedDAG.workerCount !== 1 ? 's' : ''}</span>
           )}
           {completedDAG.totalCostUsd !== undefined && (
-            <span className="shrink-0 text-xs font-medium text-green-400">${completedDAG.totalCostUsd.toFixed(4)}</span>
+            <span className="shrink-0 text-xs font-medium text-green-400">{formatCost(completedDAG.totalCostUsd)}</span>
           )}
         </div>
         <div className="truncate text-[10px] font-mono text-zinc-600 mb-2">{completedDAG.dagId}</div>
@@ -194,7 +201,7 @@ export function WorkflowSummary() {
   if (!graphState || !stats) {
     return (
       <div className="flex h-full items-center justify-center text-xs text-zinc-600">
-        No active workflow
+        {hasActiveInlineDAG ? 'Initializing workflow\u2026' : 'No active workflow'}
       </div>
     );
   }

@@ -1,8 +1,9 @@
 'use client';
 
-import { useEffect, useRef, useState, useCallback, useMemo, type MouseEvent } from 'react';
+import { useEffect, useRef, useState, useMemo } from 'react';
 import { useOrchestrationStore, useFilteredMemoryEvents, type MemoryEvent, type MemoryFilterState, type RecallMeta, type RetainMeta, type QualityMeta, type DedupMeta } from '@/stores/orchestration';
-import { copyToClipboard } from '@/utils/clipboard';
+import { CopyButton } from '@/components/shared/CopyButton';
+import { formatTime } from '@/utils/format';
 import {
   Brain,
   Download,
@@ -15,8 +16,6 @@ import {
   Sparkles,
   ChevronDown,
   ChevronRight,
-  Copy,
-  Check,
   X,
 } from 'lucide-react';
 
@@ -33,15 +32,6 @@ const OP_CONFIG: Record<MemoryEvent['op'], { icon: typeof Brain; label: string; 
 };
 
 const ALL_OPS = Object.keys(OP_CONFIG) as MemoryEvent['op'][];
-
-function formatTime(iso: string): string {
-  try {
-    const d = new Date(iso);
-    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-  } catch {
-    return '';
-  }
-}
 
 function formatDate(iso: string): string {
   try {
@@ -70,41 +60,6 @@ function QualityDot({ score }: { score: number }) {
   return <span className={`inline-block w-2 h-2 rounded-full ${color} flex-shrink-0`} title={`Quality: ${score.toFixed(2)}`} />;
 }
 
-function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    return () => {
-      if (timerRef.current !== null) clearTimeout(timerRef.current);
-    };
-  }, []);
-
-  const handleCopy = useCallback((e: MouseEvent) => {
-    e.stopPropagation();
-    copyToClipboard(text).then((ok) => {
-      if (!ok) return;
-      setCopied(true);
-      if (timerRef.current !== null) clearTimeout(timerRef.current);
-      timerRef.current = setTimeout(() => {
-        timerRef.current = null;
-        setCopied(false);
-      }, 1500);
-    });
-  }, [text]);
-
-  return (
-    <button
-      type="button"
-      onClick={handleCopy}
-      className="flex-shrink-0 text-zinc-600 hover:text-zinc-400 transition-colors"
-      title="Copy to clipboard"
-    >
-      {copied ? <Check size={10} className="text-green-400" /> : <Copy size={10} />}
-    </button>
-  );
-}
-
 function MemoryContentCard({ memory }: { memory: { content: string; context: string; timestamp: string; relevance?: number } }) {
   const [showFull, setShowFull] = useState(false);
   const isLong = memory.content.length > 200;
@@ -121,7 +76,7 @@ function MemoryContentCard({ memory }: { memory: { content: string; context: str
         )}
         {memory.relevance !== undefined && <RelevanceBar score={memory.relevance} />}
         <span className="ml-auto">
-          <CopyButton text={memory.content} />
+          <CopyButton text={memory.content} stopPropagation />
         </span>
       </div>
       <p className="text-xs text-zinc-400 leading-relaxed whitespace-pre-wrap break-words">
@@ -217,7 +172,7 @@ function ExpandedRetain({ meta }: { meta: RetainMeta }) {
         <div>
           <div className="flex items-center gap-1.5 mb-1">
             <span className="text-zinc-600">Content{meta.contentLength != null ? ` (${meta.contentLength} chars)` : ''}:</span>
-            <CopyButton text={meta.contentPreview} />
+            <CopyButton text={meta.contentPreview} stopPropagation />
           </div>
           <div className="rounded border border-zinc-700/40 bg-zinc-900/50 p-2">
             <p className="text-xs text-zinc-400 leading-relaxed whitespace-pre-wrap break-words">
@@ -260,7 +215,7 @@ function ExpandedQuality({ meta }: { meta: QualityMeta }) {
         <div>
           <div className="flex items-center gap-1.5 mb-1">
             <span className="text-zinc-600">Content:</span>
-            <CopyButton text={meta.contentPreview} />
+            <CopyButton text={meta.contentPreview} stopPropagation />
           </div>
           <div className="rounded border border-zinc-700/40 bg-zinc-900/50 p-2">
             <p className="text-xs text-zinc-400 leading-relaxed whitespace-pre-wrap break-words">
@@ -286,7 +241,7 @@ function ExpandedDedup({ meta }: { meta: DedupMeta }) {
         <div>
           <div className="flex items-center gap-1.5 mb-1">
             <span className="text-zinc-600">Duplicate content:</span>
-            <CopyButton text={meta.contentPreview} />
+            <CopyButton text={meta.contentPreview} stopPropagation />
           </div>
           <div className="rounded border border-zinc-700/40 bg-zinc-900/50 p-2">
             <p className="text-xs text-zinc-400 leading-relaxed whitespace-pre-wrap break-words">
