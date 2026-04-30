@@ -4,8 +4,8 @@
  */
 
 import { writeFileSync, readdirSync, existsSync, mkdirSync, statSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join, resolve as resolvePath } from 'node:path';
+import { getOrionOmegaInstallRoots, detectInstallDirWrites } from '../utils/install-dir.js';
 import type {
   WorkflowGraph,
   WorkflowNode,
@@ -110,54 +110,6 @@ function saveTextOutputIfEmpty(outputDir: string, text: string, filename: string
   } catch {
     return null;
   }
-}
-
-/**
- * Resolve the OrionOmega install directory roots that CODING_AGENT writes
- * must never land in. Includes the conventional `~/.orionomega/src` location
- * and, if discoverable, the install root surfaced by the update command via
- * `process.env.ORIONOMEGA_INSTALL_DIR`.
- */
-function getOrionOmegaInstallRoots(): string[] {
-  const roots = new Set<string>();
-  try {
-    roots.add(resolvePath(homedir(), '.orionomega'));
-  } catch { /* ignore */ }
-  const envRoot = process.env.ORIONOMEGA_INSTALL_DIR;
-  if (envRoot) {
-    try { roots.add(resolvePath(envRoot)); } catch { /* ignore */ }
-  }
-  return [...roots];
-}
-
-/**
- * Returns the subset of `paths` that resolve under any OrionOmega install
- * root. Used to surface a regression warning if a coding agent ever writes
- * deliverables back into the install tree.
- *
- * Relative paths are resolved against `cwd` (the coding agent's working
- * directory) when provided, so a Write/Edit that reports `file_path:
- * "src/foo.md"` is checked against `<cwd>/src/foo.md` rather than
- * `<process.cwd()>/src/foo.md`. Falls back to process cwd if not provided.
- */
-function detectInstallDirWrites(paths: string[], cwd?: string): string[] {
-  if (paths.length === 0) return [];
-  const roots = getOrionOmegaInstallRoots();
-  if (roots.length === 0) return [];
-  const offenders: string[] = [];
-  for (const p of paths) {
-    let resolved: string;
-    try {
-      resolved = cwd ? resolvePath(cwd, p) : resolvePath(p);
-    } catch { continue; }
-    for (const root of roots) {
-      if (resolved === root || resolved.startsWith(root + '/')) {
-        offenders.push(resolved);
-        break;
-      }
-    }
-  }
-  return offenders;
 }
 
 function scanForUntrackedFiles(outputDir: string, knownPaths: string[]): string[] {

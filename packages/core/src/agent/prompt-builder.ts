@@ -21,6 +21,24 @@ export interface PromptContext {
   availableSkills?: string[];
   /** Whether a workflow is currently running. */
   activeWorkflow?: boolean;
+  /**
+   * Per-turn run directory for the current direct-mode conversation. When
+   * present, the prompt appends a strict "Output Directory" block telling the
+   * model to write all deliverable artifacts under this path (and never into
+   * the OrionOmega install tree). Mirrors the orchestration agent-sdk-bridge
+   * runDir block so direct mode and orchestration follow the same rules.
+   */
+  runDir?: string;
+}
+
+/**
+ * Builds the strict "Output Directory" block appended to the main agent's
+ * system prompt for a given run directory. Exported so callers that cache
+ * the base prompt (e.g. MainAgent.getSystemPrompt) can append it per turn
+ * without rebuilding the whole prompt.
+ */
+export function buildRunDirBlock(runDir: string): string {
+  return `\n\n## Output Directory (STRICT)\nAll deliverable artifacts (specs, reports, research docs, generated data files, code you produce for the user) MUST be written under the run output directory: \`${runDir}\`\nThis directory is the canonical location for this conversation turn's artifacts.\n\nForbidden write locations — NEVER write deliverable artifacts to:\n- \`/home/user/...\`, \`/home/kali/...\`, or any other home directory outside \`${runDir}\`\n- \`/tmp/...\` or other system temp dirs\n- \`~/...\` or shell-expanded home paths\n- \`~/.orionomega/...\` or any subdirectory of the OrionOmega install tree (e.g. \`~/.orionomega/src\`) — that is the application's own source tree, never a place for run deliverables\n\nWhen calling \`write_file\`, prefer relative paths (just the filename) — they are resolved against \`${runDir}\` automatically. If you must use an absolute path, it must be under \`${runDir}\`. If the user names an absolute output path outside \`${runDir}\`, IGNORE that path and write the file under \`${runDir}\` instead.`;
 }
 
 const CORE_INSTRUCTIONS = `You are OrionOmega's main agent. Your role:
@@ -99,6 +117,10 @@ export async function buildSystemPrompt(context: PromptContext): Promise<string>
   }
 
   sections.push(`\n${getPortAvoidanceInstructions()}`);
+
+  if (context.runDir) {
+    sections.push(buildRunDirBlock(context.runDir));
+  }
 
   return sections.join('\n');
 }

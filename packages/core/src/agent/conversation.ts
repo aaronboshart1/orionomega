@@ -13,6 +13,7 @@ import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { exec as execCb } from 'node:child_process';
 import { promisify } from 'node:util';
+import { detectInstallDirWrites } from '../utils/install-dir.js';
 
 const execAsync = promisify(execCb);
 const log = createLogger('conversation');
@@ -196,11 +197,21 @@ export async function classifyIntent(
   }
 }
 
-/** Execute a main-agent tool call. */
+/**
+ * Execute a main-agent tool call.
+ *
+ * @param runDir - Per-turn run output directory. When provided, relative
+ *   `write_file` paths resolve here (instead of `workspaceDir`) so deliverable
+ *   artifacts land in the canonical run output folder. Absolute writes that
+ *   land inside the OrionOmega install tree (`~/.orionomega/...`) are refused
+ *   and the agent is told to retry under `runDir` — mirroring the orchestration
+ *   CODING_AGENT install-dir leak guard.
+ */
 export async function executeMainTool(
   name: string,
   input: Record<string, unknown>,
   workspaceDir: string,
+  runDir?: string,
 ): Promise<string> {
   switch (name) {
     case 'read_file': {
@@ -215,13 +226,14 @@ export async function executeMainTool(
       const command = String(input.command ?? '');
       try {
         const { stdout, stderr } = await execAsync(command, {
-          cwd: workspaceDir,
+          cwd: runDir ?? workspaceDir,
           timeout: 30_000,
           maxBuffer: 1024 * 1024,
           env: {
             ...process.env,
             HOME: process.env.HOME || '/root',
             PATH: process.env.PATH || '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+            ...(runDir ? { ORIONOMEGA_RUN_DIR: runDir } : {}),
           },
         });
         let result = stdout || '';
@@ -236,7 +248,28 @@ export async function executeMainTool(
     case 'write_file': {
       const filePath = String(input.path ?? '');
       const fileContent = String(input.content ?? '');
-      const resolved = filePath.startsWith('/') ? filePath : `${workspaceDir}/${filePath}`;
+      // Relative paths resolve against the run output dir when one is provided
+      // (so deliverables land in `~/orionomega/workspace/output/{runId}` by
+      // default), and fall back to the workspace dir otherwise. Absolute paths
+      // are taken as-is and then validated against the install-dir guard.
+      const baseDir = runDir ?? workspaceDir;
+      const resolved = filePath.startsWith('/') ? filePath : `${baseDir}/${filePath}`;
+
+      // Refuse writes that land in the OrionOmega install tree
+      // (e.g. ~/.orionomega/src). Mirrors the orchestration CODING_AGENT
+      // post-step leak detection, but enforced at write-time so the model
+      // sees the rejection and can retry under runDir on its next turn.
+      const leaks = detectInstallDirWrites([resolved]);
+      if (leaks.length > 0) {
+        const target = runDir ?? '<run output dir>';
+        log.warn('Refused write into OrionOmega install dir', {
+          requestedPath: filePath,
+          resolvedPath: resolved,
+          runDir,
+        });
+        return `Error: refused to write to "${resolved}" — that path is inside the OrionOmega install tree (~/.orionomega/...), which is the application's own source code, not a place for run deliverables. Write the file under the run output directory instead: ${target}. If you pass a relative path (e.g. just the filename), it will be resolved against the run output directory automatically.`;
+      }
+
       const { mkdir } = await import('node:fs/promises');
       const { dirname } = await import('node:path');
       await mkdir(dirname(resolved), { recursive: true });
@@ -313,6 +346,12 @@ export async function streamConversation(opts: {
   systemPrompt: string;
   messages: AnthropicMessage[];
   workspaceDir: string;
+  /**
+   * Per-turn run output directory. Threaded into `executeMainTool` so
+   * relative `write_file` paths land here and so install-dir leak guards
+   * have a sensible redirect target. See `executeMainTool` for details.
+   */
+  runDir?: string;
   onText: (text: string, streaming: boolean, done: boolean) => void;
   onThinking?: (text: string, streaming: boolean, done: boolean) => void;
   onThinkingStep?: (step: { id: string; name: string; status: 'pending' | 'active' | 'done'; startedAt?: number; completedAt?: number; elapsedMs?: number; detail?: string }) => void;
@@ -320,7 +359,7 @@ export async function streamConversation(opts: {
   maxInputTokens?: number;
   abortSignal?: AbortSignal;
 }): Promise<{ text: string; inputTokens: number; outputTokens: number; cacheCreationTokens: number; cacheReadTokens: number }> {
-  const { client, model, systemPrompt, workspaceDir, onText, onThinking, onThinkingStep, abortSignal } = opts;
+  const { client, model, systemPrompt, workspaceDir, runDir, onText, onThinking, onThinkingStep, abortSignal } = opts;
   let messages = [...opts.messages];
 
   if (opts.maxInputTokens && messages.length > 2) {
@@ -547,7 +586,7 @@ export async function streamConversation(opts: {
 
       const toolStart = Date.now();
       log.verbose(`Tool call: ${tc.name}`, { input: tc.input });
-      const result = await executeMainTool(tc.name, tc.input, workspaceDir);
+      const result = await executeMainTool(tc.name, tc.input, workspaceDir, runDir);
       const toolDuration = Date.now() - toolStart;
       onThinkingStep?.({ id: toolStepId, name: toolSummary, status: 'done', completedAt: Date.now(), elapsedMs: toolDuration });
       log.verbose(`Tool result: ${tc.name}`, {

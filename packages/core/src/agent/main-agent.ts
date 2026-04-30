@@ -14,7 +14,7 @@
 import { spawn } from 'node:child_process';
 import { AnthropicClient } from '../anthropic/client.js';
 import type { AnthropicMessage } from '../anthropic/client.js';
-import { buildSystemPrompt, type PromptContext } from './prompt-builder.js';
+import { buildSystemPrompt, buildRunDirBlock, type PromptContext } from './prompt-builder.js';
 import { createLogger } from '../logging/logger.js';
 import { SkillLoader, readSkillConfig, writeSkillConfig } from '@orionomega/skills-sdk';
 import type { OrionOmegaConfig } from '../config/types.js';
@@ -1208,8 +1208,28 @@ export class MainAgent {
     }
     wrappedOnThinking('Assembling context…', true, false);
 
+    // Per-turn run output directory. Mirrors the orchestration executor's
+    // `${workspaceDir}/output/${runId}` pattern so direct-mode artifacts land
+    // in the canonical run output folder. The runDir block in the system
+    // prompt and the relative-path resolution + install-dir guard in
+    // `executeMainTool` both pivot off this path.
+    const runDir = this.config.workspaceDir
+      ? `${this.config.workspaceDir}/output/${effectiveRunId}`
+      : undefined;
+    if (runDir) {
+      try {
+        const { mkdir } = await import('node:fs/promises');
+        await mkdir(runDir, { recursive: true });
+      } catch (err) {
+        log.warn('Failed to create direct-mode run output dir', {
+          runDir,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
     const [systemPrompt, assembled] = await Promise.all([
-      this.getSystemPrompt(),
+      this.getSystemPrompt(runDir),
       this.context.assemble(userMessage),
     ]);
 
@@ -1243,6 +1263,7 @@ export class MainAgent {
         systemPrompt,
         messages,
         workspaceDir: this.config.workspaceDir,
+        runDir,
         onText: wrappedOnText,
         onThinking: wrappedOnThinking,
         onThinkingStep: wrappedOnThinkingStep ? (step) => wrappedOnThinkingStep(step as ThinkingStep) : undefined,
@@ -1351,18 +1372,29 @@ export class MainAgent {
     );
   }
 
-  private async getSystemPrompt(): Promise<string> {
-    if (this.cachedSystemPrompt) return this.cachedSystemPrompt;
-    if (this.config.systemPrompt) {
+  /**
+   * Returns the cached base system prompt, optionally appended with a per-turn
+   * "Output Directory (STRICT)" block for the active direct-mode run. The base
+   * prompt is cached because it includes host-identity execs and SOUL/USER/TOOLS
+   * file reads; the runDir block changes every turn so it's appended on the fly
+   * rather than baked into the cache.
+   */
+  private async getSystemPrompt(runDir?: string): Promise<string> {
+    let base: string;
+    if (this.cachedSystemPrompt) {
+      base = this.cachedSystemPrompt;
+    } else if (this.config.systemPrompt) {
       this.cachedSystemPrompt = this.config.systemPrompt;
-      return this.cachedSystemPrompt;
+      base = this.cachedSystemPrompt;
+    } else {
+      const context: PromptContext = {
+        workspaceDir: this.config.workspaceDir,
+        activeWorkflow: this.orchestration.hasActiveWorkflow,
+      };
+      this.cachedSystemPrompt = await buildSystemPrompt(context);
+      base = this.cachedSystemPrompt;
     }
-    const context: PromptContext = {
-      workspaceDir: this.config.workspaceDir,
-      activeWorkflow: this.orchestration.hasActiveWorkflow,
-    };
-    this.cachedSystemPrompt = await buildSystemPrompt(context);
-    return this.cachedSystemPrompt;
+    return runDir ? base + buildRunDirBlock(runDir) : base;
   }
 
   /** Build messages from hot window only (sync, for non-conversational paths). */
