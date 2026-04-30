@@ -68,6 +68,17 @@ export class EventStreamer {
   }
 
   /**
+   * Determine the active session ID from connected clients.
+   * Falls back to defaultSessionId when no clients are connected.
+   */
+  private getActiveSessionId(): string {
+    for (const client of this.clients.values()) {
+      return client.sessionId;
+    }
+    return this.defaultSessionId;
+  }
+
+  /**
    * Register a client connection for event delivery.
    * @param client - The client connection to register.
    */
@@ -142,7 +153,7 @@ export class EventStreamer {
   private persistEvent(eventType: string, payload: Record<string, unknown>, workflowId?: string): number | undefined {
     if (!this.persistence) return undefined;
     try {
-      return this.persistence.appendEvent(this.defaultSessionId, eventType, payload, workflowId);
+      return this.persistence.appendEvent(this.getActiveSessionId(), eventType, payload, workflowId);
     } catch {
       // Non-fatal — event delivery continues even if persistence fails
       return undefined;
@@ -169,7 +180,7 @@ export class EventStreamer {
 
     // Buffer events when no clients are connected
     if (this.clients.size === 0 && this.sessionManager) {
-      this.sessionManager.bufferEvent(this.defaultSessionId, {
+      this.sessionManager.bufferEvent(this.getActiveSessionId(), {
         id: randomBytes(8).toString('hex'),
         type: 'event',
         workflowId,
@@ -244,7 +255,7 @@ export class EventStreamer {
 
     // Buffer DAG messages when no clients are connected
     if (this.clients.size === 0 && this.sessionManager) {
-      this.sessionManager.bufferEvent(this.defaultSessionId, msgWithSeq);
+      this.sessionManager.bufferEvent(this.getActiveSessionId(), msgWithSeq);
       return;
     }
 

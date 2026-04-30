@@ -866,16 +866,30 @@ export class WebSocketHandler {
    *
    * @param message - The message to send.
    */
-  broadcast(message: ServerMessage): void {
-    // Track state server-side for reconnection snapshots
-    const defaultSession = this.sessionManager.getDefaultSession();
-    if (defaultSession) {
-      this.trackMessageState(defaultSession.id, message);
+  /**
+   * Determine the active session ID from connected clients.
+   * In a single-user system, all clients share the same session.
+   * Falls back to default session when no clients are connected.
+   */
+  private getActiveSessionId(): string {
+    // Use the first connected client's session — single-user system
+    for (const conn of this.connections.values()) {
+      return conn.sessionId;
     }
+    // Fallback to default when no clients are connected
+    return this.sessionManager.getDefaultSession().id;
+  }
+
+  broadcast(message: ServerMessage): void {
+    // Determine the actual active session (not always default)
+    const activeSessionId = this.getActiveSessionId();
+
+    // Track state server-side for reconnection snapshots
+    this.trackMessageState(activeSessionId, message);
 
     // If no clients are connected, buffer the event for later delivery
-    if (this.connections.size === 0 && defaultSession) {
-      this.sessionManager.bufferEvent(defaultSession.id, message);
+    if (this.connections.size === 0) {
+      this.sessionManager.bufferEvent(activeSessionId, message);
       return;
     }
 
@@ -946,6 +960,17 @@ export class WebSocketHandler {
         }
         break;
       case 'text': {
+        // Persist completed (non-streaming) assistant text messages to the session
+        if (!message.streaming && message.done && message.content) {
+          this.storeSessionMessage(sessionId, {
+            id: message.id,
+            role: 'assistant',
+            content: message.content,
+            type: 'text',
+            replyToId: message.replyTo,
+            metadata: (message as unknown as Record<string, unknown>).metadata as Record<string, unknown> | undefined,
+          });
+        }
         // Track session totals from completed text messages with metadata
         const meta = (message as unknown as Record<string, unknown>).metadata as { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; costUsd?: number } | undefined;
         if (meta && !message.streaming && message.done && (meta.inputTokens || meta.outputTokens)) {
