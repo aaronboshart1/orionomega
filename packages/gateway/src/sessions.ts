@@ -82,7 +82,7 @@ export interface Message {
   role: 'user' | 'assistant' | 'system';
   content: string;
   timestamp: string;
-  type?: 'text' | 'plan' | 'orchestration-update' | 'command-result' | 'event' | 'dag-update' | 'workflow-result' | 'dag-dispatched' | 'dag-complete' | 'dag-confirmation' | 'direct-complete' | 'tool-call';
+  type?: 'text' | 'plan' | 'orchestration-update' | 'command-result' | 'event' | 'dag-update' | 'workflow-result' | 'dag-dispatched' | 'dag-complete' | 'dag-confirmation' | 'direct-complete' | 'tool-call' | 'gate-request';
   metadata?: Record<string, unknown> & {
     /** Model used for this response */
     model?: string;
@@ -166,6 +166,20 @@ export interface InlineDAGData {
   triggeringMessageId?: string;
 }
 
+/**
+ * A pending human-gate approval request tracked server-side so the
+ * structured Allow/Deny card survives page reloads. Mirrors the
+ * `gateRequest` payload broadcast over WebSocket.
+ */
+export interface PendingGateData {
+  gateId: string;
+  workflowId: string;
+  workflowName: string;
+  action: string;
+  description: string;
+  timestamp: string;
+}
+
 /** Cumulative session-level token/cost totals tracked server-side. */
 export interface SessionTotals {
   inputTokens: number;
@@ -219,6 +233,8 @@ interface SessionData {
   activePlan?: unknown;
   /** Current pending DAG confirmation awaiting user response. */
   pendingConfirmation?: unknown;
+  /** Outstanding human-gate approval requests, keyed by gateId. */
+  pendingGates?: Record<string, PendingGateData>;
 }
 
 /** Maximum memory events to persist per session. */
@@ -285,6 +301,8 @@ export interface Session {
   activePlan: unknown | null;
   /** Current pending DAG confirmation awaiting user response. */
   pendingConfirmation: unknown | null;
+  /** Outstanding human-gate approval requests, keyed by gateId. */
+  pendingGates: Record<string, PendingGateData>;
   /** Events buffered while no clients were connected — drained on reconnect. */
   eventBuffer: BufferedEvent[];
 }
@@ -455,6 +473,7 @@ export class SessionManager {
       sessionTotals: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, totalCostUsd: 0, messageCount: 0 },
       activePlan: null,
       pendingConfirmation: null,
+      pendingGates: {},
       eventBuffer: [],
     };
     this.sessions.set(id, session);
@@ -851,6 +870,31 @@ export class SessionManager {
   }
 
   /**
+   * Track a human-gate approval request server-side so the structured
+   * Allow/Deny card survives page reloads and reconnects.
+   */
+  setPendingGate(sessionId: string, gate: PendingGateData): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    session.pendingGates[gate.gateId] = gate;
+    session.updatedAt = new Date().toISOString();
+    this.schedulePersist(sessionId);
+  }
+
+  /**
+   * Drop a previously-tracked human-gate approval request once it has
+   * been resolved, timed out, or otherwise abandoned.
+   */
+  removePendingGate(sessionId: string, gateId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    if (!(gateId in session.pendingGates)) return;
+    delete session.pendingGates[gateId];
+    session.updatedAt = new Date().toISOString();
+    this.schedulePersist(sessionId);
+  }
+
+  /**
    * Buffer a ServerMessage when no clients are connected.
    * These will be drained and delivered on reconnect.
    */
@@ -899,6 +943,7 @@ export class SessionManager {
     session.sessionTotals = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, totalCostUsd: 0, messageCount: 0 };
     session.activePlan = null;
     session.pendingConfirmation = null;
+    session.pendingGates = {};
     session.eventBuffer.length = 0;
     session.updatedAt = new Date().toISOString();
     this.schedulePersist(sessionId);
@@ -1060,6 +1105,7 @@ export class SessionManager {
           sessionTotals: inMemSession?.sessionTotals,
           activePlan: inMemSession?.activePlan ?? null,
           pendingConfirmation: inMemSession?.pendingConfirmation ?? null,
+          pendingGates: inMemSession?.pendingGates ?? {},
           agentMode: inMemSession?.agentMode ?? 'orchestrate',
           activeWorkflows: [...(inMemSession?.activeWorkflows ?? [])],
           hindsightStatus: hindsightStatus ?? null,
@@ -1105,6 +1151,7 @@ export class SessionManager {
       sessionTotals: session.sessionTotals,
       activePlan: session.activePlan,
       pendingConfirmation: session.pendingConfirmation,
+      pendingGates: session.pendingGates,
       agentMode: session.agentMode ?? 'orchestrate',
       activeWorkflows: [...session.activeWorkflows],
       hindsightStatus: hindsightStatus ?? null,
@@ -1222,6 +1269,7 @@ export class SessionManager {
       sessionTotals: session.sessionTotals,
       activePlan: session.activePlan,
       pendingConfirmation: session.pendingConfirmation,
+      pendingGates: session.pendingGates,
     };
 
     const filePath = this.sessionFilePath(sessionId);
@@ -1317,6 +1365,7 @@ export class SessionManager {
             sessionTotals: data.sessionTotals ?? { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, totalCostUsd: 0, messageCount: 0 },
             activePlan: data.activePlan ?? null,
             pendingConfirmation: data.pendingConfirmation ?? null,
+            pendingGates: data.pendingGates ?? {},
             eventBuffer: [], // Event buffer is transient — not persisted to disk
           };
 
@@ -1504,6 +1553,7 @@ export class SessionManager {
       sessionTotals: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, totalCostUsd: 0, messageCount: 0 },
       activePlan: null,
       pendingConfirmation: null,
+      pendingGates: {},
       eventBuffer: [],
     };
     this.sessions.set(DEFAULT_SESSION_ID, session);

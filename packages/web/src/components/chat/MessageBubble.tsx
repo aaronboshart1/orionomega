@@ -127,22 +127,27 @@ export function MessageBubble({ message, onScrollToMessage }: MessageBubbleProps
   }
 
   if (type === 'gate-request' && dagId) {
-    const gate = pendingGates[dagId] ?? {
-      gateId: dagId,
-      workflowId: message.workflowId ?? '',
-      workflowName: '',
-      action: content.replace(/^Approval needed:\s*/, ''),
-      description: '',
-      timestamp: message.timestamp,
-    };
+    const gate = pendingGates[dagId];
+    // Only render the actionable Allow/Deny card when the server still
+    // has the gate as pending. Historical gate-request messages from a
+    // previous run/reload should not surface stale approval buttons.
+    if (gate) {
+      return (
+        <div className="my-3 flex justify-start">
+          <div className="max-w-[95%] md:max-w-[85%]">
+            <GateApprovalCard
+              gate={gate}
+              resolved={gate.resolved ?? null}
+              onRespond={respondToGate}
+            />
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="my-3 flex justify-start">
-        <div className="max-w-[95%] md:max-w-[85%]">
-          <GateApprovalCard
-            gate={gate}
-            resolved={gate.resolved ?? null}
-            onRespond={respondToGate}
-          />
+        <div className="max-w-[95%] rounded-2xl bg-zinc-800 px-4 py-2 text-xs text-zinc-400 md:max-w-[85%]">
+          {content.replace(/^Approval needed:\s*/, 'Approval was needed: ')} (resolved)
         </div>
       </div>
     );

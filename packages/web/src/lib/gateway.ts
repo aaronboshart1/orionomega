@@ -164,6 +164,7 @@ interface HistoryMessage {
   dagId?: string;
   metadata?: {
     workflowId?: string;
+    gateId?: string;
     background?: boolean;
     dagDispatch?: {
       workflowId: string;
@@ -214,13 +215,19 @@ function processHistoryWhenHydrated(history: HistoryMessage[]): void {
           || m.metadata?.dagDispatch?.workflowId
           || m.metadata?.dagComplete?.workflowId
           || m.metadata?.dagConfirm?.workflowId;
+        // Gate-request cards are keyed by gateId, not workflowId — preserve
+        // that so MessageBubble can look up pendingGates[dagId] correctly
+        // after a reload.
+        const dagId = m.type === 'gate-request'
+          ? (m.metadata?.gateId || m.dagId || wfId || undefined)
+          : (m.dagId || wfId || undefined);
         return {
           id: m.id,
           role: m.role as 'user' | 'assistant',
           content: m.content ?? '',
           timestamp: m.timestamp,
           type: m.type as ChatMessage['type'],
-          dagId: m.dagId || wfId || undefined,
+          dagId,
           workflowId: m.metadata?.workflowId,
           isBackground: m.metadata?.background,
         };
@@ -569,6 +576,36 @@ function rehydrateFromSnapshot(snapshot: any, bufferedEvents?: unknown[]): void 
     } catch (err) {
       sectionsFailed++;
       console.error('[gateway] Failed to rehydrate active plan', err);
+    }
+
+    // ── 6a. Rehydrate pending human-gate approvals ──────────────────────
+    // Persisted server-side so the structured Allow/Deny card survives
+    // page reloads while the backend gate is still waiting on a response.
+    try {
+      if (snapshot.pendingGates && typeof snapshot.pendingGates === 'object') {
+        for (const gate of Object.values(snapshot.pendingGates) as Array<{
+          gateId: string;
+          workflowId: string;
+          workflowName: string;
+          action: string;
+          description: string;
+          timestamp: string;
+        }>) {
+          if (!gate || !gate.gateId) continue;
+          orch.setPendingGate({
+            gateId: gate.gateId,
+            workflowId: gate.workflowId,
+            workflowName: gate.workflowName,
+            action: gate.action,
+            description: gate.description,
+            timestamp: gate.timestamp,
+          });
+        }
+      }
+      sectionsOk++;
+    } catch (err) {
+      sectionsFailed++;
+      console.error('[gateway] Failed to rehydrate pending gates', err);
     }
 
     // ── 6. Rehydrate pending confirmation ───────────────────────────────

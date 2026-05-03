@@ -845,6 +845,43 @@ async function initMainAgent(): Promise<void> {
     },
     onGateRequest(request) {
       const msgId = randomBytes(8).toString('hex');
+      // Persist the pending gate server-side so the structured Allow/Deny
+      // card rehydrates after a page reload (mirrors dag_confirm handling).
+      try {
+        sessionManager.setPendingGate(DEFAULT_SESSION_ID, {
+          gateId: request.gateId,
+          workflowId: request.workflowId,
+          workflowName: request.workflowName,
+          action: request.action,
+          description: request.description,
+          timestamp: request.timestamp,
+        });
+      } catch (err) {
+        log.warn('[gate:persist] Failed to persist pending gate', {
+          gateId: request.gateId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      // Persist a chat message for the gate so it appears in history on
+      // reload — keyed by gateId so client/server agree on dedup.
+      try {
+        sessionManager.addMessage(DEFAULT_SESSION_ID, {
+          id: `gate-${request.gateId}`,
+          role: 'assistant',
+          content: `Approval needed: ${request.action}`,
+          timestamp: request.timestamp || new Date().toISOString(),
+          type: 'gate-request',
+          metadata: {
+            workflowId: request.workflowId,
+            gateId: request.gateId,
+          },
+        });
+      } catch (err) {
+        log.warn('[gate:persist] Failed to persist gate chat message', {
+          gateId: request.gateId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
       eventStreamer.emitDAGMessage({
         id: msgId,
         type: 'gate_request',
@@ -854,6 +891,16 @@ async function initMainAgent(): Promise<void> {
     },
     onGateResolved(info) {
       const msgId = randomBytes(8).toString('hex');
+      // Authoritative cleanup: removes pending entry on every resolution
+      // path (approve/deny via UI, timeout, or expiry from the backend).
+      try {
+        sessionManager.removePendingGate(DEFAULT_SESSION_ID, info.gateId);
+      } catch (err) {
+        log.warn('[gate:persist] Failed to clear resolved gate', {
+          gateId: info.gateId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
       eventStreamer.emitDAGMessage({
         id: msgId,
         type: 'gate_resolved',

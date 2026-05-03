@@ -618,6 +618,15 @@ export class WebSocketHandler {
 
     if (this.mainAgent) {
       const approved = msg.gateAction === 'approve';
+      // Drop the persisted pending gate so it doesn't rehydrate on reload.
+      try {
+        this.sessionManager.removePendingGate(conn.sessionId, msg.gateId);
+      } catch (err) {
+        log.warn('[gate:persist] Failed to clear pending gate', {
+          gateId: msg.gateId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
       this.mainAgent
         .handleGateResponse(msg.gateId, approved)
         .catch((err) => {
@@ -697,6 +706,7 @@ export class WebSocketHandler {
         codingSession: inMemSession?.codingSession ?? null,
         activePlan: inMemSession?.activePlan ?? null,
         pendingConfirmation: inMemSession?.pendingConfirmation ?? null,
+        pendingGates: inMemSession?.pendingGates ?? {},
       } : undefined;
 
       this.send(conn.ws, {
