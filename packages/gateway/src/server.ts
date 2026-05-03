@@ -120,9 +120,15 @@ try {
 // Shared Services
 // ---------------------------------------------------------------------------
 
-const sessionManager = new SessionManager();
-const stateStore = new ServerSessionStore();
+// Construct PersistenceService first so it can be injected into the
+// SessionManager — without this, SessionManager.persistence stays null,
+// `sqliteEnabled` returns false, and PERSISTENCE_MODE='dual' silently
+// degrades to JSON-only (every dual-write branch is skipped). Verified
+// by /home/runner/.orionomega/omega.db having 0 rows in every table
+// while sessions/default.json had the full conversation.
 const persistenceService = new PersistenceService();
+const sessionManager = new SessionManager(persistenceService);
+const stateStore = new ServerSessionStore();
 const feedService = new FeedService(sessionManager);
 const activityService = new ActivityService();
 const commandHandler = new CommandHandler(sessionManager);
