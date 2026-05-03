@@ -197,10 +197,19 @@ agentSdk:
   # Enable the Claude Agent SDK for coding-agent workers. Default: true
   enabled: true
 
-  # Permission mode for the agent SDK.
+  # Permission mode for the agent SDK. This is the *floor* — OrionOmega also
+  # wires the SDK's `canUseTool` callback so any prompt the SDK still raises
+  # is answered programmatically by the orchestrator: tools in the per-call
+  # `allowedTools` list are allowed, anything matching `autonomous.humanGates`
+  # (substring match on tool name or input) is denied. A passive
+  # PermissionRequest hook also audits every escalation. Net effect: the SDK
+  # cannot hang on a permission prompt regardless of which mode is set here.
+  #
   #   'acceptEdits'       — auto-approve file edits (recommended for orchestration)
-  #   'bypassPermissions' — skip all permission prompts (use with care)
-  #   'default'           — prompt for each tool call
+  #   'bypassPermissions' — skip all permission prompts (use with care; no
+  #                         longer required to avoid hangs — `canUseTool`
+  #                         already handles that)
+  #   'default'           — prompt for each tool call (canUseTool will answer)
   # Default: acceptEdits
   permissionMode: acceptEdits
 

@@ -115,6 +115,30 @@ Each `AGENT` node spawns a worker — an isolated agent with:
 
 Workers report progress via `WorkerEvent` objects pushed to the Event Bus.
 
+### Agent SDK Bridge — Permission Handling
+
+`AGENT` and `CODING_AGENT` nodes are executed via the Claude Agent SDK
+through `orchestration/agent-sdk-bridge.ts`. Because the SDK runs
+headlessly inside our process, any permission prompt it raises has nowhere
+to go and would hang the node. The bridge applies a two-layer policy:
+
+1. **`agentSdk.permissionMode`** (default `acceptEdits`) is the floor — it
+   already auto-approves the common write paths.
+2. **`canUseTool`** is wired on every `query()` call and answers anything
+   the SDK still escalates: tools in the per-call `allowedTools` list are
+   allowed (input passes through unchanged); anything matching a keyword in
+   `autonomous.humanGates` (substring match against the tool name *and*
+   serialized input) is denied with a clear reason; tools missing from
+   `allowedTools` are denied. An aborted `signal` short-circuits to deny.
+
+A passive `PermissionRequest` hook is also registered on both call sites.
+It does not make a decision (`canUseTool` is the decision authority) — it
+just emits a structured warning so operators can see which prompts the SDK
+is actually raising. Every `canUseTool` decision is recorded through the
+same audit logger used by `auditToolInvocation`. The pure policy
+evaluator lives in `orchestration/permission-policy.ts` and is unit-tested
+in isolation.
+
 ### Node Types (`nodes/`)
 
 | Type | Purpose |

@@ -32,6 +32,10 @@ import {
 } from './abort-reason.js';
 import { getPortAvoidanceInstructions } from '../utils/port-restrictions.js';
 import { auditToolInvocation } from '../logging/audit.js';
+import {
+  buildCanUseTool,
+  buildPermissionRequestHook,
+} from './permission-policy.js';
 import { SkillLoader, SkillExecutor, readSkillConfig } from '@orionomega/skills-sdk';
 import type { SkillTool } from '@orionomega/skills-sdk';
 import path from 'node:path';
@@ -577,13 +581,32 @@ export async function executeAgent(
       );
     }
 
+    // Defense-in-depth: even with permissionMode='acceptEdits' as the floor,
+    // the SDK can still raise tool-permission requests for other tool kinds.
+    // Wire `canUseTool` so the orchestrator answers them programmatically
+    // (allowing what's already in allowedTools, denying anything that hits
+    // humanGates) and a passive PermissionRequest hook so we audit every
+    // escalation. See `./permission-policy.ts` for the policy module.
+    const agentAllowedTools = DEFAULT_AGENT_TOOLS;
+    const humanGates = config.autonomous?.humanGates;
+    const canUseTool = buildCanUseTool({
+      allowedTools: agentAllowedTools,
+      humanGates,
+      actor: 'agent',
+    });
+    const permissionRequestHook = buildPermissionRequestHook('agent');
+
     const queryResult = query({
       prompt: task,
       options: {
         model,
         cwd,
-        allowedTools: DEFAULT_AGENT_TOOLS,
+        allowedTools: agentAllowedTools,
         permissionMode,
+        canUseTool,
+        hooks: {
+          PermissionRequest: [{ hooks: [permissionRequestHook] }],
+        },
         // (queryRef wired below — needs queryResult to exist first)
         ...(permissionMode === 'bypassPermissions'
           ? { allowDangerouslySkipPermissions: true }
@@ -958,6 +981,18 @@ export async function executeCodingAgent(
       );
     }
 
+    // Defense-in-depth: see executeAgent for the rationale. canUseTool
+    // answers any tool-permission request the SDK raises against the per-call
+    // allowedTools + autonomous.humanGates; the PermissionRequest hook is
+    // passive audit only. See `./permission-policy.ts`.
+    const codingHumanGates = config.autonomous?.humanGates;
+    const codingCanUseTool = buildCanUseTool({
+      allowedTools,
+      humanGates: codingHumanGates,
+      actor: 'coding-agent',
+    });
+    const codingPermissionRequestHook = buildPermissionRequestHook('coding-agent');
+
     const queryResult = query({
       prompt: task,
       options: {
@@ -965,6 +1000,10 @@ export async function executeCodingAgent(
         cwd,
         allowedTools,
         permissionMode: codingPermissionMode,
+        canUseTool: codingCanUseTool,
+        hooks: {
+          PermissionRequest: [{ hooks: [codingPermissionRequestHook] }],
+        },
         ...(codingPermissionMode === 'bypassPermissions'
           ? { allowDangerouslySkipPermissions: true }
           : {}),
