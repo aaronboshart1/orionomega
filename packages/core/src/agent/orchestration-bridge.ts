@@ -618,8 +618,9 @@ ${userTask}`;
       maxRetries: this.config.maxRetries,
       checkpointInterval: 1,
       codingRepoDir: this.config.codingRepoDir,
-      humanGateCallback: async (action: string, description: string): Promise<boolean> => {
+      humanGateCallback: async (action: string, description: string, signal: AbortSignal): Promise<boolean> => {
         const gateId = randomBytes(8).toString('hex');
+        const timestamp = new Date().toISOString();
         return new Promise<boolean>((resolve) => {
           this.pendingGates.set(gateId, {
             gateId,
@@ -628,7 +629,33 @@ ${userTask}`;
             action,
             description,
             resolve,
-            timestamp: new Date().toISOString(),
+            timestamp,
+          });
+          // The policy aborts this signal whenever it stops waiting for the
+          // human (timeout, SDK abort, callback error). Drop the pending
+          // entry so stale prompts can't be resolved later via text-mode
+          // "allow/deny" commands or a late websocket reply.
+          const cleanup = (): void => {
+            if (this.pendingGates.delete(gateId)) {
+              resolve(false);
+            }
+          };
+          if (signal.aborted) {
+            cleanup();
+            return;
+          }
+          signal.addEventListener('abort', cleanup, { once: true });
+          // Structured event for clients that render approval prompts
+          // (Web UI, future TUI). The plain-text fallback below keeps the
+          // existing "reply allow/deny" command flow working for clients
+          // that don't render the structured event.
+          this.callbacks.onGateRequest?.({
+            gateId,
+            workflowId,
+            workflowName,
+            action,
+            description,
+            timestamp,
           });
           this.callbacks.onText(
             `⚠️ [${workflowName}] Approval needed: ${action} — ${description}\nGate ID: ${gateId}\nReply allow or deny`,

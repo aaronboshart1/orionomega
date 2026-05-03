@@ -169,6 +169,139 @@ describe('buildCanUseTool', () => {
     }
   });
 
+  it('(f) escalates a humanGates deny through the requestApproval callback and allows when approved', async () => {
+    const requestApproval = vi.fn(async () => true);
+    const canUse = buildCanUseTool({
+      allowedTools: ['DeleteThing'],
+      humanGates,
+      actor: 'agent',
+      requestApproval,
+    });
+    const { ctx } = makeCtx();
+    const result = await canUse('DeleteThing', { path: '/x' }, ctx);
+    expect(requestApproval).toHaveBeenCalledTimes(1);
+    expect(requestApproval.mock.calls[0][0]).toBe('DeleteThing');
+    expect(result.behavior).toBe('allow');
+  });
+
+  it('(g) preserves the deny when the human declines', async () => {
+    const requestApproval = vi.fn(async () => false);
+    const canUse = buildCanUseTool({
+      allowedTools: ['DeleteThing'],
+      humanGates,
+      actor: 'agent',
+      requestApproval,
+    });
+    const { ctx } = makeCtx();
+    const result = await canUse('DeleteThing', {}, ctx);
+    expect(result.behavior).toBe('deny');
+    if (result.behavior === 'deny') {
+      expect(result.message).toMatch(/denied by human/);
+    }
+  });
+
+  it('(h) falls back to deny when the approval callback exceeds the timeout', async () => {
+    const requestApproval = vi.fn(
+      () => new Promise<boolean>(() => { /* never resolves */ }),
+    );
+    const canUse = buildCanUseTool({
+      allowedTools: ['DeleteThing'],
+      humanGates,
+      actor: 'agent',
+      requestApproval,
+      approvalTimeoutMs: 25,
+    });
+    const { ctx } = makeCtx();
+    const result = await canUse('DeleteThing', {}, ctx);
+    expect(result.behavior).toBe('deny');
+    if (result.behavior === 'deny') {
+      expect(result.message).toMatch(/no human response/);
+    }
+  });
+
+  it('(i) does not escalate when no requestApproval callback is wired (autonomous default)', async () => {
+    const canUse = buildCanUseTool({
+      allowedTools: ['DeleteThing'],
+      humanGates,
+      actor: 'agent',
+    });
+    const { ctx } = makeCtx();
+    const result = await canUse('DeleteThing', {}, ctx);
+    expect(result.behavior).toBe('deny');
+    if (result.behavior === 'deny') {
+      expect(result.message).toMatch(/humanGates/);
+      expect(result.message).not.toMatch(/approved by human/);
+      expect(result.message).not.toMatch(/denied by human/);
+    }
+  });
+
+  it('(j) does not escalate allow-list denials — only humanGates denials are escalated', async () => {
+    const requestApproval = vi.fn(async () => true);
+    const canUse = buildCanUseTool({
+      // 'Task' is not in the allow-list, so it should deny without ever
+      // consulting the human callback (allow-list errors are config issues,
+      // not gated actions).
+      allowedTools: ['Read'],
+      humanGates,
+      actor: 'agent',
+      requestApproval,
+    });
+    const { ctx } = makeCtx();
+    const result = await canUse('Task', {}, ctx);
+    expect(requestApproval).not.toHaveBeenCalled();
+    expect(result.behavior).toBe('deny');
+  });
+
+  it('(k) cancels the pending approval prompt when the SDK abort fires mid-wait', async () => {
+    let resolveApproval: ((v: boolean) => void) | undefined;
+    const requestApproval = vi.fn(
+      () => new Promise<boolean>((res) => { resolveApproval = res; }),
+    );
+    const canUse = buildCanUseTool({
+      allowedTools: ['DeleteThing'],
+      humanGates,
+      actor: 'agent',
+      requestApproval,
+      approvalTimeoutMs: 60_000,
+    });
+    const { controller, ctx } = makeCtx();
+    const p = canUse('DeleteThing', {}, ctx);
+    // Abort while the human is still "thinking".
+    setTimeout(() => controller.abort(), 5);
+    const result = await p;
+    expect(result.behavior).toBe('deny');
+    if (result.behavior === 'deny') {
+      expect(result.message).toMatch(/cancelled while awaiting approval/);
+    }
+    // Late resolution must not throw.
+    resolveApproval?.(true);
+  });
+
+  it('(l) signals the requestApproval callback when the policy stops waiting (timeout/abort)', async () => {
+    // Captures the cleanup signal so we can assert the policy fires it on
+    // timeout/abort. Bridge uses this to drop stale pendingGates entries.
+    const captured: { signal?: AbortSignal } = {};
+    const requestApproval = vi.fn(
+      (_tool: string, _reason: string, signal: AbortSignal) =>
+        new Promise<boolean>(() => {
+          captured.signal = signal;
+        }),
+    );
+
+    const canUse = buildCanUseTool({
+      allowedTools: ['DeleteThing'],
+      humanGates,
+      actor: 'agent',
+      requestApproval,
+      approvalTimeoutMs: 25,
+    });
+    const { ctx } = makeCtx();
+    const result = await canUse('DeleteThing', {}, ctx);
+    expect(result.behavior).toBe('deny');
+    expect(captured.signal).toBeDefined();
+    expect(captured.signal!.aborted).toBe(true);
+  });
+
   it('(d) short-circuits to deny when the signal is already aborted', async () => {
     // Spy via a humanGates value that would otherwise *allow* (no match)
     // to prove the policy was not consulted — the deny reason must be the

@@ -104,7 +104,39 @@ export interface CanUseToolFactoryOptions {
   humanGates: readonly string[] | undefined;
   /** Optional context tag for audit entries (e.g. 'agent', 'coding-agent'). */
   actor?: string;
+  /**
+   * Optional human-in-the-loop approval callback. When the policy would deny
+   * a tool because of `humanGates`, this callback is invoked with the tool
+   * name, the policy's deny reason, and an `AbortSignal` that fires whenever
+   * the policy stops waiting for an answer (timeout, SDK abort, callback
+   * error). Implementations should listen for `signal.abort` and clean up
+   * any UI/pending-request state so prompts don't leak past the moment the
+   * policy has already moved on.
+   *
+   * Returning `true` overrides the deny and allows the tool through;
+   * returning `false` (or rejecting / timing out) preserves the original
+   * deny. When this option is `undefined` the policy behaviour is
+   * unchanged: every gated tool is denied automatically (the
+   * autonomous-mode default).
+   */
+  requestApproval?: (
+    toolName: string,
+    reason: string,
+    signal: AbortSignal,
+  ) => Promise<boolean>;
+  /**
+   * How long to wait for `requestApproval` to resolve before falling back to
+   * deny. Defaults to 5 minutes. Ignored when `requestApproval` is not set.
+   */
+  approvalTimeoutMs?: number;
 }
+
+/**
+ * Default approval timeout. Long enough that a human reviewer can read the
+ * prompt and respond; short enough that an unattended workflow doesn't sit
+ * forever waiting for a human who isn't there.
+ */
+export const DEFAULT_APPROVAL_TIMEOUT_MS = 5 * 60 * 1000;
 
 /**
  * Build the SDK's `canUseTool` callback. The callback:
@@ -120,7 +152,8 @@ export interface CanUseToolFactoryOptions {
  * rewriting tool inputs, just gating them.
  */
 export function buildCanUseTool(options: CanUseToolFactoryOptions): CanUseTool {
-  const { allowedTools, humanGates, actor } = options;
+  const { allowedTools, humanGates, actor, requestApproval } = options;
+  const approvalTimeoutMs = options.approvalTimeoutMs ?? DEFAULT_APPROVAL_TIMEOUT_MS;
 
   return async (toolName, toolInput, ctx) => {
     const { signal, toolUseID, agentID } = ctx;
@@ -145,6 +178,58 @@ export function buildCanUseTool(options: CanUseToolFactoryOptions): CanUseTool {
       humanGates,
     });
 
+    // If the policy would deny purely because of a humanGates match AND a
+    // human-in-the-loop callback is wired, give the user a chance to
+    // approve. Allow-list denials are *not* escalated — those are
+    // configuration errors, not gated actions.
+    if (
+      result.decision === 'deny' &&
+      requestApproval &&
+      isHumanGateDeny(result.reason)
+    ) {
+      logPermissionDecision({
+        toolName,
+        decision: 'deny',
+        reason: `${result.reason} — requesting human approval`,
+        toolUseID,
+        agentID,
+        actor,
+      });
+
+      const approval = await requestApprovalWithTimeout({
+        requestApproval,
+        toolName,
+        reason: result.reason,
+        timeoutMs: approvalTimeoutMs,
+        signal,
+      });
+
+      const finalReason =
+        approval.outcome === 'approved'
+          ? `${result.reason} — approved by human`
+          : approval.outcome === 'denied'
+            ? `${result.reason} — denied by human`
+            : approval.outcome === 'timeout'
+              ? `${result.reason} — no human response within ${approvalTimeoutMs}ms`
+              : approval.outcome === 'aborted'
+                ? `${result.reason} — cancelled while awaiting approval`
+                : `${result.reason} — approval callback failed: ${approval.error}`;
+
+      logPermissionDecision({
+        toolName,
+        decision: approval.outcome === 'approved' ? 'allow' : 'deny',
+        reason: finalReason,
+        toolUseID,
+        agentID,
+        actor,
+      });
+
+      if (approval.outcome === 'approved') {
+        return { behavior: 'allow', updatedInput: toolInput, toolUseID };
+      }
+      return { behavior: 'deny', message: finalReason, toolUseID };
+    }
+
     logPermissionDecision({
       toolName,
       decision: result.decision,
@@ -160,6 +245,82 @@ export function buildCanUseTool(options: CanUseToolFactoryOptions): CanUseTool {
 
     return { behavior: 'deny', message: result.reason, toolUseID };
   };
+}
+
+/**
+ * Returns true when the policy deny reason was produced by a humanGates
+ * match (and therefore a candidate for human override). Allow-list denies
+ * are not escalated — see {@link evaluatePermission}.
+ */
+function isHumanGateDeny(reason: string): boolean {
+  return reason.includes('humanGates pattern');
+}
+
+type ApprovalOutcome =
+  | { outcome: 'approved' }
+  | { outcome: 'denied' }
+  | { outcome: 'timeout' }
+  | { outcome: 'aborted' }
+  | { outcome: 'error'; error: string };
+
+/**
+ * Race the user's approval callback against a wall-clock timeout and the
+ * SDK's abort signal. Any of (callback resolves false, callback throws,
+ * timer fires, signal aborts) collapses to a deny — the SDK is never
+ * left waiting on a human who isn't going to respond.
+ */
+async function requestApprovalWithTimeout(args: {
+  requestApproval: (toolName: string, reason: string, signal: AbortSignal) => Promise<boolean>;
+  toolName: string;
+  reason: string;
+  timeoutMs: number;
+  signal: AbortSignal;
+}): Promise<ApprovalOutcome> {
+  const { requestApproval, toolName, reason, timeoutMs, signal } = args;
+
+  // A second AbortController so we can notify the requestApproval callback
+  // whenever the policy stops waiting (timeout, upstream abort, callback
+  // error). This lets implementations clean up any pending-prompt state
+  // they kept on our behalf.
+  const cleanupController = new AbortController();
+
+  return new Promise<ApprovalOutcome>((resolve) => {
+    let settled = false;
+    const settle = (outcome: ApprovalOutcome): void => {
+      if (settled) return;
+      settled = true;
+      if (timer !== null) clearTimeout(timer);
+      if (abortHandler) signal.removeEventListener('abort', abortHandler);
+      // Only abort the cleanup controller for non-approved outcomes — the
+      // approved branch has already produced a value via resolveGate, no
+      // need to re-signal cancellation.
+      if (outcome.outcome !== 'approved' && !cleanupController.signal.aborted) {
+        cleanupController.abort();
+      }
+      resolve(outcome);
+    };
+
+    const abortHandler = (): void => settle({ outcome: 'aborted' });
+    if (signal.aborted) {
+      cleanupController.abort();
+      resolve({ outcome: 'aborted' });
+      return;
+    }
+    signal.addEventListener('abort', abortHandler);
+
+    const timer: ReturnType<typeof setTimeout> | null =
+      timeoutMs > 0 && Number.isFinite(timeoutMs)
+        ? setTimeout(() => settle({ outcome: 'timeout' }), timeoutMs)
+        : null;
+    timer?.unref?.();
+
+    Promise.resolve()
+      .then(() => requestApproval(toolName, reason, cleanupController.signal))
+      .then(
+        (approved) => settle({ outcome: approved ? 'approved' : 'denied' }),
+        (err) => settle({ outcome: 'error', error: err instanceof Error ? err.message : String(err) }),
+      );
+  });
 }
 
 interface DecisionLogFields {

@@ -843,6 +843,15 @@ async function initMainAgent(): Promise<void> {
         });
       }
     },
+    onGateRequest(request) {
+      const msgId = randomBytes(8).toString('hex');
+      eventStreamer.emitDAGMessage({
+        id: msgId,
+        type: 'gate_request',
+        workflowId: request.workflowId,
+        gateRequest: request,
+      });
+    },
     onDAGConfirm(confirm) {
       const msgId = randomBytes(8).toString('hex');
       const now = new Date().toISOString();

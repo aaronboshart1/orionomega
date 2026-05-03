@@ -134,6 +134,12 @@ export class WorkerProcess {
   private lastToolName?: string;
   /** Optional callback invoked when this worker self-aborts on its own timeout. */
   private readonly onTimeout?: (lastTool?: string) => void;
+  /**
+   * Optional human-in-the-loop approval callback forwarded into the Agent
+   * SDK's `canUseTool`. When unset, gated tools are auto-denied (autonomous
+   * default). When set, the user is asked whether to allow the gated tool.
+   */
+  private readonly humanGateCallback?: (action: string, description: string, signal: AbortSignal) => Promise<boolean>;
 
   constructor(
     node: WorkflowNode,
@@ -145,6 +151,7 @@ export class WorkerProcess {
       workflowId?: string;
       runDir?: string;
       onTimeout?: (lastTool?: string) => void;
+      humanGateCallback?: (action: string, description: string, signal: AbortSignal) => Promise<boolean>;
     },
   ) {
     this.node = node;
@@ -155,6 +162,7 @@ export class WorkerProcess {
     this.workflowId = options.workflowId;
     this.runDir = options.runDir;
     this.onTimeout = options.onTimeout;
+    this.humanGateCallback = options.humanGateCallback;
   }
 
   /**
@@ -443,6 +451,7 @@ export class WorkerProcess {
       skillIds: agentConfig.skillIds,
       tokenBudget,
       abortSignal: this.abortController.signal,
+      ...(this.humanGateCallback ? { humanGateCallback: this.humanGateCallback } : {}),
       onProgress: (event) => {
         if (event.type === 'tool_call') {
           heartbeatToolCalls++;

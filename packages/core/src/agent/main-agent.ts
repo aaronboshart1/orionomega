@@ -111,6 +111,26 @@ export interface MainAgentCallbacks {
 
   /** Granular memory operation event for live activity feed. */
   onMemoryEvent?: (event: MemoryEvent) => void;
+
+  /**
+   * Emitted when an Agent SDK tool call is paused awaiting human approval
+   * because of a `humanGates` policy match. Renderers should surface a
+   * structured approve/deny prompt; the user's answer is routed back via
+   * MainAgent.handleGateResponse(gateId, approved).
+   */
+  onGateRequest?: (request: GateRequestInfo) => void;
+}
+
+/** Payload describing a single human-gate approval prompt. */
+export interface GateRequestInfo {
+  gateId: string;
+  workflowId: string;
+  workflowName: string;
+  /** Tool name (or action verb) the agent is asking to run. */
+  action: string;
+  /** Human-readable reason — typically the policy's deny message. */
+  description: string;
+  timestamp: string;
 }
 
 export interface MemoryEvent {
@@ -685,6 +705,22 @@ export class MainAgent {
       const msg = err instanceof Error ? err.message : String(err);
       log.error('handleDAGResponse error', { error: msg });
       this.callbacks.onText(`Error handling DAG response: ${msg}`, false, true);
+    }
+  }
+
+  /**
+   * Handle a structured human-gate approval response from the gateway.
+   * Mirrors handleDAGResponse's contract — gateway calls this when a client
+   * sends a `gate_response` message with the gateId returned in the
+   * matching `gate_request` event.
+   */
+  async handleGateResponse(gateId: string, approved: boolean): Promise<void> {
+    try {
+      this.orchestration.resolveGate(gateId, approved);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log.error('handleGateResponse error', { error: msg });
+      this.callbacks.onText(`Error handling gate response: ${msg}`, false, true);
     }
   }
 

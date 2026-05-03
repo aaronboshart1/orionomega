@@ -226,7 +226,7 @@ export interface ExecutorConfig {
   /** Callback for re-planning on failure. */
   replanCallback?: (failedNode: WorkflowNode, error: string, originalTask: string) => Promise<WorkflowNode[] | null>;
   /** Callback for human gate approval. */
-  humanGateCallback?: (action: string, description: string) => Promise<boolean>;
+  humanGateCallback?: (action: string, description: string, signal: AbortSignal) => Promise<boolean>;
   /** Original task description (for re-planning context). */
   task?: string;
   /** Callback for memory I/O events (forwarded to HindsightClient.onIO). */
@@ -792,6 +792,12 @@ export class GraphExecutor {
               ...(lastTool ? { lastTool } : {}),
             });
           },
+          // Forward the human-gate approval callback so the Agent SDK's
+          // canUseTool can ask the user instead of auto-denying — see
+          // permission-policy.ts (`requestApproval`) for the policy.
+          ...(this.config.humanGateCallback
+            ? { humanGateCallback: this.config.humanGateCallback }
+            : {}),
         });
         this.activeWorkers.set(node.id, worker);
 
@@ -966,6 +972,10 @@ export class GraphExecutor {
             },
             codingAbort.signal,
             this.getRunDir(),
+            // Forward the human-gate approval callback so the coding agent's
+            // canUseTool can ask the user for one-off approval rather than
+            // auto-denying gated tools. See permission-policy.ts.
+            this.config.humanGateCallback,
           );
 
           if (this.stopRequested) {
@@ -1611,7 +1621,10 @@ export class GraphExecutor {
 
     if (this.config.humanGateCallback) {
       this.emitOrchestrator('status', `🚧 Human gate: "${action}" — awaiting approval`, { action, description, workflowId: this.graph.id });
-      return this.config.humanGateCallback(action, description);
+      // DAG-level gate has no SDK abort signal to forward; pass a signal
+      // that never aborts so the bridge keeps the entry until the human
+      // (or the bridge itself) resolves it.
+      return this.config.humanGateCallback(action, description, new AbortController().signal);
     }
 
     // No callback configured — deny gated actions by default

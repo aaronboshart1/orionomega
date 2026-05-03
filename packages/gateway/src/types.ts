@@ -25,7 +25,7 @@ export interface ClientConnection {
 /** Client → Gateway message envelope. */
 export interface ClientMessage {
   id: string;
-  type: 'chat' | 'command' | 'plan_response' | 'subscribe' | 'dag_response' | 'ping' | 'file_read' | 'init' | 'client_state';
+  type: 'chat' | 'command' | 'plan_response' | 'subscribe' | 'dag_response' | 'gate_response' | 'ping' | 'file_read' | 'init' | 'client_state';
   /** Session ID for reconnection — sent with 'init' message. */
   sessionId?: string;
   /** Last event sequence number seen by this client (sent with 'init' for delta sync). */
@@ -54,6 +54,10 @@ export interface ClientMessage {
   replyToRole?: string;
   /** DAG/workflow ID associated with the referenced message. */
   replyToDagId?: string;
+  /** Gate ID being approved/denied — sent with `gate_response`. */
+  gateId?: string;
+  /** Approve or deny a pending tool-permission gate. */
+  gateAction?: 'approve' | 'deny';
   /** File attachments sent with the message. */
   attachments?: { name: string; size: number; type: string; data?: string; textContent?: string }[];
   /**
@@ -174,6 +178,7 @@ export interface ServerMessage {
     | 'text' | 'thinking' | 'thinking_step' | 'plan' | 'event' | 'status'
     | 'command_result' | 'session_status' | 'error' | 'ack' | 'history'
     | 'dag_dispatched' | 'dag_progress' | 'dag_complete' | 'dag_confirm'
+    | 'gate_request'
     | 'pong' | 'file_content'
     | 'hindsight_status' | 'memory_event' | 'memory_history'
     | 'coding_event'
@@ -258,6 +263,22 @@ export interface ServerMessage {
     estimatedTime: number;
     nodes: Array<{ id: string; label: string; type: string }>;
     guardedActions: string[];
+  };
+  /**
+   * Human-gate approval prompt. Present when `type === 'gate_request'`.
+   * Emitted whenever the Agent SDK pauses a tool call awaiting human
+   * approval; the client renders an approve/deny prompt and sends a
+   * `gate_response` message back with the matching `gateId`.
+   */
+  gateRequest?: {
+    gateId: string;
+    workflowId: string;
+    workflowName: string;
+    /** Tool name (or action verb) the agent is asking to run. */
+    action: string;
+    /** Human-readable reason — typically the policy's deny message. */
+    description: string;
+    timestamp: string;
   };
 
   /** Coding Mode lifecycle event. Present when `type === 'coding_event'`. */

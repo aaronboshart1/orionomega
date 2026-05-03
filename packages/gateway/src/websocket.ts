@@ -368,6 +368,9 @@ export class WebSocketHandler {
       case 'dag_response':
         this.handleDAGResponse(conn, msg);
         break;
+      case 'gate_response':
+        this.handleGateResponse(conn, msg);
+        break;
       case 'subscribe':
         this.handleSubscribe(conn, msg);
         break;
@@ -598,6 +601,38 @@ export class WebSocketHandler {
         id: randomBytes(8).toString('hex'),
         type: 'ack',
         content: `DAG response (${msg.dagAction}) received. Agent not connected or missing fields.`,
+      });
+    }
+  }
+
+  /** Handle a human-gate approval response (approve/deny for tool-permission gates). */
+  private handleGateResponse(conn: ClientConnection, msg: ClientMessage): void {
+    if (!msg.gateId || !msg.gateAction) {
+      this.send(conn.ws, {
+        id: randomBytes(8).toString('hex'),
+        type: 'error',
+        error: 'gate_response requires gateId and gateAction',
+      });
+      return;
+    }
+
+    if (this.mainAgent) {
+      const approved = msg.gateAction === 'approve';
+      this.mainAgent
+        .handleGateResponse(msg.gateId, approved)
+        .catch((err) => {
+          log.error('MainAgent.handleGateResponse error', { error: err instanceof Error ? err.message : String(err) });
+          this.send(conn.ws, {
+            id: randomBytes(8).toString('hex'),
+            type: 'error',
+            error: 'Internal gate response error',
+          });
+        });
+    } else {
+      this.send(conn.ws, {
+        id: randomBytes(8).toString('hex'),
+        type: 'ack',
+        content: `Gate response (${msg.gateAction}) received. Agent not connected.`,
       });
     }
   }

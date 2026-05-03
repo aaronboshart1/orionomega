@@ -199,6 +199,14 @@ export interface AgentExecutionConfig {
   outputFormat?: { type: 'json_schema'; schema: Record<string, unknown> };
   /** Run output directory for this workflow. Injected as ORIONOMEGA_RUN_DIR env var. */
   runDir?: string;
+  /**
+   * Optional human-in-the-loop approval callback. When supplied, any tool
+   * the policy would deny because of an `autonomous.humanGates` match is
+   * surfaced to the human first; their answer is forwarded into the SDK's
+   * `canUseTool` response. Without a callback the policy keeps its
+   * autonomous-default deny behaviour. See `permission-policy.ts`.
+   */
+  humanGateCallback?: (action: string, description: string, signal: AbortSignal) => Promise<boolean>;
 }
 
 /** Result of an AGENT node execution via the Agent SDK. */
@@ -593,6 +601,12 @@ export async function executeAgent(
       allowedTools: agentAllowedTools,
       humanGates,
       actor: 'agent',
+      ...(options.humanGateCallback
+        ? {
+            requestApproval: (toolName, reason, signal) =>
+              options.humanGateCallback!(toolName, reason, signal),
+          }
+        : {}),
     });
     const permissionRequestHook = buildPermissionRequestHook('agent');
 
@@ -828,6 +842,13 @@ export async function executeCodingAgent(
   onProgress?: (event: { type: string; message: string; progress?: number; thinking?: string }) => void,
   abortSignal?: AbortSignal,
   runDir?: string,
+  /**
+   * Optional human-in-the-loop approval callback. Same contract as
+   * `AgentExecutionConfig.humanGateCallback` — see that doc-comment for the
+   * full rationale. Threaded into `buildCanUseTool` so the SDK's `canUseTool`
+   * response carries the human's decision instead of an automatic deny.
+   */
+  humanGateCallback?: (action: string, description: string, signal: AbortSignal) => Promise<boolean>,
 ): Promise<CodingAgentResult> {
   const config = readConfig();
   const sdkConfig = config.agentSdk;
@@ -990,6 +1011,12 @@ export async function executeCodingAgent(
       allowedTools,
       humanGates: codingHumanGates,
       actor: 'coding-agent',
+      ...(humanGateCallback
+        ? {
+            requestApproval: (toolName, reason, signal) =>
+              humanGateCallback(toolName, reason, signal),
+          }
+        : {}),
     });
     const codingPermissionRequestHook = buildPermissionRequestHook('coding-agent');
 

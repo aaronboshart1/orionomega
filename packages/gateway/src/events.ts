@@ -247,6 +247,7 @@ export class EventStreamer {
         dagProgress: message.dagProgress,
         dagComplete: message.dagComplete,
         dagConfirm: message.dagConfirm,
+        gateRequest: message.gateRequest,
       },
       message.workflowId,
     );
