@@ -638,6 +638,15 @@ ${userTask}`;
           const cleanup = (): void => {
             if (this.pendingGates.delete(gateId)) {
               resolve(false);
+              // Notify clients so any rendered approval card can clear
+              // itself instead of sitting stale on screen waiting for a
+              // response the backend will never accept.
+              this.callbacks.onGateResolved?.({
+                gateId,
+                workflowId,
+                resolution: 'expired',
+                timestamp: new Date().toISOString(),
+              });
             }
           };
           if (signal.aborted) {
@@ -971,6 +980,14 @@ ${userTask}`;
       `${approved ? '✅' : '❌'} Gate ${gate.action} [${gate.workflowName}]: ${approved ? 'approved' : 'denied'}`,
       false, true,
     );
+    // Broadcast resolution so any other connected clients (or replays) can
+    // finalize the matching approval card instead of leaving it pending.
+    this.callbacks.onGateResolved?.({
+      gateId,
+      workflowId: gate.workflowId,
+      resolution: approved ? 'approved' : 'denied',
+      timestamp: new Date().toISOString(),
+    });
   }
 
   /** Return all pending gate requests as an array. */

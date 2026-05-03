@@ -179,6 +179,7 @@ export interface ServerMessage {
     | 'command_result' | 'session_status' | 'error' | 'ack' | 'history'
     | 'dag_dispatched' | 'dag_progress' | 'dag_complete' | 'dag_confirm'
     | 'gate_request'
+    | 'gate_resolved'
     | 'pong' | 'file_content'
     | 'hindsight_status' | 'memory_event' | 'memory_history'
     | 'coding_event'
@@ -278,6 +279,19 @@ export interface ServerMessage {
     action: string;
     /** Human-readable reason — typically the policy's deny message. */
     description: string;
+    timestamp: string;
+  };
+
+  /**
+   * Resolution of a previously emitted `gate_request`. Present when
+   * `type === 'gate_resolved'`. `resolution: 'expired'` indicates the
+   * backend aborted/timed out the gate without a user response, so any
+   * approval card on screen should be cleared.
+   */
+  gateResolved?: {
+    gateId: string;
+    workflowId: string;
+    resolution: 'approved' | 'denied' | 'expired';
     timestamp: string;
   };
 

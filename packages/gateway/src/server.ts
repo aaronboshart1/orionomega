@@ -852,6 +852,15 @@ async function initMainAgent(): Promise<void> {
         gateRequest: request,
       });
     },
+    onGateResolved(info) {
+      const msgId = randomBytes(8).toString('hex');
+      eventStreamer.emitDAGMessage({
+        id: msgId,
+        type: 'gate_resolved',
+        workflowId: info.workflowId,
+        gateResolved: info,
+      });
+    },
     onDAGConfirm(confirm) {
       const msgId = randomBytes(8).toString('hex');
       const now = new Date().toISOString();

@@ -187,7 +187,7 @@ export interface PendingGate {
   action: string;
   description: string;
   timestamp: string;
-  resolved?: 'approved' | 'denied';
+  resolved?: 'approved' | 'denied' | 'expired';
 }
 
 export interface WorkflowData {
@@ -228,7 +228,7 @@ interface OrchestrationStore {
   removeInlineDAG: (dagId: string) => void;
   setPendingConfirmation: (c: DAGConfirmation | null) => void;
   setPendingGate: (gate: PendingGate) => void;
-  resolvePendingGate: (gateId: string, resolution: 'approved' | 'denied') => void;
+  resolvePendingGate: (gateId: string, resolution: 'approved' | 'denied' | 'expired') => void;
   removePendingGate: (gateId: string) => void;
   setOrchPaneOpen: (open: boolean) => void;
   clearScrollToDagId: () => void;

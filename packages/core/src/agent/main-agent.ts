@@ -119,6 +119,15 @@ export interface MainAgentCallbacks {
    * MainAgent.handleGateResponse(gateId, approved).
    */
   onGateRequest?: (request: GateRequestInfo) => void;
+
+  /**
+   * Emitted when a previously requested human gate has been resolved on
+   * the backend — either by an explicit user response (`approved`/`denied`)
+   * or because the underlying signal aborted (`expired`). Renderers should
+   * use this to clear or finalize any approval prompt UI so stale cards
+   * don't sit on screen after the agent has moved on.
+   */
+  onGateResolved?: (info: GateResolvedInfo) => void;
 }
 
 /** Payload describing a single human-gate approval prompt. */
@@ -130,6 +139,15 @@ export interface GateRequestInfo {
   action: string;
   /** Human-readable reason — typically the policy's deny message. */
   description: string;
+  timestamp: string;
+}
+
+/** Payload describing the resolution of a previously requested human gate. */
+export interface GateResolvedInfo {
+  gateId: string;
+  workflowId: string;
+  /** How the gate was resolved. `expired` means the backend aborted/timed out. */
+  resolution: 'approved' | 'denied' | 'expired';
   timestamp: string;
 }
 

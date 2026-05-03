@@ -5,12 +5,20 @@ import type { PendingGate } from '@/stores/orchestration';
 
 interface GateApprovalCardProps {
   gate: PendingGate;
-  resolved?: 'approved' | 'denied' | null;
+  resolved?: 'approved' | 'denied' | 'expired' | null;
   onRespond: (gateId: string, approved: boolean) => void;
 }
 
 export function GateApprovalCard({ gate, resolved, onRespond }: GateApprovalCardProps) {
-  const isResolved = resolved === 'approved' || resolved === 'denied';
+  const isResolved =
+    resolved === 'approved' || resolved === 'denied' || resolved === 'expired';
+  const resolvedLabel =
+    resolved === 'approved' ? 'Approved'
+      : resolved === 'denied' ? 'Denied'
+        : resolved === 'expired' ? 'Expired — no response needed'
+          : '';
+  const resolvedClass =
+    resolved === 'approved' ? 'text-green-400' : 'text-zinc-500';
 
   return (
     <div className="rounded-xl border border-yellow-500/30 bg-zinc-800/80 p-4">
@@ -28,12 +36,8 @@ export function GateApprovalCard({ gate, resolved, onRespond }: GateApprovalCard
       <p className="mb-3 text-xs text-zinc-400">{gate.description}</p>
 
       {isResolved ? (
-        <div
-          className={`text-xs font-medium ${
-            resolved === 'approved' ? 'text-green-400' : 'text-zinc-500'
-          }`}
-        >
-          {resolved === 'approved' ? 'Approved' : 'Denied'}
+        <div className={`text-xs font-medium ${resolvedClass}`}>
+          {resolvedLabel}
         </div>
       ) : (
         <div className="flex items-center gap-2">

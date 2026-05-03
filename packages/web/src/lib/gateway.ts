@@ -1098,6 +1098,16 @@ function bindListeners(ws: ReconnectingWebSocket): void {
         });
         break;
       }
+      case 'gate_resolved': {
+        const gr = msg.gateResolved;
+        if (!gr) break;
+        // Mark the card as resolved (approved/denied/expired) so it
+        // visibly reflects its final state and can no longer be acted on.
+        // Using resolvePendingGate (rather than removePendingGate) keeps
+        // the card mounted with a clear status badge instead of vanishing.
+        orch.resolvePendingGate(gr.gateId, gr.resolution);
+        break;
+      }
       case 'gate_request': {
         const gr = msg.gateRequest;
         if (!gr) break;
