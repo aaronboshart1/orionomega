@@ -109,6 +109,8 @@ export interface InlineDAG {
   toolCallCount?: number;
   modelUsage?: ModelUsageEntry[];
   nodeOutputPaths?: Record<string, string[]>;
+  /** True when this entry represents a Direct-mode conversation turn (not a multi-node DAG). */
+  isDirect?: boolean;
 }
 
 export interface MemoryEvent {
@@ -371,10 +373,24 @@ export const useOrchestrationStore = create<OrchestrationStore>()((set) => ({
         [wfId]: existing,
       };
       const newActiveId = isNew ? wfId : (s.activeWorkflowId ?? wfId);
+      // Merge with prior inline DAG so identity fields seeded by the
+      // initial event (e.g. isDirect, original summary, initial node
+      // list) survive partial updates from later frames such as
+      // direct_complete.
+      const prior = s.inlineDAGs[dag.dagId];
+      const merged: InlineDAG = prior
+        ? {
+            ...prior,
+            ...dag,
+            isDirect: dag.isDirect ?? prior.isDirect,
+            summary: dag.summary || prior.summary,
+            nodes: dag.nodes && dag.nodes.length > 0 ? dag.nodes : prior.nodes,
+          }
+        : dag;
       return {
         workflows: updatedWorkflows,
         activeWorkflowId: newActiveId,
-        inlineDAGs: { ...s.inlineDAGs, [dag.dagId]: dag },
+        inlineDAGs: { ...s.inlineDAGs, [dag.dagId]: merged },
         ...deriveActive(updatedWorkflows, newActiveId),
       };
     }),

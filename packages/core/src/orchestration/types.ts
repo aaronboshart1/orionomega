@@ -158,7 +158,7 @@ export interface WorkerEvent {
     | 'done'
     | 'loop_iteration'
     | 'replan';
-  tool?: { name: string; action?: string; file?: string; summary: string };
+  tool?: { name: string; action?: string; file?: string; summary: string; id?: string };
   thinking?: string;
   progress?: number;
   message?: string;
@@ -332,6 +332,8 @@ export interface DirectCompleteInfo {
   modelUsage: ModelUsage[];
   /** Total cost in USD for this turn. */
   totalCostUsd: number;
+  /** Set when the run terminated abnormally; UI should show error state. */
+  error?: string;
 }
 /** Info emitted when a guarded DAG needs user confirmation. */
 export interface DAGConfirmInfo {

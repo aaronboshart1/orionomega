@@ -164,6 +164,8 @@ export interface InlineDAGData {
   nodeOutputPaths?: Record<string, string[]>;
   /** ID of the chat message that triggered this workflow run. */
   triggeringMessageId?: string;
+  /** True when this entry represents a Direct-mode conversation turn rather than a multi-node DAG. */
+  isDirect?: boolean;
 }
 
 /**
@@ -708,7 +710,20 @@ export class SessionManager {
   upsertInlineDAG(sessionId: string, dag: InlineDAGData): void {
     const session = this.sessions.get(sessionId);
     if (!session) return;
-    session.inlineDAGs[dag.dagId] = dag;
+    // Merge with existing entry so identity fields established at start
+    // (isDirect, original summary, original nodes) survive subsequent
+    // updates such as direct_complete, which would otherwise overwrite
+    // them with a stub payload.
+    const existing = session.inlineDAGs[dag.dagId];
+    session.inlineDAGs[dag.dagId] = existing
+      ? {
+          ...existing,
+          ...dag,
+          isDirect: dag.isDirect ?? existing.isDirect,
+          summary: dag.summary || existing.summary,
+          nodes: dag.nodes && dag.nodes.length > 0 ? dag.nodes : existing.nodes,
+        }
+      : dag;
     session.updatedAt = new Date().toISOString();
     this.schedulePersist(sessionId);
   }

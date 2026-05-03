@@ -1195,6 +1195,92 @@ function bindListeners(ws: ReconnectingWebSocket): void {
       }
       case 'event': {
         if (msg.event) orch.addEvent(msg.event, msg.workflowId);
+
+        // ── Direct-mode tool transparency ─────────────────────────
+        // When a Direct-mode turn invokes a tool, surface it inline in
+        // chat as a ToolCallCard (mirroring the dag_progress branch
+        // above). Direct-mode events are tagged with a `direct-…`
+        // workflowId by main-agent.respondConversationally.
+        const isDirectEvt = !!msg.workflowId && msg.workflowId.startsWith('direct-');
+        const directEvt = msg.event as {
+          type?: string;
+          tool?: { id?: string; name: string; summary?: string; file?: string; action?: string; params?: Record<string, unknown> };
+          message?: string;
+          error?: string;
+          durationMs?: number;
+        } | undefined;
+        if (isDirectEvt && directEvt?.tool?.name && (directEvt.type === 'tool_call' || directEvt.type === 'tool_result')) {
+          const t = directEvt.tool;
+          const isResult = directEvt.type === 'tool_result';
+          const isErrorResult = isResult && (!!directEvt.error || (directEvt.message ?? '').startsWith('Error:'));
+          const currentMessages = useChatStore.getState().messages;
+          // Prefer matching by stable tool_use id so repeated calls with the
+          // same tool/file pair (e.g. two read_file calls) are not merged.
+          // Fall back to the older heuristic for legacy events that lack id.
+          const existing = [...currentMessages].reverse().find((m) => {
+            if (m.type !== 'tool-call' || m.dagId !== msg.workflowId) return false;
+            if (t.id && m.toolCall?.toolCallId) return m.toolCall.toolCallId === t.id;
+            return (
+              m.toolCall?.toolName === t.name &&
+              m.toolCall?.file === t.file &&
+              m.toolCall?.status === 'running'
+            );
+          });
+          if (existing && isResult) {
+            chat.updateToolCall(existing.id, {
+              status: isErrorResult ? 'error' : 'done',
+              result: directEvt.message,
+              isError: isErrorResult,
+              durationMs: directEvt.durationMs,
+            });
+          } else if (!existing && !isResult) {
+            chat.addMessage({
+              id: uuid(),
+              role: 'assistant',
+              content: t.summary || `${t.name}${t.file ? `: ${t.file}` : ''}`,
+              timestamp: new Date().toISOString(),
+              type: 'tool-call',
+              dagId: msg.workflowId,
+              toolCall: {
+                toolName: t.name,
+                action: t.action,
+                file: t.file,
+                summary: t.summary || '',
+                status: 'running',
+                params: t.params,
+                workerId: 'direct',
+                nodeId: 'direct',
+                nodeLabel: 'Direct response',
+                toolCallId: t.id,
+              },
+            });
+          } else if (!existing && isResult) {
+            // Result arrived without a matching start (e.g. after a reload) — render it directly.
+            chat.addMessage({
+              id: uuid(),
+              role: 'assistant',
+              content: t.summary || t.name,
+              timestamp: new Date().toISOString(),
+              type: 'tool-call',
+              dagId: msg.workflowId,
+              toolCall: {
+                toolName: t.name,
+                action: t.action,
+                file: t.file,
+                summary: t.summary || '',
+                status: isErrorResult ? 'error' : 'done',
+                result: directEvt.message,
+                isError: isErrorResult,
+                durationMs: directEvt.durationMs,
+                workerId: 'direct',
+                nodeId: 'direct',
+                nodeLabel: 'Direct response',
+                toolCallId: t.id,
+              },
+            });
+          }
+        }
+
         const evt = msg.event as {
           type?: string;
           tool?: { name?: string };
@@ -1360,20 +1446,42 @@ function bindListeners(ws: ReconnectingWebSocket): void {
         }
         break;
       }
+      case 'direct_started': {
+        const ds = msg.directStart;
+        if (!ds) break;
+        // Open an inline run summary card and orchestration-pane workflow
+        // tab as soon as a Direct-mode turn starts so tool calls have a
+        // home before the final completion event arrives.
+        orch.upsertInlineDAG({
+          dagId: ds.runId,
+          summary: ds.userMessage || 'Direct response',
+          status: 'running',
+          nodes: [{ id: 'direct', label: 'Direct response', type: 'AGENT', status: 'running' }],
+          completedCount: 0,
+          totalCount: 1,
+          elapsed: 0,
+          isDirect: true,
+        });
+        break;
+      }
       case 'direct_complete': {
         const dc = msg.directComplete;
         if (!dc) break;
-        // Create an InlineDAG entry so RunSummaryCard can render
+        // Create an InlineDAG entry so RunSummaryCard can render. Pass an
+        // empty summary + nodes so the merge logic in upsertInlineDAG
+        // preserves the identity (isDirect, original summary, original
+        // nodes) seeded by the earlier direct_started event.
         orch.upsertInlineDAG({
           dagId: dc.runId,
-          summary: 'Direct response',
+          summary: '',
           status: 'dispatched',
           nodes: [],
           completedCount: 0,
           totalCount: 1,
           elapsed: 0,
+          isDirect: true,
         });
-        orch.completeDAG(dc.runId, undefined, undefined, {
+        orch.completeDAG(dc.runId, dc.error ? 'error' : undefined, dc.error, {
           durationSec: dc.durationSec,
           workerCount: 1,
           totalCostUsd: dc.totalCostUsd,
@@ -1856,7 +1964,14 @@ export function useGateway() {
     [send],
   );
 
-  return { send, sendChat, sendCommand, sendWorkflowCommand, respondToPlan, respondToDAG, respondToConfirmation, respondToGate };
+  const sendFeedback = useCallback(
+    (messageId: string, value: 'good' | 'bad' | null) => {
+      send({ id: uuid(), type: 'feedback', feedbackPayload: { messageId, value } });
+    },
+    [send],
+  );
+
+  return { send, sendChat, sendCommand, sendWorkflowCommand, sendFeedback, respondToPlan, respondToDAG, respondToConfirmation, respondToGate };
 }
 
 // Logs API helpers — typed wrappers around /api/logs/{meta,tail,stream,download}.

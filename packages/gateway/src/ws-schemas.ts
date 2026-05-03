@@ -90,6 +90,15 @@ const clientStateSchema = z.object({
   }).optional(),
 });
 
+const feedbackSchema = z.object({
+  id: z.string().min(1).max(128),
+  type: z.literal('feedback'),
+  feedbackPayload: z.object({
+    messageId: z.string().min(1).max(128),
+    value: z.enum(['good', 'bad']).nullable(),
+  }),
+});
+
 const clientMessageSchema = z.discriminatedUnion('type', [
   chatMessageSchema,
   commandMessageSchema,
@@ -101,6 +110,7 @@ const clientMessageSchema = z.discriminatedUnion('type', [
   fileReadSchema,
   initSchema,
   clientStateSchema,
+  feedbackSchema,
 ]);
 
 export type ValidatedClientMessage = z.infer<typeof clientMessageSchema>;

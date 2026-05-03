@@ -521,6 +521,24 @@ async function initMainAgent(): Promise<void> {
         sessionStatus: status,
       });
     },
+    onDirectStart(info) {
+      const evtId = randomBytes(8).toString("hex");
+      const now = new Date().toISOString();
+      stateStore.appendEvent({
+        id: evtId,
+        sessionId: DEFAULT_SESSION_ID,
+        type: 'direct_started',
+        timestamp: now,
+        data: { directStart: info },
+        workflowId: info.runId,
+      });
+      wsHandler.broadcast({
+        id: evtId,
+        type: "direct_started",
+        directStart: info,
+        workflowId: info.runId,
+      });
+    },
     onDirectComplete(info) {
       const msgId = randomBytes(8).toString("hex");
       const now = new Date().toISOString();

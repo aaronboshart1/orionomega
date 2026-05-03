@@ -19,6 +19,7 @@ export type StateEventType =
   | 'event'
   | 'graph_state'
   | 'session_status'
+  | 'direct_started'
   | 'direct_complete'
   | 'dag_dispatched'
   | 'dag_progress'

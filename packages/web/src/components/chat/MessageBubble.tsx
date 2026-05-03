@@ -11,8 +11,10 @@ import { GateApprovalCard } from './GateApprovalCard';
 import { ToolCallCard } from './ToolCallCard';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { useGateway } from '@/lib/gateway';
-import { Reply, FileText } from 'lucide-react';
+import { Reply, FileText, Copy, Check, RefreshCcw, Pencil, ThumbsUp, ThumbsDown, ArrowRight } from 'lucide-react';
 import { formatBytes } from '@/utils/format';
+import { copyToClipboard } from '@/utils/clipboard';
+import { useCallback, useState } from 'react';
 
 // Dynamically import MarkdownContent — it pulls in react-markdown, remark-gfm,
 // rehype-highlight, rehype-sanitize, and highlight.js (~150KB+ of JS/CSS).
@@ -74,6 +76,56 @@ function AttachmentDisplay({ attachments }: { attachments: MessageAttachment[] }
   );
 }
 
+function MessageActionButton({
+  onClick,
+  label,
+  children,
+  className = '',
+}: {
+  onClick: () => void;
+  label: string;
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`flex h-6 items-center gap-1 rounded-md bg-zinc-800/80 px-1.5 text-[11px] text-zinc-400 transition-colors hover:bg-zinc-700 hover:text-zinc-200 ${className}`}
+      aria-label={label}
+      title={label}
+    >
+      {children}
+    </button>
+  );
+}
+
+function MessageActionBar({
+  align,
+  onCopy,
+  copied,
+  extras,
+}: {
+  align: 'left' | 'right';
+  onCopy: () => void;
+  copied: boolean;
+  extras?: React.ReactNode;
+}) {
+  return (
+    <div
+      className={`mt-1 flex gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 ${
+        align === 'right' ? 'justify-end' : 'justify-start'
+      }`}
+    >
+      <MessageActionButton onClick={onCopy} label={copied ? 'Copied' : 'Copy message'}>
+        {copied ? <Check size={10} /> : <Copy size={10} />}
+        {copied ? 'Copied' : 'Copy'}
+      </MessageActionButton>
+      {extras}
+    </div>
+  );
+}
+
 function ReplyButton({ onClick }: { onClick: () => void }) {
   return (
     <button
@@ -91,10 +143,63 @@ export function MessageBubble({ message, onScrollToMessage }: MessageBubbleProps
   const isStreaming = useChatStore((s) => s.isStreaming);
   const messages = useChatStore((s) => s.messages);
   const setReplyTarget = useChatStore((s) => s.setReplyTarget);
+  const truncateAfter = useChatStore((s) => s.truncateAfter);
+  const setDraftInput = useChatStore((s) => s.setDraftInput);
+  const setMessageFeedback = useChatStore((s) => s.setMessageFeedback);
   const inlineDAGs = useOrchestrationStore((s) => s.inlineDAGs);
   const pendingConfirmation = useOrchestrationStore((s) => s.pendingConfirmation);
   const pendingGates = useOrchestrationStore((s) => s.pendingGates);
-  const { respondToConfirmation, respondToGate } = useGateway();
+  const { respondToConfirmation, respondToGate, sendChat, sendFeedback } = useGateway();
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = useCallback(() => {
+    if (!content) return;
+    copyToClipboard(content).then((ok) => {
+      if (!ok) return;
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  }, [content]);
+
+  const handleRegenerate = useCallback(() => {
+    if (isStreaming) return;
+    // Walk backwards from this assistant message to find the user message that produced it.
+    const idx = messages.findIndex((m) => m.id === message.id);
+    if (idx < 0) return;
+    let userIdx = -1;
+    for (let i = idx; i >= 0; i--) {
+      if (messages[i].role === 'user') { userIdx = i; break; }
+    }
+    if (userIdx < 0) return;
+    const userMsg = messages[userIdx];
+    truncateAfter(userMsg.id);
+    void sendChat(userMsg.content);
+  }, [isStreaming, messages, message.id, truncateAfter, sendChat]);
+
+  const handleEdit = useCallback(() => {
+    if (isStreaming || message.role !== 'user') return;
+    // Edit semantics: remove the original user message AND everything
+    // after it from the thread, then prefill the composer with the
+    // original content. The user's submit re-sends from that point as
+    // a fresh user message — leaving no stale duplicate of the
+    // pre-edit text in the conversation history.
+    truncateAfter(message.id);
+    setDraftInput(content);
+  }, [isStreaming, message.id, message.role, content, truncateAfter, setDraftInput]);
+
+  const handleContinue = useCallback(() => {
+    if (isStreaming) return;
+    void sendChat('Please continue from where you left off.');
+  }, [isStreaming, sendChat]);
+
+  const handleFeedback = useCallback((value: 'good' | 'bad') => {
+    const next = message.feedback === value ? null : value;
+    setMessageFeedback(message.id, next);
+    // Emit a lightweight feedback event over the gateway socket so the
+    // backend can record/forward telemetry. Non-persistent on the
+    // server side — see websocket.ts case 'feedback'.
+    sendFeedback(message.id, next);
+  }, [message.id, message.feedback, setMessageFeedback, sendFeedback]);
 
   const handleReply = () => {
     setReplyTarget({
@@ -185,10 +290,25 @@ export function MessageBubble({ message, onScrollToMessage }: MessageBubbleProps
   }
 
   if (type === 'tool-call' && message.toolCall) {
+    // Allow retrying a failed tool call by replaying the prior user turn
+    // (only meaningful for direct-mode tool cards inline in chat).
+    const handleToolRetry = () => {
+      if (isStreaming) return;
+      const idx = messages.findIndex((m) => m.id === message.id);
+      if (idx < 0) return;
+      let userIdx = -1;
+      for (let i = idx; i >= 0; i--) {
+        if (messages[i].role === 'user') { userIdx = i; break; }
+      }
+      if (userIdx < 0) return;
+      const userMsg = messages[userIdx];
+      truncateAfter(userMsg.id);
+      void sendChat(userMsg.content);
+    };
     return (
       <div className="my-1 flex justify-start">
         <div className="max-w-[95%] md:max-w-[85%] w-full">
-          <ToolCallCard toolCall={message.toolCall} />
+          <ToolCallCard toolCall={message.toolCall} onRetry={handleToolRetry} workflowId={message.dagId} />
         </div>
       </div>
     );
@@ -251,6 +371,48 @@ export function MessageBubble({ message, onScrollToMessage }: MessageBubbleProps
             <AttachmentDisplay attachments={attachments} />
           )}
         </div>
+        {!isActivelyStreaming && content && (
+          <MessageActionBar
+            align={isUser ? 'right' : 'left'}
+            onCopy={handleCopy}
+            copied={copied}
+            extras={
+              isUser ? (
+                <MessageActionButton onClick={handleEdit} label="Edit and resend">
+                  <Pencil size={10} />
+                  Edit
+                </MessageActionButton>
+              ) : (
+                <>
+                  <MessageActionButton onClick={handleRegenerate} label="Regenerate response">
+                    <RefreshCcw size={10} />
+                    Retry
+                  </MessageActionButton>
+                  {message.interrupted && (
+                    <MessageActionButton onClick={handleContinue} label="Continue this response">
+                      <ArrowRight size={10} />
+                      Continue
+                    </MessageActionButton>
+                  )}
+                  <MessageActionButton
+                    onClick={() => handleFeedback('good')}
+                    label="Mark as helpful"
+                    className={message.feedback === 'good' ? '!text-emerald-300 !bg-emerald-900/40' : ''}
+                  >
+                    <ThumbsUp size={10} />
+                  </MessageActionButton>
+                  <MessageActionButton
+                    onClick={() => handleFeedback('bad')}
+                    label="Mark as unhelpful"
+                    className={message.feedback === 'bad' ? '!text-red-300 !bg-red-900/40' : ''}
+                  >
+                    <ThumbsDown size={10} />
+                  </MessageActionButton>
+                </>
+              )
+            }
+          />
+        )}
         <ReplyButton onClick={handleReply} />
       </div>
     </div>

@@ -2,7 +2,7 @@
 
 import { useRef, useState, useCallback, useMemo, useEffect } from 'react';
 import { Virtuoso, VirtuosoHandle } from 'react-virtuoso';
-import { Settings2, ArrowDown, AlertOctagon, Settings, Users } from 'lucide-react';
+import { Settings2, ArrowDown, AlertOctagon, Settings, Users, Square } from 'lucide-react';
 import { useChatStore, useChatHydrated } from '@/stores/chat';
 import { useOrchestrationStore, useOrchHydrated } from '@/stores/orchestration';
 import { useConnectionStore } from '@/stores/connection';
@@ -34,7 +34,7 @@ const SettingsModal = dynamic(
 type RenderItem =
   | { kind: 'message'; message: ChatMessage }
   | { kind: 'error'; message: ChatMessage }
-  | { kind: 'tool-group'; nodeLabel: string; toolCalls: { id: string; toolCall: NonNullable<ChatMessage['toolCall']> }[] };
+  | { kind: 'tool-group'; nodeLabel: string; toolCalls: { id: string; toolCall: NonNullable<ChatMessage['toolCall']>; workflowId?: string }[] };
 
 function buildRenderItems(messages: ChatMessage[]): RenderItem[] {
   const items: RenderItem[] = [];
@@ -61,7 +61,7 @@ function buildRenderItems(messages: ChatMessage[]): RenderItem[] {
     if (msg.type === 'tool-call' && msg.toolCall) {
       const groupNodeId = msg.toolCall.nodeId;
       const groupLabel = msg.toolCall.nodeLabel || groupNodeId || 'Worker';
-      const group: { id: string; toolCall: NonNullable<ChatMessage['toolCall']> }[] = [];
+      const group: { id: string; toolCall: NonNullable<ChatMessage['toolCall']>; workflowId?: string }[] = [];
       if (groupNodeId) {
         while (
           i < messages.length &&
@@ -69,11 +69,11 @@ function buildRenderItems(messages: ChatMessage[]): RenderItem[] {
           messages[i].toolCall &&
           messages[i].toolCall!.nodeId === groupNodeId
         ) {
-          group.push({ id: messages[i].id, toolCall: messages[i].toolCall! });
+          group.push({ id: messages[i].id, toolCall: messages[i].toolCall!, workflowId: messages[i].dagId });
           i++;
         }
       } else {
-        group.push({ id: messages[i].id, toolCall: messages[i].toolCall! });
+        group.push({ id: messages[i].id, toolCall: messages[i].toolCall!, workflowId: messages[i].dagId });
         i++;
       }
       if (group.length > 1) {
@@ -195,12 +195,34 @@ export function ChatPane() {
         );
       }
       if (item.kind === 'tool-group') {
+        // Wire per-tool retry — replays the most-recent prior user message,
+        // truncating chat history at that point. Mirrors the single-card
+        // retry handler in MessageBubble so failed calls inside a grouped
+        // multi-tool chain still expose a Retry action.
+        const enriched = item.toolCalls.map((tc) => ({
+          ...tc,
+          onRetry: () => {
+            const chat = useChatStore.getState();
+            if (chat.isStreaming) return;
+            const allMessages = chat.messages;
+            const idx = allMessages.findIndex((m) => m.id === tc.id);
+            if (idx < 0) return;
+            let userIdx = -1;
+            for (let i = idx; i >= 0; i--) {
+              if (allMessages[i].role === 'user') { userIdx = i; break; }
+            }
+            if (userIdx < 0) return;
+            const userMsg = allMessages[userIdx];
+            chat.truncateAfter(userMsg.id);
+            void sendChat(userMsg.content);
+          },
+        }));
         return (
           <div className="px-3 md:px-6">
             <ToolCallGroup
               key={`group-${item.toolCalls[0].id}`}
               nodeLabel={item.nodeLabel}
-              toolCalls={item.toolCalls}
+              toolCalls={enriched}
             />
           </div>
         );
@@ -220,9 +242,44 @@ export function ChatPane() {
     [renderItems, scrollToMessage],
   );
 
+  // Compute follow-up suggestion chips for the latest assistant message.
+  // These are deliberately context-aware (chosen based on the tail of the
+  // conversation: tool errors, code blocks, or general turns) but kept
+  // deterministic so the UI is testable and predictable.
+  const followUpChips = useMemo<string[]>(() => {
+    if (isStreaming) return [];
+    const last = [...messages].reverse().find((m) => m.role === 'assistant' && (m.type === 'text' || !m.type));
+    if (!last) return [];
+    const recentToolErr = messages.slice(-6).some(
+      (m) => m.type === 'tool-call' && m.toolCall?.isError,
+    );
+    if (recentToolErr) {
+      return ['Investigate the failing tool call', 'Try a different approach', 'Show me the full error'];
+    }
+    if (/```/.test(last.content)) {
+      return ['Explain this code', 'Add tests for it', 'Refactor for clarity'];
+    }
+    return ['Tell me more', 'Continue', 'Summarize the key points'];
+  }, [messages, isStreaming]);
+
   const Footer = useCallback(() => {
     return (
       <div className="pb-6">
+        {followUpChips.length > 0 && (
+          <div className="mb-3 flex flex-wrap gap-1.5 px-3 md:px-6">
+            {followUpChips.map((chip) => (
+              <button
+                key={chip}
+                type="button"
+                onClick={() => handleSend(chip)}
+                className="rounded-full border border-zinc-700/70 bg-zinc-800/40 px-3 py-1 text-[11px] text-zinc-400 transition-colors hover:border-blue-500/50 hover:bg-blue-950/30 hover:text-blue-200 focus:outline-none focus:ring-1 focus:ring-blue-500/40"
+                aria-label={`Send follow-up: ${chip}`}
+              >
+                {chip}
+              </button>
+            ))}
+          </div>
+        )}
         {activePlan && showAdvancedPlan && (
           <div className="my-4 px-3 md:px-6">
             <PlanCard plan={activePlan} onRespond={respondToPlan} />
@@ -258,7 +315,7 @@ export function ChatPane() {
         )}
       </div>
     );
-  }, [activePlan, showAdvancedPlan, respondToPlan, thinkingContent, isStreaming, streamingStatus, thinkingSteps]);
+  }, [activePlan, showAdvancedPlan, respondToPlan, thinkingContent, isStreaming, streamingStatus, thinkingSteps, followUpChips]);
 
   return (
     <div className="flex h-full flex-col bg-[var(--background)]">
@@ -337,16 +394,21 @@ export function ChatPane() {
             </p>
             <div className="mt-6 grid grid-cols-1 gap-1.5 w-full max-w-xs">
               {[
-                { hint: 'Multi-agent DAG orchestration', detail: 'Orch mode' },
-                { hint: 'Direct streaming response', detail: 'Direct mode' },
-                { hint: 'Coding workflow with review', detail: 'Code mode' },
-                { hint: 'Type / for commands', detail: '/help · /stop · /clear' },
-              ].map(({ hint, detail }) => (
-                <div key={hint} className="flex items-center gap-2 rounded-lg bg-zinc-900/40 px-3 py-2">
+                { prompt: 'Summarize the contents of replit.md', detail: 'Direct' },
+                { prompt: 'Plan a small refactor and execute it across the repo', detail: 'Orch' },
+                { prompt: 'Add a new endpoint to the gateway and write tests', detail: 'Code' },
+                { prompt: '/help', detail: 'Commands' },
+              ].map(({ prompt, detail }) => (
+                <button
+                  key={prompt}
+                  type="button"
+                  onClick={() => handleSend(prompt)}
+                  className="flex w-full items-center gap-2 rounded-lg bg-zinc-900/40 px-3 py-2 text-left transition-colors hover:bg-zinc-800/60 focus:outline-none focus:ring-1 focus:ring-blue-500/50"
+                >
                   <span className="h-1 w-1 flex-shrink-0 rounded-full bg-zinc-700" />
-                  <span className="text-xs text-zinc-500">{hint}</span>
+                  <span className="truncate text-xs text-zinc-400">{prompt}</span>
                   <span className="ml-auto text-[10px] text-zinc-700 tabular-nums">{detail}</span>
-                </div>
+                </button>
               ))}
             </div>
           </div>
@@ -397,6 +459,37 @@ export function ChatPane() {
             New messages
           </button>
         )}
+
+        {/*
+          Persistent floating Stop. Anchored to the bottom-right of the
+          chat pane so it remains reachable even if the user scrolls
+          away from the streaming tail of the conversation.
+        */}
+        {isStreaming && (
+          <button
+            type="button"
+            onClick={() => sendCommand('stop')}
+            className="absolute bottom-4 right-4 flex items-center gap-1.5 rounded-full border border-red-500/40 bg-zinc-900/95 px-3 py-1.5 text-xs text-red-200 shadow-lg backdrop-blur transition-colors hover:border-red-400 hover:bg-red-950/60 hover:text-red-100 focus:outline-none focus:ring-2 focus:ring-red-500/50"
+            aria-label="Stop streaming response"
+            title="Stop (Esc)"
+            style={{ zIndex: Z.scrollToBottom + 1 }}
+          >
+            <Square size={11} />
+            Stop
+          </button>
+        )}
+
+        {/* Polite ARIA live region for streaming/tool phase changes — */}
+        {/* readable by screen readers without stealing focus. */}
+        <div
+          aria-live="polite"
+          aria-atomic="true"
+          className="sr-only"
+        >
+          {isStreaming
+            ? (streamingStatus || (thinkingContent ? 'Thinking…' : 'Generating response…'))
+            : ''}
+        </div>
       </div>
 
       <ChatInput

@@ -78,6 +78,27 @@ export function ChatInput({ onSend, disabled, modeToggle, costBar }: ChatInputPr
   const messages = useChatStore((s) => s.messages);
   const replyTarget = useChatStore((s) => s.replyTarget);
   const setReplyTarget = useChatStore((s) => s.setReplyTarget);
+  const draftInput = useChatStore((s) => s.draftInput);
+  const setDraftInput = useChatStore((s) => s.setDraftInput);
+
+  // Consume `draftInput` whenever it changes — used by MessageBubble's
+  // "Edit" action to load a prior message into the composer for revision
+  // before re-sending. Focus + place caret at end so the user can edit
+  // immediately.
+  useEffect(() => {
+    if (draftInput == null) return;
+    setInput(draftInput);
+    setDraftInput(null);
+    requestAnimationFrame(() => {
+      const ta = textareaRef.current;
+      if (!ta) return;
+      ta.focus();
+      const len = ta.value.length;
+      try { ta.setSelectionRange(len, len); } catch { /* noop */ }
+      ta.style.height = 'auto';
+      ta.style.height = `${Math.min(ta.scrollHeight, 240)}px`;
+    });
+  }, [draftInput, setDraftInput]);
   const fileCommands = useFileCommands();
   const SLASH_COMMANDS = useMemo(() => [...BUILTIN_COMMANDS, ...fileCommands], [fileCommands]);
   const [acHighlight, setAcHighlight] = useState(0);

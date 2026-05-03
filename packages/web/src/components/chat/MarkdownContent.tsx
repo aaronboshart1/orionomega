@@ -226,6 +226,72 @@ function TextWithClickablePaths({ text }: { text: string }) {
   return <>{parts}</>;
 }
 
+const COLLAPSE_LINE_THRESHOLD = 24;
+
+function CollapsiblePre({
+  lang,
+  text,
+  hasFilePaths,
+  children,
+}: {
+  lang: string | null;
+  text: string;
+  hasFilePaths: boolean;
+  children: React.ReactNode;
+}) {
+  const lineCount = text ? text.split('\n').length : 0;
+  const isLong = lineCount > COLLAPSE_LINE_THRESHOLD;
+  const [collapsed, setCollapsed] = useState(isLong);
+  const showCollapsed = isLong && collapsed;
+
+  return (
+    <div className="my-3 overflow-x-auto rounded-lg bg-zinc-900 text-xs">
+      <div className="flex items-center justify-between border-b border-zinc-700/50 px-4 py-1.5">
+        {lang ? (
+          <span className="text-xs font-medium uppercase tracking-wider text-zinc-500">
+            {lang}
+          </span>
+        ) : (
+          <span />
+        )}
+        <div className="flex items-center gap-1">
+          {isLong && (
+            <button
+              type="button"
+              onClick={() => setCollapsed((c) => !c)}
+              className="rounded px-2 py-1 text-xs text-zinc-400 transition-colors hover:bg-zinc-700 hover:text-zinc-200"
+              aria-expanded={!collapsed}
+            >
+              {collapsed ? `Show all ${lineCount} lines` : 'Collapse'}
+            </button>
+          )}
+          <CopyButton text={text} />
+        </div>
+      </div>
+      {showCollapsed ? (
+        <pre className="p-4 max-h-48 overflow-hidden relative">
+          <code className="block">
+            {hasFilePaths ? (
+              <TextWithClickablePaths text={text.split('\n').slice(0, 12).join('\n')} />
+            ) : (
+              text.split('\n').slice(0, 12).join('\n')
+            )}
+          </code>
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-12 bg-gradient-to-t from-zinc-900 to-transparent" />
+        </pre>
+      ) : hasFilePaths ? (
+        <pre className="p-4">
+          <code className="block">
+            <TextWithClickablePaths text={text} />
+          </code>
+        </pre>
+      ) : (
+        <pre className="p-4">{children}</pre>
+      )}
+    </div>
+  );
+}
+
 const components: Components = {
   pre({ children }) {
     const { lang, text } = extractCodeProps(children);
@@ -233,31 +299,7 @@ const components: Components = {
     const hasFilePaths = FILE_PATH_RE.test(text);
     FILE_PATH_RE.lastIndex = 0;
 
-    return (
-      <div className="my-3 overflow-x-auto rounded-lg bg-zinc-900 text-xs">
-        <div className="flex items-center justify-between border-b border-zinc-700/50 px-4 py-1.5">
-          {lang ? (
-            <span className="text-xs font-medium uppercase tracking-wider text-zinc-500">
-              {lang}
-            </span>
-          ) : (
-            <span />
-          )}
-          <CopyButton text={text} />
-        </div>
-        {hasFilePaths ? (
-          <pre className="p-4">
-            <code className="block">
-              <TextWithClickablePaths text={text} />
-            </code>
-          </pre>
-        ) : (
-          <pre className="p-4">
-            {children}
-          </pre>
-        )}
-      </div>
-    );
+    return <CollapsiblePre lang={lang} text={text} hasFilePaths={hasFilePaths}>{children}</CollapsiblePre>;
   },
   code({ className, children, ...props }) {
     const match = /language-([^\s]+)/.exec(className || '');

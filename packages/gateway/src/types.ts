@@ -25,7 +25,12 @@ export interface ClientConnection {
 /** Client → Gateway message envelope. */
 export interface ClientMessage {
   id: string;
-  type: 'chat' | 'command' | 'plan_response' | 'subscribe' | 'dag_response' | 'gate_response' | 'ping' | 'file_read' | 'init' | 'client_state';
+  type: 'chat' | 'command' | 'plan_response' | 'subscribe' | 'dag_response' | 'gate_response' | 'ping' | 'file_read' | 'init' | 'client_state' | 'feedback';
+  /** Feedback envelope — UI-emitted thumbs-up / thumbs-down on an assistant message. Lightweight: logged, not persisted. */
+  feedbackPayload?: {
+    messageId: string;
+    value: 'good' | 'bad' | null;
+  };
   /** Session ID for reconnection — sent with 'init' message. */
   sessionId?: string;
   /** Last event sequence number seen by this client (sent with 'init' for delta sync). */
@@ -183,6 +188,7 @@ export interface ServerMessage {
     | 'pong' | 'file_content'
     | 'hindsight_status' | 'memory_event' | 'memory_history'
     | 'coding_event'
+    | 'direct_started'
     | 'direct_complete'
     | 'session'
     | 'schedule_triggered'
@@ -328,6 +334,14 @@ export interface ServerMessage {
     task?: ScheduledTask;
   };
 
+  /** Lightweight payload announcing that a direct (non-DAG) conversation turn has started.
+   * Lets the UI open an inline run summary card and an orchestration-pane workflow tab
+   * before any tool calls or final stats arrive. Present when `type === 'direct_started'`. */
+  directStart?: {
+    runId: string;
+    model: string;
+    userMessage: string;
+  };
   /** Per-run stats for direct (non-DAG) conversation turns. Present when `type === 'direct_complete'`. */
   directComplete?: {
     runId: string;
@@ -343,6 +357,8 @@ export interface ServerMessage {
       costUsd: number;
     }>;
     totalCostUsd: number;
+    /** Set when the run terminated abnormally; UI should mark the workflow tab as errored. */
+    error?: string;
   };
 }
 

@@ -389,6 +389,17 @@ export class WebSocketHandler {
       case 'client_state':
         this.handleClientState(conn, msg);
         break;
+      case 'feedback': {
+        const fb = msg.feedbackPayload;
+        if (fb?.messageId) {
+          log.info(`Message feedback from ${conn.id}`, {
+            messageId: fb.messageId,
+            value: fb.value,
+            sessionId: conn.sessionId,
+          });
+        }
+        break;
+      }
       default:
         this.send(conn.ws, {
           id: randomBytes(8).toString('hex'),
@@ -1053,20 +1064,42 @@ export class WebSocketHandler {
         }
         break;
       }
+      case 'direct_started': {
+        const ds = message.directStart;
+        if (!ds) break;
+        // Seed an InlineDAG for the direct run so the orchestration-pane
+        // workflow tab shows up immediately and is clearly marked as a
+        // direct-mode run (not a multi-node DAG).
+        this.sessionManager.upsertInlineDAG(sessionId, {
+          dagId: ds.runId,
+          summary: ds.userMessage || 'Direct response',
+          status: 'running',
+          nodes: [{ id: 'direct', label: 'Direct response', type: 'AGENT', status: 'running' }],
+          completedCount: 0,
+          totalCount: 1,
+          elapsed: 0,
+          isDirect: true,
+        });
+        break;
+      }
       case 'direct_complete': {
         const dc = message.directComplete;
         if (!dc) break;
         // Create an InlineDAG entry like the client does
+        // Empty summary/nodes lets upsertInlineDAG preserve the identity
+        // (isDirect, original summary, original nodes) seeded by the
+        // earlier direct_started event rather than overwriting them.
         this.sessionManager.upsertInlineDAG(sessionId, {
           dagId: dc.runId,
-          summary: 'Direct response',
+          summary: '',
           status: 'dispatched',
           nodes: [],
           completedCount: 0,
           totalCount: 1,
           elapsed: 0,
+          isDirect: true,
         });
-        this.sessionManager.completeInlineDAG(sessionId, dc.runId, undefined, undefined, {
+        this.sessionManager.completeInlineDAG(sessionId, dc.runId, undefined, dc.error, {
           durationSec: dc.durationSec,
           workerCount: 1,
           totalCostUsd: dc.totalCostUsd,

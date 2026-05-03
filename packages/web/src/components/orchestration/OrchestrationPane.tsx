@@ -142,6 +142,7 @@ export function OrchestrationPane() {
           const graph = workflows[wfId]?.graphState;
           const status = getWorkflowStatus(dag?.status, graph?.status);
           const label = dag?.summary || graph?.name || wfId.slice(0, 8);
+          const isDirect = !!dag?.isDirect;
           const isActive = activeOrchTab === 'workflow' && wfId === activeWorkflowId;
           const isTerminal = status === 'complete' || status === 'error' || status === 'stopped';
           const dotColor = statusColors[status] || 'bg-zinc-500';
@@ -184,6 +185,14 @@ export function OrchestrationPane() {
                 }`}
               />
               <span className="max-w-[140px] truncate">{label}</span>
+              {isDirect && (
+                <span
+                  className="rounded-sm bg-blue-500/15 px-1 py-px text-[9px] font-semibold uppercase tracking-wider text-blue-300 ring-1 ring-blue-500/30"
+                  title="Direct-mode conversation turn (no DAG)"
+                >
+                  Direct
+                </span>
+              )}
               <div className="flex items-center gap-0.5">
                 {showPlayResume && (
                   <button

@@ -355,11 +355,15 @@ export async function streamConversation(opts: {
   onText: (text: string, streaming: boolean, done: boolean) => void;
   onThinking?: (text: string, streaming: boolean, done: boolean) => void;
   onThinkingStep?: (step: { id: string; name: string; status: 'pending' | 'active' | 'done'; startedAt?: number; completedAt?: number; elapsedMs?: number; detail?: string }) => void;
+  /** Emitted just before a tool is invoked. Used by main-agent to surface direct-mode tool calls in the orchestration pane / chat. */
+  onToolStart?: (info: { id: string; name: string; input: Record<string, unknown>; summary: string; file?: string; action?: string }) => void;
+  /** Emitted right after a tool finishes. `result` is truncated by the caller for transport; `isError` is true for `Error:`-prefixed results or circuit-breaker trips. */
+  onToolEnd?: (info: { id: string; name: string; result: string; isError: boolean; durationMs: number; summary: string; file?: string; action?: string }) => void;
   maxToolRounds?: number;
   maxInputTokens?: number;
   abortSignal?: AbortSignal;
 }): Promise<{ text: string; inputTokens: number; outputTokens: number; cacheCreationTokens: number; cacheReadTokens: number }> {
-  const { client, model, systemPrompt, workspaceDir, runDir, onText, onThinking, onThinkingStep, abortSignal } = opts;
+  const { client, model, systemPrompt, workspaceDir, runDir, onText, onThinking, onThinkingStep, onToolStart, onToolEnd, abortSignal } = opts;
   let messages = [...opts.messages];
 
   if (opts.maxInputTokens && messages.length > 2) {
@@ -577,18 +581,38 @@ export async function streamConversation(opts: {
             : `Tool: ${tc.name}`;
       onThinking?.(toolSummary, true, false);
       const toolStepId = `tool-${tc.id}`;
-      const toolDetail = tc.name === 'exec'
-        ? String(tc.input.command ?? '').slice(0, 120)
-        : tc.name === 'read_file' || tc.name === 'write_file'
-          ? String(tc.input.path ?? '')
-          : undefined;
+      const toolFile = tc.name === 'read_file' || tc.name === 'write_file'
+        ? String(tc.input.path ?? '')
+        : undefined;
+      const toolAction = tc.name === 'exec'
+        ? String(tc.input.command ?? '').slice(0, 200)
+        : undefined;
+      const toolDetail = toolAction ?? toolFile;
       onThinkingStep?.({ id: toolStepId, name: toolSummary, status: 'active', startedAt: Date.now(), detail: toolDetail });
+      onToolStart?.({
+        id: tc.id,
+        name: tc.name,
+        input: tc.input,
+        summary: toolSummary,
+        file: toolFile,
+        action: toolAction,
+      });
 
       const toolStart = Date.now();
       log.verbose(`Tool call: ${tc.name}`, { input: tc.input });
       const result = await executeMainTool(tc.name, tc.input, workspaceDir, runDir);
       const toolDuration = Date.now() - toolStart;
       onThinkingStep?.({ id: toolStepId, name: toolSummary, status: 'done', completedAt: Date.now(), elapsedMs: toolDuration });
+      onToolEnd?.({
+        id: tc.id,
+        name: tc.name,
+        result: result.length > 4000 ? result.slice(0, 4000) + `\n\n…[truncated, ${result.length - 4000} more chars]` : result,
+        isError: result.startsWith('Error:'),
+        durationMs: toolDuration,
+        summary: toolSummary,
+        file: toolFile,
+        action: toolAction,
+      });
       log.verbose(`Tool result: ${tc.name}`, {
         durationMs: toolDuration,
         resultLength: result.length,

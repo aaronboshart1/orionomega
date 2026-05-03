@@ -20,6 +20,21 @@ export interface ToolCallData {
   workerId?: string;
   nodeId?: string;
   nodeLabel?: string;
+  /**
+   * Stable correlation ID from the underlying Anthropic tool_use block.
+   * When present, gateway/web uses it to pair tool_call ↔ tool_result
+   * deterministically — heuristic matching on (name, file, status) can
+   * mis-merge repeated calls (e.g. two `read_file` calls in one turn).
+   */
+  toolCallId?: string;
+  /** Truncated tool input params for the expanded view (Direct mode tool transparency). */
+  params?: Record<string, unknown>;
+  /** Truncated tool result preview shown when the card is expanded. */
+  result?: string;
+  /** Set when the tool returned an error so the card can render in an error style. */
+  isError?: boolean;
+  /** Wall-clock duration in milliseconds, populated on tool_result. */
+  durationMs?: number;
 }
 
 export interface ReplyToData {
@@ -74,6 +89,7 @@ export interface ChatMessage {
   isBackground?: boolean;
   toolCall?: ToolCallData;
   interrupted?: boolean;
+  feedback?: 'good' | 'bad' | null;
   replyTo?: ReplyToData;
   attachments?: MessageAttachment[];
   /** Per-message token/cost metadata */
@@ -109,11 +125,22 @@ interface ChatStore {
   clearThinkingSteps: () => void;
   markThinkingStepsDone: () => void;
   updateToolCallStatus: (messageId: string, status: 'running' | 'done' | 'error') => void;
+  updateToolCall: (messageId: string, updates: Partial<ToolCallData>) => void;
+  /**
+   * Remove the message with `messageId` and every message after it.
+   * Returns the removed slice (the target message is included in the
+   * returned array so callers can re-send / inspect it).
+   */
+  truncateAfter: (messageId: string) => ChatMessage[];
   setStreamingStatus: (status: string) => void;
   markLastInterrupted: () => void;
   updateMessage: (id: string, updates: Partial<ChatMessage>) => void;
   clearMessages: () => void;
   setReplyTarget: (target: ReplyToData | null) => void;
+  /** Pre-fill the composer with this text on the next render. ChatInput consumes and clears it. */
+  draftInput: string | null;
+  setDraftInput: (text: string | null) => void;
+  setMessageFeedback: (id: string, feedback: 'good' | 'bad' | null) => void;
   accumulateTokens: (meta: MessageMetadata) => void;
   /** Rehydrate store from a server state snapshot (replaces localStorage persistence). */
   hydrateFromSnapshot: (snapshot: { messages?: ChatMessage[]; sessionTotals?: SessionTokenTotals }) => void;
@@ -206,6 +233,24 @@ export const useChatStore = create<ChatStore>()((set) => ({
               : m,
           ),
         })),
+      updateToolCall: (messageId, updates) =>
+        set((s) => ({
+          messages: s.messages.map((m) =>
+            m.id === messageId && m.toolCall
+              ? { ...m, toolCall: { ...m.toolCall, ...updates } }
+              : m,
+          ),
+        })),
+      truncateAfter: (messageId) => {
+        let removed: ChatMessage[] = [];
+        set((s) => {
+          const idx = s.messages.findIndex((m) => m.id === messageId);
+          if (idx < 0) return s;
+          removed = s.messages.slice(idx);
+          return { messages: s.messages.slice(0, idx) };
+        });
+        return removed;
+      },
       setStreamingStatus: (streamingStatus) => set({ streamingStatus }),
       markLastInterrupted: () =>
         set((s) => {
@@ -225,6 +270,12 @@ export const useChatStore = create<ChatStore>()((set) => ({
         })),
       clearMessages: () => set({ messages: [], sessionTotals: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, totalCostUsd: 0, messageCount: 0 } }),
       setReplyTarget: (replyTarget) => set({ replyTarget }),
+      draftInput: null,
+      setDraftInput: (draftInput) => set({ draftInput }),
+      setMessageFeedback: (id, feedback) =>
+        set((s) => ({
+          messages: s.messages.map((m) => (m.id === id ? { ...m, feedback } : m)),
+        })),
       accumulateTokens: (meta) =>
         set((s) => ({
           sessionTotals: {

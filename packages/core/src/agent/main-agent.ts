@@ -103,6 +103,9 @@ export interface MainAgentCallbacks {
   onDAGProgress?: (progress: DAGProgressInfo) => void;
   onDAGComplete?: (result: DAGCompleteInfo) => void;
   onDAGConfirm?: (confirm: DAGConfirmInfo) => void;
+  /** Emitted when a direct (non-DAG) conversation turn starts. Used by the UI to open
+   * an inline run summary card and orchestration-pane workflow tab while the turn streams. */
+  onDirectStart?: (info: { runId: string; model: string; userMessage: string }) => void;
   /** Emitted when a direct (non-DAG) conversation turn completes with per-run stats. */
   onDirectComplete?: (info: DirectCompleteInfo) => void;
 
@@ -1240,14 +1243,88 @@ export class MainAgent {
       return wasDetached;
     };
 
+    // `directWorkflowId` is captured by closure below; we initialize it
+    // here so the wrapped callbacks can forward direct-mode thinking/text
+    // into the orchestration event stream (Activity Feed parity).
+    const _directWorkflowId = `direct-${effectiveRunId}`;
+    // Captured here (not inside try) so the catch path can compute
+    // failure duration for the orchestration `run_failed` signal.
+    const turnStartTime = Date.now();
+
+    // Streaming convention from `streamConversation`:
+    //   onText(delta, streaming=true, done=false)  per chunk
+    //   onText('', streaming=true, done=true)       on completion
+    //   onThinking(label, true, false) / onThinking('', false, true)
+    // Emitting orchestration events only on `done && text` would drop
+    // every successful run's narrative because the terminal callback is
+    // the empty-string sentinel. Accumulate deltas and emit the buffered
+    // content on `done` so Activity Feed gets the full final text /
+    // thinking, matching Orchestrate-mode parity.
+    // Emit text/thinking deltas into the orchestration stream as they
+    // arrive so the Activity Feed updates in real time, matching
+    // Orchestrate-mode parity. We coalesce frequent deltas into ~80ms
+    // batches to keep the bus from getting flooded by per-token
+    // callbacks while still giving a responsive UI.
+    let _textBuffer = '';
+    let _thinkingBuffer = '';
+    let _textTimer: ReturnType<typeof setTimeout> | null = null;
+    let _thinkingTimer: ReturnType<typeof setTimeout> | null = null;
+    const FLUSH_MS = 80;
+    const TEXT_CAP = 4000;
+    const THINK_CAP = 2000;
+    const emitTextChunk = (chunk: string) => {
+      if (wasDetached || !chunk.trim()) return;
+      const out = chunk.length > TEXT_CAP ? chunk.slice(0, TEXT_CAP) + '…' : chunk;
+      this.callbacks.onEvent({
+        workflowId: _directWorkflowId,
+        workerId: 'direct',
+        nodeId: 'direct',
+        timestamp: new Date().toISOString(),
+        type: 'finding',
+        message: out,
+      });
+    };
+    const emitThinkingChunk = (chunk: string) => {
+      if (wasDetached || !chunk.trim()) return;
+      const out = chunk.length > THINK_CAP ? chunk.slice(0, THINK_CAP) + '…' : chunk;
+      this.callbacks.onEvent({
+        workflowId: _directWorkflowId,
+        workerId: 'direct',
+        nodeId: 'direct',
+        timestamp: new Date().toISOString(),
+        type: 'thinking',
+        thinking: out,
+      });
+    };
+    const flushText = () => {
+      if (_textTimer) { clearTimeout(_textTimer); _textTimer = null; }
+      const buf = _textBuffer; _textBuffer = '';
+      if (buf) emitTextChunk(buf);
+    };
+    const flushThinking = () => {
+      if (_thinkingTimer) { clearTimeout(_thinkingTimer); _thinkingTimer = null; }
+      const buf = _thinkingBuffer; _thinkingBuffer = '';
+      if (buf) emitThinkingChunk(buf);
+    };
+
     const wrappedOnText = (text: string, streaming: boolean, done: boolean) => {
       checkDetached();
       this.callbacks.onText(text, streaming, done, wasDetached ? effectiveRunId : undefined);
+      if (text) {
+        _textBuffer += text;
+        if (!_textTimer) _textTimer = setTimeout(flushText, FLUSH_MS);
+      }
+      if (done) flushText();
     };
 
     const wrappedOnThinking = (text: string, streaming: boolean, done: boolean) => {
       checkDetached();
       this.callbacks.onThinking(text, streaming, done, wasDetached ? effectiveRunId : undefined);
+      if (text) {
+        _thinkingBuffer += (_thinkingBuffer ? '\n' : '') + text;
+        if (!_thinkingTimer) _thinkingTimer = setTimeout(flushThinking, FLUSH_MS);
+      }
+      if (done) flushThinking();
     };
 
     const wrappedOnThinkingStep = this.callbacks.onThinkingStep
@@ -1261,6 +1338,20 @@ export class MainAgent {
       this.emitStep('context', 'Assembling context', 'active');
     }
     wrappedOnThinking('Assembling context…', true, false);
+
+    // Surface this direct-mode turn in the orchestration pane so users see
+    // the same Activity Feed / Workflow tab affordances they get for
+    // Orchestrate/Code mode runs. Uses the same `direct-${runId}` workflow
+    // id that `onDirectComplete` already references, so the live tab and
+    // the final RunSummaryCard share state.
+    const directWorkflowId = _directWorkflowId;
+    if (!wasDetached) {
+      this.callbacks.onDirectStart?.({
+        runId: directWorkflowId,
+        model: this.config.model,
+        userMessage: userMessage.length > 200 ? userMessage.slice(0, 200) + '…' : userMessage,
+      });
+    }
 
     // Per-turn run output directory. Mirrors the orchestration executor's
     // `${workspaceDir}/output/${runId}` pattern so direct-mode artifacts land
@@ -1310,7 +1401,35 @@ export class MainAgent {
     wrappedOnThinking('Generating response…', true, false);
 
     try {
-      const turnStartTime = Date.now();
+      // Forward direct-mode tool calls into the orchestration event stream
+      // so the Activity Feed / Workflow tab show them like any other run.
+      // Only fire for foreground turns — background conversations already
+      // tag every onText/onThinking with a workflowId and don't need a
+      // duplicate orchestration thread.
+      const directToolStart = wasDetached ? undefined : (info: { id: string; name: string; input: Record<string, unknown>; summary: string; file?: string; action?: string }) => {
+        this.callbacks.onEvent({
+          workflowId: directWorkflowId,
+          workerId: 'direct',
+          nodeId: 'direct',
+          timestamp: new Date().toISOString(),
+          type: 'tool_call',
+          tool: { id: info.id, name: info.name, summary: info.summary, file: info.file, action: info.action, params: info.input },
+        } as WorkerEvent & { tool: { id?: string; name: string; summary?: string; file?: string; action?: string; params?: Record<string, unknown> } });
+      };
+      const directToolEnd = wasDetached ? undefined : (info: { id: string; name: string; result: string; isError: boolean; durationMs: number; summary: string; file?: string; action?: string }) => {
+        this.callbacks.onEvent({
+          workflowId: directWorkflowId,
+          workerId: 'direct',
+          nodeId: 'direct',
+          timestamp: new Date().toISOString(),
+          type: 'tool_result',
+          tool: { id: info.id, name: info.name, summary: info.summary, file: info.file, action: info.action },
+          message: info.result,
+          durationMs: info.durationMs,
+          ...(info.isError ? { error: info.result } : {}),
+        } as WorkerEvent & { message?: string; durationMs?: number });
+      };
+
       const result = await streamConversation({
         client: this.anthropic,
         model: this.config.model,
@@ -1321,6 +1440,8 @@ export class MainAgent {
         onText: wrappedOnText,
         onThinking: wrappedOnThinking,
         onThinkingStep: wrappedOnThinkingStep ? (step) => wrappedOnThinkingStep(step as ThinkingStep) : undefined,
+        onToolStart: directToolStart,
+        onToolEnd: directToolEnd,
         maxInputTokens: 100_000,
         abortSignal,
       });
@@ -1372,6 +1493,36 @@ export class MainAgent {
       wrappedOnText(fallback, false, true);
       if (!wasDetached) {
         this.pushHistory({ role: 'assistant', content: fallback });
+        // Surface direct-mode failures through the orchestration event
+        // stream + completion callback so the Workflow tab tab transitions
+        // to an "error" terminal state rather than appearing stuck mid-run.
+        this.callbacks.onEvent({
+          workflowId: _directWorkflowId,
+          workerId: 'direct',
+          nodeId: 'direct',
+          timestamp: new Date().toISOString(),
+          type: 'error',
+          error: msg,
+          message: msg,
+        });
+        const failureDurationSec = (Date.now() - turnStartTime) / 1000;
+        const shortModel = this.config.model.replace(/^claude-/, '').replace(/-\d{8}$/, '');
+        this.callbacks.onDirectComplete?.({
+          runId: _directWorkflowId,
+          model: this.config.model,
+          durationSec: Math.round(failureDurationSec * 10) / 10,
+          modelUsage: [{
+            model: shortModel,
+            inputTokens: 0,
+            outputTokens: 0,
+            cacheReadTokens: 0,
+            cacheCreationTokens: 0,
+            workerCount: 1,
+            costUsd: 0,
+          }],
+          totalCostUsd: 0,
+          error: msg,
+        });
       }
     } finally {
       if (runId) {
