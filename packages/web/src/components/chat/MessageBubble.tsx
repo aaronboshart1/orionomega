@@ -7,6 +7,7 @@ import { useOrchestrationStore } from '@/stores/orchestration';
 import { InlineDAGCard } from './InlineDAGCard';
 import { RunSummaryCard } from './RunSummaryCard';
 import { DAGConfirmationCard } from './DAGConfirmationCard';
+import { GateApprovalCard } from './GateApprovalCard';
 import { ToolCallCard } from './ToolCallCard';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { useGateway } from '@/lib/gateway';
@@ -92,7 +93,8 @@ export function MessageBubble({ message, onScrollToMessage }: MessageBubbleProps
   const setReplyTarget = useChatStore((s) => s.setReplyTarget);
   const inlineDAGs = useOrchestrationStore((s) => s.inlineDAGs);
   const pendingConfirmation = useOrchestrationStore((s) => s.pendingConfirmation);
-  const { respondToConfirmation } = useGateway();
+  const pendingGates = useOrchestrationStore((s) => s.pendingGates);
+  const { respondToConfirmation, respondToGate } = useGateway();
 
   const handleReply = () => {
     setReplyTarget({
@@ -119,6 +121,28 @@ export function MessageBubble({ message, onScrollToMessage }: MessageBubbleProps
             </div>
           ) : null}
           <ReplyButton onClick={handleReply} />
+        </div>
+      </div>
+    );
+  }
+
+  if (type === 'gate-request' && dagId) {
+    const gate = pendingGates[dagId] ?? {
+      gateId: dagId,
+      workflowId: message.workflowId ?? '',
+      workflowName: '',
+      action: content.replace(/^Approval needed:\s*/, ''),
+      description: '',
+      timestamp: message.timestamp,
+    };
+    return (
+      <div className="my-3 flex justify-start">
+        <div className="max-w-[95%] md:max-w-[85%]">
+          <GateApprovalCard
+            gate={gate}
+            resolved={gate.resolved ?? null}
+            onRespond={respondToGate}
+          />
         </div>
       </div>
     );

@@ -180,6 +180,16 @@ export interface DAGConfirmation {
   guardedNodes: { id: string; label: string; risk: string }[];
 }
 
+export interface PendingGate {
+  gateId: string;
+  workflowId: string;
+  workflowName: string;
+  action: string;
+  description: string;
+  timestamp: string;
+  resolved?: 'approved' | 'denied';
+}
+
 export interface WorkflowData {
   graphState: GraphState | null;
   events: WorkerEvent[];
@@ -192,6 +202,7 @@ interface OrchestrationStore {
   selectedWorker: string | null;
   inlineDAGs: Record<string, InlineDAG>;
   pendingConfirmation: DAGConfirmation | null;
+  pendingGates: Record<string, PendingGate>;
   orchPaneOpen: boolean;
   scrollToDagId: string | null;
   activitySectionCollapsed: boolean;
@@ -216,6 +227,9 @@ interface OrchestrationStore {
   completeDAG: (dagId: string, result?: string, error?: string, stats?: { durationSec?: number; workerCount?: number; totalCostUsd?: number; toolCallCount?: number; modelUsage?: ModelUsageEntry[]; nodeOutputPaths?: Record<string, string[]>; stopped?: boolean }) => void;
   removeInlineDAG: (dagId: string) => void;
   setPendingConfirmation: (c: DAGConfirmation | null) => void;
+  setPendingGate: (gate: PendingGate) => void;
+  resolvePendingGate: (gateId: string, resolution: 'approved' | 'denied') => void;
+  removePendingGate: (gateId: string) => void;
   setOrchPaneOpen: (open: boolean) => void;
   clearScrollToDagId: () => void;
   toggleActivitySectionCollapsed: () => void;
@@ -251,6 +265,7 @@ export const useOrchestrationStore = create<OrchestrationStore>()((set) => ({
   selectedWorker: null,
   inlineDAGs: {},
   pendingConfirmation: null,
+  pendingGates: {},
   orchPaneOpen: true,
   scrollToDagId: null,
   activitySectionCollapsed: false,
@@ -415,6 +430,30 @@ export const useOrchestrationStore = create<OrchestrationStore>()((set) => ({
 
   setPendingConfirmation: (pendingConfirmation) => set({ pendingConfirmation }),
 
+  setPendingGate: (gate) =>
+    set((s) => ({
+      pendingGates: { ...s.pendingGates, [gate.gateId]: gate },
+    })),
+
+  resolvePendingGate: (gateId, resolution) =>
+    set((s) => {
+      const existing = s.pendingGates[gateId];
+      if (!existing) return s;
+      return {
+        pendingGates: {
+          ...s.pendingGates,
+          [gateId]: { ...existing, resolved: resolution },
+        },
+      };
+    }),
+
+  removePendingGate: (gateId) =>
+    set((s) => {
+      if (!s.pendingGates[gateId]) return s;
+      const { [gateId]: _, ...rest } = s.pendingGates;
+      return { pendingGates: rest };
+    }),
+
   setOrchPaneOpen: (open) => set({ orchPaneOpen: open }),
   clearScrollToDagId: () => set({ scrollToDagId: null }),
 
@@ -539,6 +578,7 @@ export const useOrchestrationStore = create<OrchestrationStore>()((set) => ({
       selectedWorker: null,
       inlineDAGs: {},
       pendingConfirmation: null,
+      pendingGates: {},
       orchPaneOpen: true,
       scrollToDagId: null,
       activitySectionCollapsed: false,

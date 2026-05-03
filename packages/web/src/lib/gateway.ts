@@ -1098,6 +1098,33 @@ function bindListeners(ws: ReconnectingWebSocket): void {
         });
         break;
       }
+      case 'gate_request': {
+        const gr = msg.gateRequest;
+        if (!gr) break;
+        orch.setPendingGate({
+          gateId: gr.gateId,
+          workflowId: gr.workflowId,
+          workflowName: gr.workflowName,
+          action: gr.action,
+          description: gr.description,
+          timestamp: gr.timestamp,
+        });
+        // Avoid creating duplicate chat entries when the same gate_request
+        // arrives via both the live socket and a buffered/replayed event.
+        const gateMsgId = `gate-${gr.gateId}`;
+        if (!useChatStore.getState().messages.some((m) => m.id === gateMsgId)) {
+          chat.addMessage({
+            id: gateMsgId,
+            role: 'assistant',
+            content: `Approval needed: ${gr.action}`,
+            timestamp: gr.timestamp || new Date().toISOString(),
+            type: 'gate-request',
+            dagId: gr.gateId,
+            workflowId: gr.workflowId,
+          });
+        }
+        break;
+      }
       case 'dag_confirm': {
         const cf = msg.dagConfirm;
         if (!cf) break;
@@ -1769,7 +1796,20 @@ export function useGateway() {
     [respondToDAG],
   );
 
-  return { send, sendChat, sendCommand, sendWorkflowCommand, respondToPlan, respondToDAG, respondToConfirmation };
+  const respondToGate = useCallback(
+    (gateId: string, approved: boolean) => {
+      send({
+        id: uuid(),
+        type: 'gate_response',
+        gateId,
+        gateAction: approved ? 'approve' : 'deny',
+      });
+      useOrchestrationStore.getState().resolvePendingGate(gateId, approved ? 'approved' : 'denied');
+    },
+    [send],
+  );
+
+  return { send, sendChat, sendCommand, sendWorkflowCommand, respondToPlan, respondToDAG, respondToConfirmation, respondToGate };
 }
 
 // Logs API helpers — typed wrappers around /api/logs/{meta,tail,stream,download}.

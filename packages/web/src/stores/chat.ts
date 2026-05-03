@@ -66,6 +66,7 @@ export interface ChatMessage {
     | 'dag-complete'
     | 'direct-complete'
     | 'dag-confirmation'
+    | 'gate-request'
     | 'tool-call'
     | 'error';
   dagId?: string;
