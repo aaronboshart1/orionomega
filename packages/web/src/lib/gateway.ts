@@ -423,6 +423,10 @@ function rehydrateFromSnapshot(snapshot: any, bufferedEvents?: unknown[]): void 
               completedCount: dag.completedCount ?? 0,
               totalCount: dag.totalCount ?? 0,
               elapsed: dag.elapsed ?? 0,
+              // Forward direct-mode flag so the orchestration pane's
+              // "Direct" badge and any direct-mode rendering survive
+              // a page reload.
+              isDirect: dag.isDirect,
             });
             // If the server says it's complete, apply completion stats
             if (dag.status === 'complete' || dag.status === 'error' || dag.status === 'stopped') {

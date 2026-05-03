@@ -532,6 +532,19 @@ async function initMainAgent(): Promise<void> {
         data: { directStart: info },
         workflowId: info.runId,
       });
+      // Persist an inline DAG entry so the RunSummaryCard can be rebuilt
+      // after a page reload. Mirrors the live client-side seed in
+      // packages/web/src/lib/gateway.ts under case 'direct_started'.
+      sessionManager.upsertInlineDAG(DEFAULT_SESSION_ID, {
+        dagId: info.runId,
+        summary: info.userMessage || 'Direct response',
+        status: 'running',
+        nodes: [{ id: 'direct', label: 'Direct response', type: 'AGENT', status: 'running' }],
+        completedCount: 0,
+        totalCount: 1,
+        elapsed: 0,
+        isDirect: true,
+      });
       wsHandler.broadcast({
         id: evtId,
         type: "direct_started",
@@ -559,6 +572,30 @@ async function initMainAgent(): Promise<void> {
         });
       }
 
+      // Persist direct-mode inline DAG completion so the RunSummaryCard
+      // survives a page reload. Mirrors the orchestrate-mode path in
+      // onDAGComplete, and pairs with the upsert in onDirectStart.
+      sessionManager.completeInlineDAG(
+        DEFAULT_SESSION_ID,
+        info.runId,
+        undefined,
+        info.error,
+        {
+          durationSec: info.durationSec,
+          workerCount: 1,
+          totalCostUsd: info.totalCostUsd,
+          modelUsage: info.modelUsage?.map((m) => ({
+            model: m.model,
+            inputTokens: m.inputTokens,
+            outputTokens: m.outputTokens,
+            cacheReadTokens: m.cacheReadTokens,
+            cacheCreationTokens: m.cacheCreationTokens,
+            workerCount: 1,
+            costUsd: m.costUsd,
+          })),
+        },
+      );
+
       wsHandler.broadcast({
         id: msgId,
         type: "direct_complete",
@@ -566,14 +603,35 @@ async function initMainAgent(): Promise<void> {
       });
       const sid = DEFAULT_SESSION_ID;
       if (sid) {
+        // Persist as `dag-complete` (with `dagComplete`-shaped metadata)
+        // rather than `direct-complete` so the existing client rehydration
+        // path in packages/web/src/lib/gateway.ts (which only knows about
+        // `dag-complete`) picks it up after a reload. The live client-side
+        // direct_complete handler also adds the chat message with
+        // type:'dag-complete' and dagId:runId — same id is reused via msgId
+        // so the two paths dedupe to a single rendered card.
         sessionManager.addMessage(sid, {
           id: msgId,
           role: "assistant",
           content: "",
           timestamp: now,
-          type: "direct-complete",
+          type: "dag-complete",
           metadata: {
+            workflowId: info.runId,
             runId: info.runId,
+            isDirect: true,
+            dagComplete: {
+              workflowId: info.runId,
+              status: info.error ? 'error' : 'complete',
+              summary: info.error ?? '',
+              output: undefined,
+              durationSec: info.durationSec,
+              workerCount: 1,
+              totalCostUsd: info.totalCostUsd,
+              modelUsage: info.modelUsage,
+            },
+            // Keep the original payload for clients that still want the
+            // direct-mode-specific fields (e.g. model name, runId).
             directComplete: info,
           },
         });
