@@ -98,7 +98,9 @@ section('getDefaultConfig — orchestration defaults');
   assertEq(config.orchestration.workerTimeout, 600, 'workerTimeout = 600');
   assertEq(config.orchestration.codingAgentTimeout, 1800, 'codingAgentTimeout = 1800');
   assertEq(config.orchestration.validationTimeout, 300, 'validationTimeout = 300');
-  assertEq(config.orchestration.maxRetries, 2, 'maxRetries = 2');
+  // Default is now 0, the sentinel meaning "unlimited transient retries"
+  // (see config/types.ts and executor.ts for the translation).
+  assertEq(config.orchestration.maxRetries, 0, 'maxRetries default = 0 (unlimited sentinel)');
   assert(config.orchestration.planFirst === true, 'planFirst = true');
 }
 

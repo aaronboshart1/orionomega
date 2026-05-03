@@ -70,7 +70,16 @@ export interface OrionOmegaConfig {
      * (build/test/lint executed inside coding mode templates).
      */
     validationTimeout: number;
-    /** Maximum retry attempts per worker. */
+    /**
+     * Maximum retry attempts per worker.
+     *
+     * Special sentinel: `0` means **unlimited** retries on transient failures
+     * — permanent errors (see `classifyError` in `executor.ts`) still
+     * short-circuit the loop, and per-attempt timeouts plus the user's Stop
+     * button still bound runs. Set a positive integer (e.g. `3`) to cap the
+     * number of attempts. Per-node `retries` overrides this and at the
+     * per-node level `0` keeps its original meaning of "no retries".
+     */
     maxRetries: number;
     /** Whether to require planning before execution. */
     planFirst: boolean;

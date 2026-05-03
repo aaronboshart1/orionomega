@@ -496,9 +496,9 @@ function OmegaClawTab({
           onChange={(v) => onChange('orchestration.workerTimeout', v)}
         />
       </FormField>
-      <FormField label="Max Retries">
+      <FormField label="Max Retries (0 = unlimited)">
         <NumberInput
-          value={Number(getNestedValue(config, 'orchestration.maxRetries') ?? 2)}
+          value={Number(getNestedValue(config, 'orchestration.maxRetries') ?? 0)}
           onChange={(v) => onChange('orchestration.maxRetries', v)}
         />
       </FormField>

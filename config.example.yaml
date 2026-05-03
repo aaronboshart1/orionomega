@@ -99,8 +99,14 @@ orchestration:
   # Default: 300 (5 minutes)
   workerTimeout: 300
 
-  # Maximum retry attempts per failed worker node. Default: 2
-  maxRetries: 2
+  # Maximum retry attempts per failed worker node. Default: 0 (unlimited).
+  # 0 is a sentinel meaning "retry transient failures forever" — permanent
+  # errors (4xx from Anthropic, classifyError === 'permanent', etc.) still
+  # short-circuit, and per-attempt timeouts plus the Stop button still
+  # bound runs. Set a positive integer (e.g. 3) to cap the number of
+  # attempts. Per-node `retries` overrides this; at the per-node level a
+  # value of 0 keeps its original meaning of "no retries".
+  maxRetries: 0
 
   # How often to write workflow checkpoints (seconds). Default: 30
   checkpointInterval: 30

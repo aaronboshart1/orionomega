@@ -234,7 +234,8 @@ async function initMainAgent(): Promise<void> {
     // Coding loops are inherently long-running; default 30 min and allow
     // operators to override via orchestration.codingAgentTimeout in config.
     codingAgentTimeout: freshConfig.orchestration?.codingAgentTimeout ?? 1800,
-    maxRetries: freshConfig.orchestration?.maxRetries ?? 2,
+    // 0 = unlimited retries on transient failures (see config/types.ts).
+    maxRetries: freshConfig.orchestration?.maxRetries ?? 0,
     skillsDir: freshConfig.skills?.directory,
     commandsDir: freshConfig.commands?.directory,
     hindsight: freshConfig.hindsight,

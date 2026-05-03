@@ -66,7 +66,10 @@ export function getDefaultConfig(): OrionOmegaConfig {
       codingAgentTimeout: 1800,
       // In-loop validation commands (build/test/lint) inside coding mode templates.
       validationTimeout: 300,
-      maxRetries: 2,
+      // 0 = unlimited retries on transient failures; permanent errors still
+      // short-circuit via classifyError() in executor.ts. Per-node `retries`
+      // still wins, and 0 there keeps its original "no retries" meaning.
+      maxRetries: 0,
       planFirst: true,
       checkpointInterval: 30,
       autoResume: false,

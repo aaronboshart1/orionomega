@@ -207,8 +207,13 @@ export class Planner {
             ? (n.dependsOn as string[]).map(String)
             : [],
           status: 'pending' as const,
-          timeout: n.timeout ? Number(n.timeout) : undefined,
-          retries: n.retries ? Number(n.retries) : undefined,
+          timeout: n.timeout != null ? Number(n.timeout) : undefined,
+          // Use nullish check, not truthy: a planner-emitted `retries: 0`
+          // legitimately means "no retries" and must reach the executor as
+          // 0, not get coerced to undefined (which would fall through to the
+          // global config default — Infinity when the unlimited sentinel is
+          // active).
+          retries: n.retries != null ? Number(n.retries) : undefined,
           fallbackNodeId: n.fallbackNodeId
             ? String(n.fallbackNodeId)
             : undefined,

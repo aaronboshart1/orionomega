@@ -586,7 +586,17 @@ export class GraphExecutor {
     node.status = 'running';
     node.startedAt = new Date().toISOString();
 
-    const maxRetries = node.retries ?? this.config.maxRetries;
+    // Resolve the cap. The config-level `maxRetries: 0` is a sentinel
+    // meaning "unlimited transient retries" (permanent errors still
+    // short-circuit via classifyError below). Per-node `retries` overrides
+    // the global cap and at the per-node level `0` keeps its original
+    // meaning of "no retries" — so the sentinel translation is applied
+    // only when falling back to the global config value.
+    const cfgMax = this.config.maxRetries <= 0
+      ? Number.POSITIVE_INFINITY
+      : this.config.maxRetries;
+    const maxRetries = node.retries ?? cfgMax;
+    const capLabel = Number.isFinite(maxRetries) ? `${maxRetries + 1}` : '∞';
     let lastError: Error | undefined;
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -601,9 +611,9 @@ export class GraphExecutor {
       try {
         if (attempt > 0) {
           const delayMs = computeBackoffDelay(attempt);
-          log.info(`Retrying node '${nodeId}' (attempt ${attempt + 1}/${maxRetries + 1}) after ${delayMs}ms backoff`);
+          log.info(`Retrying node '${nodeId}' (attempt ${attempt + 1}/${capLabel}) after ${delayMs}ms backoff`);
           this.emitOrchestrator('status', `Retrying '${node.label}' (attempt ${attempt + 1}) in ${Math.round(delayMs / 1000)}s`, {
-            retry: { attempt, maxRetries, delayMs },
+            retry: { attempt, maxRetries: Number.isFinite(maxRetries) ? maxRetries : -1, delayMs },
           });
           await new Promise((resolve) => setTimeout(resolve, delayMs));
         }
