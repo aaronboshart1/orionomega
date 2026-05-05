@@ -414,15 +414,24 @@ export class HindsightClient {
    * @param bankId - Target bank identifier.
    * @param content - The memory content text.
    * @param context - Category for the memory (e.g. `'preference'`, `'decision'`).
+   * @param tags - Optional tags (e.g. `['session:<id>']`) attached to the
+   *   stored item. Tags are used by callers to attribute provenance
+   *   (e.g. which gateway session wrote a memory) without affecting
+   *   cross-session recall.
    */
   async retainOne(
     bankId: string,
     content: string,
     context: string,
+    tags?: string[],
   ): Promise<RetainResult> {
-    return this.retain(bankId, [
-      { content, context, timestamp: new Date().toISOString() },
-    ]);
+    const item: MemoryItem = {
+      content,
+      context,
+      timestamp: new Date().toISOString(),
+    };
+    if (tags && tags.length > 0) item.tags = tags;
+    return this.retain(bankId, [item]);
   }
 
   /**

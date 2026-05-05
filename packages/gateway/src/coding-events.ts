@@ -44,14 +44,93 @@ export function setCodingEventStreamer(streamer: EventStreamer): void {
 
 // ── Internal helper ───────────────────────────────────────────────────────────
 
+/**
+ * Coding-session-id → gateway-session-id binding map.
+ *
+ * The legacy `CodingOrchestrator` mints its own internal `sessionId` (UUID)
+ * which is *not* the same as the gateway session that originated the
+ * request. Without an explicit binding the streamer cannot scope subsequent
+ * step/review/commit events to the correct gateway session, so they leak
+ * across sessions.
+ *
+ * Callers (gateway server) populate this map at coding-session start via
+ * {@link bindCodingSessionToGatewaySession}. The "current" coding session
+ * is also tracked so step/review/commit events (which carry no IDs at all)
+ * can resolve back to the right gateway session in the common single-tenant
+ * case. NOTE: this last-binding-wins approach is correct only for serial
+ * coding sessions. Concurrent coding sessions across gateway sessions would
+ * require threading sessionId through every coding event payload — tracked
+ * as a follow-up for the broader coding-mode multi-session refactor.
+ */
+const codingSessionToGatewaySession = new Map<string, string>();
+let _activeCodingGatewaySession: string | undefined;
+
+/**
+ * Bind a coding-orchestrator sessionId to the originating gateway sessionId.
+ * Should be called by the gateway when a coding session is dispatched, so
+ * subsequent legacy `coding:*` events can be filtered per-session.
+ */
+export function bindCodingSessionToGatewaySession(
+  codingSessionId: string,
+  gatewaySessionId: string,
+): void {
+  codingSessionToGatewaySession.set(codingSessionId, gatewaySessionId);
+  _activeCodingGatewaySession = gatewaySessionId;
+}
+
+/** Drop a coding-session binding (call on session completion/failure). */
+export function unbindCodingSession(codingSessionId: string): void {
+  codingSessionToGatewaySession.delete(codingSessionId);
+  if (codingSessionToGatewaySession.size === 0) _activeCodingGatewaySession = undefined;
+}
+
+/**
+ * Resolve the gateway sessionId for a coding event, preferring the
+ * payload-derived coding sessionId binding when available, then any
+ * caller-supplied override, finally the active coding context.
+ */
+function resolveGatewaySession(
+  codingEvent: CodingEventPayload,
+  override?: string,
+): string | undefined {
+  // session:started carries the coding sessionId directly in payload.
+  if (codingEvent.type === 'coding:session:started') {
+    const bound = codingSessionToGatewaySession.get(codingEvent.payload.sessionId);
+    if (bound) return bound;
+  }
+  // workflow:started carries workflowId which equals the coding sessionId
+  // (per CodingOrchestrator.run()).
+  if (codingEvent.type === 'coding:workflow:started') {
+    const bound = codingSessionToGatewaySession.get(codingEvent.payload.workflowId);
+    if (bound) return bound;
+  }
+  if (override) return override;
+  return _activeCodingGatewaySession;
+}
+
+/**
+ * Extract a real workflowId from the coding event payload when one exists.
+ * Only `coding:workflow:started` carries an explicit `workflowId`; other
+ * events are scoped to the originating session via the resolver above.
+ */
+function extractWorkflowId(codingEvent: CodingEventPayload): string | undefined {
+  if (codingEvent.type === 'coding:workflow:started') {
+    return codingEvent.payload.workflowId;
+  }
+  return undefined;
+}
+
 function emit(codingEvent: CodingEventPayload, sessionId?: string): void {
   if (!_streamer) return;
-  _streamer.emitDAGMessage({
-    id: randomBytes(8).toString('hex'),
-    type: 'coding_event',
-    workflowId: sessionId,
-    codingEvent,
-  });
+  _streamer.emitDAGMessage(
+    {
+      id: randomBytes(8).toString('hex'),
+      type: 'coding_event',
+      workflowId: extractWorkflowId(codingEvent),
+      codingEvent,
+    },
+    resolveGatewaySession(codingEvent, sessionId),
+  );
 }
 
 // ── Public emitter functions ──────────────────────────────────────────────────

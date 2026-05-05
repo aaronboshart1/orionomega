@@ -149,11 +149,26 @@ export class EventStreamer {
   /**
    * Persist an event to SQLite and return the seq number.
    * Returns undefined if persistence is not available.
+   *
+   * When `sessionId` is provided, the event is persisted against THAT
+   * session — never the "first connected" client's session. Callers that
+   * derived `sid` from the originating MainAgentCallback should always
+   * pass it explicitly.
    */
-  private persistEvent(eventType: string, payload: Record<string, unknown>, workflowId?: string): number | undefined {
+  private persistEvent(
+    eventType: string,
+    payload: Record<string, unknown>,
+    workflowId?: string,
+    sessionId?: string,
+  ): number | undefined {
     if (!this.persistence) return undefined;
     try {
-      return this.persistence.appendEvent(this.getActiveSessionId(), eventType, payload, workflowId);
+      return this.persistence.appendEvent(
+        sessionId ?? this.getActiveSessionId(),
+        eventType,
+        payload,
+        workflowId,
+      );
     } catch {
       // Non-fatal — event delivery continues even if persistence fails
       return undefined;
@@ -170,17 +185,20 @@ export class EventStreamer {
    * @param eventType - Optional event type string (e.g. 'done', 'error', 'finding').
    * @param workflowId - Optional workflow ID to scope event delivery.
    */
-  emit(event: unknown, eventType?: string, workflowId?: string): void {
-    // Persist to SQLite first, get seq
+  emit(event: unknown, eventType?: string, workflowId?: string, sessionId?: string): void {
+    // Persist to SQLite first, get seq — attribute to the originating
+    // session rather than "the first connected client".
     const seq = this.persistEvent(
       eventType ?? 'event',
       event as Record<string, unknown>,
       workflowId,
+      sessionId,
     );
 
-    // Buffer events when no clients are connected
+    // Buffer events when no clients are connected — also session-scoped
+    // so the right session's queue receives the event on reconnect.
     if (this.clients.size === 0 && this.sessionManager) {
-      this.sessionManager.bufferEvent(this.getActiveSessionId(), {
+      this.sessionManager.bufferEvent(sessionId ?? this.getActiveSessionId(), {
         id: randomBytes(8).toString('hex'),
         type: 'event',
         workflowId,
@@ -191,6 +209,8 @@ export class EventStreamer {
     }
 
     for (const [clientId, client] of this.clients) {
+      // Apply per-client session filter when caller provided a sessionId
+      if (sessionId && client.sessionId !== sessionId) continue;
       // Apply per-client workflow subscription filter
       if (
         workflowId &&
@@ -238,8 +258,8 @@ export class EventStreamer {
    *
    * @param message - The DAG message to broadcast.
    */
-  emitDAGMessage(message: ServerMessage): void {
-    // Persist DAG message to SQLite, get seq
+  emitDAGMessage(message: ServerMessage, sessionId?: string): void {
+    // Persist DAG message to SQLite, get seq — session-attributed.
     const seq = this.persistEvent(
       message.type,
       {
@@ -251,17 +271,20 @@ export class EventStreamer {
         gateResolved: message.gateResolved,
       },
       message.workflowId,
+      sessionId,
     );
 
     const msgWithSeq: ServerMessage = { ...message, seq };
 
-    // Buffer DAG messages when no clients are connected
+    // Buffer DAG messages when no clients are connected — session-scoped.
     if (this.clients.size === 0 && this.sessionManager) {
-      this.sessionManager.bufferEvent(this.getActiveSessionId(), msgWithSeq);
+      this.sessionManager.bufferEvent(sessionId ?? this.getActiveSessionId(), msgWithSeq);
       return;
     }
 
     for (const [, client] of this.clients) {
+      // Apply per-client session filter when caller provided a sessionId
+      if (sessionId && client.sessionId !== sessionId) continue;
       // Apply per-client workflow subscription filter
       if (
         message.workflowId &&

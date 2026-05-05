@@ -51,6 +51,9 @@ export interface RunArtifactCollectorConfig {
   hindsight: HindsightClient;
   /** Target bank ID for storing run artifacts. */
   bankId: string;
+  /** Originating gateway session id — when set, every retained memory is
+   *  tagged `session:<sessionId>` for provenance. Recall is unaffected. */
+  sessionId?: string;
   /** Maximum tokens per chunk. Default: 2048. */
   maxChunkTokens?: number;
   /** Maximum total tokens per run. Default: 100000. */
@@ -86,6 +89,7 @@ export interface CollectionResult {
 export class RunArtifactCollector {
   private readonly hs: HindsightClient;
   private readonly bankId: string;
+  private readonly sessionId: string | undefined;
   private readonly maxChunkTokens: number;
   private readonly maxTotalTokens: number;
   private readonly minContentChars: number;
@@ -93,9 +97,15 @@ export class RunArtifactCollector {
   constructor(config: RunArtifactCollectorConfig) {
     this.hs = config.hindsight;
     this.bankId = config.bankId;
+    this.sessionId = config.sessionId;
     this.maxChunkTokens = config.maxChunkTokens ?? MAX_CHUNK_TOKENS;
     this.maxTotalTokens = config.maxTotalTokensPerRun ?? MAX_TOTAL_TOKENS_PER_RUN;
     this.minContentChars = config.minContentChars ?? MIN_CONTENT_CHARS;
+  }
+
+  /** Tags applied to every memory written by this collector. */
+  private get retentionTags(): string[] | undefined {
+    return this.sessionId ? [`session:${this.sessionId}`] : undefined;
   }
 
   /**
@@ -180,7 +190,7 @@ export class RunArtifactCollector {
 
           // Store to Hindsight
           try {
-            await this.hs.retainOne(this.bankId, chunk.content, 'run_artifact');
+            await this.hs.retainOne(this.bankId, chunk.content, 'run_artifact', this.retentionTags);
             result.itemsStored++;
             result.totalTokens += chunkTokens;
           } catch (err) {
@@ -201,7 +211,7 @@ export class RunArtifactCollector {
     if (result.itemsStored > 0) {
       try {
         const manifest = this.buildManifest(runId, runDir, mdFiles, taskSummary, result);
-        await this.hs.retainOne(this.bankId, manifest, 'run_manifest');
+        await this.hs.retainOne(this.bankId, manifest, 'run_manifest', this.retentionTags);
         result.itemsStored++;
         result.totalTokens += estimateTokens(manifest);
       } catch (err) {
@@ -483,7 +493,8 @@ export async function collectRunArtifacts(
   runId: string,
   runDir: string,
   taskSummary: string,
+  sessionId?: string,
 ): Promise<CollectionResult> {
-  const collector = new RunArtifactCollector({ hindsight, bankId });
+  const collector = new RunArtifactCollector({ hindsight, bankId, sessionId });
   return collector.collectAndStore(runId, runDir, taskSummary);
 }

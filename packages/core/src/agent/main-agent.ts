@@ -12,6 +12,7 @@
  */
 
 import { spawn } from 'node:child_process';
+import { existsSync, unlinkSync } from 'node:fs';
 import { AnthropicClient } from '../anthropic/client.js';
 import type { AnthropicMessage } from '../anthropic/client.js';
 import { buildSystemPrompt, buildRunDirBlock, type PromptContext } from './prompt-builder.js';
@@ -362,7 +363,39 @@ export class MainAgent {
     this.contextBySession.delete(sessionId);
     this.totalsBySession.delete(sessionId);
     for (const [wfId, sid] of this.workflowSessions) {
-      if (sid === sessionId) this.workflowSessions.delete(wfId);
+      if (sid === sessionId) {
+        this.workflowSessions.delete(wfId);
+        // Also drop the mirrored mapping inside RetentionEngine so any
+        // late-arriving workflow events for this session don't keep tagging
+        // memories under a deleted session id.
+        this.memory.retention?.unregisterWorkflowSession(wfId);
+      }
+    }
+    // Best-effort delete of the per-session hot-window file (and its .bak)
+    // so a recreated session with the same id doesn't rehydrate stale
+    // conversation context. Hindsight memories are NOT touched — they are
+    // the cross-session knowledge graph and survive session deletion.
+    try {
+      const configPath = process.env.CONFIG_PATH || '';
+      const configDir = configPath
+        ? configPath.replace(/\/[^/]+$/, '')
+        : `${process.env.HOME || '/root'}/.orionomega`;
+      const hwPath = `${configDir}/sessions/hot-window-${sessionId}.json`;
+      for (const p of [hwPath, `${hwPath}.bak`]) {
+        try {
+          if (existsSync(p)) unlinkSync(p);
+        } catch (err) {
+          log.debug('Failed to delete per-session hot-window file', {
+            path: p,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+    } catch (err) {
+      log.debug('clearSessionState: hot-window cleanup skipped', {
+        sessionId,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
     log.info('Cleared in-memory state for session', { sessionId });
   }
@@ -370,6 +403,11 @@ export class MainAgent {
   /** Register a workflow → session mapping so async DAG callbacks route correctly. */
   registerWorkflowSession(workflowId: string, sessionId: string): void {
     this.workflowSessions.set(workflowId, sessionId);
+    // Mirror the binding into the RetentionEngine so event-driven memory
+    // writes (findings, errors, node outputs) get tagged with the source
+    // session even though they originate from the EventBus, not from a
+    // session-scoped callback.
+    this.memory.retention?.registerWorkflowSession(workflowId, sessionId);
   }
 
   /**
@@ -523,18 +561,32 @@ export class MainAgent {
           this.emitSessionStatus(sid);
         }
         this.callbacks.onDAGComplete?.(result);
-        // Workflow is done — drop the workflow→session mapping so the map
-        // doesn't grow unboundedly across the lifetime of the process.
-        this.workflowSessions.delete(result.workflowId);
+        // NOTE: workflowSessions.delete() is intentionally NOT called here.
+        // OrchestrationBridge.cleanupWorkflow() fires onWorkflowEnd AFTER
+        // onDAGComplete, and the wrapped onWorkflowEnd needs to resolve the
+        // sessionId from workflowSessions. Deleting here would force the
+        // resolver to fall back to currentSessionId — wrong attribution.
+        // The deletion happens in the onWorkflowEnd wrapper below, after
+        // the user callback has already received the correct session id.
+      },
+      onWorkflowEnd: (wfId) => {
+        // Invoke the user-facing callback first so session resolution still
+        // works (workflowSessions still contains the wfId → sid mapping).
+        this.callbacks.onWorkflowEnd?.(wfId);
+        // Now drop the mapping so the maps don't grow unboundedly across
+        // the lifetime of the process. Mirror the cleanup into the
+        // RetentionEngine to keep both maps in sync.
+        this.workflowSessions.delete(wfId);
+        this.memory.retention?.unregisterWorkflowSession(wfId);
       },
       onDAGDispatched: (info) => {
         // Bind workflowId → currentSessionId on dispatch so subsequent
         // async DAG events resolve to the originating session.
-        this.workflowSessions.set(info.workflowId, this.currentSessionId);
+        this.registerWorkflowSession(info.workflowId, this.currentSessionId);
         this.callbacks.onDAGDispatched?.(info);
       },
       onDAGConfirm: (info) => {
-        this.workflowSessions.set(info.workflowId, this.currentSessionId);
+        this.registerWorkflowSession(info.workflowId, this.currentSessionId);
         this.callbacks.onDAGConfirm?.(info);
       },
       onDirectStart: (info) => {
@@ -543,7 +595,7 @@ export class MainAgent {
         // text/thinking emissions keyed by runId) attributes back to the
         // session that initiated the direct run, not whatever session is
         // currently in the foreground.
-        this.workflowSessions.set(info.runId, this.currentSessionId);
+        this.registerWorkflowSession(info.runId, this.currentSessionId);
         this.callbacks.onDirectStart?.(info);
       },
       onDirectComplete: (info) => {
@@ -554,6 +606,11 @@ export class MainAgent {
         }
         this.callbacks.onDirectComplete?.(info);
         this.workflowSessions.delete(info.runId);
+        // Mirror the cleanup into RetentionEngine — direct runs registered
+        // their runId via registerWorkflowSession() at start, so we must
+        // unregister it here to keep both maps in sync and prevent the
+        // workflowSessions map in retention-engine from growing unbounded.
+        this.memory.retention?.unregisterWorkflowSession(info.runId);
       },
     };
     (this as unknown as { orchestration: OrchestrationBridge }).orchestration = new OrchestrationBridge(
@@ -1244,7 +1301,7 @@ export class MainAgent {
   /** Summarize the session to Hindsight. */
   async summarizeSession(sessionId?: string): Promise<void> {
     const sid = sessionId || this.currentSessionId;
-    await this.memory.summarize(this.getContext(sid).getHistory());
+    await this.memory.summarize(this.getContext(sid).getHistory(), sid);
   }
 
   /** Get the shared event bus. */

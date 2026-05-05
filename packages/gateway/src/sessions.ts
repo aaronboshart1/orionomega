@@ -1369,7 +1369,13 @@ export class SessionManager {
   private loadAllFromDisk(): void {
     try {
       const files = readdirSync(SESSIONS_DIR).filter(
-        (f) => f.endsWith('.json') && f !== 'hot-window.json',
+        // Exclude legacy singleton hot-window file AND every per-session
+        // hot-window-<sid>.json (and their .bak siblings) so they aren't
+        // misparsed as session files at startup.
+        (f) =>
+          f.endsWith('.json') &&
+          f !== 'hot-window.json' &&
+          !f.startsWith('hot-window-'),
       );
 
       for (const file of files) {

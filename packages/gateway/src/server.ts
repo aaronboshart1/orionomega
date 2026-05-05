@@ -47,7 +47,7 @@ import {
 import { rateLimitRest, startRateLimitCleanup, stopRateLimitCleanup } from './rate-limit.js';
 import { setSecurityHeaders } from './security-headers.js';
 import { handleStartCodingSession, handleGetCodingSession, handleGetCodingSteps, handleCancelCodingSession } from './routes/coding.js';
-import { setCodingEventStreamer, emitCodingSessionStarted, emitCodingWorkflowStarted, emitCodingStepStarted, emitCodingStepProgress, emitCodingStepCompleted, emitCodingStepFailed, emitCodingReviewStarted, emitCodingReviewCompleted, emitCodingCommitCompleted, emitCodingSessionCompleted } from './coding-events.js';
+import { setCodingEventStreamer, emitCodingSessionStarted, emitCodingWorkflowStarted, emitCodingStepStarted, emitCodingStepProgress, emitCodingStepCompleted, emitCodingStepFailed, emitCodingReviewStarted, emitCodingReviewCompleted, emitCodingCommitCompleted, emitCodingSessionCompleted, bindCodingSessionToGatewaySession, unbindCodingSession } from './coding-events.js';
 import { FeedService } from './feed/index.js';
 import { handleGetFeed, handleGetFeedMessage, handlePostFeedMessage, handleGetFeedCount } from './routes/feed.js';
 
@@ -143,6 +143,16 @@ setCodingEventStreamer(eventStreamer);
 // Wire the CodingOrchestrator legacy emitters to the gateway coding event system.
 // This ensures coding_event messages are broadcast to WebSocket clients in real time.
 setCodingOrchestatorEmitters({
+  // Bind coding sessionId → gateway sessionId BEFORE any session/workflow
+  // events are emitted, so the resolver in coding-events.ts can scope all
+  // subsequent step/review/commit events (which carry no IDs in their
+  // payloads) back to the originating gateway session.
+  bindSession: (codingSessionId, gatewaySessionId) => {
+    bindCodingSessionToGatewaySession(codingSessionId, gatewaySessionId);
+  },
+  unbindSession: (codingSessionId) => {
+    unbindCodingSession(codingSessionId);
+  },
   sessionStarted: (p) => emitCodingSessionStarted(p, p.sessionId),
   workflowStarted: (p) => emitCodingWorkflowStarted(p, p.workflowId),
   stepStarted: (p) => emitCodingStepStarted(p),
@@ -471,7 +481,7 @@ async function initMainAgent(): Promise<void> {
         workerEvent.workflowId,
       );
 
-      eventStreamer.emit(event, workerEvent.type, workerEvent.workflowId);
+      eventStreamer.emit(event, workerEvent.type, workerEvent.workflowId, sid);
     },
     onGraphState(state, sessionId) {
       const sid = sessionId ?? DEFAULT_SESSION_ID;
@@ -776,7 +786,7 @@ async function initMainAgent(): Promise<void> {
         type: 'dag_dispatched',
         workflowId: dispatch.workflowId,
         dagDispatch: dispatch,
-      });
+      }, sid);
       sessionManager.addMessage(sid, {
         id: msgId,
         role: 'assistant',
@@ -833,7 +843,7 @@ async function initMainAgent(): Promise<void> {
         type: 'dag_progress',
         workflowId: progress.workflowId,
         dagProgress: progress,
-      });
+      }, sid);
     },
     onDAGComplete(result, sessionId) {
       const sid = sessionId ?? DEFAULT_SESSION_ID;
@@ -897,7 +907,7 @@ async function initMainAgent(): Promise<void> {
         type: 'dag_complete',
         workflowId: result.workflowId,
         dagComplete: result,
-      });
+      }, sid);
       {
         sessionManager.addMessage(sid, {
           id: msgId,
@@ -970,7 +980,7 @@ async function initMainAgent(): Promise<void> {
         type: 'gate_request',
         workflowId: request.workflowId,
         gateRequest: request,
-      });
+      }, sid);
     },
     onGateResolved(info, sessionId) {
       const sid = sessionId ?? DEFAULT_SESSION_ID;
@@ -990,7 +1000,7 @@ async function initMainAgent(): Promise<void> {
         type: 'gate_resolved',
         workflowId: info.workflowId,
         gateResolved: info,
-      });
+      }, sid);
     },
     onDAGConfirm(confirm, sessionId) {
       const sid = sessionId ?? DEFAULT_SESSION_ID;
@@ -1038,7 +1048,7 @@ async function initMainAgent(): Promise<void> {
         type: 'dag_confirm',
         workflowId: confirm.workflowId,
         dagConfirm: confirm,
-      });
+      }, sid);
       {
         sessionManager.addMessage(sid, {
           id: msgId,

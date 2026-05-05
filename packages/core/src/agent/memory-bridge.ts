@@ -400,14 +400,22 @@ export class MemoryBridge {
 
   /**
    * Summarize the current session and retain to Hindsight.
+   *
+   * @param sessionId - Originating gateway session id. When set, the
+   *   resulting `session_summary` (and `project_update` mirror) are
+   *   tagged `session:<sessionId>` so provenance is preserved while
+   *   recall remains cross-session.
    */
-  async summarize(history: Array<{ role: string; content: string }>): Promise<void> {
+  async summarize(
+    history: Array<{ role: string; content: string }>,
+    sessionId?: string,
+  ): Promise<void> {
     if (!this.sessionSummarizer) return;
 
     try {
-      await this.sessionSummarizer.summarize(history, this.activeProjectBank ?? undefined);
-      log.info('Session summarised');
-      this.onMemoryEvent?.('summary', 'Session summary retained', this.activeProjectBank ?? undefined);
+      await this.sessionSummarizer.summarize(history, this.activeProjectBank ?? undefined, sessionId);
+      log.info('Session summarised', { sessionId });
+      this.onMemoryEvent?.('summary', 'Session summary retained', this.activeProjectBank ?? undefined, sessionId ? { sessionId } : undefined);
     } catch (err) {
       log.warn('Session summary failed', { error: err instanceof Error ? err.message : String(err) });
     }

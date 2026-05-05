@@ -37,6 +37,9 @@ export interface RetentionConfig {
 export interface WorkflowOutcome {
   bankId: string;
   workflowId?: string;
+  /** Originating gateway session id — when set, every memory written for
+   *  this workflow's outcome is tagged `session:<sessionId>`. */
+  sessionId?: string;
   taskSummary: string;
   workerCount: number;
   durationSec: number;
@@ -349,6 +352,10 @@ export class RetentionEngine {
   private unsubscribe: (() => void) | null = null;
   /** Map workflowId → bankId, set by the orchestration bridge when dispatching. */
   private workflowBanks = new Map<string, string>();
+  /** Map workflowId → originating gateway sessionId, set by the main agent
+   *  whenever a workflow is dispatched on behalf of a session. Used to
+   *  attribute event-driven retentions back to the source session via tags. */
+  private workflowSessions = new Map<string, string>();
   /** Recent retention buffer for intra-batch dedup (avoids redundant API calls). */
   private recentRetentions: Array<{ content: string; bankId: string; ts: number }> = [];
   private static readonly RECENT_BUFFER_TTL_MS = 30_000; // 30 seconds
@@ -405,6 +412,37 @@ export class RetentionEngine {
   }
 
   /**
+   * Register a workflow → originating gateway session so event-driven
+   * retentions can be tagged with `session:<sessionId>` for provenance.
+   */
+  registerWorkflowSession(workflowId: string, sessionId: string): void {
+    this.workflowSessions.set(workflowId, sessionId);
+  }
+
+  /** Unregister a workflow → session mapping (call on workflow completion). */
+  unregisterWorkflowSession(workflowId: string): void {
+    this.workflowSessions.delete(workflowId);
+  }
+
+  /**
+   * Look up the originating gateway session for a workflow (if known).
+   * Used by orchestration-side callers (e.g. run artifact collector) that
+   * need to tag downstream memory writes with session provenance.
+   */
+  getWorkflowSession(workflowId: string): string | undefined {
+    return this.workflowSessions.get(workflowId);
+  }
+
+  /**
+   * Resolve the originating session for a workflow event, if known.
+   * Returns undefined when no mapping exists (e.g. detached background work).
+   */
+  private resolveSessionForEvent(event: WorkerEvent): string | undefined {
+    if (!event.workflowId) return undefined;
+    return this.workflowSessions.get(event.workflowId);
+  }
+
+  /**
    * Manually retain a piece of information to a specific bank.
    * Now includes: token budget enforcement, importance scoring,
    * local dedup buffer, and content compression.
@@ -413,7 +451,13 @@ export class RetentionEngine {
    * @param content - The information to retain.
    * @param context - Category (e.g. 'preference', 'decision', 'lesson').
    */
-  async retain(bankId: string, content: string, context: string): Promise<void> {
+  /**
+   * @param sessionId - Optional originating gateway session. When set, the
+   *   memory is tagged `session:<sessionId>` so the live memory feed and
+   *   downstream provenance queries can attribute it. Recall remains
+   *   cross-session; tags do NOT scope retrieval.
+   */
+  async retain(bankId: string, content: string, context: string, sessionId?: string): Promise<void> {
     try {
       // Compress content before any scoring or storage
       const compressed = compressMemoryContent(content);
@@ -473,7 +517,8 @@ export class RetentionEngine {
       // Compute importance for metadata
       const importance = computeImportance(compressed, context);
 
-      await this.hs.retainOne(bankId, compressed, context);
+      const tags = sessionId ? [`session:${sessionId}`] : undefined;
+      await this.hs.retainOne(bankId, compressed, context, tags);
 
       // Track in local buffer
       this.trackRetention(bankId, compressed);
@@ -492,6 +537,7 @@ export class RetentionEngine {
         contentPreview: compressed.slice(0, 200),
         contentLength: compressed.length,
         estimatedTokens: contentTokens,
+        ...(sessionId ? { sessionId } : {}),
       });
       this.onAfterRetain?.(bankId, context);
     } catch (err) {
@@ -547,6 +593,11 @@ export class RetentionEngine {
       bankId, taskSummary, workerCount, durationSec,
       outputPaths, decisions, findings, errors, infraChanges,
     } = outcome;
+    // Resolve session via outcome → workflowSessions fallback so callers
+    // that don't know the originating session (e.g. orchestration-bridge)
+    // still produce session-tagged memories.
+    const sessionId = outcome.sessionId
+      ?? (outcome.workflowId ? this.workflowSessions.get(outcome.workflowId) : undefined);
 
     try {
       const hasSubstance = decisions.length > 0 || findings.length > 0
@@ -572,7 +623,7 @@ export class RetentionEngine {
         }
       }
 
-      await this.retain(bankId, summary, 'project_update');
+      await this.retain(bankId, summary, 'project_update', sessionId);
 
       // Consolidate findings before retaining to reduce redundant memories
       const now = new Date().toISOString();
@@ -581,12 +632,12 @@ export class RetentionEngine {
 
       // Retain decisions individually
       for (const decision of decisions) {
-        this.retain(bankId, decision, 'decision').catch((err) => { log.debug('Fire-and-forget retain failed', { error: err instanceof Error ? err.message : String(err) }); });
+        this.retain(bankId, decision, 'decision', sessionId).catch((err) => { log.debug('Fire-and-forget retain failed', { error: err instanceof Error ? err.message : String(err) }); });
       }
 
       // Retain consolidated findings
       for (const finding of consolidatedFindings) {
-        this.retain(bankId, finding.content, 'lesson').catch((err) => { log.debug('Fire-and-forget retain failed', { error: err instanceof Error ? err.message : String(err) }); });
+        this.retain(bankId, finding.content, 'lesson', sessionId).catch((err) => { log.debug('Fire-and-forget retain failed', { error: err instanceof Error ? err.message : String(err) }); });
       }
 
       // Retain errors as lessons
@@ -594,13 +645,13 @@ export class RetentionEngine {
         const errorContent = error.resolution
           ? `Error in ${error.worker}: ${error.message} — Resolution: ${error.resolution}`
           : `Error in ${error.worker}: ${error.message}`;
-        this.retain(bankId, errorContent, 'lesson').catch((err) => { log.debug('Fire-and-forget retain failed', { error: err instanceof Error ? err.message : String(err) }); });
+        this.retain(bankId, errorContent, 'lesson', sessionId).catch((err) => { log.debug('Fire-and-forget retain failed', { error: err instanceof Error ? err.message : String(err) }); });
       }
 
       // Retain infrastructure changes
       if (infraChanges && infraChanges.length > 0) {
         for (const change of infraChanges) {
-          this.retain('infra', change, 'infrastructure').catch((err) => { log.debug('Fire-and-forget retain failed', { error: err instanceof Error ? err.message : String(err) }); });
+          this.retain('infra', change, 'infrastructure', sessionId).catch((err) => { log.debug('Fire-and-forget retain failed', { error: err instanceof Error ? err.message : String(err) }); });
         }
       }
 
@@ -620,7 +671,7 @@ export class RetentionEngine {
             .join('\n');
           manifestParts.push(`Per-node artifacts:\n${perNode}`);
         }
-        this.retain(bankId, manifestParts.join('\n'), 'artifact').catch((err) => { log.debug('Fire-and-forget retain failed', { error: err instanceof Error ? err.message : String(err) }); });
+        this.retain(bankId, manifestParts.join('\n'), 'artifact', sessionId).catch((err) => { log.debug('Fire-and-forget retain failed', { error: err instanceof Error ? err.message : String(err) }); });
       }
     } catch (err) {
       log.warn('Failed to retain workflow outcome', {
@@ -680,12 +731,14 @@ export class RetentionEngine {
    */
   private handleEvent(event: WorkerEvent): void {
     const bankId = this.resolveBankForEvent(event);
+    const sid = this.resolveSessionForEvent(event);
 
     if (event.type === 'finding' && event.message) {
       this.retain(
         bankId,
         event.message,
         'lesson',
+        sid,
       ).catch((err) => { log.debug('Fire-and-forget retain failed', { error: err instanceof Error ? err.message : String(err) }); });
     }
 
@@ -694,6 +747,7 @@ export class RetentionEngine {
         bankId,
         `Worker ${event.workerId} error: ${event.error}`,
         'lesson',
+        sid,
       ).catch((err) => { log.debug('Fire-and-forget retain failed', { error: err instanceof Error ? err.message : String(err) }); });
     }
 
@@ -702,7 +756,7 @@ export class RetentionEngine {
       if (Array.isArray(data.findings)) {
         for (const finding of data.findings) {
           if (typeof finding === 'string') {
-            this.retain(bankId, finding, 'lesson').catch((err) => { log.debug('Fire-and-forget retain failed', { error: err instanceof Error ? err.message : String(err) }); });
+            this.retain(bankId, finding, 'lesson', sid).catch((err) => { log.debug('Fire-and-forget retain failed', { error: err instanceof Error ? err.message : String(err) }); });
           }
         }
       }
@@ -717,10 +771,10 @@ export class RetentionEngine {
           typeof data.finalResult === 'string' ? `Result: ${data.finalResult}` : null,
           `Output: ${data.output.slice(0, 4000)}`,
         ].filter(Boolean).join('\n');
-        this.retain(bankId, outputContent, 'node_output').catch((err) => { log.debug('Fire-and-forget retain failed', { error: err instanceof Error ? err.message : String(err) }); });
+        this.retain(bankId, outputContent, 'node_output', sid).catch((err) => { log.debug('Fire-and-forget retain failed', { error: err instanceof Error ? err.message : String(err) }); });
       } else if (typeof data.finalResult === 'string' && data.finalResult.length > 0) {
         const resultContent = `Node: ${nodeLabel}\nWorkflow: ${workflowId}\nResult: ${data.finalResult}`;
-        this.retain(bankId, resultContent, 'node_output').catch((err) => { log.debug('Fire-and-forget retain failed', { error: err instanceof Error ? err.message : String(err) }); });
+        this.retain(bankId, resultContent, 'node_output', sid).catch((err) => { log.debug('Fire-and-forget retain failed', { error: err instanceof Error ? err.message : String(err) }); });
       }
 
       if (Array.isArray(data.outputPaths) && data.outputPaths.length > 0) {
@@ -729,7 +783,7 @@ export class RetentionEngine {
           `Workflow: ${workflowId}`,
           `Artifacts: ${(data.outputPaths as string[]).join(', ')}`,
         ].join('\n');
-        this.retain(bankId, artifactContent, 'artifact').catch((err) => { log.debug('Fire-and-forget retain failed', { error: err instanceof Error ? err.message : String(err) }); });
+        this.retain(bankId, artifactContent, 'artifact', sid).catch((err) => { log.debug('Fire-and-forget retain failed', { error: err instanceof Error ? err.message : String(err) }); });
       }
     }
   }

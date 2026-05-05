@@ -176,6 +176,7 @@ export class SessionSummarizer {
   async summarize(
     messages: { role: string; content: string }[],
     projectBank?: string,
+    sessionId?: string,
   ): Promise<void> {
     if (messages.length < MIN_MESSAGES) {
       log.debug('Skipping summary — too few messages', { count: messages.length });
@@ -237,21 +238,24 @@ export class SessionSummarizer {
         return;
       }
 
-      // F9: Retain to core bank with retry
+      // F9: Retain to core bank with retry. Tag the summary with the
+      // originating session so provenance is preserved while recall stays
+      // cross-session.
+      const tags = sessionId ? [`session:${sessionId}`] : undefined;
       await withRetry(
-        () => this.hs.retainOne('core', summary, 'session_summary'),
+        () => this.hs.retainOne('core', summary, 'session_summary', tags),
         'Session summary retain (core)',
       );
-      log.info('Session summary retained to core');
+      log.info('Session summary retained to core', { sessionId });
 
       // Retain to project bank if provided (also with retry)
       if (projectBank) {
         try {
           await withRetry(
-            () => this.hs.retainOne(projectBank, summary, 'project_update'),
+            () => this.hs.retainOne(projectBank, summary, 'project_update', tags),
             `Session summary retain (${projectBank})`,
           );
-          log.info('Session summary retained to project bank', { projectBank });
+          log.info('Session summary retained to project bank', { projectBank, sessionId });
         } catch (err) {
           log.warn('Failed to retain summary to project bank', {
             projectBank,

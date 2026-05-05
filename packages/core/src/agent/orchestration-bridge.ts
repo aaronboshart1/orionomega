@@ -818,12 +818,17 @@ ${userTask}`;
     // work, the system can recall complete findings, analysis, and reports.
     if (this.memory.client && this.memory.projectBank) {
       const runDir = `${this.config.workspaceDir}/output/${result.workflowId}`;
+      // Look up the originating gateway session via the retention engine's
+      // workflow→session map so collected artifacts are tagged with
+      // `session:<sessionId>` for provenance. Recall stays cross-session.
+      const sessionIdForRun = this.memory.retention?.getWorkflowSession(result.workflowId);
       collectRunArtifacts(
         this.memory.client,
         this.memory.projectBank,
         result.workflowId,
         runDir,
         result.taskSummary,
+        sessionIdForRun,
       ).then((collectionResult) => {
         if (collectionResult.itemsStored > 0) {
           log.info('Run artifacts stored to memory', {
@@ -944,6 +949,7 @@ ${userTask}`;
     this.commands.removeWorkflow(workflowId);
     if (this.memory.retention) {
       this.memory.retention.unregisterWorkflowBank(workflowId);
+      this.memory.retention.unregisterWorkflowSession(workflowId);
     }
   }
 

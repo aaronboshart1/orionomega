@@ -85,6 +85,20 @@ export interface CodingEventEmitters {
   reviewCompleted: (payload: { decision: 'approve' | 'reject' | 'request-changes'; feedback: string; metrics?: Record<string, unknown> }) => void;
   commitCompleted: (payload: { commitHash: string; branch: string }) => void;
   sessionCompleted: (payload: { summary: string; filesModified?: string[]; filesCreated?: string[]; totalDurationMs?: number }) => void;
+  /**
+   * Bind a coding-orchestrator sessionId to the originating gateway/conversation
+   * sessionId. Called by `run()`/`start()` immediately before `sessionStarted`
+   * so downstream gateways can scope subsequent step/review/commit events
+   * (which carry no IDs in their payloads) back to the correct session.
+   * Optional for backward compatibility with non-multi-session emitters.
+   */
+  bindSession?: (codingSessionId: string, gatewaySessionId: string) => void;
+  /**
+   * Drop the binding registered by {@link bindSession}. Called when a coding
+   * session terminates (success, failure, or cancel) so the binding map does
+   * not grow unboundedly. Optional for backward compatibility.
+   */
+  unbindSession?: (codingSessionId: string) => void;
 }
 
 let _emitters: CodingEventEmitters | null = null;
@@ -238,6 +252,10 @@ export class CodingOrchestrator {
     // Select template
     const template = matchCodingIntent(taskDescription) ?? 'feature-implementation';
 
+    // Bind coding sessionId → conversation/gateway sessionId BEFORE emitting
+    // any events so the downstream resolver can scope them correctly.
+    _emitters?.bindSession?.(sessionId, conversationId);
+
     // Emit legacy events
     _emitters?.sessionStarted({ repoUrl, branch, sessionId });
     _emitters?.workflowStarted({ workflowId: sessionId, template, nodeCount: DEFAULT_CODING_STEPS.length });
@@ -277,6 +295,9 @@ export class CodingOrchestrator {
         });
       });
       throw err;
+    } finally {
+      // Always release the binding so the resolver map does not grow.
+      _emitters?.unbindSession?.(sessionId);
     }
   }
 
@@ -296,6 +317,9 @@ export class CodingOrchestrator {
     });
 
     const template = matchCodingIntent(taskDescription) ?? 'feature-implementation';
+    // Bind coding sessionId → conversation/gateway sessionId BEFORE emitting
+    // any events so the downstream resolver can scope them correctly.
+    _emitters?.bindSession?.(sessionId, conversationId);
     _emitters?.sessionStarted({ repoUrl, branch, sessionId });
     _emitters?.workflowStarted({ workflowId: sessionId, template, nodeCount: DEFAULT_CODING_STEPS.length });
 
@@ -324,6 +348,10 @@ export class CodingOrchestrator {
             error: updErr instanceof Error ? updErr.message : String(updErr),
           });
         });
+      })
+      .finally(() => {
+        // Always release the binding so the resolver map does not grow.
+        _emitters?.unbindSession?.(sessionId);
       });
 
     return sessionId;
