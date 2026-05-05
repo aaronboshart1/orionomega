@@ -256,7 +256,8 @@ async function initMainAgent(): Promise<void> {
   const bgStreamState = new Map<string, { textId: string; buffer: string }>();
 
   const callbacks: MainAgentCallbacks = {
-    onText(text, streaming, done, workflowId) {
+    onText(text, streaming, done, workflowId, sessionId) {
+      const sid = sessionId ?? DEFAULT_SESSION_ID;
       if (workflowId) {
         let state = bgStreamState.get(workflowId);
         if (!state) {
@@ -269,7 +270,7 @@ async function initMainAgent(): Promise<void> {
           const fullContent = getFullContent(state.buffer, text, streaming);
           stateStore.appendEvent({
             id: state.textId,
-            sessionId: DEFAULT_SESSION_ID,
+            sessionId: sid,
             type: 'message',
             timestamp: new Date().toISOString(),
             data: { role: 'assistant', content: fullContent, workflowId, background: true },
@@ -284,7 +285,7 @@ async function initMainAgent(): Promise<void> {
           streaming,
           done,
           workflowId,
-        });
+        }, sid);
 
         if (streaming && !done) {
           state.buffer += text;
@@ -293,17 +294,14 @@ async function initMainAgent(): Promise<void> {
         if (done || !streaming) {
           const fullContent = getFullContent(state.buffer, text, streaming);
           if (fullContent) {
-            const sid = DEFAULT_SESSION_ID;
-            if (sid) {
-              sessionManager.addMessage(sid, {
-                id: state.textId,
-                role: 'assistant',
-                content: fullContent,
-                timestamp: new Date().toISOString(),
-                type: 'text',
-                metadata: { workflowId, background: true },
-              });
-            }
+            sessionManager.addMessage(sid, {
+              id: state.textId,
+              role: 'assistant',
+              content: fullContent,
+              timestamp: new Date().toISOString(),
+              type: 'text',
+              metadata: { workflowId, background: true },
+            });
           }
           bgStreamState.delete(workflowId);
         }
@@ -316,7 +314,7 @@ async function initMainAgent(): Promise<void> {
         if (fullContent) {
           stateStore.appendEvent({
             id: currentTextId,
-            sessionId: DEFAULT_SESSION_ID,
+            sessionId: sid,
             type: 'message',
             timestamp: new Date().toISOString(),
             data: { role: 'assistant', content: fullContent },
@@ -331,7 +329,7 @@ async function initMainAgent(): Promise<void> {
         streaming,
         done,
         workflowId,
-      });
+      }, sid);
 
       if (streaming && !done) {
         streamBuffer += text;
@@ -341,28 +339,26 @@ async function initMainAgent(): Promise<void> {
         const fullContent = getFullContent(streamBuffer, text, streaming);
 
         if (fullContent) {
-          const sid = DEFAULT_SESSION_ID;
-          if (sid) {
-            sessionManager.addMessage(sid, {
-              id: currentTextId,
-              role: 'assistant',
-              content: fullContent,
-              timestamp: new Date().toISOString(),
-              type: 'text',
-            });
-          }
+          sessionManager.addMessage(sid, {
+            id: currentTextId,
+            role: 'assistant',
+            content: fullContent,
+            timestamp: new Date().toISOString(),
+            type: 'text',
+          });
         }
 
         streamBuffer = '';
         currentTextId = randomBytes(8).toString('hex');
       }
     },
-    onThinking(text, streaming, done, workflowId) {
+    onThinking(text, streaming, done, workflowId, sessionId) {
+      const sid = sessionId ?? DEFAULT_SESSION_ID;
       // Store thinking content to state store (only on completion to avoid noise)
       if (done || !streaming) {
         stateStore.appendEvent({
           id: currentThinkingId,
-          sessionId: DEFAULT_SESSION_ID,
+          sessionId: sid,
           type: 'thinking',
           timestamp: new Date().toISOString(),
           data: { thinking: text, streaming, done },
@@ -377,18 +373,19 @@ async function initMainAgent(): Promise<void> {
         streaming,
         done,
         workflowId,
-      });
+      }, sid);
       if (done || !streaming) {
         currentThinkingId = randomBytes(8).toString('hex');
       }
     },
-    onThinkingStep(step: { id: string; name: string; status: 'pending' | 'active' | 'done'; startedAt?: number; completedAt?: number; elapsedMs?: number; detail?: string }, workflowId?: string) {
+    onThinkingStep(step: { id: string; name: string; status: 'pending' | 'active' | 'done'; startedAt?: number; completedAt?: number; elapsedMs?: number; detail?: string }, workflowId?: string, sessionId?: string) {
+      const sid = sessionId ?? DEFAULT_SESSION_ID;
       const evtId = randomBytes(8).toString('hex');
 
       // Store thinking steps to state store
       stateStore.appendEvent({
         id: evtId,
-        sessionId: DEFAULT_SESSION_ID,
+        sessionId: sid,
         type: 'thinking_step',
         timestamp: new Date().toISOString(),
         data: { step },
@@ -400,9 +397,10 @@ async function initMainAgent(): Promise<void> {
         type: 'thinking_step',
         step,
         workflowId,
-      });
+      }, sid);
     },
-    onPlan(plan) {
+    onPlan(plan, sessionId) {
+      const sid = sessionId ?? DEFAULT_SESSION_ID;
       // Use graph.id as the message ID so the TUI can send it back
       // in plan_response and the MainAgent can match it to pendingPlanId.
       const graph = (plan as PlannerOutput).graph;
@@ -419,7 +417,7 @@ async function initMainAgent(): Promise<void> {
       // Store plan to state store BEFORE broadcasting
       stateStore.appendEvent({
         id: planId,
-        sessionId: DEFAULT_SESSION_ID,
+        sessionId: sid,
         type: 'plan',
         timestamp: now,
         data: { plan: transportPlan },
@@ -428,7 +426,7 @@ async function initMainAgent(): Promise<void> {
       // Track as pending action awaiting approval
       stateStore.addPendingAction({
         id: planId,
-        sessionId: DEFAULT_SESSION_ID,
+        sessionId: sid,
         type: 'plan',
         data: transportPlan as Record<string, unknown>,
         status: 'pending',
@@ -436,30 +434,28 @@ async function initMainAgent(): Promise<void> {
       });
 
       // Store plan in session history
-      const sessionId = DEFAULT_SESSION_ID;
-      if (sessionId) {
-        sessionManager.addMessage(sessionId, {
-          id: planId,
-          role: 'assistant',
-          content: JSON.stringify(transportPlan),
-          timestamp: now,
-          type: 'plan',
-        });
-      }
+      sessionManager.addMessage(sid, {
+        id: planId,
+        role: 'assistant',
+        content: JSON.stringify(transportPlan),
+        timestamp: now,
+        type: 'plan',
+      });
 
       wsHandler.broadcast({
         id: planId,
         type: 'plan',
         plan: transportPlan,
-      });
+      }, sid);
     },
-    onEvent(event) {
+    onEvent(event, sessionId) {
+      const sid = sessionId ?? DEFAULT_SESSION_ID;
       const workerEvent = event as { workflowId?: string; type?: string };
 
       // Store orchestration events to state store
       stateStore.appendEvent({
         id: randomBytes(8).toString('hex'),
-        sessionId: DEFAULT_SESSION_ID,
+        sessionId: sid,
         type: 'event',
         timestamp: new Date().toISOString(),
         data: event as unknown as Record<string, unknown>,
@@ -470,20 +466,21 @@ async function initMainAgent(): Promise<void> {
       // (eventStreamer.emit bypasses wsHandler.broadcast/trackMessageState,
       //  so we must persist directly here)
       sessionManager.addOrchestrationEvent(
-        DEFAULT_SESSION_ID,
+        sid,
         event,
         workerEvent.workflowId,
       );
 
       eventStreamer.emit(event, workerEvent.type, workerEvent.workflowId);
     },
-    onGraphState(state) {
+    onGraphState(state, sessionId) {
+      const sid = sessionId ?? DEFAULT_SESSION_ID;
       const evtId = randomBytes(8).toString('hex');
 
       // Store graph state snapshots
       stateStore.appendEvent({
         id: evtId,
-        sessionId: DEFAULT_SESSION_ID,
+        sessionId: sid,
         type: 'graph_state',
         timestamp: new Date().toISOString(),
         data: state as unknown as Record<string, unknown>,
@@ -495,15 +492,16 @@ async function initMainAgent(): Promise<void> {
         type: 'status',
         workflowId: state.workflowId,
         graphState: state,
-      });
+      }, sid);
     },
-    onSessionStatus(status) {
+    onSessionStatus(status, sessionId) {
+      const sid = sessionId ?? DEFAULT_SESSION_ID;
       const evtId = randomBytes(8).toString("hex");
 
       // Store session status and accumulate costs
       stateStore.appendEvent({
         id: evtId,
-        sessionId: DEFAULT_SESSION_ID,
+        sessionId: sid,
         type: 'session_status',
         timestamp: new Date().toISOString(),
         data: status as Record<string, unknown>,
@@ -512,7 +510,7 @@ async function initMainAgent(): Promise<void> {
       // Accumulate token costs from session status updates
       const s = status as { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheCreationTokens?: number; sessionCostUsd?: number };
       if (s.inputTokens || s.outputTokens || s.sessionCostUsd) {
-        stateStore.accumulateCosts(DEFAULT_SESSION_ID, {
+        stateStore.accumulateCosts(sid, {
           inputTokens: s.inputTokens ?? 0,
           outputTokens: s.outputTokens ?? 0,
           cacheReadTokens: s.cacheReadTokens ?? 0,
@@ -525,14 +523,15 @@ async function initMainAgent(): Promise<void> {
         id: evtId,
         type: "session_status",
         sessionStatus: status,
-      });
+      }, sid);
     },
-    onDirectStart(info) {
+    onDirectStart(info, sessionId) {
+      const sid = sessionId ?? DEFAULT_SESSION_ID;
       const evtId = randomBytes(8).toString("hex");
       const now = new Date().toISOString();
       stateStore.appendEvent({
         id: evtId,
-        sessionId: DEFAULT_SESSION_ID,
+        sessionId: sid,
         type: 'direct_started',
         timestamp: now,
         data: { directStart: info },
@@ -541,7 +540,7 @@ async function initMainAgent(): Promise<void> {
       // Persist an inline DAG entry so the RunSummaryCard can be rebuilt
       // after a page reload. Mirrors the live client-side seed in
       // packages/web/src/lib/gateway.ts under case 'direct_started'.
-      sessionManager.upsertInlineDAG(DEFAULT_SESSION_ID, {
+      sessionManager.upsertInlineDAG(sid, {
         dagId: info.runId,
         summary: info.userMessage || 'Direct response',
         status: 'running',
@@ -556,16 +555,17 @@ async function initMainAgent(): Promise<void> {
         type: "direct_started",
         directStart: info,
         workflowId: info.runId,
-      });
+      }, sid);
     },
-    onDirectComplete(info) {
+    onDirectComplete(info, sessionId) {
+      const sid = sessionId ?? DEFAULT_SESSION_ID;
       const msgId = randomBytes(8).toString("hex");
       const now = new Date().toISOString();
 
       // Store to state store BEFORE broadcasting
       stateStore.appendEvent({
         id: msgId,
-        sessionId: DEFAULT_SESSION_ID,
+        sessionId: sid,
         type: 'direct_complete',
         timestamp: now,
         data: { directComplete: info },
@@ -573,7 +573,7 @@ async function initMainAgent(): Promise<void> {
 
       // Accumulate costs from direct completion
       if (info.totalCostUsd) {
-        stateStore.accumulateCosts(DEFAULT_SESSION_ID, {
+        stateStore.accumulateCosts(sid, {
           costUsd: info.totalCostUsd,
         });
       }
@@ -582,7 +582,7 @@ async function initMainAgent(): Promise<void> {
       // survives a page reload. Mirrors the orchestrate-mode path in
       // onDAGComplete, and pairs with the upsert in onDirectStart.
       sessionManager.completeInlineDAG(
-        DEFAULT_SESSION_ID,
+        sid,
         info.runId,
         undefined,
         info.error,
@@ -606,9 +606,8 @@ async function initMainAgent(): Promise<void> {
         id: msgId,
         type: "direct_complete",
         directComplete: info,
-      });
-      const sid = DEFAULT_SESSION_ID;
-      if (sid) {
+      }, sid);
+      {
         // Persist as `dag-complete` (with `dagComplete`-shaped metadata)
         // rather than `direct-complete` so the existing client rehydration
         // path in packages/web/src/lib/gateway.ts (which only knows about
@@ -643,43 +642,44 @@ async function initMainAgent(): Promise<void> {
         });
       }
     },
-    onWorkflowStart(workflowId, _workflowName) {
-      const sessionId = DEFAULT_SESSION_ID;
+    onWorkflowStart(workflowId, _workflowName, sessionId) {
+      const sid = sessionId ?? DEFAULT_SESSION_ID;
 
       // Store workflow start event
       stateStore.appendEvent({
         id: randomBytes(8).toString('hex'),
-        sessionId,
+        sessionId: sid,
         type: 'event',
         timestamp: new Date().toISOString(),
         data: { type: 'workflow_start', workflowId, workflowName: _workflowName },
         workflowId,
       });
 
-      if (sessionId) sessionManager.addActiveWorkflow(sessionId, workflowId);
+      sessionManager.addActiveWorkflow(sid, workflowId);
     },
-    onWorkflowEnd(workflowId) {
-      const sessionId = DEFAULT_SESSION_ID;
+    onWorkflowEnd(workflowId, sessionId) {
+      const sid = sessionId ?? DEFAULT_SESSION_ID;
 
       // Store workflow end event
       stateStore.appendEvent({
         id: randomBytes(8).toString('hex'),
-        sessionId,
+        sessionId: sid,
         type: 'event',
         timestamp: new Date().toISOString(),
         data: { type: 'workflow_end', workflowId },
         workflowId,
       });
 
-      if (sessionId) sessionManager.removeActiveWorkflow(sessionId, workflowId);
+      sessionManager.removeActiveWorkflow(sid, workflowId);
     },
-    onCommandResult(result) {
+    onCommandResult(result, sessionId) {
+      const sid = sessionId ?? DEFAULT_SESSION_ID;
       const evtId = randomBytes(8).toString('hex');
 
       // Store command results
       stateStore.appendEvent({
         id: evtId,
-        sessionId: DEFAULT_SESSION_ID,
+        sessionId: sid,
         type: 'command_result',
         timestamp: new Date().toISOString(),
         data: { commandResult: result },
@@ -689,12 +689,12 @@ async function initMainAgent(): Promise<void> {
         id: evtId,
         type: 'command_result',
         commandResult: result,
-      });
+      }, sid);
     },
     onHindsightActivity(status) {
       const evtId = randomBytes(8).toString('hex');
 
-      // Store hindsight status changes
+      // Store hindsight status changes (global — not session-scoped)
       stateStore.appendEvent({
         id: evtId,
         sessionId: DEFAULT_SESSION_ID,
@@ -709,13 +709,14 @@ async function initMainAgent(): Promise<void> {
         hindsightStatus: status,
       });
     },
-    onMemoryEvent(event) {
+    onMemoryEvent(event, sessionId) {
+      const sid = sessionId ?? DEFAULT_SESSION_ID;
       const evtId = randomBytes(8).toString('hex');
 
       // Store memory events to state store BEFORE broadcasting
       stateStore.appendEvent({
         id: evtId,
-        sessionId: DEFAULT_SESSION_ID,
+        sessionId: sid,
         type: 'memory_event',
         timestamp: new Date().toISOString(),
         data: { memoryEvent: event },
@@ -725,19 +726,20 @@ async function initMainAgent(): Promise<void> {
         id: evtId,
         type: 'memory_event',
         memoryEvent: event,
-      });
-      sessionManager.addMemoryEvent(DEFAULT_SESSION_ID, event);
+      }, sid);
+      sessionManager.addMemoryEvent(sid, event);
     },
 
     // DAG lifecycle callbacks — route through EventStreamer for subscription filtering
-    onDAGDispatched(dispatch) {
+    onDAGDispatched(dispatch, sessionId) {
+      const sid = sessionId ?? DEFAULT_SESSION_ID;
       const msgId = randomBytes(8).toString('hex');
       const now = new Date().toISOString();
 
       // Store DAG dispatch to state store BEFORE broadcasting
       stateStore.appendEvent({
         id: msgId,
-        sessionId: DEFAULT_SESSION_ID,
+        sessionId: sid,
         type: 'dag_dispatched',
         timestamp: now,
         data: { dagDispatch: dispatch },
@@ -745,7 +747,7 @@ async function initMainAgent(): Promise<void> {
       });
 
       // Record materialized DAG state
-      stateStore.recordDAGDispatched(DEFAULT_SESSION_ID, dispatch.workflowId, {
+      stateStore.recordDAGDispatched(sid, dispatch.workflowId, {
         workflowId: dispatch.workflowId,
         workflowName: dispatch.workflowName,
         nodeCount: dispatch.nodeCount,
@@ -757,8 +759,8 @@ async function initMainAgent(): Promise<void> {
 
       // Persist DAG structure to durable session storage
       // (emitDAGMessage bypasses wsHandler.broadcast/trackMessageState)
-      const triggeringMessageId = sessionManager.getLastUserMessageId(DEFAULT_SESSION_ID);
-      sessionManager.upsertInlineDAG(DEFAULT_SESSION_ID, {
+      const triggeringMessageId = sessionManager.getLastUserMessageId(sid);
+      sessionManager.upsertInlineDAG(sid, {
         dagId: dispatch.workflowId,
         summary: dispatch.summary,
         status: 'dispatched',
@@ -775,33 +777,31 @@ async function initMainAgent(): Promise<void> {
         workflowId: dispatch.workflowId,
         dagDispatch: dispatch,
       });
-      const sid = DEFAULT_SESSION_ID;
-      if (sid) {
-        sessionManager.addMessage(sid, {
-          id: msgId,
-          role: 'assistant',
-          content: dispatch.summary || 'Working on it...',
-          timestamp: now,
-          type: 'dag-dispatched',
-          metadata: {
+      sessionManager.addMessage(sid, {
+        id: msgId,
+        role: 'assistant',
+        content: dispatch.summary || 'Working on it...',
+        timestamp: now,
+        type: 'dag-dispatched',
+        metadata: {
+          workflowId: dispatch.workflowId,
+          dagDispatch: {
             workflowId: dispatch.workflowId,
-            dagDispatch: {
-              workflowId: dispatch.workflowId,
-              summary: dispatch.summary,
-              nodeCount: dispatch.nodeCount,
-              nodes: dispatch.nodes,
-            },
+            summary: dispatch.summary,
+            nodeCount: dispatch.nodeCount,
+            nodes: dispatch.nodes,
           },
-        });
-      }
+        },
+      });
     },
-    onDAGProgress(progress) {
+    onDAGProgress(progress, sessionId) {
+      const sid = sessionId ?? DEFAULT_SESSION_ID;
       const evtId = randomBytes(8).toString('hex');
 
       // Store DAG progress to state store BEFORE broadcasting
       stateStore.appendEvent({
         id: evtId,
-        sessionId: DEFAULT_SESSION_ID,
+        sessionId: sid,
         type: 'dag_progress',
         timestamp: new Date().toISOString(),
         data: { dagProgress: progress },
@@ -823,7 +823,7 @@ async function initMainAgent(): Promise<void> {
       const dagProgressStatusMap: Record<string, 'pending' | 'running' | 'done' | 'error'> = {
         started: 'running', progress: 'running', done: 'done', error: 'error',
       };
-      sessionManager.updateInlineDAGNode(DEFAULT_SESSION_ID, progress.workflowId, progress.nodeId, {
+      sessionManager.updateInlineDAGNode(sid, progress.workflowId, progress.nodeId, {
         status: dagProgressStatusMap[progress.status] ?? 'running',
         progress: progress.progress,
       });
@@ -835,14 +835,15 @@ async function initMainAgent(): Promise<void> {
         dagProgress: progress,
       });
     },
-    onDAGComplete(result) {
+    onDAGComplete(result, sessionId) {
+      const sid = sessionId ?? DEFAULT_SESSION_ID;
       const msgId = randomBytes(8).toString('hex');
       const now = new Date().toISOString();
 
       // Store DAG completion to state store BEFORE broadcasting
       stateStore.appendEvent({
         id: msgId,
-        sessionId: DEFAULT_SESSION_ID,
+        sessionId: sid,
         type: 'dag_complete',
         timestamp: now,
         data: { dagComplete: result },
@@ -865,14 +866,14 @@ async function initMainAgent(): Promise<void> {
 
       // Accumulate DAG costs
       if (result.totalCostUsd) {
-        stateStore.accumulateCosts(DEFAULT_SESSION_ID, {
+        stateStore.accumulateCosts(sid, {
           costUsd: result.totalCostUsd,
         });
       }
 
       // Persist DAG completion to durable session storage
       sessionManager.completeInlineDAG(
-        DEFAULT_SESSION_ID,
+        sid,
         result.workflowId,
         result.output ?? result.summary,
         result.status === 'error' ? result.summary : undefined,
@@ -897,8 +898,7 @@ async function initMainAgent(): Promise<void> {
         workflowId: result.workflowId,
         dagComplete: result,
       });
-      const sid = DEFAULT_SESSION_ID;
-      if (sid) {
+      {
         sessionManager.addMessage(sid, {
           id: msgId,
           role: 'assistant',
@@ -925,12 +925,13 @@ async function initMainAgent(): Promise<void> {
         });
       }
     },
-    onGateRequest(request) {
+    onGateRequest(request, sessionId) {
+      const sid = sessionId ?? DEFAULT_SESSION_ID;
       const msgId = randomBytes(8).toString('hex');
       // Persist the pending gate server-side so the structured Allow/Deny
       // card rehydrates after a page reload (mirrors dag_confirm handling).
       try {
-        sessionManager.setPendingGate(DEFAULT_SESSION_ID, {
+        sessionManager.setPendingGate(sid, {
           gateId: request.gateId,
           workflowId: request.workflowId,
           workflowName: request.workflowName,
@@ -947,7 +948,7 @@ async function initMainAgent(): Promise<void> {
       // Persist a chat message for the gate so it appears in history on
       // reload — keyed by gateId so client/server agree on dedup.
       try {
-        sessionManager.addMessage(DEFAULT_SESSION_ID, {
+        sessionManager.addMessage(sid, {
           id: `gate-${request.gateId}`,
           role: 'assistant',
           content: `Approval needed: ${request.action}`,
@@ -971,12 +972,13 @@ async function initMainAgent(): Promise<void> {
         gateRequest: request,
       });
     },
-    onGateResolved(info) {
+    onGateResolved(info, sessionId) {
+      const sid = sessionId ?? DEFAULT_SESSION_ID;
       const msgId = randomBytes(8).toString('hex');
       // Authoritative cleanup: removes pending entry on every resolution
       // path (approve/deny via UI, timeout, or expiry from the backend).
       try {
-        sessionManager.removePendingGate(DEFAULT_SESSION_ID, info.gateId);
+        sessionManager.removePendingGate(sid, info.gateId);
       } catch (err) {
         log.warn('[gate:persist] Failed to clear resolved gate', {
           gateId: info.gateId,
@@ -990,14 +992,15 @@ async function initMainAgent(): Promise<void> {
         gateResolved: info,
       });
     },
-    onDAGConfirm(confirm) {
+    onDAGConfirm(confirm, sessionId) {
+      const sid = sessionId ?? DEFAULT_SESSION_ID;
       const msgId = randomBytes(8).toString('hex');
       const now = new Date().toISOString();
 
       // Store DAG confirmation to state store BEFORE broadcasting
       stateStore.appendEvent({
         id: msgId,
-        sessionId: DEFAULT_SESSION_ID,
+        sessionId: sid,
         type: 'dag_confirm',
         timestamp: now,
         data: { dagConfirm: confirm },
@@ -1005,7 +1008,7 @@ async function initMainAgent(): Promise<void> {
       });
 
       // Record as materialized DAG state
-      stateStore.recordDAGConfirm(confirm.workflowId, DEFAULT_SESSION_ID, {
+      stateStore.recordDAGConfirm(confirm.workflowId, sid, {
         workflowId: confirm.workflowId,
         summary: confirm.summary,
         reasoning: confirm.reasoning,
@@ -1018,7 +1021,7 @@ async function initMainAgent(): Promise<void> {
       // Track as pending action awaiting user approval
       stateStore.addPendingAction({
         id: confirm.workflowId,
-        sessionId: DEFAULT_SESSION_ID,
+        sessionId: sid,
         type: 'dag_confirm',
         data: {
           workflowId: confirm.workflowId,
@@ -1036,8 +1039,7 @@ async function initMainAgent(): Promise<void> {
         workflowId: confirm.workflowId,
         dagConfirm: confirm,
       });
-      const sid = DEFAULT_SESSION_ID;
-      if (sid) {
+      {
         sessionManager.addMessage(sid, {
           id: msgId,
           role: 'assistant',
@@ -1062,6 +1064,15 @@ async function initMainAgent(): Promise<void> {
     mainAgent = new MainAgent(agentConfig, callbacks);
     await mainAgent.init();
     wsHandler.setMainAgent(mainAgent);
+    // Hook session deletion into MainAgent so per-session context, totals,
+    // and workflow→session mappings are purged. Hindsight is NOT touched.
+    sessionManager.onSessionDeleted = (id) => {
+      try {
+        mainAgent!.clearSessionState(id);
+      } catch (err) {
+        log.warn('clearSessionState failed', { id, error: err instanceof Error ? err.message : String(err) });
+      }
+    };
     log.info(' MainAgent connected');
 
     // Initialize scheduler after MainAgent is ready (gated by config).

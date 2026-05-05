@@ -645,6 +645,7 @@ export class SchedulerService {
         let timedOut = false;
 
         const executionPromise = this.mainAgent.handleMessage(
+          task.sessionId ?? 'default',
           task.prompt,
           undefined,
           undefined,

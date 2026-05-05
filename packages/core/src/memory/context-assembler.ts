@@ -68,6 +68,13 @@ export interface ContextAssemblerConfig {
   conversationBank?: string;
   /** Additional banks to query (e.g. project-*, jarvis-core). */
   additionalBanks?: string[];
+  /**
+   * The gateway session this assembler belongs to. When set, retained
+   * messages are tagged with `session:<id>` and their retention metadata
+   * carries `sessionId` so the live memory feed shows which session
+   * stored each item. Recall remains cross-session.
+   */
+  sessionId?: string;
   /** Hindsight recall budget level. Default: 'mid'. */
   recallBudget?: 'low' | 'mid' | 'high';
   /** Path to persist hot window to disk. If set, survives gateway restarts. */
@@ -130,6 +137,7 @@ export class ContextAssembler {
   private additionalBanks: string[];
   private readonly recallBudget: 'low' | 'mid' | 'high';
   private readonly persistPath: string | null;
+  private readonly sessionId: string | null;
   private hs: HindsightClient | null;
   private readonly federateBanks: boolean;
   private readonly minRelevance: number;
@@ -155,6 +163,7 @@ export class ContextAssembler {
     this.additionalBanks = config.additionalBanks ?? [];
     this.recallBudget = config.recallBudget ?? 'mid';
     this.persistPath = config.persistPath ?? null;
+    this.sessionId = config.sessionId ?? null;
     this.federateBanks = config.federateBanks !== false;
     this.minRelevance = config.minRelevance ?? 0.15;
     this.storageDeduplicationThreshold = config.storageDeduplicationThreshold ?? 0.85;
@@ -411,13 +420,23 @@ export class ContextAssembler {
       return;
     }
 
+    const tags: string[] = [];
+    if (this.sessionId) tags.push(`session:${this.sessionId}`);
+
     await this.hs.retain(this.conversationBank, [
       {
         content: formattedContent,
         context: `conversation_${msg.role}`,
         timestamp: msg.timestamp ?? new Date().toISOString(),
+        ...(tags.length ? { tags } : {}),
       },
     ]);
+
+    this.onMemoryEvent?.('retain', `Retained ${msg.role} message (${msg.content.length} chars)`, this.conversationBank, {
+      role: msg.role,
+      chars: msg.content.length,
+      ...(this.sessionId ? { sessionId: this.sessionId } : {}),
+    });
   }
 
   /**

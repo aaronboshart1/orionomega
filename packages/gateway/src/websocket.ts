@@ -478,7 +478,7 @@ export class WebSocketHandler {
         this.sessionManager.updateAgentMode(conn.sessionId, agentMode);
       }
       log.verbose('Routing to MainAgent', { hasReplyContext: !!replyContext, attachmentCount: attachments?.length ?? 0, agentMode });
-      this.mainAgent.handleMessage(content, replyContext, attachments, agentMode).catch((err) => {
+      this.mainAgent.handleMessage(conn.sessionId, content, replyContext, attachments, agentMode).catch((err) => {
         log.error('MainAgent.handleMessage error', { error: err instanceof Error ? err.message : String(err) });
         this.send(conn.ws, {
           id: randomBytes(8).toString('hex'),
@@ -510,7 +510,7 @@ export class WebSocketHandler {
 
     if (this.mainAgent) {
       try {
-        await this.mainAgent.handleCommand(command, msg.workflowId);
+        await this.mainAgent.handleCommand(conn.sessionId, command, msg.workflowId);
         if (command.trim().toLowerCase() === '/reset') {
           this.sessionManager.resetSession(conn.sessionId);
         }
@@ -562,7 +562,7 @@ export class WebSocketHandler {
 
     if (this.mainAgent && msg.planId && msg.action) {
       this.mainAgent
-        .handlePlanResponse(msg.planId, msg.action, msg.modification)
+        .handlePlanResponse(conn.sessionId, msg.planId, msg.action, msg.modification)
         .catch((err) => {
           log.error('MainAgent.handlePlanResponse error', { error: err instanceof Error ? err.message : String(err) });
           this.send(conn.ws, {
@@ -598,7 +598,7 @@ export class WebSocketHandler {
 
     if (this.mainAgent && msg.workflowId && msg.dagAction) {
       this.mainAgent
-        .handleDAGResponse(msg.workflowId, msg.dagAction)
+        .handleDAGResponse(conn.sessionId, msg.workflowId, msg.dagAction)
         .catch((err) => {
           log.error('MainAgent.handleDAGResponse error', { error: err instanceof Error ? err.message : String(err) });
           this.send(conn.ws, {
@@ -639,7 +639,7 @@ export class WebSocketHandler {
         });
       }
       this.mainAgent
-        .handleGateResponse(msg.gateId, approved)
+        .handleGateResponse(conn.sessionId, msg.gateId, approved)
         .catch((err) => {
           log.error('MainAgent.handleGateResponse error', { error: err instanceof Error ? err.message : String(err) });
           this.send(conn.ws, {
@@ -936,20 +936,37 @@ export class WebSocketHandler {
     return this.sessionManager.getDefaultSession().id;
   }
 
-  broadcast(message: ServerMessage): void {
-    // Determine the actual active session (not always default)
-    const activeSessionId = this.getActiveSessionId();
+  /**
+   * Broadcast a ServerMessage. When `targetSessionId` is supplied, the
+   * message is only delivered to WebSocket connections whose
+   * `conn.sessionId === targetSessionId` (and is buffered into that
+   * session's queue + tracked into that session's state-store when no
+   * matching connection is open). When omitted, the message is treated as
+   * a global event and goes to every connection (legacy behaviour) using
+   * the active session for state tracking — used for non-session-scoped
+   * events (auth, system).
+   */
+  broadcast(message: ServerMessage, targetSessionId?: string): void {
+    const sid = targetSessionId ?? this.getActiveSessionId();
 
-    // Track state server-side for reconnection snapshots
-    this.trackMessageState(activeSessionId, message);
+    // Track state server-side for reconnection snapshots — always against
+    // the originating session, never the "first connected" one.
+    this.trackMessageState(sid, message);
 
-    // If no clients are connected, buffer the event for later delivery
-    if (this.connections.size === 0) {
-      this.sessionManager.bufferEvent(activeSessionId, message);
+    // Find connections matching the target session. If a target was
+    // specified, only those connections receive the message; otherwise
+    // every connection does.
+    const recipients = targetSessionId
+      ? Array.from(this.connections.values()).filter((c) => c.sessionId === targetSessionId)
+      : Array.from(this.connections.values());
+
+    if (recipients.length === 0) {
+      // Buffer for later delivery when the session reconnects/opens a tab.
+      this.sessionManager.bufferEvent(sid, message);
       return;
     }
 
-    for (const conn of this.connections.values()) {
+    for (const conn of recipients) {
       this.send(conn.ws, message);
     }
   }

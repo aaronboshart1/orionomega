@@ -86,34 +86,34 @@ export interface ThinkingStep {
 }
 
 export interface MainAgentCallbacks {
-  onText: (text: string, streaming: boolean, done: boolean, workflowId?: string) => void;
-  onThinking: (text: string, streaming: boolean, done: boolean, workflowId?: string) => void;
-  onThinkingStep?: (step: ThinkingStep, workflowId?: string) => void;
+  onText: (text: string, streaming: boolean, done: boolean, workflowId?: string, sessionId?: string) => void;
+  onThinking: (text: string, streaming: boolean, done: boolean, workflowId?: string, sessionId?: string) => void;
+  onThinkingStep?: (step: ThinkingStep, workflowId?: string, sessionId?: string) => void;
   /** @deprecated Use onDAGConfirm for guarded plans. Kept for backward compat during migration. */
-  onPlan: (plan: PlannerOutput) => void;
-  onEvent: (event: WorkerEvent) => void;
-  onGraphState: (state: GraphState) => void;
-  onCommandResult: (result: { command: string; success: boolean; message: string }) => void;
-  onSessionStatus?: (status: { model: string; inputTokens: number; outputTokens: number; cacheCreationTokens: number; cacheReadTokens: number; maxContextTokens: number; sessionCostUsd: number }) => void;
-  onWorkflowStart?: (workflowId: string, workflowName: string) => void;
-  onWorkflowEnd?: (workflowId: string) => void;
+  onPlan: (plan: PlannerOutput, sessionId?: string) => void;
+  onEvent: (event: WorkerEvent, sessionId?: string) => void;
+  onGraphState: (state: GraphState, sessionId?: string) => void;
+  onCommandResult: (result: { command: string; success: boolean; message: string }, sessionId?: string) => void;
+  onSessionStatus?: (status: { model: string; inputTokens: number; outputTokens: number; cacheCreationTokens: number; cacheReadTokens: number; maxContextTokens: number; sessionCostUsd: number }, sessionId?: string) => void;
+  onWorkflowStart?: (workflowId: string, workflowName: string, sessionId?: string) => void;
+  onWorkflowEnd?: (workflowId: string, sessionId?: string) => void;
 
   // New DAG lifecycle callbacks
-  onDAGDispatched?: (dispatch: DAGDispatchInfo) => void;
-  onDAGProgress?: (progress: DAGProgressInfo) => void;
-  onDAGComplete?: (result: DAGCompleteInfo) => void;
-  onDAGConfirm?: (confirm: DAGConfirmInfo) => void;
+  onDAGDispatched?: (dispatch: DAGDispatchInfo, sessionId?: string) => void;
+  onDAGProgress?: (progress: DAGProgressInfo, sessionId?: string) => void;
+  onDAGComplete?: (result: DAGCompleteInfo, sessionId?: string) => void;
+  onDAGConfirm?: (confirm: DAGConfirmInfo, sessionId?: string) => void;
   /** Emitted when a direct (non-DAG) conversation turn starts. Used by the UI to open
    * an inline run summary card and orchestration-pane workflow tab while the turn streams. */
-  onDirectStart?: (info: { runId: string; model: string; userMessage: string }) => void;
+  onDirectStart?: (info: { runId: string; model: string; userMessage: string }, sessionId?: string) => void;
   /** Emitted when a direct (non-DAG) conversation turn completes with per-run stats. */
-  onDirectComplete?: (info: DirectCompleteInfo) => void;
+  onDirectComplete?: (info: DirectCompleteInfo, sessionId?: string) => void;
 
   /** Hindsight I/O activity state change (connected/busy). */
   onHindsightActivity?: (status: { connected: boolean; busy: boolean }) => void;
 
   /** Granular memory operation event for live activity feed. */
-  onMemoryEvent?: (event: MemoryEvent) => void;
+  onMemoryEvent?: (event: MemoryEvent, sessionId?: string) => void;
 
   /**
    * Emitted when an Agent SDK tool call is paused awaiting human approval
@@ -121,7 +121,7 @@ export interface MainAgentCallbacks {
    * structured approve/deny prompt; the user's answer is routed back via
    * MainAgent.handleGateResponse(gateId, approved).
    */
-  onGateRequest?: (request: GateRequestInfo) => void;
+  onGateRequest?: (request: GateRequestInfo, sessionId?: string) => void;
 
   /**
    * Emitted when a previously requested human gate has been resolved on
@@ -130,7 +130,7 @@ export interface MainAgentCallbacks {
    * use this to clear or finalize any approval prompt UI so stale cards
    * don't sit on screen after the agent has moved on.
    */
-  onGateResolved?: (info: GateResolvedInfo) => void;
+  onGateResolved?: (info: GateResolvedInfo, sessionId?: string) => void;
 }
 
 /** Payload describing a single human-gate approval prompt. */
@@ -179,14 +179,38 @@ interface HistoryEntry {
  * Manages shared state (history, system prompt, skill discovery).
  * All complex logic is delegated to sub-modules.
  */
+/** Default session id — must match `DEFAULT_SESSION_ID` in the gateway. */
+const DEFAULT_SESSION_ID = 'default';
+
+interface SessionTotals {
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationTokens: number;
+  cacheReadTokens: number;
+  costUsd: number;
+}
+
 export class MainAgent {
   private readonly config: MainAgentConfig;
+  /** User-provided callbacks (raw, no sessionId injection). */
+  private readonly userCallbacks: MainAgentCallbacks;
+  /** Wrapped callbacks that inject sessionId on every call. Used everywhere internally. */
   private readonly callbacks: MainAgentCallbacks;
   private readonly anthropic: AnthropicClient;
 
   private readonly memory: MemoryBridge;
   private readonly orchestration: OrchestrationBridge;
   private initPromise: Promise<void> | null = null;
+
+  /**
+   * The session whose turn is currently being processed on the foreground
+   * agent loop. Set on each handleMessage() / handleCommand() entry. Async
+   * DAG events resolve their session via workflowSessions instead.
+   */
+  private currentSessionId: string = DEFAULT_SESSION_ID;
+
+  /** Map of workflowId → owning sessionId, populated on dispatch and on direct-mode start. */
+  private readonly workflowSessions = new Map<string, string>();
 
   /**
    * Snapshot of Hindsight client health (circuit breaker state, last error,
@@ -207,13 +231,11 @@ export class MainAgent {
     return this.memory.getSummarizerStatus();
   }
 
-  private context: ContextAssembler;
+  /** Per-session ContextAssembler — each session gets its own hot window. */
+  private readonly contextBySession = new Map<string, ContextAssembler>();
+  /** Per-session token / cost totals — replaces process-wide cumulative counters. */
+  private readonly totalsBySession = new Map<string, SessionTotals>();
   private cachedSystemPrompt: string | null = null;
-  private cumulativeInputTokens = 0;
-  private cumulativeOutputTokens = 0;
-  private cumulativeCacheCreationTokens = 0;
-  private cumulativeCacheReadTokens = 0;
-  private sessionCostUsd = 0;
   private availableSkills: string[] = [];
   private interruptedWorkflows: WorkflowCheckpoint[] = [];
   private activeAbort: AbortController | null = null;
@@ -230,7 +252,8 @@ export class MainAgent {
 
   constructor(config: MainAgentConfig, callbacks: MainAgentCallbacks) {
     this.config = config;
-    this.callbacks = callbacks;
+    this.userCallbacks = callbacks;
+    this.callbacks = this.buildWrappedCallbacks(callbacks);
     this.anthropic = new AnthropicClient(config.apiKey);
 
     // Create the memory bridge
@@ -240,34 +263,172 @@ export class MainAgent {
       new EventBus(),
     );
 
-    // Context assembler — replaces raw history array with hot window + Hindsight recall
-    // Note: memory.client may be null until init() runs; we pass null initially
-    // and the assembler handles it gracefully
-    const hsClient = this.memory.client;
-    // Derive config directory for session persistence
-    const configPath = process.env.CONFIG_PATH || '';
-    const configDir = configPath
-      ? configPath.replace(/\/[^/]+$/, '')  // parent of config.yaml
-      : `${process.env.HOME || '/root'}/.orionomega`;
-
-    this.context = new ContextAssembler(hsClient, {
-      hotWindowSize: 20,
-      recallBudgetTokens: 30_000,
-      maxTurnTokens: 60_000,
-      conversationBank: config.hindsight?.url
-        ? `conversation-${Date.now().toString(36)}`
-        : undefined,
-      additionalBanks: config.hindsight?.url
-        ? ['core']
-        : [],
-      persistPath: `${configDir}/sessions/hot-window.json`,
-    });
+    // Per-session ContextAssemblers are created lazily in getContext(sessionId).
+    // The default session's context is created up-front so any pre-init reads
+    // (e.g. `context.getHistory()` for logging) succeed without surprise.
+    this.getContext(DEFAULT_SESSION_ID);
 
     // We'll initialise orchestration in init() after skills are discovered
     this.orchestration = null!; // set in init()
     this.initPromise = null;
 
     log.info('MainAgent initialised', { model: config.model });
+  }
+
+  // ── Per-session helpers ────────────────────────────────────────────────
+
+  /**
+   * Resolve which sessionId an event belongs to. Async DAG callbacks carry
+   * a workflowId; we look it up in workflowSessions. Synchronous callbacks
+   * fall back to the active foreground session.
+   */
+  private resolveSessionId(workflowId?: string): string {
+    if (workflowId) {
+      const sid = this.workflowSessions.get(workflowId);
+      if (sid) return sid;
+    }
+    return this.currentSessionId;
+  }
+
+  /** Lazily create (and bootstrap) a ContextAssembler for the given session. */
+  private getContext(sessionId: string): ContextAssembler {
+    let ctx = this.contextBySession.get(sessionId);
+    if (ctx) return ctx;
+
+    const configPath = process.env.CONFIG_PATH || '';
+    const configDir = configPath
+      ? configPath.replace(/\/[^/]+$/, '')
+      : `${process.env.HOME || '/root'}/.orionomega`;
+
+    ctx = new ContextAssembler(this.memory.client, {
+      hotWindowSize: 20,
+      recallBudgetTokens: 30_000,
+      maxTurnTokens: 60_000,
+      conversationBank: this.config.hindsight?.url
+        ? `conversation-${sessionId}`
+        : undefined,
+      additionalBanks: this.config.hindsight?.url ? ['core'] : [],
+      persistPath: `${configDir}/sessions/hot-window-${sessionId}.json`,
+      sessionId,
+    });
+
+    // Wire memory-event forwarding so the live activity feed shows which
+    // session each retain/dedup/recall came from.
+    if (this.userCallbacks.onMemoryEvent) {
+      ctx.onMemoryEvent = (op, detail, bank, meta) => {
+        this.emitMemoryEvent(op as MemoryEvent['op'], detail, bank, { ...(meta ?? {}), sessionId }, sessionId);
+      };
+    }
+
+    this.contextBySession.set(sessionId, ctx);
+
+    // Best-effort: ensure the per-session conversation bank exists in
+    // Hindsight. Failures are logged at debug — the bank usually exists
+    // (after restarts) and circuit-breaker handles transport problems.
+    if (this.memory.client && this.config.hindsight?.url) {
+      const bank = `conversation-${sessionId}`;
+      this.memory.client.createBank(bank, {
+        name: `OrionOmega session ${sessionId}`,
+      }).catch((err) => {
+        log.debug('Conversation bank create failed (may already exist)', {
+          bank,
+          sessionId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+    }
+
+    return ctx;
+  }
+
+  /** Lazily create per-session totals. */
+  private getTotals(sessionId: string): SessionTotals {
+    let t = this.totalsBySession.get(sessionId);
+    if (!t) {
+      t = { inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, costUsd: 0 };
+      this.totalsBySession.set(sessionId, t);
+    }
+    return t;
+  }
+
+  /**
+   * Drop all in-memory per-session state for `sessionId`. Called by the
+   * gateway when a session is deleted so the assembler/totals/workflow
+   * mappings don't outlive the session row. Hindsight memories (and the
+   * conversation bank itself) are intentionally NOT touched — they are the
+   * cross-session knowledge graph and survive session deletion.
+   */
+  clearSessionState(sessionId: string): void {
+    this.contextBySession.delete(sessionId);
+    this.totalsBySession.delete(sessionId);
+    for (const [wfId, sid] of this.workflowSessions) {
+      if (sid === sessionId) this.workflowSessions.delete(wfId);
+    }
+    log.info('Cleared in-memory state for session', { sessionId });
+  }
+
+  /** Register a workflow → session mapping so async DAG callbacks route correctly. */
+  registerWorkflowSession(workflowId: string, sessionId: string): void {
+    this.workflowSessions.set(workflowId, sessionId);
+  }
+
+  /**
+   * Build a callbacks object that auto-injects sessionId into every call
+   * by inspecting the workflowId argument and falling back to the active
+   * foreground session.
+   */
+  private buildWrappedCallbacks(user: MainAgentCallbacks): MainAgentCallbacks {
+    const sid = (workflowId?: string) => this.resolveSessionId(workflowId);
+    return {
+      onText: (text, streaming, done, workflowId) =>
+        user.onText(text, streaming, done, workflowId, sid(workflowId)),
+      onThinking: (text, streaming, done, workflowId) =>
+        user.onThinking(text, streaming, done, workflowId, sid(workflowId)),
+      onThinkingStep: user.onThinkingStep
+        ? (step, workflowId) => user.onThinkingStep!(step, workflowId, sid(workflowId))
+        : undefined,
+      onPlan: (plan) => user.onPlan(plan, sid(plan?.graph?.id)),
+      onEvent: (event) => user.onEvent(event, sid(event.workflowId)),
+      onGraphState: (state) => user.onGraphState(state, sid((state as { workflowId?: string }).workflowId)),
+      onCommandResult: (result) => user.onCommandResult(result, sid()),
+      onSessionStatus: user.onSessionStatus
+        ? (status) => user.onSessionStatus!(status, sid())
+        : undefined,
+      onWorkflowStart: user.onWorkflowStart
+        ? (wfId, name) => user.onWorkflowStart!(wfId, name, sid(wfId))
+        : undefined,
+      onWorkflowEnd: user.onWorkflowEnd
+        ? (wfId) => user.onWorkflowEnd!(wfId, sid(wfId))
+        : undefined,
+      onDAGDispatched: user.onDAGDispatched
+        ? (info) => user.onDAGDispatched!(info, sid(info.workflowId))
+        : undefined,
+      onDAGProgress: user.onDAGProgress
+        ? (info) => user.onDAGProgress!(info, sid(info.workflowId))
+        : undefined,
+      onDAGComplete: user.onDAGComplete
+        ? (info) => user.onDAGComplete!(info, sid(info.workflowId))
+        : undefined,
+      onDAGConfirm: user.onDAGConfirm
+        ? (info) => user.onDAGConfirm!(info, sid(info.workflowId))
+        : undefined,
+      onDirectStart: user.onDirectStart
+        ? (info) => user.onDirectStart!(info, sid(info.runId))
+        : undefined,
+      onDirectComplete: user.onDirectComplete
+        ? (info) => user.onDirectComplete!(info, sid(info.runId))
+        : undefined,
+      onHindsightActivity: user.onHindsightActivity,
+      onMemoryEvent: user.onMemoryEvent
+        ? (event) => user.onMemoryEvent!(event, sid())
+        : undefined,
+      onGateRequest: user.onGateRequest
+        ? (req) => user.onGateRequest!(req, sid(req.workflowId))
+        : undefined,
+      onGateResolved: user.onGateResolved
+        ? (info) => user.onGateResolved!(info, sid(info.workflowId))
+        : undefined,
+    };
   }
 
   /**
@@ -291,44 +452,23 @@ export class MainAgent {
       this.cachedSystemPrompt = null;
     }
 
-    // 1b. Attach Hindsight client to context assembler (now that memory is initialised)
+    // 1b. Attach Hindsight client to all existing per-session context assemblers
+    // (now that memory is initialised). New per-session contexts created later
+    // via getContext() pull `this.memory.client` directly.
     if (this.memory.client) {
-      this.context.setHindsightClient(this.memory.client);
-
-      // Wire hindsight I/O activity tracking to gateway callback
-      if (this.callbacks.onHindsightActivity) {
-        this.memory.client.onActivity = this.callbacks.onHindsightActivity;
+      for (const ctx of this.contextBySession.values()) {
+        ctx.setHindsightClient(this.memory.client);
       }
 
-      if (this.callbacks.onMemoryEvent) {
+      // Wire hindsight I/O activity tracking to gateway callback
+      if (this.userCallbacks.onHindsightActivity) {
+        this.memory.client.onActivity = this.userCallbacks.onHindsightActivity;
+      }
+
+      if (this.userCallbacks.onMemoryEvent) {
         this.memory.onMemoryEvent = (op, detail, bank, meta) => {
           this.emitMemoryEvent(op, detail, bank, meta);
         };
-        this.context.onMemoryEvent = (op, detail, bank, meta) => {
-          this.emitMemoryEvent(op as MemoryEvent['op'], detail, bank, meta);
-        };
-      }
-
-      // Ensure the conversation bank exists in Hindsight
-      let convBank = this.context['conversationBank'] as string | null;
-      if (!convBank) {
-        convBank = `conversation-${Date.now().toString(36)}`;
-        this.context.setConversationBank(convBank);
-      }
-      try {
-        await this.memory.client.createBank(convBank, {
-          name: `Conversation session ${new Date().toISOString().slice(0, 19)}`,
-        });
-        log.info('Conversation bank created in Hindsight', { bank: convBank });
-      } catch (err) {
-        // Bank-already-exists is the common case; transport problems show up
-        // in /api/health via the circuit breaker. Log at debug so the noise
-        // floor stays low while diagnostics remain available.
-        log.debug('Failed to create conversation bank (may already exist)', {
-          bank: convBank,
-          endpoint: `PUT /v1/<ns>/banks/${convBank}`,
-          error: err instanceof Error ? err.message : String(err),
-        });
       }
     }
 
@@ -371,14 +511,49 @@ export class MainAgent {
     }
 
     // 3. Create orchestration bridge (needs skills list and memory bridge)
+    // The orchestration bridge sees `wrappedCallbacks` — these include both
+    // per-session cost accumulation (for DAGs) and the sessionId-injection
+    // wrappers from `this.callbacks`.
     const wrappedCallbacks: MainAgentCallbacks = {
       ...this.callbacks,
       onDAGComplete: (result) => {
         if (result.status !== 'stopped') {
-          this.sessionCostUsd += result.totalCostUsd;
-          this.emitSessionStatus();
+          const sid = this.resolveSessionId(result.workflowId);
+          this.getTotals(sid).costUsd += result.totalCostUsd;
+          this.emitSessionStatus(sid);
         }
         this.callbacks.onDAGComplete?.(result);
+        // Workflow is done — drop the workflow→session mapping so the map
+        // doesn't grow unboundedly across the lifetime of the process.
+        this.workflowSessions.delete(result.workflowId);
+      },
+      onDAGDispatched: (info) => {
+        // Bind workflowId → currentSessionId on dispatch so subsequent
+        // async DAG events resolve to the originating session.
+        this.workflowSessions.set(info.workflowId, this.currentSessionId);
+        this.callbacks.onDAGDispatched?.(info);
+      },
+      onDAGConfirm: (info) => {
+        this.workflowSessions.set(info.workflowId, this.currentSessionId);
+        this.callbacks.onDAGConfirm?.(info);
+      },
+      onDirectStart: (info) => {
+        // Direct runs use info.runId instead of a workflowId. Register the
+        // mapping so the matching async onDirectComplete (and any background
+        // text/thinking emissions keyed by runId) attributes back to the
+        // session that initiated the direct run, not whatever session is
+        // currently in the foreground.
+        this.workflowSessions.set(info.runId, this.currentSessionId);
+        this.callbacks.onDirectStart?.(info);
+      },
+      onDirectComplete: (info) => {
+        const sid = this.resolveSessionId(info.runId);
+        if (info.totalCostUsd) {
+          this.getTotals(sid).costUsd += info.totalCostUsd;
+          this.emitSessionStatus(sid);
+        }
+        this.callbacks.onDirectComplete?.(info);
+        this.workflowSessions.delete(info.runId);
       },
     };
     (this as unknown as { orchestration: OrchestrationBridge }).orchestration = new OrchestrationBridge(
@@ -416,7 +591,7 @@ export class MainAgent {
         for (const checkpoint of interrupted) {
           void this.orchestration.resumeFromCheckpoint(
             checkpoint,
-            (e) => this.pushHistory(e as HistoryEntry),
+            (e) => this.pushHistory(DEFAULT_SESSION_ID, e as HistoryEntry),
           ).then(() => {
             this.callbacks.onText(
               `Auto-resume complete: ${checkpoint.task}`,
@@ -450,6 +625,7 @@ export class MainAgent {
    * All tool-using tasks route through orchestration.
    */
   async handleMessage(
+    sessionId: string,
     content: string,
     replyContext?: { messageId: string; content: string; role: string; dagId?: string; workflowId?: string },
     attachments?: { name: string; size: number; type: string; data?: string; textContent?: string }[],
@@ -460,6 +636,17 @@ export class MainAgent {
       await this.initPromise;
     }
 
+    // Bind the foreground session for this turn so synchronous callbacks
+    // (text, thinking, command results, gates) attribute back to the right
+    // session. Async DAG callbacks resolve via workflowSessions instead.
+    // ALSO capture into `sid` so any closure created during this turn (e.g.
+    // pushHistory callbacks passed to orchestration) attributes to *this*
+    // session even if a later turn for another session shifts
+    // `this.currentSessionId` while we're awaiting.
+    this.currentSessionId = sessionId || DEFAULT_SESSION_ID;
+    const sid = this.currentSessionId;
+    const ctx = this.getContext(sid);
+
     if (!content?.trim() && (!attachments || attachments.length === 0)) {
       this.callbacks.onText('I didn\'t catch that. Could you say that again?', false, true);
       return;
@@ -467,9 +654,10 @@ export class MainAgent {
 
     const trimmed = (content || '').trim();
     log.verbose('Handling message', {
+      sessionId: sid,
       contentLength: trimmed.length,
       contentPreview: trimmed.slice(0, 200),
-      historyLength: this.context.getHistory().length,
+      historyLength: ctx.getHistory().length,
       hasReplyContext: !!replyContext,
       replyToDagId: replyContext?.dagId,
       replyToWorkflowId: replyContext?.workflowId,
@@ -495,11 +683,11 @@ export class MainAgent {
       userContent += attachmentDescriptions.join('');
     }
 
-    this.pushHistory({ role: 'user', content: userContent });
+    this.pushHistory(sid, { role: 'user', content: userContent });
 
     if (trimmed.startsWith('/')) {
       log.verbose('Route: slash command (pre-detach)', { command: trimmed.slice(0, 80) });
-      await this.handleCommand(trimmed);
+      await this.handleCommand(sid, trimmed);
       return;
     }
 
@@ -584,7 +772,7 @@ export class MainAgent {
         log.verbose('Route: approve pending plan (legacy)', { planId: this.orchestration.latestPendingPlanId });
         await this.orchestration.handlePlanResponse(
           this.orchestration.latestPendingPlanId, 'approve',
-          (e) => this.pushHistory(e as HistoryEntry),
+          (e) => this.pushHistory(sid, e as HistoryEntry),
         );
         return;
       }
@@ -596,7 +784,7 @@ export class MainAgent {
           for (const checkpoint of toResume) {
             void this.orchestration.resumeFromCheckpoint(
               checkpoint,
-              (e) => this.pushHistory(e as HistoryEntry),
+              (e) => this.pushHistory(sid, e as HistoryEntry),
             );
           }
           return;
@@ -632,7 +820,7 @@ export class MainAgent {
         this.emitStep('route', 'Routing request', 'done', 'Coding mode');
         await this.orchestration.dispatchCodingWorkflow(
           userContent,
-          (e) => this.pushHistory(e as HistoryEntry),
+          (e) => this.pushHistory(sid, e as HistoryEntry),
         );
         return;
       }
@@ -642,7 +830,7 @@ export class MainAgent {
         log.verbose('Route: ORCHESTRATE (skill match)', { guarded: isGuardedRequest(trimmed) });
         await this.orchestration.dispatchFullDAG(
           userContent,
-          (e) => this.pushHistory(e as HistoryEntry),
+          (e) => this.pushHistory(sid, e as HistoryEntry),
           { requireConfirmation: isGuardedRequest(trimmed) },
         );
         return;
@@ -664,7 +852,7 @@ export class MainAgent {
         const guarded = isGuardedRequest(trimmed);
         await this.orchestration.dispatchFullDAG(
           userContent,
-          (e) => this.pushHistory(e as HistoryEntry),
+          (e) => this.pushHistory(sid, e as HistoryEntry),
           { requireConfirmation: guarded },
         );
         return; // Returns immediately — DAG runs async
@@ -687,7 +875,7 @@ export class MainAgent {
           log.verbose('Route: ORCHESTRATE (LLM classified)', { guarded: isGuardedRequest(trimmed) });
           await this.orchestration.dispatchFullDAG(
             userContent,
-            (e) => this.pushHistory(e as HistoryEntry),
+            (e) => this.pushHistory(sid, e as HistoryEntry),
             { requireConfirmation: isGuardedRequest(trimmed) },
           );
           break;
@@ -715,7 +903,8 @@ export class MainAgent {
    * Handle a DAG confirmation response (approve/reject for guarded operations).
    * Called from the gateway when a client sends a dag_response message.
    */
-  async handleDAGResponse(workflowId: string, action: 'approve' | 'reject'): Promise<void> {
+  async handleDAGResponse(sessionId: string, workflowId: string, action: 'approve' | 'reject'): Promise<void> {
+    this.currentSessionId = sessionId || DEFAULT_SESSION_ID;
     try {
       if (action === 'approve') {
         this.orchestration.resolveConfirmation(true, workflowId);
@@ -735,7 +924,8 @@ export class MainAgent {
    * sends a `gate_response` message with the gateId returned in the
    * matching `gate_request` event.
    */
-  async handleGateResponse(gateId: string, approved: boolean): Promise<void> {
+  async handleGateResponse(sessionId: string, gateId: string, approved: boolean): Promise<void> {
+    this.currentSessionId = sessionId || DEFAULT_SESSION_ID;
     try {
       this.orchestration.resolveGate(gateId, approved);
     } catch (err) {
@@ -746,11 +936,12 @@ export class MainAgent {
   }
 
   /** Handle a plan response (approve, modify, reject). */
-  async handlePlanResponse(planId: string, action: string, modification?: string): Promise<void> {
+  async handlePlanResponse(sessionId: string, planId: string, action: string, modification?: string): Promise<void> {
+    this.currentSessionId = sessionId || DEFAULT_SESSION_ID;
     try {
       await this.orchestration.handlePlanResponse(
         planId, action,
-        (e) => this.pushHistory(e as HistoryEntry),
+        (e) => this.pushHistory(this.currentSessionId, e as HistoryEntry),
         modification,
       );
     } catch (err) {
@@ -761,7 +952,8 @@ export class MainAgent {
   }
 
   /** Handle a slash command, optionally targeting a specific workflow. */
-  async handleCommand(command: string, workflowId?: string): Promise<void> {
+  async handleCommand(sessionId: string, command: string, workflowId?: string): Promise<void> {
+    this.currentSessionId = sessionId || DEFAULT_SESSION_ID;
     // Ensure init() has completed
     if (this.initPromise) await this.initPromise;
 
@@ -856,7 +1048,7 @@ export class MainAgent {
           });
           void this.orchestration.resumeFromCheckpoint(
             checkpoint,
-            (e) => this.pushHistory(e as HistoryEntry),
+            (e) => this.pushHistory(this.currentSessionId, e as HistoryEntry),
           ).then(() => {
             this.interruptedWorkflows = this.interruptedWorkflows.filter((c) => c !== checkpoint);
             this.callbacks.onText(
@@ -897,18 +1089,22 @@ export class MainAgent {
       if (cmd === '/reset') {
         this.orchestration.clearPendingPlans();
         this.orchestration.stopAll();
-        this.context.clear();
+        // Wipe only the calling session's hot window + totals — other sessions
+        // remain untouched. Hindsight memories are NOT cleared (cross-session
+        // knowledge survives /reset).
+        this.getContext(this.currentSessionId).clear();
+        const totals = this.getTotals(this.currentSessionId);
+        totals.inputTokens = 0;
+        totals.outputTokens = 0;
+        totals.cacheCreationTokens = 0;
+        totals.cacheReadTokens = 0;
+        totals.costUsd = 0;
         this.cachedSystemPrompt = null;
-        this.cumulativeInputTokens = 0;
-        this.cumulativeOutputTokens = 0;
-        this.cumulativeCacheCreationTokens = 0;
-        this.cumulativeCacheReadTokens = 0;
-        this.sessionCostUsd = 0;
         this.callbacks.onCommandResult({
           command: '/reset', success: true,
           message: 'Reset complete. Pending plans cleared, history wiped, executor stopped.',
         });
-        this.emitSessionStatus();
+        this.emitSessionStatus(this.currentSessionId);
         return;
       }
 
@@ -998,7 +1194,7 @@ export class MainAgent {
             command: cmd, success: true,
             message: `Running custom command /${fileCmd.name}…`,
           });
-          await this.handleMessage(fileCmd.content);
+          await this.handleMessage(this.currentSessionId, fileCmd.content);
           return;
         }
       }
@@ -1040,13 +1236,15 @@ export class MainAgent {
   }
 
   /** Flush memory before compaction. */
-  async flushMemory(): Promise<void> {
-    await this.memory.flush(this.context.getHistory());
+  async flushMemory(sessionId?: string): Promise<void> {
+    const sid = sessionId || this.currentSessionId;
+    await this.memory.flush(this.getContext(sid).getHistory());
   }
 
   /** Summarize the session to Hindsight. */
-  async summarizeSession(): Promise<void> {
-    await this.memory.summarize(this.context.getHistory());
+  async summarizeSession(sessionId?: string): Promise<void> {
+    const sid = sessionId || this.currentSessionId;
+    await this.memory.summarize(this.getContext(sid).getHistory());
   }
 
   /** Get the shared event bus. */
@@ -1198,15 +1396,16 @@ export class MainAgent {
 
   private _stepTimers = new Map<string, number>();
 
-  emitMemoryEvent(op: MemoryEvent['op'], detail: string, bank?: string, meta?: Record<string, unknown>): void {
-    this.callbacks.onMemoryEvent?.({
+  emitMemoryEvent(op: MemoryEvent['op'], detail: string, bank?: string, meta?: Record<string, unknown>, sessionId?: string): void {
+    const sid = sessionId ?? this.currentSessionId;
+    this.userCallbacks.onMemoryEvent?.({
       id: `mem-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
       timestamp: new Date().toISOString(),
       op,
       detail,
       bank,
-      meta,
-    });
+      meta: { ...(meta ?? {}), sessionId: sid },
+    }, sid);
   }
 
   private emitStep(id: string, name: string, status: ThinkingStepStatus, detail?: string): void {
@@ -1373,9 +1572,10 @@ export class MainAgent {
       }
     }
 
+    const sid = this.currentSessionId;
     const [systemPrompt, assembled] = await Promise.all([
       this.getSystemPrompt(runDir),
-      this.context.assemble(userMessage),
+      this.getContext(sid).assemble(userMessage),
     ]);
 
     const msgCount = assembled.hotMessages.length + (assembled.priorContext ? 2 : 0);
@@ -1448,21 +1648,22 @@ export class MainAgent {
       if (!checkDetached()) {
         this.emitStep('llm', 'Generating response', 'done');
       }
-      this.cumulativeInputTokens += result.inputTokens;
-      this.cumulativeOutputTokens += result.outputTokens;
-      this.cumulativeCacheCreationTokens += result.cacheCreationTokens;
-      this.cumulativeCacheReadTokens += result.cacheReadTokens;
-      this.sessionCostUsd += this.estimateConversationalCost(
+      const totals = this.getTotals(sid);
+      totals.inputTokens += result.inputTokens;
+      totals.outputTokens += result.outputTokens;
+      totals.cacheCreationTokens += result.cacheCreationTokens;
+      totals.cacheReadTokens += result.cacheReadTokens;
+      totals.costUsd += this.estimateConversationalCost(
         result.inputTokens, result.outputTokens,
         result.cacheCreationTokens, result.cacheReadTokens,
       );
       if (!wasDetached) {
-        this.pushHistory({ role: "assistant", content: result.text });
+        this.pushHistory(sid, { role: "assistant", content: result.text });
       } else {
         log.info('Background conversation completed, appending to history', { runId: effectiveRunId, textLength: result.text.length });
-        this.pushHistory({ role: "assistant", content: `[Background ${effectiveRunId.slice(0, 12)}]: ${result.text}` });
+        this.pushHistory(sid, { role: "assistant", content: `[Background ${effectiveRunId.slice(0, 12)}]: ${result.text}` });
       }
-      this.emitSessionStatus();
+      this.emitSessionStatus(sid);
 
       // Emit per-run stats for direct mode (mirrors DAGCompleteInfo for orchestration runs)
       const turnDurationSec = (Date.now() - turnStartTime) / 1000;
@@ -1492,7 +1693,7 @@ export class MainAgent {
       const fallback = 'I seem to be having trouble reaching my language centre. Give me a moment.';
       wrappedOnText(fallback, false, true);
       if (!wasDetached) {
-        this.pushHistory({ role: 'assistant', content: fallback });
+        this.pushHistory(sid, { role: 'assistant', content: fallback });
         // Surface direct-mode failures through the orchestration event
         // stream + completion callback so the Workflow tab tab transitions
         // to an "error" terminal state rather than appearing stuck mid-run.
@@ -1534,17 +1735,24 @@ export class MainAgent {
     }
   }
 
-  /** Emit session status to the TUI/gateway. */
-  private emitSessionStatus(): void {
-    this.callbacks.onSessionStatus?.({
+  /**
+   * Emit session status for the given session to the TUI/gateway.
+   * Bypasses the sessionId-injection wrapper and goes straight to the user
+   * callback so we can pass an explicit sessionId (callers may emit status
+   * for a non-foreground session, e.g. when a DAG belonging to session B
+   * completes while session A is the foreground turn).
+   */
+  private emitSessionStatus(sessionId: string): void {
+    const totals = this.getTotals(sessionId);
+    this.userCallbacks.onSessionStatus?.({
       model: this.config.model,
-      inputTokens: this.cumulativeInputTokens,
-      outputTokens: this.cumulativeOutputTokens,
-      cacheCreationTokens: this.cumulativeCacheCreationTokens,
-      cacheReadTokens: this.cumulativeCacheReadTokens,
+      inputTokens: totals.inputTokens,
+      outputTokens: totals.outputTokens,
+      cacheCreationTokens: totals.cacheCreationTokens,
+      cacheReadTokens: totals.cacheReadTokens,
       maxContextTokens: 200000,
-      sessionCostUsd: this.sessionCostUsd,
-    });
+      sessionCostUsd: totals.costUsd,
+    }, sessionId);
   }
 
   private estimateConversationalCost(
@@ -1602,21 +1810,22 @@ export class MainAgent {
     return runDir ? base + buildRunDirBlock(runDir) : base;
   }
 
-  /** Build messages from hot window only (sync, for non-conversational paths). */
-  private buildAnthropicMessages(): AnthropicMessage[] {
-    return this.context.getHistory().map((m) => ({
+  /** Build messages from a session's hot window only (sync, for non-conversational paths). */
+  private buildAnthropicMessages(sessionId?: string): AnthropicMessage[] {
+    const sid = sessionId || this.currentSessionId;
+    return this.getContext(sid).getHistory().map((m) => ({
       role: m.role as 'user' | 'assistant',
       content: m.content,
     }));
   }
 
-  private pushHistory(entry: HistoryEntry): void {
+  private pushHistory(sessionId: string, entry: HistoryEntry): void {
     // Fire-and-forget: push to context assembler (retains to Hindsight + hot window)
-    this.context.push({
+    this.getContext(sessionId).push({
       role: entry.role as 'user' | 'assistant' | 'system',
       content: entry.content,
     }).catch((err) => {
-      log.debug('Context push failed (fire-and-forget)', { error: err instanceof Error ? err.message : String(err) });
+      log.debug('Context push failed (fire-and-forget)', { sessionId, error: err instanceof Error ? err.message : String(err) });
     });
   }
 }

@@ -82,7 +82,7 @@ export async function handleStartCodingSession(
     if (body.branch) enrichedTask += ` branch:${body.branch}`;
 
     // Kick off through the agent in coding mode (fire-and-forget)
-    void mainAgent.handleMessage(enrichedTask, undefined, undefined, 'code').catch((err) => {
+    void mainAgent.handleMessage('default', enrichedTask, undefined, undefined, 'code').catch((err) => {
       log.error('Coding session via API failed', { error: err instanceof Error ? err.message : String(err) });
     });
 

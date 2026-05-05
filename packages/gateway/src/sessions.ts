@@ -459,9 +459,10 @@ export class SessionManager {
 
     const id = SessionManager.generateSessionId();
     const now = new Date().toISOString();
+    const finalName = name ?? `Session ${new Date().toLocaleString()}`;
     const session: Session = {
       id,
-      name: name ?? `Session ${new Date().toLocaleString()}`,
+      name: finalName,
       createdAt: now,
       updatedAt: now,
       messages: [],
@@ -479,6 +480,15 @@ export class SessionManager {
       eventBuffer: [],
     };
     this.sessions.set(id, session);
+    // SQLite dual-write: insert session row so per-session foreign-keyed
+    // tables (messages, events, memory_events, etc.) can cascade on delete.
+    if (this.sqliteEnabled) {
+      try {
+        this.persistence!.createSession(id, finalName);
+      } catch (err) {
+        log.warn('[session:created] SQLite createSession failed', { id, error: (err as Error).message });
+      }
+    }
     this.schedulePersist(id);
     log.info(`[session:created] New session created: ${id}`);
     return session;
@@ -495,6 +505,14 @@ export class SessionManager {
     if (!session) return false;
     session.name = name;
     session.updatedAt = new Date().toISOString();
+    // SQLite dual-write: keep the persisted name in sync.
+    if (this.sqliteEnabled) {
+      try {
+        this.persistence!.updateSession(id, { name });
+      } catch (err) {
+        log.warn('[session:renamed] SQLite updateSession failed', { id, error: (err as Error).message });
+      }
+    }
     this.schedulePersist(id);
     return true;
   }
@@ -970,6 +988,14 @@ export class SessionManager {
    * The default session cannot be deleted — use /reset to clear it instead.
    * @param id - Session identifier.
    */
+  /**
+   * Optional hook fired after a session is deleted from memory/disk/SQLite.
+   * Wired by the gateway to MainAgent.clearSessionState so per-session
+   * agent state (context, totals, workflow mappings) is purged too.
+   * Hindsight memories are NEVER touched here — recall stays cross-session.
+   */
+  onSessionDeleted: ((id: string) => void) | null = null;
+
   deleteSession(id: string): void {
     if (id === DEFAULT_SESSION_ID) {
       log.warn('Cannot delete the default session — use /reset to clear it');
@@ -977,6 +1003,21 @@ export class SessionManager {
     }
     this.sessions.delete(id);
     this.deleteFromDisk(id);
+    // SQLite cascade: deletes messages, events, memory_events, workflows,
+    // workflow_events, run_history, client_state for this session via FK.
+    // Hindsight is a separate store and is intentionally untouched.
+    if (this.sqliteEnabled) {
+      try {
+        this.persistence!.deleteSession(id);
+      } catch (err) {
+        log.warn('[session:deleted] SQLite deleteSession failed', { id, error: (err as Error).message });
+      }
+    }
+    try {
+      this.onSessionDeleted?.(id);
+    } catch (err) {
+      log.warn('[session:deleted] onSessionDeleted hook failed', { id, error: (err as Error).message });
+    }
     log.info(`Session deleted: ${id}`);
   }
 
