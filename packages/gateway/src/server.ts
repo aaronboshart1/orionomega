@@ -1965,13 +1965,23 @@ async function shutdown(signal: string): Promise<void> {
       }
     });
 
-    const summaryDone = mainAgent
-      ? mainAgent.summarizeSession().then(
-          () => log.info('Session summarized during shutdown'),
-          (err) => log.warn('Session summarization failed during shutdown', {
-            error: err instanceof Error ? err.message : String(err),
-          }),
-        )
+    // Summarize EACH known session at shutdown rather than only the
+    // foreground/current one — without per-session iteration, sessions
+    // other than the most recently active one would lose their summary
+    // anchor on graceful shutdown.
+    const ma = mainAgent;
+    const summaryDone = ma
+      ? Promise.all(
+          (sessionManager?.listSessions() ?? []).map((s) =>
+            ma.summarizeSession(s.id).then(
+              () => log.info('Session summarized during shutdown', { sessionId: s.id }),
+              (err) => log.warn('Session summarization failed during shutdown', {
+                sessionId: s.id,
+                error: err instanceof Error ? err.message : String(err),
+              }),
+            ),
+          ),
+        ).then(() => undefined)
       : Promise.resolve();
 
     await withDeadline(
