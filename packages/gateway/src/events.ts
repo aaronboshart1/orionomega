@@ -195,10 +195,19 @@ export class EventStreamer {
       sessionId,
     );
 
-    // Buffer events when no clients are connected — also session-scoped
-    // so the right session's queue receives the event on reconnect.
-    if (this.clients.size === 0 && this.sessionManager) {
-      this.sessionManager.bufferEvent(sessionId ?? this.getActiveSessionId(), {
+    // Determine which connected clients would actually receive this event
+    // under the session filter. Buffer when there are no eligible recipients
+    // for the target session — not just when zero global clients exist —
+    // so events for an idle/disconnected session aren't silently dropped
+    // while another session has active clients. Mirrors broadcast semantics.
+    const targetSid = sessionId ?? this.getActiveSessionId();
+    let eligibleRecipients = 0;
+    for (const [, c] of this.clients) {
+      if (sessionId && c.sessionId !== sessionId) continue;
+      eligibleRecipients++;
+    }
+    if (eligibleRecipients === 0 && this.sessionManager) {
+      this.sessionManager.bufferEvent(targetSid, {
         id: randomBytes(8).toString('hex'),
         type: 'event',
         workflowId,
@@ -276,9 +285,18 @@ export class EventStreamer {
 
     const msgWithSeq: ServerMessage = { ...message, seq };
 
-    // Buffer DAG messages when no clients are connected — session-scoped.
-    if (this.clients.size === 0 && this.sessionManager) {
-      this.sessionManager.bufferEvent(sessionId ?? this.getActiveSessionId(), msgWithSeq);
+    // Buffer DAG messages when there are no eligible recipients for this
+    // session — not just when zero global clients exist — so per-session
+    // DAG progress is recoverable on reconnect even while other sessions
+    // have active clients. Mirrors broadcast semantics.
+    const targetSid = sessionId ?? this.getActiveSessionId();
+    let eligibleRecipients = 0;
+    for (const [, c] of this.clients) {
+      if (sessionId && c.sessionId !== sessionId) continue;
+      eligibleRecipients++;
+    }
+    if (eligibleRecipients === 0 && this.sessionManager) {
+      this.sessionManager.bufferEvent(targetSid, msgWithSeq);
       return;
     }
 
