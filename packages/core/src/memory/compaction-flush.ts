@@ -69,6 +69,7 @@ export class CompactionFlush {
   async flush(
     messages: { role: string; content: string }[],
     bankId: string,
+    sessionId?: string,
   ): Promise<FlushResult> {
     if (messages.length === 0) {
       return { itemsRetained: 0 };
@@ -134,10 +135,12 @@ export class CompactionFlush {
       );
       const uniqueItems = dedupChecks.filter(Boolean) as ExtractedItem[];
 
+      const sessionTags = sessionId ? [`session:${sessionId}`] : undefined;
       const items = uniqueItems.map((item) => ({
         content: item.content,
         context: item.context,
         timestamp: new Date().toISOString(),
+        ...(sessionTags ? { tags: sessionTags } : {}),
       }));
 
       if (items.length > 0) {

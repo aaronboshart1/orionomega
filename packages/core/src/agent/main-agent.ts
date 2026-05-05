@@ -1297,7 +1297,7 @@ export class MainAgent {
   /** Flush memory before compaction. */
   async flushMemory(sessionId?: string): Promise<void> {
     const sid = sessionId || this.currentSessionId;
-    await this.memory.flush(this.getContext(sid).getHistory());
+    await this.memory.flush(this.getContext(sid).getHistory(), sid);
   }
 
   /** Summarize the session to Hindsight. */

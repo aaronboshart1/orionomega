@@ -385,14 +385,14 @@ export class MemoryBridge {
   /**
    * Flush conversation context to Hindsight before compaction.
    */
-  async flush(history: Array<{ role: string; content: string }>): Promise<void> {
+  async flush(history: Array<{ role: string; content: string }>, sessionId?: string): Promise<void> {
     if (!this.compactionFlush) return;
 
     const bankId = this.activeProjectBank ?? this.config.hindsight?.defaultBank ?? 'core';
     try {
-      const result = await this.compactionFlush.flush(history, bankId);
+      const result = await this.compactionFlush.flush(history, bankId, sessionId);
       log.info('Memory flushed before compaction', { itemsRetained: result.itemsRetained });
-      this.onMemoryEvent?.('flush', `Flushed ${result.itemsRetained} items to memory`, bankId, { itemsRetained: result.itemsRetained });
+      this.onMemoryEvent?.('flush', `Flushed ${result.itemsRetained} items to memory`, bankId, { itemsRetained: result.itemsRetained, ...(sessionId ? { sessionId } : {}) });
     } catch (err) {
       log.warn('Memory flush failed', { error: err instanceof Error ? err.message : String(err) });
     }
