@@ -1492,6 +1492,31 @@ export class MainAgent {
       this.isActiveConversation = true;
     }
 
+    // CRITICAL multi-session correctness:
+    // The wrapped onText/onThinking/onThinkingStep callbacks below pass
+    // `effectiveRunId` (NOT the `direct-${effectiveRunId}` prefixed form)
+    // as the workflowId argument when the conversation is detached. The
+    // user-facing `buildWrappedCallbacks` then runs `sid(workflowId)`
+    // (i.e. resolveSessionId(effectiveRunId)) to attribute the event to
+    // the originating session. Without an entry under `effectiveRunId`
+    // in workflowSessions, that lookup misses and falls back to
+    // `currentSessionId` — which is mutable across turns. If a different
+    // session has become foreground by the time a background turn emits
+    // its final text, the text would be persisted/broadcast to the wrong
+    // session.
+    //
+    // We therefore bind BOTH `effectiveRunId` (used by streaming
+    // callbacks) AND `direct-${effectiveRunId}` (used by
+    // onDirectStart/Complete + the orchestration `onEvent` emissions
+    // below) to the active session at turn start, and clear both
+    // bindings in the `finally` block. This guarantees sid resolution
+    // succeeds for every event regardless of which ID the call site
+    // chose to thread through.
+    const _directWorkflowIdForBinding = `direct-${effectiveRunId}`;
+    const _sessionAtTurnStart = this.currentSessionId;
+    this.registerWorkflowSession(effectiveRunId, _sessionAtTurnStart);
+    this.registerWorkflowSession(_directWorkflowIdForBinding, _sessionAtTurnStart);
+
     const checkDetached = () => {
       if (!wasDetached && this.backgroundConversations.has(effectiveRunId)) {
         wasDetached = true;
@@ -1789,6 +1814,13 @@ export class MainAgent {
       if (this.foregroundRunId === effectiveRunId) {
         this.isActiveConversation = false;
       }
+      // Drop the workflow→session bindings registered at turn start so
+      // the maps don't grow unboundedly. Mirror the cleanup into the
+      // RetentionEngine to keep both maps in sync.
+      this.workflowSessions.delete(effectiveRunId);
+      this.workflowSessions.delete(_directWorkflowIdForBinding);
+      this.memory.retention?.unregisterWorkflowSession(effectiveRunId);
+      this.memory.retention?.unregisterWorkflowSession(_directWorkflowIdForBinding);
     }
   }
 

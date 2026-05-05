@@ -74,17 +74,27 @@ export interface CodingProgressCallback {
 
 // ── Event emitter registry (legacy — kept for backward compat) ────────────────
 
+/**
+ * Every event-emitter function in this interface accepts the
+ * CodingOrchestrator's internal sessionId as a second `codingSessionId`
+ * argument. The gateway uses this id to look up the originating
+ * gateway sessionId via the binding map populated by `bindSession()`.
+ * Threading the id through every call (rather than relying on a
+ * "currently active" fallback) is REQUIRED for correct routing when
+ * multiple coding sessions run concurrently across distinct gateway
+ * sessions.
+ */
 export interface CodingEventEmitters {
-  sessionStarted: (payload: { repoUrl: string; branch: string; sessionId: string }) => void;
-  workflowStarted: (payload: { workflowId: string; template: string; nodeCount: number }) => void;
-  stepStarted: (payload: { nodeId: string; label: string; type: string }) => void;
-  stepProgress: (payload: { nodeId: string; message: string; percentage: number }) => void;
-  stepCompleted: (payload: { nodeId: string; status: 'success'; outputSummary: string; metadata?: Record<string, unknown> }) => void;
-  stepFailed: (payload: { nodeId: string; error: string }) => void;
-  reviewStarted: (payload: { iteration: number }) => void;
-  reviewCompleted: (payload: { decision: 'approve' | 'reject' | 'request-changes'; feedback: string; metrics?: Record<string, unknown> }) => void;
-  commitCompleted: (payload: { commitHash: string; branch: string }) => void;
-  sessionCompleted: (payload: { summary: string; filesModified?: string[]; filesCreated?: string[]; totalDurationMs?: number }) => void;
+  sessionStarted: (payload: { repoUrl: string; branch: string; sessionId: string }, codingSessionId?: string) => void;
+  workflowStarted: (payload: { workflowId: string; template: string; nodeCount: number }, codingSessionId?: string) => void;
+  stepStarted: (payload: { nodeId: string; label: string; type: string }, codingSessionId?: string) => void;
+  stepProgress: (payload: { nodeId: string; message: string; percentage: number }, codingSessionId?: string) => void;
+  stepCompleted: (payload: { nodeId: string; status: 'success'; outputSummary: string; metadata?: Record<string, unknown> }, codingSessionId?: string) => void;
+  stepFailed: (payload: { nodeId: string; error: string }, codingSessionId?: string) => void;
+  reviewStarted: (payload: { iteration: number }, codingSessionId?: string) => void;
+  reviewCompleted: (payload: { decision: 'approve' | 'reject' | 'request-changes'; feedback: string; metrics?: Record<string, unknown> }, codingSessionId?: string) => void;
+  commitCompleted: (payload: { commitHash: string; branch: string }, codingSessionId?: string) => void;
+  sessionCompleted: (payload: { summary: string; filesModified?: string[]; filesCreated?: string[]; totalDurationMs?: number }, codingSessionId?: string) => void;
   /**
    * Bind a coding-orchestrator sessionId to the originating gateway/conversation
    * sessionId. Called by `run()`/`start()` immediately before `sessionStarted`
@@ -257,8 +267,8 @@ export class CodingOrchestrator {
     _emitters?.bindSession?.(sessionId, conversationId);
 
     // Emit legacy events
-    _emitters?.sessionStarted({ repoUrl, branch, sessionId });
-    _emitters?.workflowStarted({ workflowId: sessionId, template, nodeCount: DEFAULT_CODING_STEPS.length });
+    _emitters?.sessionStarted({ repoUrl, branch, sessionId }, sessionId);
+    _emitters?.workflowStarted({ workflowId: sessionId, template, nodeCount: DEFAULT_CODING_STEPS.length }, sessionId);
 
     // Persist workflow execution
     const executionId = uuid();
@@ -281,7 +291,7 @@ export class CodingOrchestrator {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       log.error('Coding workflow failed', { sessionId, error: msg });
-      _emitters?.stepFailed({ nodeId: 'workflow', error: msg });
+      _emitters?.stepFailed({ nodeId: 'workflow', error: msg }, sessionId);
       await this._updateSessionStatus(sessionId, 'failed').catch((updErr) => {
         log.warn('Failed to mark coding session as failed', {
           sessionId,
@@ -320,8 +330,8 @@ export class CodingOrchestrator {
     // Bind coding sessionId → conversation/gateway sessionId BEFORE emitting
     // any events so the downstream resolver can scope them correctly.
     _emitters?.bindSession?.(sessionId, conversationId);
-    _emitters?.sessionStarted({ repoUrl, branch, sessionId });
-    _emitters?.workflowStarted({ workflowId: sessionId, template, nodeCount: DEFAULT_CODING_STEPS.length });
+    _emitters?.sessionStarted({ repoUrl, branch, sessionId }, sessionId);
+    _emitters?.workflowStarted({ workflowId: sessionId, template, nodeCount: DEFAULT_CODING_STEPS.length }, sessionId);
 
     const executionId = uuid();
     await this.db.insert(workflowExecutions).values({
@@ -335,7 +345,7 @@ export class CodingOrchestrator {
       .catch((err) => {
         const msg = err instanceof Error ? err.message : String(err);
         log.error('Coding workflow failed', { sessionId, error: msg });
-        _emitters?.stepFailed({ nodeId: 'workflow', error: msg });
+        _emitters?.stepFailed({ nodeId: 'workflow', error: msg }, sessionId);
         this._updateSessionStatus(sessionId, 'failed').catch((updErr) => {
           log.warn('Failed to mark coding session as failed', {
             sessionId,
@@ -384,9 +394,9 @@ export class CodingOrchestrator {
     let targetDir = workspacePath;
 
     // ── Step 1: Clone / sync repo ──────────────────────────────────────────
-    await this._runStep(executionId, 'clone', 'Clone / sync repo', 'git', progress, async () => {
+    await this._runStep(sessionId, executionId, 'clone', 'Clone / sync repo', 'git', progress, async () => {
       progress?.onStepProgress('clone', 'Preparing workspace…', 10);
-      _emitters?.stepProgress({ nodeId: 'clone', message: 'Preparing workspace…', percentage: 10 });
+      _emitters?.stepProgress({ nodeId: 'clone', message: 'Preparing workspace…', percentage: 10 }, sessionId);
       mkdirSync(workspacePath, { recursive: true });
 
       if (repoUrl.startsWith('file://')) {
@@ -408,12 +418,12 @@ export class CodingOrchestrator {
 
         const msg = `Local workspace validated: ${targetDir}`;
         progress?.onStepProgress('clone', msg, 100);
-        _emitters?.stepProgress({ nodeId: 'clone', message: msg, percentage: 100 });
+        _emitters?.stepProgress({ nodeId: 'clone', message: msg, percentage: 100 }, sessionId);
       } else {
         // Remote repo — clone via repo-manager
         const msg = `Cloning ${repoUrl}…`;
         progress?.onStepProgress('clone', msg, 30);
-        _emitters?.stepProgress({ nodeId: 'clone', message: msg, percentage: 30 });
+        _emitters?.stepProgress({ nodeId: 'clone', message: msg, percentage: 30 }, sessionId);
 
         targetDir = await cloneRepo(repoUrl, workspacePath, {
           branch,
@@ -421,7 +431,7 @@ export class CodingOrchestrator {
         });
 
         progress?.onStepProgress('clone', 'Clone complete', 100);
-        _emitters?.stepProgress({ nodeId: 'clone', message: 'Clone complete', percentage: 100 });
+        _emitters?.stepProgress({ nodeId: 'clone', message: 'Clone complete', percentage: 100 }, sessionId);
       }
 
       const output = `Repo prepared at ${targetDir}`;
@@ -433,9 +443,9 @@ export class CodingOrchestrator {
     let codebaseScanOutput: CodebaseScanOutput | null = null;
     let analysisText = '';
 
-    await this._runStep(executionId, 'analyze', 'Analyze codebase', 'analysis', progress, async () => {
+    await this._runStep(sessionId, executionId, 'analyze', 'Analyze codebase', 'analysis', progress, async () => {
       progress?.onStepProgress('analyze', 'Scanning project structure…', 20);
-      _emitters?.stepProgress({ nodeId: 'analyze', message: 'Scanning project structure…', percentage: 20 });
+      _emitters?.stepProgress({ nodeId: 'analyze', message: 'Scanning project structure…', percentage: 20 }, sessionId);
 
       try {
         // Use the proper codebase-analyzer module
@@ -443,7 +453,7 @@ export class CodingOrchestrator {
         codebaseScanOutput = toCodebaseScanOutput(summary);
 
         progress?.onStepProgress('analyze', 'Identifying tech stack…', 60);
-        _emitters?.stepProgress({ nodeId: 'analyze', message: 'Identifying tech stack…', percentage: 60 });
+        _emitters?.stepProgress({ nodeId: 'analyze', message: 'Identifying tech stack…', percentage: 60 }, sessionId);
 
         analysisText = [
           `Language: ${summary.techStack.language}`,
@@ -458,13 +468,13 @@ export class CodingOrchestrator {
         ].join('\n');
 
         progress?.onStepProgress('analyze', 'Analysis complete', 100);
-        _emitters?.stepProgress({ nodeId: 'analyze', message: 'Analysis complete', percentage: 100 });
+        _emitters?.stepProgress({ nodeId: 'analyze', message: 'Analysis complete', percentage: 100 }, sessionId);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         log.warn('Full codebase analysis failed, using fallback', { error: msg });
         analysisText = `Analysis partial failure: ${msg}`;
         progress?.onStepProgress('analyze', 'Partial analysis (fallback)', 100);
-        _emitters?.stepProgress({ nodeId: 'analyze', message: 'Partial analysis (fallback)', percentage: 100 });
+        _emitters?.stepProgress({ nodeId: 'analyze', message: 'Partial analysis (fallback)', percentage: 100 }, sessionId);
       }
 
       stepResults.push({ nodeId: 'analyze', label: 'Analyze codebase', status: 'completed', output: analysisText.slice(0, 500) });
@@ -478,11 +488,11 @@ export class CodingOrchestrator {
     // Captured planner output for end-of-run Hindsight retention. Stays
     // null when the planner falls back to the prose-only path.
     let capturedPlanOutput: CodingPlannerOutput | null = null;
-    await this._runStep(executionId, 'plan', 'Design implementation plan', 'architect', progress, async () => {
+    await this._runStep(sessionId, executionId, 'plan', 'Design implementation plan', 'architect', progress, async () => {
       // 3a. Recall prior decisions from Hindsight (best-effort).
       if (this.cfg.memoryBridge) {
         progress?.onStepProgress('plan', 'Recalling prior architecture decisions…', 10);
-        _emitters?.stepProgress({ nodeId: 'plan', message: 'Recalling prior architecture decisions…', percentage: 10 });
+        _emitters?.stepProgress({ nodeId: 'plan', message: 'Recalling prior architecture decisions…', percentage: 10 }, sessionId);
         try {
           priorDecisions = await this.cfg.memoryBridge.recallForArchitect(taskDescription);
         } catch (err) {
@@ -495,7 +505,7 @@ export class CodingOrchestrator {
       }
 
       progress?.onStepProgress('plan', 'Generating implementation plan…', 30);
-      _emitters?.stepProgress({ nodeId: 'plan', message: 'Generating implementation plan…', percentage: 30 });
+      _emitters?.stepProgress({ nodeId: 'plan', message: 'Generating implementation plan…', percentage: 30 }, sessionId);
 
       try {
         const planner = new CodingPlanner({
@@ -522,20 +532,20 @@ export class CodingOrchestrator {
         ].join(', ');
 
         progress?.onStepProgress('plan', 'Plan ready', 70);
-        _emitters?.stepProgress({ nodeId: 'plan', message: 'Plan ready', percentage: 70 });
+        _emitters?.stepProgress({ nodeId: 'plan', message: 'Plan ready', percentage: 70 }, sessionId);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         log.warn('CodingPlanner failed, using task description as plan', { error: msg });
         implementationPlan = `Fallback plan: ${taskDescription}`;
         progress?.onStepProgress('plan', 'Plan complete (fallback)', 70);
-        _emitters?.stepProgress({ nodeId: 'plan', message: 'Plan complete (fallback)', percentage: 70 });
+        _emitters?.stepProgress({ nodeId: 'plan', message: 'Plan complete (fallback)', percentage: 70 }, sessionId);
       }
 
       // 3b. Extract requirements from the user's task. We deliberately do
       // this *outside* the architect template (which only runs in DAG mode)
       // so the linear orchestrator path also enforces goal coverage.
       progress?.onStepProgress('plan', 'Extracting concrete requirements…', 85);
-      _emitters?.stepProgress({ nodeId: 'plan', message: 'Extracting concrete requirements…', percentage: 85 });
+      _emitters?.stepProgress({ nodeId: 'plan', message: 'Extracting concrete requirements…', percentage: 85 }, sessionId);
       requirements = await this._extractRequirements(taskDescription, priorDecisions);
 
       // 3c. Coverage check — every requirement must have at least one
@@ -573,7 +583,7 @@ export class CodingOrchestrator {
         nodeId: 'plan',
         message: `Plan ready (${requirements.length} requirement(s), ${priorDecisions.length} prior decision(s))`,
         percentage: 100,
-      });
+      }, sessionId);
 
       stepResults.push({ nodeId: 'plan', label: 'Design implementation plan', status: 'completed', output: summary });
       return summary;
@@ -603,9 +613,9 @@ export class CodingOrchestrator {
 
     // ── Step 4: Implementation loop (Claude Agent SDK) ─────────────────────
     let implementationOutput = '';
-    await this._runStep(executionId, 'implement', 'Implementation loop', 'implementer', progress, async () => {
+    await this._runStep(sessionId, executionId, 'implement', 'Implementation loop', 'implementer', progress, async () => {
       progress?.onStepProgress('implement', 'Starting coding agent…', 5);
-      _emitters?.stepProgress({ nodeId: 'implement', message: 'Starting coding agent…', percentage: 5 });
+      _emitters?.stepProgress({ nodeId: 'implement', message: 'Starting coding agent…', percentage: 5 }, sessionId);
 
       // Build a rich task prompt with codebase context. Prior decisions
       // and the explicit requirements list are appended so the implementer
@@ -673,7 +683,7 @@ export class CodingOrchestrator {
             const pct = event.progress ?? 50;
             const msg = event.message ?? 'Working…';
             progress?.onStepProgress('implement', msg, Math.min(95, pct));
-            _emitters?.stepProgress({ nodeId: 'implement', message: msg, percentage: Math.min(95, pct) });
+            _emitters?.stepProgress({ nodeId: 'implement', message: msg, percentage: Math.min(95, pct) }, sessionId);
           },
         );
 
@@ -707,7 +717,7 @@ export class CodingOrchestrator {
         ].filter(Boolean).join(', ');
 
         progress?.onStepProgress('implement', `Implementation complete — ${filesSummary}`, 100);
-        _emitters?.stepProgress({ nodeId: 'implement', message: `Implementation complete — ${filesSummary}`, percentage: 100 });
+        _emitters?.stepProgress({ nodeId: 'implement', message: `Implementation complete — ${filesSummary}`, percentage: 100 }, sessionId);
 
         const outputSummary = `${result.success ? 'Success' : 'Completed with errors'}. ${filesSummary}`;
         stepResults.push({ nodeId: 'implement', label: 'Implementation loop', status: result.success ? 'completed' : 'completed', output: outputSummary });
@@ -719,7 +729,7 @@ export class CodingOrchestrator {
 
         // Fall back to validation-only mode (original behavior)
         progress?.onStepProgress('implement', 'Agent failed, running baseline validation…', 60);
-        _emitters?.stepProgress({ nodeId: 'implement', message: 'Agent failed, running baseline validation…', percentage: 60 });
+        _emitters?.stepProgress({ nodeId: 'implement', message: 'Agent failed, running baseline validation…', percentage: 60 }, sessionId);
 
         const validationCmds = await detectValidationCommands(targetDir);
         let validationPassed = true;
@@ -745,7 +755,7 @@ export class CodingOrchestrator {
 
         implementationOutput = `Agent failed (${msg}). Baseline validation: ${validationPassed ? 'PASSED' : 'FAILED'}.`;
         progress?.onStepProgress('implement', 'Fallback validation complete', 100);
-        _emitters?.stepProgress({ nodeId: 'implement', message: 'Fallback validation complete', percentage: 100 });
+        _emitters?.stepProgress({ nodeId: 'implement', message: 'Fallback validation complete', percentage: 100 }, sessionId);
         stepResults.push({ nodeId: 'implement', label: 'Implementation loop', status: 'completed', output: implementationOutput });
         return implementationOutput;
       }
@@ -755,10 +765,10 @@ export class CodingOrchestrator {
     const reviewIteration = 1;
     let goalVerdicts: RequirementVerdict[] = [];
 
-    await this._runStep(executionId, 'review', 'Architect review', 'reviewer', progress, async () => {
-      _emitters?.reviewStarted({ iteration: reviewIteration });
+    await this._runStep(sessionId, executionId, 'review', 'Architect review', 'reviewer', progress, async () => {
+      _emitters?.reviewStarted({ iteration: reviewIteration }, sessionId);
       progress?.onStepProgress('review', 'Running build, tests, and quality checks…', 20);
-      _emitters?.stepProgress({ nodeId: 'review', message: 'Running build, tests, and quality checks…', percentage: 20 });
+      _emitters?.stepProgress({ nodeId: 'review', message: 'Running build, tests, and quality checks…', percentage: 20 }, sessionId);
 
       let report: ReviewReport;
       try {
@@ -818,15 +828,15 @@ export class CodingOrchestrator {
         });
 
         const output = `Review failed (${msg}). Auto-approved.`;
-        _emitters?.reviewCompleted({ decision: 'approve', feedback: output });
+        _emitters?.reviewCompleted({ decision: 'approve', feedback: output }, sessionId);
         progress?.onStepProgress('review', 'Review complete (auto-approved)', 100);
-        _emitters?.stepProgress({ nodeId: 'review', message: 'Review complete (auto-approved)', percentage: 100 });
+        _emitters?.stepProgress({ nodeId: 'review', message: 'Review complete (auto-approved)', percentage: 100 }, sessionId);
         stepResults.push({ nodeId: 'review', label: 'Architect review', status: 'completed', output });
         return output;
       }
 
       progress?.onStepProgress('review', 'Evaluating results…', 80);
-      _emitters?.stepProgress({ nodeId: 'review', message: 'Evaluating results…', percentage: 80 });
+      _emitters?.stepProgress({ nodeId: 'review', message: 'Evaluating results…', percentage: 80 }, sessionId);
 
       // Map review decision to our enum. The reviewer already converts an
       // unmet requirement into outcome=retask via makeDecision, so we only
@@ -890,7 +900,7 @@ export class CodingOrchestrator {
             evidence: v.evidence.slice(0, 240),
           })),
         },
-      });
+      }, sessionId);
 
       const goalsLine = requirements.length > 0
         ? `Goals: ${metCount}/${requirements.length} met` +
@@ -909,22 +919,22 @@ export class CodingOrchestrator {
       ].filter(Boolean).join('\n');
 
       progress?.onStepProgress('review', `Review complete: ${outcome}`, 100);
-      _emitters?.stepProgress({ nodeId: 'review', message: `Review complete: ${outcome}`, percentage: 100 });
+      _emitters?.stepProgress({ nodeId: 'review', message: `Review complete: ${outcome}`, percentage: 100 }, sessionId);
       stepResults.push({ nodeId: 'review', label: 'Architect review', status: 'completed', output });
       return output;
     });
 
     // ── Step 6: Commit and push ────────────────────────────────────────────
-    await this._runStep(executionId, 'commit', 'Commit and push', 'git', progress, async () => {
+    await this._runStep(sessionId, executionId, 'commit', 'Commit and push', 'git', progress, async () => {
       progress?.onStepProgress('commit', 'Checking for changes…', 10);
-      _emitters?.stepProgress({ nodeId: 'commit', message: 'Checking for changes…', percentage: 10 });
+      _emitters?.stepProgress({ nodeId: 'commit', message: 'Checking for changes…', percentage: 10 }, sessionId);
 
       // Only commit if the target is a git repo
       const isRepo = await isGitRepo(targetDir).catch(() => false);
       if (!isRepo) {
         const msg = 'Not a git repo — skipping commit';
         progress?.onStepProgress('commit', msg, 100);
-        _emitters?.stepProgress({ nodeId: 'commit', message: msg, percentage: 100 });
+        _emitters?.stepProgress({ nodeId: 'commit', message: msg, percentage: 100 }, sessionId);
         commitHash = 'no-commit';
         stepResults.push({ nodeId: 'commit', label: 'Commit and push', status: 'completed', output: msg });
         return msg;
@@ -933,7 +943,7 @@ export class CodingOrchestrator {
       try {
         // Stage all changes via repo-manager
         progress?.onStepProgress('commit', 'Staging changes…', 30);
-        _emitters?.stepProgress({ nodeId: 'commit', message: 'Staging changes…', percentage: 30 });
+        _emitters?.stepProgress({ nodeId: 'commit', message: 'Staging changes…', percentage: 30 }, sessionId);
         await stageChanges(targetDir);
 
         // Check if there are actually changes to commit
@@ -941,7 +951,7 @@ export class CodingOrchestrator {
         if (status.isClean && status.stagedFiles.length === 0) {
           const msg = 'No changes to commit';
           progress?.onStepProgress('commit', msg, 100);
-          _emitters?.stepProgress({ nodeId: 'commit', message: msg, percentage: 100 });
+          _emitters?.stepProgress({ nodeId: 'commit', message: msg, percentage: 100 }, sessionId);
           commitHash = 'no-changes';
           stepResults.push({ nodeId: 'commit', label: 'Commit and push', status: 'completed', output: msg });
           return msg;
@@ -949,7 +959,7 @@ export class CodingOrchestrator {
 
         // Commit via repo-manager
         progress?.onStepProgress('commit', 'Creating commit…', 50);
-        _emitters?.stepProgress({ nodeId: 'commit', message: 'Creating commit…', percentage: 50 });
+        _emitters?.stepProgress({ nodeId: 'commit', message: 'Creating commit…', percentage: 50 }, sessionId);
 
         const commitMsg = `feat: ${taskDescription.slice(0, 72)}\n\nGenerated by OrionOmega Coding Agent`;
         const commitResult = await commitChanges(
@@ -977,34 +987,34 @@ export class CodingOrchestrator {
         }
 
         progress?.onStepProgress('commit', `Committed as ${commitHash.slice(0, 8)}`, 70);
-        _emitters?.stepProgress({ nodeId: 'commit', message: `Committed as ${commitHash.slice(0, 8)}`, percentage: 70 });
-        _emitters?.commitCompleted({ commitHash: commitHash.slice(0, 8), branch });
+        _emitters?.stepProgress({ nodeId: 'commit', message: `Committed as ${commitHash.slice(0, 8)}`, percentage: 70 }, sessionId);
+        _emitters?.commitCompleted({ commitHash: commitHash.slice(0, 8), branch }, sessionId);
 
         // Push for remote repos
         if (!repoUrl.startsWith('file://')) {
           try {
             progress?.onStepProgress('commit', 'Pushing to remote…', 85);
-            _emitters?.stepProgress({ nodeId: 'commit', message: 'Pushing to remote…', percentage: 85 });
+            _emitters?.stepProgress({ nodeId: 'commit', message: 'Pushing to remote…', percentage: 85 }, sessionId);
             await pushChanges(targetDir, { branch });
             progress?.onStepProgress('commit', 'Pushed to remote', 100);
-            _emitters?.stepProgress({ nodeId: 'commit', message: 'Pushed to remote', percentage: 100 });
+            _emitters?.stepProgress({ nodeId: 'commit', message: 'Pushed to remote', percentage: 100 }, sessionId);
           } catch (pushErr) {
             const pushMsg = pushErr instanceof Error ? pushErr.message : String(pushErr);
             log.warn('Push failed (non-fatal)', { error: pushMsg });
             progress?.onStepProgress('commit', `Committed locally (push failed: ${pushMsg.slice(0, 60)})`, 100);
-            _emitters?.stepProgress({ nodeId: 'commit', message: 'Committed locally (push skipped)', percentage: 100 });
+            _emitters?.stepProgress({ nodeId: 'commit', message: 'Committed locally (push skipped)', percentage: 100 }, sessionId);
           }
         } else {
           progress?.onStepProgress('commit', 'Committed locally', 100);
-          _emitters?.stepProgress({ nodeId: 'commit', message: 'Committed locally', percentage: 100 });
+          _emitters?.stepProgress({ nodeId: 'commit', message: 'Committed locally', percentage: 100 }, sessionId);
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         log.warn('Commit step failed (non-fatal)', { error: msg });
         progress?.onStepProgress('commit', `Commit skipped: ${msg.slice(0, 80)}`, 100);
-        _emitters?.stepProgress({ nodeId: 'commit', message: `Commit skipped: ${msg.slice(0, 80)}`, percentage: 100 });
+        _emitters?.stepProgress({ nodeId: 'commit', message: `Commit skipped: ${msg.slice(0, 80)}`, percentage: 100 }, sessionId);
         commitHash = 'no-commit';
-        _emitters?.commitCompleted({ commitHash: 'no-commit', branch });
+        _emitters?.commitCompleted({ commitHash: 'no-commit', branch }, sessionId);
       }
 
       const output = `Committed: ${commitHash || 'no-commit'}`;
@@ -1095,7 +1105,7 @@ export class CodingOrchestrator {
       filesModified: filesModified.length > 0 ? filesModified : undefined,
       filesCreated: filesCreated.length > 0 ? filesCreated : undefined,
       totalDurationMs,
-    });
+    }, sessionId);
 
     return {
       sessionId,
@@ -1117,6 +1127,7 @@ export class CodingOrchestrator {
   // ── Step runner ─────────────────────────────────────────────────────────────
 
   private async _runStep(
+    sessionId: string,
     executionId: string,
     nodeId: string,
     label: string,
@@ -1152,7 +1163,7 @@ export class CodingOrchestrator {
     });
 
     progress?.onStepStarted(nodeId, label);
-    _emitters?.stepStarted({ nodeId, label, type });
+    _emitters?.stepStarted({ nodeId, label, type }, sessionId);
     log.info(`Step started: ${label}`, { nodeId });
 
     try {
@@ -1182,7 +1193,7 @@ export class CodingOrchestrator {
         status: 'success',
         outputSummary: output.slice(0, 200),
         ...(extraMetadata ? { metadata: extraMetadata } : {}),
-      });
+      }, sessionId);
       log.info(`Step completed: ${label}`, { nodeId });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -1192,7 +1203,7 @@ export class CodingOrchestrator {
         .where(eq(workflowSteps.id, stepId));
 
       progress?.onStepFailed(nodeId, msg);
-      _emitters?.stepFailed({ nodeId, error: msg });
+      _emitters?.stepFailed({ nodeId, error: msg }, sessionId);
       log.error(`Step failed: ${label}`, { nodeId, error: msg });
       throw err;
     }

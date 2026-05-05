@@ -57,7 +57,7 @@ export async function handleStartCodingSession(
 ): Promise<void> {
   try {
     const raw = await readBody(req);
-    let body: { task?: string; repoUrl?: string; branch?: string };
+    let body: { task?: string; repoUrl?: string; branch?: string; sessionId?: string };
     try {
       body = JSON.parse(raw);
     } catch {
@@ -76,20 +76,45 @@ export async function handleStartCodingSession(
       return;
     }
 
+    // Resolve the originating gateway session.
+    //
+    // Multi-session correctness: the coding session must run within (and
+    // emit events scoped to) the caller's gateway session. The session id
+    // is resolved with the following precedence:
+    //   1. JSON body `sessionId` field (preferred — explicit)
+    //   2. `X-Session-Id` request header (convenient for browser clients)
+    //   3. `'default'` fallback (preserves legacy single-session behavior
+    //      when callers omit the field — documented).
+    //
+    // Without explicit threading, all REST-initiated coding sessions
+    // would attribute to the `default` session even when a different
+    // session is foreground in the UI, leaking events across sessions.
+    const headerSessionId = (() => {
+      const v = req.headers['x-session-id'];
+      if (typeof v === 'string' && v.trim()) return v.trim();
+      if (Array.isArray(v) && v[0]?.trim()) return v[0].trim();
+      return undefined;
+    })();
+    const sessionId = body.sessionId?.trim() || headerSessionId || 'default';
+
     // Build the task string with optional repo/branch hints
     let enrichedTask = task;
     if (body.repoUrl) enrichedTask += ` repo:${body.repoUrl}`;
     if (body.branch) enrichedTask += ` branch:${body.branch}`;
 
     // Kick off through the agent in coding mode (fire-and-forget)
-    void mainAgent.handleMessage('default', enrichedTask, undefined, undefined, 'code').catch((err) => {
-      log.error('Coding session via API failed', { error: err instanceof Error ? err.message : String(err) });
+    void mainAgent.handleMessage(sessionId, enrichedTask, undefined, undefined, 'code').catch((err) => {
+      log.error('Coding session via API failed', {
+        sessionId,
+        error: err instanceof Error ? err.message : String(err),
+      });
     });
 
     json(res, 202, {
       status: 'accepted',
       message: 'Coding session started. Monitor progress via WebSocket events (type: coding_event).',
       task,
+      sessionId,
     });
   } catch (err) {
     log.error('handleStartCodingSession error', { error: err instanceof Error ? err.message : String(err) });

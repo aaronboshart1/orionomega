@@ -54,16 +54,11 @@ export function setCodingEventStreamer(streamer: EventStreamer): void {
  * across sessions.
  *
  * Callers (gateway server) populate this map at coding-session start via
- * {@link bindCodingSessionToGatewaySession}. The "current" coding session
- * is also tracked so step/review/commit events (which carry no IDs at all)
- * can resolve back to the right gateway session in the common single-tenant
- * case. NOTE: this last-binding-wins approach is correct only for serial
- * coding sessions. Concurrent coding sessions across gateway sessions would
- * require threading sessionId through every coding event payload — tracked
- * as a follow-up for the broader coding-mode multi-session refactor.
+ * {@link bindCodingSessionToGatewaySession} and threadthe coding sessionId
+ * through every emit call so the resolver works correctly even with
+ * concurrent coding sessions across gateway sessions.
  */
 const codingSessionToGatewaySession = new Map<string, string>();
-let _activeCodingGatewaySession: string | undefined;
 
 /**
  * Bind a coding-orchestrator sessionId to the originating gateway sessionId.
@@ -75,37 +70,42 @@ export function bindCodingSessionToGatewaySession(
   gatewaySessionId: string,
 ): void {
   codingSessionToGatewaySession.set(codingSessionId, gatewaySessionId);
-  _activeCodingGatewaySession = gatewaySessionId;
 }
 
 /** Drop a coding-session binding (call on session completion/failure). */
 export function unbindCodingSession(codingSessionId: string): void {
   codingSessionToGatewaySession.delete(codingSessionId);
-  if (codingSessionToGatewaySession.size === 0) _activeCodingGatewaySession = undefined;
 }
 
 /**
- * Resolve the gateway sessionId for a coding event, preferring the
- * payload-derived coding sessionId binding when available, then any
- * caller-supplied override, finally the active coding context.
+ * Resolve the gateway sessionId for a coding event. Prefers explicit
+ * codingSessionId threading via the binding map, then payload-derived
+ * coding sessionId for events that carry one. Returns undefined if no
+ * mapping is found — callers MUST always pass a codingSessionId for
+ * concurrent-correct routing.
  */
 function resolveGatewaySession(
   codingEvent: CodingEventPayload,
-  override?: string,
+  codingSessionId?: string,
 ): string | undefined {
-  // session:started carries the coding sessionId directly in payload.
+  // Explicit threading wins (correct under concurrent coding sessions).
+  if (codingSessionId) {
+    const bound = codingSessionToGatewaySession.get(codingSessionId);
+    if (bound) return bound;
+  }
+  // Fallback: payload-carried coding sessionId for the two events that
+  // carry one. Other event types must always supply codingSessionId
+  // explicitly via the emit caller; otherwise we return undefined and
+  // the streamer will not deliver to any per-session client.
   if (codingEvent.type === 'coding:session:started') {
     const bound = codingSessionToGatewaySession.get(codingEvent.payload.sessionId);
     if (bound) return bound;
   }
-  // workflow:started carries workflowId which equals the coding sessionId
-  // (per CodingOrchestrator.run()).
   if (codingEvent.type === 'coding:workflow:started') {
     const bound = codingSessionToGatewaySession.get(codingEvent.payload.workflowId);
     if (bound) return bound;
   }
-  if (override) return override;
-  return _activeCodingGatewaySession;
+  return undefined;
 }
 
 /**
@@ -120,7 +120,7 @@ function extractWorkflowId(codingEvent: CodingEventPayload): string | undefined 
   return undefined;
 }
 
-function emit(codingEvent: CodingEventPayload, sessionId?: string): void {
+function emit(codingEvent: CodingEventPayload, codingSessionId?: string): void {
   if (!_streamer) return;
   _streamer.emitDAGMessage(
     {
@@ -129,138 +129,98 @@ function emit(codingEvent: CodingEventPayload, sessionId?: string): void {
       workflowId: extractWorkflowId(codingEvent),
       codingEvent,
     },
-    resolveGatewaySession(codingEvent, sessionId),
+    resolveGatewaySession(codingEvent, codingSessionId),
   );
 }
 
 // ── Public emitter functions ──────────────────────────────────────────────────
 
 /**
- * Emit `coding:session:started` — when a coding session begins.
- *
- * @param payload - Repo URL, branch, and session ID.
- * @param sessionId - Optional workflow/session ID to scope delivery.
+ * NOTE on the second `codingSessionId` argument:
+ * Pass the CodingOrchestrator's internal sessionId (the UUID it minted
+ * in `run()`/`start()`). The gateway sessionId is resolved by looking
+ * the codingSessionId up in the binding map populated by
+ * {@link bindCodingSessionToGatewaySession}. Threading codingSessionId
+ * through every emit call is REQUIRED for correct routing under
+ * concurrent coding sessions across gateway sessions.
  */
+
+/** Emit `coding:session:started` — when a coding session begins. */
 export function emitCodingSessionStarted(
   payload: CodingSessionStartedPayload,
-  sessionId?: string,
+  codingSessionId?: string,
 ): void {
-  emit({ type: 'coding:session:started', payload }, sessionId);
+  emit({ type: 'coding:session:started', payload }, codingSessionId);
 }
 
-/**
- * Emit `coding:workflow:started` — when the DAG workflow starts executing.
- *
- * @param payload - Workflow ID, template name, and node count.
- * @param sessionId - Optional workflow/session ID to scope delivery.
- */
+/** Emit `coding:workflow:started` — when the DAG workflow starts executing. */
 export function emitCodingWorkflowStarted(
   payload: CodingWorkflowStartedPayload,
-  sessionId?: string,
+  codingSessionId?: string,
 ): void {
-  emit({ type: 'coding:workflow:started', payload }, sessionId);
+  emit({ type: 'coding:workflow:started', payload }, codingSessionId);
 }
 
-/**
- * Emit `coding:step:started` — when a workflow node begins execution.
- *
- * @param payload - Node ID, label, and coding role type.
- * @param sessionId - Optional workflow/session ID to scope delivery.
- */
+/** Emit `coding:step:started` — when a workflow node begins execution. */
 export function emitCodingStepStarted(
   payload: CodingStepStartedPayload,
-  sessionId?: string,
+  codingSessionId?: string,
 ): void {
-  emit({ type: 'coding:step:started', payload }, sessionId);
+  emit({ type: 'coding:step:started', payload }, codingSessionId);
 }
 
-/**
- * Emit `coding:step:progress` — progress update during step execution.
- *
- * @param payload - Node ID, message, and 0–100 percentage.
- * @param sessionId - Optional workflow/session ID to scope delivery.
- */
+/** Emit `coding:step:progress` — progress update during step execution. */
 export function emitCodingStepProgress(
   payload: CodingStepProgressPayload,
-  sessionId?: string,
+  codingSessionId?: string,
 ): void {
-  emit({ type: 'coding:step:progress', payload }, sessionId);
+  emit({ type: 'coding:step:progress', payload }, codingSessionId);
 }
 
-/**
- * Emit `coding:step:completed` — when a step finishes successfully.
- *
- * @param payload - Node ID, status, and output summary.
- * @param sessionId - Optional workflow/session ID to scope delivery.
- */
+/** Emit `coding:step:completed` — when a step finishes successfully. */
 export function emitCodingStepCompleted(
   payload: CodingStepCompletedPayload,
-  sessionId?: string,
+  codingSessionId?: string,
 ): void {
-  emit({ type: 'coding:step:completed', payload }, sessionId);
+  emit({ type: 'coding:step:completed', payload }, codingSessionId);
 }
 
-/**
- * Emit `coding:step:failed` — when a step fails.
- *
- * @param payload - Node ID and error message.
- * @param sessionId - Optional workflow/session ID to scope delivery.
- */
+/** Emit `coding:step:failed` — when a step fails. */
 export function emitCodingStepFailed(
   payload: CodingStepFailedPayload,
-  sessionId?: string,
+  codingSessionId?: string,
 ): void {
-  emit({ type: 'coding:step:failed', payload }, sessionId);
+  emit({ type: 'coding:step:failed', payload }, codingSessionId);
 }
 
-/**
- * Emit `coding:review:started` — when architect review begins.
- *
- * @param payload - 1-indexed iteration number.
- * @param sessionId - Optional workflow/session ID to scope delivery.
- */
+/** Emit `coding:review:started` — when architect review begins. */
 export function emitCodingReviewStarted(
   payload: CodingReviewStartedPayload,
-  sessionId?: string,
+  codingSessionId?: string,
 ): void {
-  emit({ type: 'coding:review:started', payload }, sessionId);
+  emit({ type: 'coding:review:started', payload }, codingSessionId);
 }
 
-/**
- * Emit `coding:review:completed` — with architect review results.
- *
- * @param payload - Decision, feedback text, and optional metrics.
- * @param sessionId - Optional workflow/session ID to scope delivery.
- */
+/** Emit `coding:review:completed` — with architect review results. */
 export function emitCodingReviewCompleted(
   payload: CodingReviewCompletedPayload,
-  sessionId?: string,
+  codingSessionId?: string,
 ): void {
-  emit({ type: 'coding:review:completed', payload }, sessionId);
+  emit({ type: 'coding:review:completed', payload }, codingSessionId);
 }
 
-/**
- * Emit `coding:commit:completed` — when code is committed and pushed.
- *
- * @param payload - Commit hash and branch name.
- * @param sessionId - Optional workflow/session ID to scope delivery.
- */
+/** Emit `coding:commit:completed` — when code is committed and pushed. */
 export function emitCodingCommitCompleted(
   payload: CodingCommitCompletedPayload,
-  sessionId?: string,
+  codingSessionId?: string,
 ): void {
-  emit({ type: 'coding:commit:completed', payload }, sessionId);
+  emit({ type: 'coding:commit:completed', payload }, codingSessionId);
 }
 
-/**
- * Emit `coding:session:completed` — when the entire coding session finishes.
- *
- * @param payload - Summary, modified/created file lists, and total duration.
- * @param sessionId - Optional workflow/session ID to scope delivery.
- */
+/** Emit `coding:session:completed` — when the entire coding session finishes. */
 export function emitCodingSessionCompleted(
   payload: CodingSessionCompletedPayload,
-  sessionId?: string,
+  codingSessionId?: string,
 ): void {
-  emit({ type: 'coding:session:completed', payload }, sessionId);
+  emit({ type: 'coding:session:completed', payload }, codingSessionId);
 }

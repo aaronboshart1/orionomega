@@ -144,25 +144,26 @@ setCodingEventStreamer(eventStreamer);
 // This ensures coding_event messages are broadcast to WebSocket clients in real time.
 setCodingOrchestatorEmitters({
   // Bind coding sessionId → gateway sessionId BEFORE any session/workflow
-  // events are emitted, so the resolver in coding-events.ts can scope all
-  // subsequent step/review/commit events (which carry no IDs in their
-  // payloads) back to the originating gateway session.
+  // events are emitted, so the resolver in coding-events.ts can scope
+  // every subsequent step/review/commit event (which carries no IDs in
+  // its payload) back to the originating gateway session. The orchestrator
+  // threads `codingSessionId` (its internal UUID) through every emit call.
   bindSession: (codingSessionId, gatewaySessionId) => {
     bindCodingSessionToGatewaySession(codingSessionId, gatewaySessionId);
   },
   unbindSession: (codingSessionId) => {
     unbindCodingSession(codingSessionId);
   },
-  sessionStarted: (p) => emitCodingSessionStarted(p, p.sessionId),
-  workflowStarted: (p) => emitCodingWorkflowStarted(p, p.workflowId),
-  stepStarted: (p) => emitCodingStepStarted(p),
-  stepProgress: (p) => emitCodingStepProgress(p),
-  stepCompleted: (p) => emitCodingStepCompleted(p),
-  stepFailed: (p) => emitCodingStepFailed(p),
-  reviewStarted: (p) => emitCodingReviewStarted(p),
-  reviewCompleted: (p) => emitCodingReviewCompleted(p),
-  commitCompleted: (p) => emitCodingCommitCompleted(p),
-  sessionCompleted: (p) => emitCodingSessionCompleted(p),
+  sessionStarted: (p, codingSessionId) => emitCodingSessionStarted(p, codingSessionId ?? p.sessionId),
+  workflowStarted: (p, codingSessionId) => emitCodingWorkflowStarted(p, codingSessionId ?? p.workflowId),
+  stepStarted: (p, codingSessionId) => emitCodingStepStarted(p, codingSessionId),
+  stepProgress: (p, codingSessionId) => emitCodingStepProgress(p, codingSessionId),
+  stepCompleted: (p, codingSessionId) => emitCodingStepCompleted(p, codingSessionId),
+  stepFailed: (p, codingSessionId) => emitCodingStepFailed(p, codingSessionId),
+  reviewStarted: (p, codingSessionId) => emitCodingReviewStarted(p, codingSessionId),
+  reviewCompleted: (p, codingSessionId) => emitCodingReviewCompleted(p, codingSessionId),
+  commitCompleted: (p, codingSessionId) => emitCodingCommitCompleted(p, codingSessionId),
+  sessionCompleted: (p, codingSessionId) => emitCodingSessionCompleted(p, codingSessionId),
 });
 wsHandler.setHindsightStatusProvider(() => ({
   connected: lastHindsightConnected ?? false,
