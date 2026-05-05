@@ -994,11 +994,12 @@ export class MainAgent {
 
   /** Handle a plan response (approve, modify, reject). */
   async handlePlanResponse(sessionId: string, planId: string, action: string, modification?: string): Promise<void> {
-    this.currentSessionId = sessionId || DEFAULT_SESSION_ID;
+    const sid = sessionId || DEFAULT_SESSION_ID;
+    this.currentSessionId = sid;
     try {
       await this.orchestration.handlePlanResponse(
         planId, action,
-        (e) => this.pushHistory(this.currentSessionId, e as HistoryEntry),
+        (e) => this.pushHistory(sid, e as HistoryEntry),
         modification,
       );
     } catch (err) {
@@ -1010,7 +1011,8 @@ export class MainAgent {
 
   /** Handle a slash command, optionally targeting a specific workflow. */
   async handleCommand(sessionId: string, command: string, workflowId?: string): Promise<void> {
-    this.currentSessionId = sessionId || DEFAULT_SESSION_ID;
+    const sid = sessionId || DEFAULT_SESSION_ID;
+    this.currentSessionId = sid;
     // Ensure init() has completed
     if (this.initPromise) await this.initPromise;
 
@@ -1105,7 +1107,7 @@ export class MainAgent {
           });
           void this.orchestration.resumeFromCheckpoint(
             checkpoint,
-            (e) => this.pushHistory(this.currentSessionId, e as HistoryEntry),
+            (e) => this.pushHistory(sid, e as HistoryEntry),
           ).then(() => {
             this.interruptedWorkflows = this.interruptedWorkflows.filter((c) => c !== checkpoint);
             this.callbacks.onText(
@@ -1149,8 +1151,8 @@ export class MainAgent {
         // Wipe only the calling session's hot window + totals — other sessions
         // remain untouched. Hindsight memories are NOT cleared (cross-session
         // knowledge survives /reset).
-        this.getContext(this.currentSessionId).clear();
-        const totals = this.getTotals(this.currentSessionId);
+        this.getContext(sid).clear();
+        const totals = this.getTotals(sid);
         totals.inputTokens = 0;
         totals.outputTokens = 0;
         totals.cacheCreationTokens = 0;
@@ -1161,7 +1163,7 @@ export class MainAgent {
           command: '/reset', success: true,
           message: 'Reset complete. Pending plans cleared, history wiped, executor stopped.',
         });
-        this.emitSessionStatus(this.currentSessionId);
+        this.emitSessionStatus(sid);
         return;
       }
 
@@ -1251,7 +1253,7 @@ export class MainAgent {
             command: cmd, success: true,
             message: `Running custom command /${fileCmd.name}…`,
           });
-          await this.handleMessage(this.currentSessionId, fileCmd.content);
+          await this.handleMessage(sid, fileCmd.content);
           return;
         }
       }
@@ -1654,7 +1656,7 @@ export class MainAgent {
       }
     }
 
-    const sid = this.currentSessionId;
+    const sid = _sessionAtTurnStart;
     const [systemPrompt, assembled] = await Promise.all([
       this.getSystemPrompt(runDir),
       this.getContext(sid).assemble(userMessage),

@@ -810,7 +810,7 @@ export class WebSocketHandler {
     // When the last client disconnects from a session, summarize to persistent memory
     if (session && remainingClients === 0 && this.mainAgent) {
       log.info('[ws:summarize] Last client disconnected — summarizing session', { sessionId });
-      this.mainAgent.summarizeSession().catch((err) => {
+      this.mainAgent.summarizeSession(sessionId).catch((err) => {
         log.warn('[ws:summarize:error] Session summarization failed on disconnect', {
           error: err instanceof Error ? err.message : String(err),
         });
