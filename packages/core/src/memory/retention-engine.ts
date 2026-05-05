@@ -556,14 +556,14 @@ export class RetentionEngine {
    * @param content - The user's message text.
    * @param projectBank - Optional project bank for decision-context retention.
    */
-  async evaluateUserMessage(content: string, projectBank?: string): Promise<void> {
+  async evaluateUserMessage(content: string, projectBank?: string, sessionId?: string): Promise<void> {
     // Check for explicit "remember this/that" commands
     for (const pattern of REMEMBER_PATTERNS) {
       if (pattern.test(content)) {
         const stripped = content.replace(pattern, '').trim();
         if (stripped) {
           const bank = projectBank ?? 'core';
-          this.retain(bank, stripped, 'preference').catch((err) => { log.debug('Fire-and-forget retain failed', { error: err instanceof Error ? err.message : String(err) }); });
+          this.retain(bank, stripped, 'preference', sessionId).catch((err) => { log.debug('Fire-and-forget retain failed', { error: err instanceof Error ? err.message : String(err) }); });
         }
         return;
       }
@@ -571,13 +571,13 @@ export class RetentionEngine {
 
     // Check for preference phrases
     if (PREFERENCE_PATTERNS.some((p) => p.test(content))) {
-      this.retain('core', content, 'preference').catch((err) => { log.debug('Fire-and-forget retain failed', { error: err instanceof Error ? err.message : String(err) }); });
+      this.retain('core', content, 'preference', sessionId).catch((err) => { log.debug('Fire-and-forget retain failed', { error: err instanceof Error ? err.message : String(err) }); });
     }
 
     // Check for decision phrases
     if (DECISION_PATTERNS.some((p) => p.test(content))) {
       const bank = projectBank ?? 'core';
-      this.retain(bank, content, 'decision').catch((err) => { log.debug('Fire-and-forget retain failed', { error: err instanceof Error ? err.message : String(err) }); });
+      this.retain(bank, content, 'decision', sessionId).catch((err) => { log.debug('Fire-and-forget retain failed', { error: err instanceof Error ? err.message : String(err) }); });
     }
   }
 

@@ -801,7 +801,7 @@ export class MainAgent {
     }
 
     if (this.memory.retention) {
-      this.memory.retention.evaluateUserMessage(trimmed, this.memory.projectBank ?? undefined).catch((err) => {
+      this.memory.retention.evaluateUserMessage(trimmed, this.memory.projectBank ?? undefined, sid).catch((err) => {
         log.debug('User message evaluation failed', { error: err instanceof Error ? err.message : String(err) });
       });
     }

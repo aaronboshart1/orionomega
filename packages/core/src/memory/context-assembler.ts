@@ -259,12 +259,12 @@ export class ContextAssembler {
           : undefined;
 
         if (queryType === 'external_action') {
-          this.onMemoryEvent?.('recall', `Skipping recall for external action query`, undefined, { queryType, recallTokens: 0 });
+          this.onMemoryEvent?.('recall', `Skipping recall for external action query`, undefined, { queryType, recallTokens: 0, ...(this.sessionId ? { sessionId: this.sessionId } : {}) });
         }
 
         if (queryType !== 'external_action') {
 
-        this.onMemoryEvent?.('recall', `Assembling context (${queryType}, budget: ${recallTokens} tokens)`, undefined, { queryType, recallTokens });
+        this.onMemoryEvent?.('recall', `Assembling context (${queryType}, budget: ${recallTokens} tokens)`, undefined, { queryType, recallTokens, ...(this.sessionId ? { sessionId: this.sessionId } : {}) });
 
         const isShort = this.isShortReply(currentQuery);
         const recallQuery = isShort
@@ -282,7 +282,7 @@ export class ContextAssembler {
           priorContext = recallResult.formatted;
           recalledTokens = estimateTokens(recallResult.formatted);
           confidenceSummary = recallResult.confidenceSummary;
-          this.onMemoryEvent?.('recall', `Recalled ${recalledTokens} tokens of prior context`, undefined, { recalledTokens, confidenceSummary });
+          this.onMemoryEvent?.('recall', `Recalled ${recalledTokens} tokens of prior context`, undefined, { recalledTokens, confidenceSummary, ...(this.sessionId ? { sessionId: this.sessionId } : {}) });
         }
 
         const shouldFallbackToSummary =

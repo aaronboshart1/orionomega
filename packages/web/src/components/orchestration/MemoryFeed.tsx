@@ -264,6 +264,21 @@ function ExpandedGeneric({ meta }: { meta: Record<string, unknown> }) {
   );
 }
 
+function SessionProvenancePill({ op, sessionId }: { op: MemoryEvent['op']; sessionId: string }) {
+  // For retain ops, the session is where the memory was STORED (origin).
+  // For recall ops, the session is where the memory was RECALLED INTO (target).
+  const verb = op === 'recall' ? 'recalled into' : 'stored in';
+  const short = sessionId.length > 12 ? `${sessionId.slice(0, 8)}…` : sessionId;
+  return (
+    <span
+      className="text-xs px-1.5 py-0.5 bg-violet-500/10 text-violet-300 rounded font-mono"
+      title={`${verb} session ${sessionId}`}
+    >
+      {verb} {short}
+    </span>
+  );
+}
+
 const MemoryEventRow = function MemoryEventRow({ event }: { event: MemoryEvent }) {
   const [expanded, setExpanded] = useState(false);
   const cfg = OP_CONFIG[event.op] ?? { icon: Brain, label: event.op, color: 'text-zinc-400', bgColor: 'bg-zinc-800' };
@@ -274,6 +289,10 @@ const MemoryEventRow = function MemoryEventRow({ event }: { event: MemoryEvent }
   const retainMeta = event.op === 'retain' ? (meta as RetainMeta) : null;
   const qualityMeta = event.op === 'quality' ? (meta as QualityMeta) : null;
   const dedupMeta = event.op === 'dedup' ? (meta as DedupMeta) : null;
+  const provenanceSessionId = (meta as { sessionId?: unknown }).sessionId;
+  const sessionIdStr = typeof provenanceSessionId === 'string' && provenanceSessionId.length > 0
+    ? provenanceSessionId
+    : null;
 
   const hasExpandable = Object.keys(meta).length > 0;
 
@@ -295,6 +314,9 @@ const MemoryEventRow = function MemoryEventRow({ event }: { event: MemoryEvent }
               <span className="text-xs text-zinc-500 bg-zinc-800 rounded px-1.5 py-0.5 font-mono">
                 {event.bank}
               </span>
+            )}
+            {sessionIdStr && (event.op === 'retain' || event.op === 'recall') && (
+              <SessionProvenancePill op={event.op} sessionId={sessionIdStr} />
             )}
             {recallMeta?.topScore != null && <RelevanceBar score={recallMeta.topScore} />}
             {retainMeta?.score != null && <QualityDot score={retainMeta.score} />}

@@ -133,6 +133,8 @@ export interface RetainMeta {
   items?: Array<{ content: string; context: string; timestamp: string }>;
   durationMs?: number;
   result?: { success: boolean; bankId?: string; itemsCount?: number };
+  /** Originating session that produced this retain (provenance). */
+  sessionId?: string;
 }
 
 /** Typed read-side accessors for recall meta */
@@ -149,6 +151,8 @@ export interface RecallMeta {
   maxTokens?: number;
   minRelevance?: number;
   results?: Array<{ content: string; context: string; timestamp: string; relevance: number }>;
+  /** Target session that recalled this context (provenance). */
+  sessionId?: string;
 }
 
 /** Typed read-side accessors for quality rejection meta */
