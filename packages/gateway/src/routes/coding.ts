@@ -95,7 +95,19 @@ export async function handleStartCodingSession(
       if (Array.isArray(v) && v[0]?.trim()) return v[0].trim();
       return undefined;
     })();
-    const sessionId = body.sessionId?.trim() || headerSessionId || 'default';
+    const rawSessionId = body.sessionId?.trim() || headerSessionId || 'default';
+
+    // Strict allowlist validation: sessionId is interpolated into
+    // per-session filesystem paths (`hot-window-${sessionId}.json`) and
+    // SQLite keys downstream. Reject anything containing path separators,
+    // dot-segments, whitespace, or non-allowlisted characters to prevent
+    // path manipulation / orphan-attribution from untrusted callers.
+    const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+    if (!SESSION_ID_RE.test(rawSessionId)) {
+      json(res, 400, { error: 'Invalid sessionId: must match [A-Za-z0-9_-]{1,64}' });
+      return;
+    }
+    const sessionId = rawSessionId;
 
     // Build the task string with optional repo/branch hints
     let enrichedTask = task;
