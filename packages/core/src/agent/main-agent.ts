@@ -1456,7 +1456,16 @@ export class MainAgent {
   private _stepTimers = new Map<string, number>();
 
   emitMemoryEvent(op: MemoryEvent['op'], detail: string, bank?: string, meta?: Record<string, unknown>, sessionId?: string): void {
-    const sid = sessionId ?? this.currentSessionId;
+    // Precedence: explicit sessionId arg > meta.sessionId (set by the
+    // callsite that knows the originating session, e.g. retain/recall) >
+    // currentSessionId fallback. Async memory ops can complete after the
+    // foreground session has shifted, so we must NOT overwrite a
+    // caller-provided meta.sessionId — that would mis-attribute the
+    // event to whichever session happens to be foreground at emit time.
+    const metaSid = typeof meta?.sessionId === 'string' && meta.sessionId.length > 0
+      ? (meta.sessionId as string)
+      : undefined;
+    const sid = sessionId ?? metaSid ?? this.currentSessionId;
     this.userCallbacks.onMemoryEvent?.({
       id: `mem-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
       timestamp: new Date().toISOString(),
