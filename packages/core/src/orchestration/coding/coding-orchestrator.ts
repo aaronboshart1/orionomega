@@ -285,7 +285,7 @@ export class CodingOrchestrator {
     try {
       const result = await this._runWorkflow(
         sessionId, executionId, workspacePath, repoUrl, branch,
-        taskDescription, template, startedAt, progress,
+        taskDescription, template, startedAt, conversationId, progress,
       );
       return result;
     } catch (err) {
@@ -341,7 +341,7 @@ export class CodingOrchestrator {
     });
 
     // Fire-and-forget
-    this._runWorkflow(sessionId, executionId, workspacePath, repoUrl, branch, taskDescription, template, startedAt)
+    this._runWorkflow(sessionId, executionId, workspacePath, repoUrl, branch, taskDescription, template, startedAt, conversationId)
       .catch((err) => {
         const msg = err instanceof Error ? err.message : String(err);
         log.error('Coding workflow failed', { sessionId, error: msg });
@@ -378,6 +378,7 @@ export class CodingOrchestrator {
     taskDescription: string,
     template: string,
     startedAt: number,
+    conversationId: string,
     progress?: CodingProgressCallback,
   ): Promise<CodingSessionResult> {
     let filesModified: string[] = [];
@@ -1058,6 +1059,7 @@ export class CodingOrchestrator {
         verdicts: goalVerdicts,
         decision: reviewDecision,
         priorDecisionsCount: priorDecisions.length,
+        sessionId: conversationId,
         plan: ((): {
           template?: string;
           approach: string;

@@ -502,6 +502,10 @@ export class MemoryBridge {
     verdicts: Array<{ requirementId: string; status: string; evidence: string; confidence: number }>;
     decision: string;
     priorDecisionsCount?: number;
+    /** Originating gateway/conversation session id; tagged onto the
+     * stored memory as `session:<id>` so deleteSession purges per-session
+     * data correctly and recall can filter by source session. */
+    sessionId?: string;
     /**
      * Full architect plan for the run. Persisting the structured plan
      * (approach, file changes, fan-out, requirement→chunk mapping)
@@ -596,7 +600,8 @@ export class MemoryBridge {
     }
 
     try {
-      await this.hindsightClient.retainOne(bankId, lines.join('\n'), 'coding-run');
+      const sessionTags = payload.sessionId ? [`session:${payload.sessionId}`] : undefined;
+      await this.hindsightClient.retainOne(bankId, lines.join('\n'), 'coding-run', sessionTags);
       this.onMemoryEvent?.(
         'retain',
         `Persisted coding run (${payload.requirements.length} requirement(s), ${payload.verdicts.length} verdict(s))`,
@@ -605,6 +610,7 @@ export class MemoryBridge {
           requirementsCount: payload.requirements.length,
           verdictsCount: payload.verdicts.length,
           decision: payload.decision,
+          ...(payload.sessionId ? { sessionId: payload.sessionId } : {}),
         },
       );
     } catch (err) {
