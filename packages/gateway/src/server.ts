@@ -260,6 +260,16 @@ async function initMainAgent(): Promise<void> {
     // 0 = unlimited retries on transient failures (see config/types.ts).
     maxRetries: freshConfig.orchestration?.maxRetries ?? 0,
     skillsDir: freshConfig.skills?.directory,
+    // Pass the shipped default-skills dir so the agent can advertise
+    // skills (e.g. google-workspace) whose manifests ship with the
+    // install but whose user-specific state lives in `skillsDir`.
+    // Resolved the same way as routes/skills.ts → getDefaultSkillsDir().
+    defaultSkillsDir: (() => {
+      try {
+        const here = fileURLToPath(import.meta.url);
+        return joinPath(here, '..', '..', '..', '..', 'default-skills');
+      } catch { return undefined; }
+    })(),
     commandsDir: freshConfig.commands?.directory,
     hindsight: freshConfig.hindsight,
     autoResume: freshConfig.orchestration?.autoResume ?? false,

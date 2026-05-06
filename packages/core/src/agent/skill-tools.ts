@@ -78,23 +78,52 @@ export interface SkillToolBuildResult {
 }
 
 /**
+ * Either a bare skill id (manifest is in the configured skillsDir) or a
+ * pair binding the skill id to the directory whose `<id>/manifest.json`
+ * should be loaded — used so a skill whose manifest ships in
+ * `default-skills/` can still pull its config (enabled / configured /
+ * fields) from the user's configured `~/.orionomega/skills` dir.
+ */
+export type SkillRef = string | { id: string; manifestDir: string };
+
+/**
  * Build a flat list of skill-tool entries for the given skill IDs.
+ *
+ * `skillsDir` is the user's *config* dir — used for `readSkillConfig`
+ * (enabled / configured / fields) and threaded to handlers via
+ * `ORIONOMEGA_SKILLS_DIR` so per-account file layouts (e.g.
+ * google-workspace) resolve correctly. The manifest itself is loaded
+ * from each ref's `manifestDir` when provided, otherwise from
+ * `skillsDir`. This split is what lets default-skills manifests be
+ * exposed to the agent even when the user only has a config directory
+ * for the skill (no copy of the manifest tree).
  *
  * Skills that fail to load, are disabled, or whose handlers we can't resolve
  * are skipped with a single warn log and recorded in `failures`. A single
  * broken skill never poisons the rest of the list.
  */
 export async function buildSkillToolset(
-  skillIds: string[],
+  skillRefs: SkillRef[],
   skillsDir: string,
   loader?: SkillLoader,
 ): Promise<SkillToolBuildResult> {
-  const sl = loader ?? new SkillLoader(skillsDir);
+  const defaultLoader = loader ?? new SkillLoader(skillsDir);
+  const loadersByDir = new Map<string, SkillLoader>();
+  loadersByDir.set(path.resolve(skillsDir), defaultLoader);
   const tools: SkillToolEntry[] = [];
   const failures: SkillToolFailure[] = [];
   const seen = new Set<string>();
 
-  for (const skillId of skillIds) {
+  for (const ref of skillRefs) {
+    const skillId = typeof ref === 'string' ? ref : ref.id;
+    const manifestDir = typeof ref === 'string' ? skillsDir : ref.manifestDir;
+    const manifestDirAbs = path.resolve(manifestDir);
+    let sl = loadersByDir.get(manifestDirAbs);
+    if (!sl) {
+      sl = new SkillLoader(manifestDirAbs);
+      loadersByDir.set(manifestDirAbs, sl);
+    }
+
     let loaded;
     try {
       loaded = await sl.load(skillId);

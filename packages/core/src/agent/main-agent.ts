@@ -39,7 +39,43 @@ import {
 import { MemoryBridge } from './memory-bridge.js';
 import { OrchestrationBridge } from './orchestration-bridge.js';
 import { ContextAssembler } from '../memory/context-assembler.js';
-import { buildSkillToolset, type SkillToolEntry } from './skill-tools.js';
+import { buildSkillToolset, type SkillRef, type SkillToolEntry } from './skill-tools.js';
+import { existsSync as _existsSync } from 'node:fs';
+import { readdirSync as _readdirSync, statSync as _statSync } from 'node:fs';
+import { join as _joinPath } from 'node:path';
+
+/**
+ * Walk both the user's configured skills dir and the shipped
+ * default-skills dir, returning one SkillRef per discovered skill.
+ * The user's skillsDir wins on conflicts (so a user-overridden manifest
+ * shadows the default). Either dir may be missing.
+ */
+function discoverSkillRefsFromDirs(
+  configDir: string | undefined,
+  defaultDir: string | undefined,
+): SkillRef[] {
+  const refs: SkillRef[] = [];
+  const seen = new Set<string>();
+  const scan = (dir: string | undefined, useDefaultManifestDir: boolean): void => {
+    if (!dir || !_existsSync(dir)) return;
+    let entries: string[];
+    try { entries = _readdirSync(dir); } catch { return; }
+    for (const name of entries) {
+      if (seen.has(name)) continue;
+      const child = _joinPath(dir, name);
+      try {
+        if (!_statSync(child).isDirectory()) continue;
+        if (!_existsSync(_joinPath(child, 'manifest.json'))) continue;
+      } catch { continue; }
+      seen.add(name);
+      refs.push(useDefaultManifestDir ? { id: name, manifestDir: dir } : name);
+    }
+  };
+  // configDir first so user overrides win.
+  scan(configDir, false);
+  scan(defaultDir, true);
+  return refs;
+}
 
 const log = createLogger('main-agent');
 
@@ -63,6 +99,17 @@ export interface MainAgentConfig {
   codingAgentTimeout?: number;
   maxRetries: number;
   skillsDir?: string;
+  /**
+   * Directory containing shipped/default skills (e.g. `default-skills/`
+   * in the repo). Manifests here are exposed to the agent as tools even
+   * when the user's `skillsDir` only contains config/state for that
+   * skill (no copy of the manifest tree). The user's `skillsDir` still
+   * wins on overrides — see `mergeSkillRefs` below. Without this, a
+   * skill like google-workspace whose accounts setup creates only a
+   * config dir but no manifest dir would never be visible to the agent
+   * even though the gateway's UI lists it as configured.
+   */
+  defaultSkillsDir?: string;
   commandsDir?: string;
   hindsight?: OrionOmegaConfig['hindsight'];
   autoResume?: boolean;
@@ -511,13 +558,23 @@ export class MainAgent {
       }
     }
 
-    // 2. Discover skills
-    if (this.config.skillsDir) {
+    // 2. Discover skills (manifests from BOTH user dir + default-skills)
+    if (this.config.skillsDir || this.config.defaultSkillsDir) {
       try {
-        const skillLoader = new SkillLoader(this.config.skillsDir);
-        const manifests = await skillLoader.discoverAll();
-        this.availableSkills = manifests.map((m) => `${m.name}: ${m.description}`);
-        log.info('Skills discovered', { count: manifests.length });
+        const refs = discoverSkillRefsFromDirs(this.config.skillsDir, this.config.defaultSkillsDir);
+        const seen = new Set<string>();
+        this.availableSkills = [];
+        for (const ref of refs) {
+          const id = typeof ref === 'string' ? ref : ref.id;
+          const manifestDir = typeof ref === 'string' ? this.config.skillsDir! : ref.manifestDir;
+          if (seen.has(id)) continue;
+          seen.add(id);
+          try {
+            const m = await new SkillLoader(manifestDir).load(id);
+            this.availableSkills.push(`${m.manifest.name}: ${m.manifest.description}`);
+          } catch { /* skip broken manifest */ }
+        }
+        log.info('Skills discovered', { count: this.availableSkills.length });
       } catch (err) {
         log.warn('Skills discovery failed', {
           error: err instanceof Error ? err.message : String(err),
@@ -1702,15 +1759,14 @@ export class MainAgent {
     // skipped (with a warn log) by `buildSkillToolset` and never poisons
     // the rest of the list.
     let skillTools: SkillToolEntry[] = [];
-    if (this.config.skillsDir) {
+    if (this.config.skillsDir || this.config.defaultSkillsDir) {
       try {
-        const skillLoader = new SkillLoader(this.config.skillsDir);
-        const manifests = await skillLoader.discoverAll();
-        const built = await buildSkillToolset(
-          manifests.map((m) => m.name),
-          this.config.skillsDir,
-          skillLoader,
-        );
+        const refs = discoverSkillRefsFromDirs(this.config.skillsDir, this.config.defaultSkillsDir);
+        // configDir for readSkillConfig + ORIONOMEGA_SKILLS_DIR. We
+        // prefer the user dir so per-account state (e.g. google-workspace
+        // accounts/) lives in the user's home, not in default-skills/.
+        const configDir = this.config.skillsDir || this.config.defaultSkillsDir!;
+        const built = await buildSkillToolset(refs, configDir);
         skillTools = built.tools;
         if (built.failures.length > 0) {
           log.info('Skill toolset built with failures', {
