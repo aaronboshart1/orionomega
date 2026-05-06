@@ -86,24 +86,24 @@ const PRESETS: { label: string; expr: string }[] = [
 /** Empty-state templates the user can one-click into the form. */
 const TEMPLATES: { name: string; description: string; cronExpr: string; prompt: string; agentMode: FormState['agentMode'] }[] = [
   {
-    name: 'Daily standup digest',
-    description: 'Summarize yesterday\'s commits and open PRs',
-    cronExpr: '0 9 * * 1-5',
-    prompt: 'Summarize yesterday\'s commits across all repos and surface any open PRs awaiting review.',
+    name: 'Daily summary at 9am',
+    description: 'Summarize yesterday\'s activity each morning',
+    cronExpr: '0 9 * * *',
+    prompt: 'Summarize yesterday\'s activity across the project: notable commits, open PRs, and outstanding issues.',
     agentMode: 'orchestrate',
   },
   {
-    name: 'Hourly inbox triage',
-    description: 'Sort and label new mail',
+    name: 'Hourly health check',
+    description: 'Probe critical services every hour',
     cronExpr: '0 * * * *',
-    prompt: 'Triage any new emails in the last hour: label by priority and draft replies for the urgent ones.',
+    prompt: 'Run a health check across critical services and report any failures or degraded responses.',
     agentMode: 'direct',
   },
   {
-    name: 'Weekly report',
-    description: 'Mondays 8am — last week\'s metrics',
-    cronExpr: '0 8 * * 1',
-    prompt: 'Compile last week\'s key metrics into a markdown report and save it to reports/.',
+    name: 'Weekly cleanup on Sunday',
+    description: 'Sundays at midnight — sweep stale state',
+    cronExpr: '0 0 * * 0',
+    prompt: 'Perform weekly cleanup: prune stale temp files, archive completed tickets, and rotate old logs.',
     agentMode: 'orchestrate',
   },
 ];
@@ -442,7 +442,8 @@ export function SchedulesPane() {
               onClick={() => void reload()}
               disabled={loading}
               className="rounded p-1 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-40"
-              title="Refresh"
+              title="Refresh schedules"
+              aria-label="Refresh schedules"
             >
               <RefreshCw size={11} className={loading ? 'animate-spin' : ''} />
             </button>
@@ -502,7 +503,8 @@ export function SchedulesPane() {
               <button
                 onClick={() => setBulkSelected(new Set())}
                 className="rounded p-1 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200"
-                aria-label="Clear selection"
+                aria-label="Clear bulk selection"
+                title="Clear bulk selection"
               >
                 <X size={11} />
               </button>
@@ -554,7 +556,8 @@ export function SchedulesPane() {
             <button
               onClick={() => setError(null)}
               className="text-zinc-500 hover:text-zinc-200"
-              aria-label="Dismiss"
+              aria-label="Dismiss error"
+              title="Dismiss error"
             >
               <X size={11} />
             </button>
@@ -574,7 +577,14 @@ export function SchedulesPane() {
             schedule={selected}
             executions={executions[selected.id] ?? []}
             isLive={liveTriggers.has(selected.id)}
-            onEdit={() => handleEdit(selected)}
+            onSave={async (patch) => {
+              try {
+                const updated = await updateSchedule(selected.id, patch);
+                upsertSchedule(updated);
+              } catch (err) {
+                setError(err instanceof Error ? err.message : 'Failed to save');
+              }
+            }}
             onPause={() => void handlePause(selected.id)}
             onResume={() => void handleResume(selected.id)}
             onTrigger={() => void handleTrigger(selected.id)}
@@ -755,7 +765,7 @@ function ScheduleDetail({
   schedule,
   executions,
   isLive,
-  onEdit,
+  onSave,
   onPause,
   onResume,
   onTrigger,
@@ -764,7 +774,7 @@ function ScheduleDetail({
   schedule: Schedule;
   executions: Execution[];
   isLive: boolean;
-  onEdit: () => void;
+  onSave: (patch: Partial<Schedule>) => Promise<void>;
   onPause: () => void;
   onResume: () => void;
   onTrigger: () => void;
@@ -778,7 +788,18 @@ function ScheduleDetail({
     window.dispatchEvent(new PopStateEvent('popstate'));
   }, []);
   const [openExec, setOpenExec] = useState<string | null>(null);
+  const [subTab, setSubTab] = useState<'overview' | 'history' | 'settings'>('overview');
   const upcoming = useMemo(() => nextRuns(schedule.cronExpr, 5), [schedule.cronExpr]);
+
+  // Success rate over last 20 runs (only counting completed/failed/timeout —
+  // skipped runs don't reflect the prompt's success or failure).
+  const successRate = useMemo(() => {
+    const last20 = executions.slice(0, 20);
+    const decided = last20.filter((e) => e.status === 'completed' || e.status === 'failed' || e.status === 'timeout');
+    if (decided.length === 0) return null;
+    const ok = decided.filter((e) => e.status === 'completed').length;
+    return { rate: ok / decided.length, sample: decided.length, ok };
+  }, [executions]);
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-y-auto">
@@ -838,12 +859,6 @@ function ScheduleDetail({
             </button>
           )}
           <button
-            onClick={onEdit}
-            className="rounded bg-zinc-800 px-2 py-1 text-[10px] font-medium text-zinc-300 hover:bg-zinc-700"
-          >
-            Edit
-          </button>
-          <button
             onClick={onDelete}
             className="rounded p-1.5 text-zinc-500 hover:bg-red-500/20 hover:text-red-300"
             title="Delete schedule"
@@ -854,6 +869,61 @@ function ScheduleDetail({
         </div>
       </div>
 
+      {/* Sub-section tabs (Overview / Run History / Settings) */}
+      <div role="tablist" aria-label="Schedule details" className="flex items-center gap-1 border-b border-zinc-800 bg-zinc-900/20 px-3 py-1">
+        {(['overview', 'history', 'settings'] as const).map((t) => (
+          <button
+            key={t}
+            role="tab"
+            aria-selected={subTab === t}
+            onClick={() => setSubTab(t)}
+            className={`rounded px-2 py-1 text-[10px] font-medium transition-colors ${
+              subTab === t
+                ? 'bg-zinc-800 text-emerald-300 ring-1 ring-emerald-500/30'
+                : 'text-zinc-500 hover:bg-zinc-800/60 hover:text-zinc-300'
+            }`}
+          >
+            {t === 'overview' ? 'Overview' : t === 'history' ? `Run History (${executions.length})` : 'Settings'}
+          </button>
+        ))}
+      </div>
+
+      {subTab === 'overview' && (
+        <ScheduleOverview
+          schedule={schedule}
+          upcoming={upcoming}
+          successRate={successRate}
+        />
+      )}
+
+      {subTab === 'history' && (
+        <RunHistoryTimeline
+          schedule={schedule}
+          executions={executions}
+          openExec={openExec}
+          setOpenExec={setOpenExec}
+          deepLinkToSession={deepLinkToSession}
+        />
+      )}
+
+      {subTab === 'settings' && (
+        <ScheduleSettingsForm schedule={schedule} onSave={onSave} />
+      )}
+    </div>
+  );
+}
+
+function ScheduleOverview({
+  schedule,
+  upcoming,
+  successRate,
+}: {
+  schedule: Schedule;
+  upcoming: Date[];
+  successRate: { rate: number; sample: number; ok: number } | null;
+}) {
+  return (
+    <>
       <div className="grid grid-cols-2 gap-3 px-4 py-3 text-[11px]">
         <Field label="Cron" value={<span className="font-mono text-zinc-200">{schedule.cronExpr}</span>} />
         <Field label="Description" value={<span className="text-zinc-300">{describeLocal(schedule.cronExpr)}</span>} />
@@ -872,7 +942,26 @@ function ScheduleDetail({
           </span>
         } />
         <Field label="Total runs" value={<span className="text-zinc-300 tabular-nums">{schedule.runCount}</span>} />
-        <Field label="Overlap policy" value={<span className="text-zinc-300">{schedule.overlapPolicy}</span>} />
+        <Field
+          label="Success rate (last 20)"
+          value={
+            successRate ? (
+              <span
+                className={`tabular-nums ${
+                  successRate.rate >= 0.9 ? 'text-emerald-300' :
+                  successRate.rate >= 0.5 ? 'text-amber-300' :
+                  'text-red-300'
+                }`}
+                title={`${successRate.ok} of ${successRate.sample} decided runs succeeded`}
+              >
+                {(successRate.rate * 100).toFixed(0)}%
+                <span className="ml-1 text-zinc-500">({successRate.ok}/{successRate.sample})</span>
+              </span>
+            ) : (
+              <span className="text-zinc-500">no data yet</span>
+            )
+          }
+        />
       </div>
 
       {upcoming.length > 0 && (
@@ -891,19 +980,31 @@ function ScheduleDetail({
         </div>
       )}
 
-      <div className="px-4 pb-3">
+      <div className="px-4 pb-4">
         <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-widest text-zinc-500">Prompt</div>
         <pre className="whitespace-pre-wrap rounded border border-zinc-800 bg-zinc-950/60 p-2 text-[11px] text-zinc-300">
           {schedule.prompt}
         </pre>
       </div>
+    </>
+  );
+}
 
-      <div className="px-4 pb-4">
-        <div className="mb-1.5 flex items-center justify-between">
-          <div className="text-[10px] font-semibold uppercase tracking-widest text-zinc-500">
-            Run history <span className="ml-1 normal-case text-zinc-600">({executions.length})</span>
-          </div>
-        </div>
+function RunHistoryTimeline({
+  schedule,
+  executions,
+  openExec,
+  setOpenExec,
+  deepLinkToSession,
+}: {
+  schedule: Schedule;
+  executions: Execution[];
+  openExec: string | null;
+  setOpenExec: (id: string | null) => void;
+  deepLinkToSession: (sessionId: string) => void;
+}) {
+  return (
+    <div className="px-4 py-3">
         {executions.length === 0 ? (
           <div className="rounded border border-zinc-800 bg-zinc-900/30 px-3 py-4 text-center text-[11px] text-zinc-500">
             No executions yet.
@@ -975,7 +1076,6 @@ function ScheduleDetail({
             })}
           </ol>
         )}
-      </div>
     </div>
   );
 }
@@ -985,6 +1085,243 @@ function Field({ label, value }: { label: string; value: React.ReactNode }) {
     <div>
       <div className="text-[9px] font-semibold uppercase tracking-widest text-zinc-600">{label}</div>
       <div className="mt-0.5">{value}</div>
+    </div>
+  );
+}
+
+/**
+ * In-detail Settings sub-section: lets the user edit the selected schedule
+ * inline (without leaving detail view) and Save patches via PUT. Only
+ * fields that actually changed are sent in the patch.
+ */
+function ScheduleSettingsForm({
+  schedule,
+  onSave,
+}: {
+  schedule: Schedule;
+  onSave: (patch: Partial<Schedule>) => Promise<void>;
+}) {
+  const [form, setForm] = useState<FormState>(() => ({
+    id: schedule.id,
+    name: schedule.name,
+    description: schedule.description,
+    cronExpr: schedule.cronExpr,
+    prompt: schedule.prompt,
+    agentMode: schedule.agentMode,
+    timezone: schedule.timezone,
+    overlapPolicy: schedule.overlapPolicy,
+    maxRetries: schedule.maxRetries,
+    timeoutSec: schedule.timeoutSec,
+    runAt: '',
+  }));
+  const [saving, setSaving] = useState(false);
+  const [localError, setLocalError] = useState<string | null>(null);
+
+  // Reset form when the user switches to a different schedule.
+  useEffect(() => {
+    setForm({
+      id: schedule.id,
+      name: schedule.name,
+      description: schedule.description,
+      cronExpr: schedule.cronExpr,
+      prompt: schedule.prompt,
+      agentMode: schedule.agentMode,
+      timezone: schedule.timezone,
+      overlapPolicy: schedule.overlapPolicy,
+      maxRetries: schedule.maxRetries,
+      timeoutSec: schedule.timeoutSec,
+      runAt: '',
+    });
+  }, [schedule]);
+
+  const cronValid = useMemo(() => isCronValid(form.cronExpr), [form.cronExpr]);
+  const upcoming = useMemo(() => (cronValid ? nextRuns(form.cronExpr, 5) : []), [form.cronExpr, cronValid]);
+  const nameTrimmed = form.name.trim();
+  const nameValid = nameTrimmed.length > 0 && NAME_REGEX.test(nameTrimmed);
+  const promptValid = form.prompt.trim().length > 0;
+  const dirty =
+    form.name.trim() !== schedule.name ||
+    form.description.trim() !== schedule.description ||
+    form.cronExpr.trim() !== schedule.cronExpr ||
+    form.prompt.trim() !== schedule.prompt ||
+    form.agentMode !== schedule.agentMode ||
+    form.timezone !== schedule.timezone ||
+    form.overlapPolicy !== schedule.overlapPolicy ||
+    form.maxRetries !== schedule.maxRetries ||
+    form.timeoutSec !== schedule.timeoutSec;
+  const canSave = !saving && dirty && nameValid && cronValid && promptValid;
+
+  const submit = async () => {
+    if (!canSave) return;
+    setSaving(true);
+    setLocalError(null);
+    try {
+      await onSave({
+        name: form.name.trim(),
+        description: form.description.trim(),
+        cronExpr: form.cronExpr.trim(),
+        prompt: form.prompt.trim(),
+        agentMode: form.agentMode,
+        timezone: form.timezone,
+        overlapPolicy: form.overlapPolicy,
+        maxRetries: form.maxRetries,
+        timeoutSec: form.timeoutSec,
+      });
+    } catch (err) {
+      setLocalError(err instanceof Error ? err.message : 'Save failed');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-3 px-4 py-3">
+      {localError && (
+        <div className="rounded border border-red-500/30 bg-red-950/20 px-2 py-1.5 text-[11px] text-red-300">
+          {localError}
+        </div>
+      )}
+      <div className="grid grid-cols-2 gap-3">
+        <label className="flex flex-col gap-1">
+          <span className="text-[10px] font-semibold uppercase tracking-widest text-zinc-500">Name</span>
+          <input
+            type="text"
+            value={form.name}
+            onChange={(e) => setForm({ ...form, name: e.target.value })}
+            aria-invalid={nameTrimmed.length > 0 && !nameValid}
+            className={`rounded bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200 border outline-none ${
+              nameTrimmed.length > 0 && !nameValid
+                ? 'border-red-600 focus:border-red-500'
+                : 'border-zinc-700 focus:border-emerald-500/60'
+            }`}
+          />
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-[10px] font-semibold uppercase tracking-widest text-zinc-500">Cron</span>
+          <input
+            type="text"
+            value={form.cronExpr}
+            onChange={(e) => setForm({ ...form, cronExpr: e.target.value })}
+            aria-invalid={!cronValid}
+            className={`rounded bg-zinc-800 px-2 py-1.5 text-xs font-mono text-zinc-200 border outline-none ${
+              cronValid ? 'border-zinc-700 focus:border-emerald-500/60' : 'border-red-600 focus:border-red-500'
+            }`}
+          />
+          <span className={`text-[10px] ${cronValid ? 'text-zinc-400' : 'text-red-400'}`}>
+            {describeLocal(form.cronExpr)}
+          </span>
+        </label>
+      </div>
+
+      {upcoming.length > 0 && (
+        <div className="rounded border border-zinc-800 bg-zinc-900/30 px-2.5 py-1.5">
+          <div className="mb-1 text-[9px] font-semibold uppercase tracking-widest text-zinc-500">
+            Next 5 runs <span className="normal-case text-zinc-600">(local time)</span>
+          </div>
+          <ul className="text-[10px]">
+            {upcoming.map((d, i) => (
+              <li key={i} className="flex justify-between">
+                <span className="text-zinc-300 tabular-nums">{d.toLocaleString()}</span>
+                <span className="text-zinc-500">{formatRelative(d.toISOString())}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <label className="flex flex-col gap-1">
+        <span className="text-[10px] font-semibold uppercase tracking-widest text-zinc-500">Description</span>
+        <input
+          type="text"
+          value={form.description}
+          onChange={(e) => setForm({ ...form, description: e.target.value })}
+          className="rounded bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200 border border-zinc-700 focus:border-emerald-500/60 outline-none"
+        />
+      </label>
+
+      <label className="flex flex-col gap-1">
+        <span className="text-[10px] font-semibold uppercase tracking-widest text-zinc-500">Prompt</span>
+        <textarea
+          value={form.prompt}
+          onChange={(e) => setForm({ ...form, prompt: e.target.value })}
+          rows={4}
+          className="rounded bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200 border border-zinc-700 focus:border-emerald-500/60 outline-none resize-y"
+        />
+      </label>
+
+      <details className="rounded border border-zinc-700/60 bg-zinc-800/30 px-3 py-2">
+        <summary className="cursor-pointer text-[11px] text-zinc-300 select-none">Advanced</summary>
+        <div className="mt-3 grid grid-cols-2 md:grid-cols-4 gap-3">
+          <label className="flex flex-col gap-1">
+            <span className="text-[10px] text-zinc-500">Mode</span>
+            <select
+              value={form.agentMode}
+              onChange={(e) => setForm({ ...form, agentMode: e.target.value as FormState['agentMode'] })}
+              className="rounded bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200 border border-zinc-700"
+            >
+              <option value="orchestrate">orchestrate</option>
+              <option value="direct">direct</option>
+              <option value="code">code</option>
+            </select>
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-[10px] text-zinc-500">Timezone</span>
+            <select
+              value={form.timezone}
+              onChange={(e) => setForm({ ...form, timezone: e.target.value })}
+              className="rounded bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200 border border-zinc-700"
+            >
+              {!TIMEZONE_OPTIONS.includes(form.timezone) && (
+                <option value={form.timezone}>{form.timezone}</option>
+              )}
+              {TIMEZONE_OPTIONS.map((tz) => (
+                <option key={tz} value={tz}>{tz}</option>
+              ))}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-[10px] text-zinc-500">Overlap</span>
+            <select
+              value={form.overlapPolicy}
+              onChange={(e) => setForm({ ...form, overlapPolicy: e.target.value as FormState['overlapPolicy'] })}
+              className="rounded bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200 border border-zinc-700"
+            >
+              <option value="skip">skip</option>
+              <option value="queue">queue</option>
+              <option value="allow">allow</option>
+            </select>
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-[10px] text-zinc-500">Timeout (sec)</span>
+            <input
+              type="number"
+              min={0}
+              max={7200}
+              value={form.timeoutSec}
+              onChange={(e) => {
+                const n = Number.parseInt(e.target.value, 10);
+                setForm({ ...form, timeoutSec: Number.isNaN(n) ? 0 : Math.max(0, Math.min(7200, n)) });
+              }}
+              className="rounded bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200 border border-zinc-700"
+            />
+          </label>
+        </div>
+      </details>
+
+      <div className="flex items-center gap-2 pt-1">
+        <button
+          type="button"
+          onClick={() => void submit()}
+          disabled={!canSave}
+          className="flex items-center gap-1 rounded bg-emerald-500/20 px-3 py-1.5 text-[11px] font-medium text-emerald-300 ring-1 ring-emerald-500/40 hover:bg-emerald-500/30 disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {saving ? <Loader2 size={11} className="animate-spin" /> : <Check size={11} />}
+          Save changes
+        </button>
+        {dirty && !saving && (
+          <span className="text-[10px] text-amber-400">Unsaved changes</span>
+        )}
+      </div>
     </div>
   );
 }
