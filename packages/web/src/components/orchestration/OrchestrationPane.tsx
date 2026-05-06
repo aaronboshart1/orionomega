@@ -8,7 +8,6 @@ import { WorkerDetail } from './WorkerDetail';
 import { WorkflowSummary } from './WorkflowSummary';
 import { MemoryFeed } from './MemoryFeed';
 import { LogsPane } from './LogsPane';
-import { SchedulesPane } from './SchedulesPane';
 import { useSchedulesStore } from '@/stores/schedules';
 import { X, Play, Pause, Square, FileText, Wifi, WifiOff, ScrollText, CalendarClock } from 'lucide-react';
 import { useGateway } from '@/lib/gateway';
@@ -43,6 +42,18 @@ const DAGVisualization = dynamic(
     loading: () => (
       <div className="flex h-full items-center justify-center text-xs text-zinc-600">
         Loading graph…
+      </div>
+    ),
+  },
+);
+
+const SchedulesPane = dynamic(
+  () => import('./SchedulesPane').then((m) => m.SchedulesPane),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex h-full items-center justify-center text-xs text-zinc-600">
+        Loading schedules…
       </div>
     ),
   },

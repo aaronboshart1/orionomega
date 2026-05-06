@@ -187,7 +187,7 @@ export function SchedulesPane() {
   const [editing, setEditing] = useState<FormState | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [search, setSearch] = useState('');
-  const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'paused'>('all');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'paused' | 'failing'>('all');
   const [bulkSelected, setBulkSelected] = useState<Set<string>>(new Set());
   /** Forces relative-time labels (e.g. "in 2m") to refresh once a minute. */
   const [, setTick] = useState(0);
@@ -235,6 +235,7 @@ export function SchedulesPane() {
     return schedules.filter((s) => {
       if (statusFilter === 'active' && s.status !== 'active') return false;
       if (statusFilter === 'paused' && s.status !== 'paused') return false;
+      if (statusFilter === 'failing' && s.lastStatus !== 'failed' && s.lastStatus !== 'timeout') return false;
       if (q && !(
         s.name.toLowerCase().includes(q) ||
         s.description.toLowerCase().includes(q) ||
@@ -401,26 +402,30 @@ export function SchedulesPane() {
         if (editing) { setEditing(null); return; }
         if (selectedId) { setSelectedId(null); return; }
       }
-      // j/k to move cursor in list
-      if (e.key === 'j' || e.key === 'k') {
+      // Arrow keys move cursor in list (j/k retained as alias for vim users).
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'j' || e.key === 'k') {
         e.preventDefault();
         if (filtered.length === 0) return;
         const idx = filtered.findIndex((s) => s.id === selectedId);
-        const nextIdx = e.key === 'j'
+        const goDown = e.key === 'ArrowDown' || e.key === 'j';
+        const nextIdx = goDown
           ? Math.min(filtered.length - 1, idx < 0 ? 0 : idx + 1)
           : Math.max(0, idx <= 0 ? 0 : idx - 1);
         setSelectedId(filtered[nextIdx].id);
+        setEditing(null);
         return;
       }
-      // Enter triggers selected
-      if (e.key === 'Enter' && selectedId && !editing) {
-        e.preventDefault();
-        void handleTrigger(selectedId);
+      // Enter opens detail (focus on first item if nothing selected).
+      if (e.key === 'Enter' && !editing) {
+        if (!selectedId && filtered.length > 0) {
+          e.preventDefault();
+          setSelectedId(filtered[0].id);
+        }
       }
     }
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [editing, selectedId, filtered, handleNew, handleTrigger]);
+  }, [editing, selectedId, filtered, handleNew]);
 
   // ── Layout ───────────────────────────────────────────────────────────
   return (
@@ -474,6 +479,7 @@ export function SchedulesPane() {
             <option value="all">all</option>
             <option value="active">active</option>
             <option value="paused">paused</option>
+            <option value="failing">failing</option>
           </select>
         </div>
 
@@ -517,7 +523,7 @@ export function SchedulesPane() {
               No schedules match the current filter.
             </div>
           ) : (
-            <ul role="list">
+            <ul role="listbox" aria-label="Schedules">
               {filtered.map((s) => (
                 <ScheduleRow
                   key={s.id}
@@ -527,6 +533,11 @@ export function SchedulesPane() {
                   isLive={liveTriggers.has(s.id)}
                   onSelect={() => { setSelectedId(s.id); setEditing(null); }}
                   onToggleBulk={() => toggleBulk(s.id)}
+                  onRun={() => void handleTrigger(s.id)}
+                  onPause={() => void handlePause(s.id)}
+                  onResume={() => void handleResume(s.id)}
+                  onEdit={() => handleEdit(s)}
+                  onDelete={() => void handleDelete(s.id)}
                 />
               ))}
             </ul>
@@ -588,6 +599,11 @@ function ScheduleRow({
   isLive,
   onSelect,
   onToggleBulk,
+  onRun,
+  onPause,
+  onResume,
+  onEdit,
+  onDelete,
 }: {
   schedule: Schedule;
   selected: boolean;
@@ -595,8 +611,15 @@ function ScheduleRow({
   isLive: boolean;
   onSelect: () => void;
   onToggleBulk: () => void;
+  onRun: () => void;
+  onPause: () => void;
+  onResume: () => void;
+  onEdit: () => void;
+  onDelete: () => void;
 }) {
   const lastBadge = statusPill(schedule.lastStatus);
+  // Stop propagation wrapper for row-level quick actions.
+  const stop = (fn: () => void) => (e: React.MouseEvent) => { e.stopPropagation(); fn(); };
   return (
     <li
       role="option"
@@ -611,7 +634,8 @@ function ScheduleRow({
         checked={bulkChecked}
         onChange={onToggleBulk}
         onClick={(e) => e.stopPropagation()}
-        aria-label={`Select ${schedule.name}`}
+        aria-label={`Select ${schedule.name} for bulk action`}
+        title={`Select ${schedule.name} for bulk action`}
         className="mt-0.5 h-3 w-3 cursor-pointer accent-emerald-500"
       />
       <div className="min-w-0 flex-1">
@@ -621,6 +645,7 @@ function ScheduleRow({
             <span
               className="inline-flex items-center gap-0.5 rounded bg-cyan-500/15 px-1 py-px text-[9px] font-semibold text-cyan-300 ring-1 ring-cyan-500/30"
               aria-label="Currently running"
+              title="Currently running"
             >
               <Loader2 size={8} className="animate-spin" />
               live
@@ -643,12 +668,17 @@ function ScheduleRow({
           <span title={schedule.nextRunAt ? formatTime(schedule.nextRunAt) : ''}>
             {formatRelative(schedule.nextRunAt)}
           </span>
+          <span>·</span>
+          <span className="tabular-nums" title={`${schedule.runCount} total runs`}>
+            {schedule.runCount} run{schedule.runCount === 1 ? '' : 's'}
+          </span>
           {schedule.lastStatus && (
             <>
               <span>·</span>
               <span
                 className={`inline-flex items-center gap-0.5 rounded px-1 py-px text-[9px] font-medium ring-1 ring-inset ${lastBadge.color}`}
                 title={`Last: ${lastBadge.label}`}
+                aria-label={`Last run: ${lastBadge.label}`}
               >
                 {lastBadge.icon}
                 {lastBadge.label}
@@ -657,9 +687,65 @@ function ScheduleRow({
           )}
         </div>
       </div>
+      {/* Per-row quick actions (visible on hover or selection) */}
+      <div
+        className={`mt-px flex shrink-0 items-center gap-0.5 transition-opacity ${
+          selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus-within:opacity-100'
+        }`}
+      >
+        <button
+          type="button"
+          onClick={stop(onRun)}
+          title={`Run "${schedule.name}" now`}
+          aria-label={`Run "${schedule.name}" now`}
+          className="rounded p-1 text-cyan-400 hover:bg-cyan-500/15"
+        >
+          <Zap size={11} />
+        </button>
+        {schedule.status === 'active' ? (
+          <button
+            type="button"
+            onClick={stop(onPause)}
+            title={`Pause "${schedule.name}"`}
+            aria-label={`Pause "${schedule.name}"`}
+            className="rounded p-1 text-amber-400 hover:bg-amber-500/15"
+          >
+            <Pause size={11} />
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={stop(onResume)}
+            title={`Resume "${schedule.name}"`}
+            aria-label={`Resume "${schedule.name}"`}
+            className="rounded p-1 text-emerald-400 hover:bg-emerald-500/15"
+          >
+            <Play size={11} />
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={stop(onEdit)}
+          title={`Edit "${schedule.name}"`}
+          aria-label={`Edit "${schedule.name}"`}
+          className="rounded p-1 text-zinc-400 hover:bg-zinc-700"
+        >
+          <Sparkles size={11} />
+        </button>
+        <button
+          type="button"
+          onClick={stop(onDelete)}
+          title={`Delete "${schedule.name}"`}
+          aria-label={`Delete "${schedule.name}"`}
+          className="rounded p-1 text-zinc-500 hover:bg-red-500/20 hover:text-red-300"
+        >
+          <Trash2 size={11} />
+        </button>
+      </div>
       <ChevronRight
         size={11}
-        className={`mt-1 shrink-0 text-zinc-700 transition-opacity ${selected ? 'opacity-100 text-emerald-400' : 'opacity-0 group-hover:opacity-100'}`}
+        aria-hidden="true"
+        className={`mt-1 shrink-0 text-zinc-700 transition-opacity ${selected ? 'opacity-100 text-emerald-400' : 'opacity-0'}`}
       />
     </li>
   );
@@ -684,6 +770,13 @@ function ScheduleDetail({
   onTrigger: () => void;
   onDelete: () => void;
 }) {
+  const deepLinkToSession = useCallback((sessionId: string) => {
+    if (typeof window === 'undefined' || !sessionId) return;
+    const url = new URL(window.location.href);
+    url.searchParams.set('session', sessionId);
+    window.history.pushState({}, '', url.toString());
+    window.dispatchEvent(new PopStateEvent('popstate'));
+  }, []);
   const [openExec, setOpenExec] = useState<string | null>(null);
   const upcoming = useMemo(() => nextRuns(schedule.cronExpr, 5), [schedule.cronExpr]);
 
@@ -753,7 +846,8 @@ function ScheduleDetail({
           <button
             onClick={onDelete}
             className="rounded p-1.5 text-zinc-500 hover:bg-red-500/20 hover:text-red-300"
-            title="Delete"
+            title="Delete schedule"
+            aria-label="Delete schedule"
           >
             <Trash2 size={11} />
           </button>
@@ -861,6 +955,18 @@ function ScheduleDetail({
                         <div className="mt-1.5 rounded bg-red-500/10 px-2 py-1 text-red-300 ring-1 ring-red-500/20">
                           {ex.error}
                         </div>
+                      )}
+                      {schedule.sessionId && (
+                        <button
+                          type="button"
+                          onClick={() => deepLinkToSession(schedule.sessionId)}
+                          className="mt-1.5 inline-flex items-center gap-1 rounded bg-zinc-800 px-2 py-1 text-[10px] text-zinc-300 hover:bg-zinc-700"
+                          title="Open this schedule's session in chat"
+                          aria-label="Open this schedule's session in chat"
+                        >
+                          Open session
+                          <ChevronRight size={10} />
+                        </button>
                       )}
                     </div>
                   )}
