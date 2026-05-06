@@ -25,10 +25,13 @@ Full-featured Google Workspace integration via the open-source [workspace-mcp](h
 
 ## Prerequisites
 
-1. A Google Cloud project with OAuth 2.0 credentials configured
-2. `uvx` installed (`pip install uv` or `curl -LsSf https://astral.sh/uv/install.sh | sh`)
-3. Relevant Google APIs enabled in your Cloud project
-4. Initial OAuth flow completed: `uvx workspace-mcp --single-user`
+1. `uvx` installed (`pip install uv` or `curl -LsSf https://astral.sh/uv/install.sh | sh`)
+2. A Google Cloud project with OAuth 2.0 Web Application credentials and the Google APIs you intend to use enabled (Gmail, Drive, Calendar, Docs, Sheets, Slides, Forms, Tasks, People, Chat, Apps Script)
+3. Skill configured via Settings → Skills → Google Workspace:
+   - Paste the OAuth **Client ID** and **Client Secret**
+   - Set the **Default Google Email** (`USER_GOOGLE_EMAIL`) — required to start the OAuth flow
+   - (Optional) Override **Redirect URI** if not running locally on `http://localhost:4100`
+   - Save, then click **Connect Google account** to complete the in-app OAuth flow. Tokens are stored in the skill's `config.json` (or `~/.google_workspace_mcp/credentials/`) and refreshed automatically.
 
 ## Tools
 

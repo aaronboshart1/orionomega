@@ -1,69 +1,79 @@
 #!/usr/bin/env node
 /**
- * Google Workspace skill setup handler.
- * Validates OAuth credentials and checks for existing auth tokens.
+ * Post-setup validation hook for the google-workspace skill.
+ *
+ * Runs after the user submits the skill settings form. Reads the
+ * submitted config from stdin (the SDK passes `{ fields, ... }`),
+ * validates that OAuth client credentials are present, and reports
+ * whether the in-app OAuth flow has been completed (i.e. an access or
+ * refresh token has been stored).
+ *
+ * The OAuth browser flow itself is driven by the gateway via
+ * `hooks/oauth-start.js` and `hooks/oauth-status.js`, not by this
+ * script — this script only validates the resulting state.
  */
 
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
-import { homedir } from 'node:os';
+async function readStdin() {
+  const chunks = [];
+  process.stdin.setEncoding('utf-8');
+  return await new Promise((resolve) => {
+    process.stdin.on('data', (chunk) => chunks.push(chunk));
+    process.stdin.on('end', () => resolve(chunks.join('')));
+    // If stdin is not piped at all, resolve quickly with whatever we have.
+    setTimeout(() => resolve(chunks.join('')), 500);
+  });
+}
 
 async function main() {
   let config = {};
   try {
-    let raw = '';
-    process.stdin.setEncoding('utf-8');
-    const chunks = [];
-    process.stdin.on('data', (chunk) => chunks.push(chunk));
-    await new Promise((resolve) => {
-      process.stdin.on('end', resolve);
-      setTimeout(resolve, 500);
-    });
-    raw = chunks.join('');
+    const raw = await readStdin();
     if (raw.trim()) config = JSON.parse(raw);
-  } catch {}
+  } catch {
+    // tolerate missing/invalid stdin — fall back to env vars
+  }
+
+  const fields = config.fields ?? {};
+  const clientId = fields.GOOGLE_OAUTH_CLIENT_ID || process.env.GOOGLE_OAUTH_CLIENT_ID;
+  const clientSecret = fields.GOOGLE_OAUTH_CLIENT_SECRET || process.env.GOOGLE_OAUTH_CLIENT_SECRET;
+  const accessToken = fields.GOOGLE_ACCESS_TOKEN;
+  const refreshToken = fields.GOOGLE_REFRESH_TOKEN;
 
   const result = { fields: {}, validated: false };
 
-  const clientId = config.fields?.GOOGLE_OAUTH_CLIENT_ID || process.env.GOOGLE_OAUTH_CLIENT_ID;
-  const clientSecret = config.fields?.GOOGLE_OAUTH_CLIENT_SECRET || process.env.GOOGLE_OAUTH_CLIENT_SECRET;
-
   if (!clientId || !clientSecret) {
     result.fields.setup_instructions =
-      '1. Go to console.cloud.google.com → APIs & Services → Credentials\n' +
-      '2. Create an OAuth 2.0 Client ID (Desktop Application)\n' +
-      '3. Enable: Gmail, Drive, Calendar, Docs, Sheets, Slides, Forms, Tasks, People, Chat, Apps Script APIs\n' +
-      '4. Enter your Client ID and Client Secret above\n' +
-      '5. After saving, run: uvx workspace-mcp --single-user  (opens browser for OAuth flow)';
+      '1. Visit https://console.cloud.google.com → APIs & Services → Credentials\n' +
+      '2. Create an OAuth 2.0 Client ID (Application type: Web application)\n' +
+      '3. Add an Authorized redirect URI matching GOOGLE_OAUTH_REDIRECT_URI (default: http://localhost:4100)\n' +
+      '4. Enable the APIs you want to use (Gmail, Drive, Calendar, Docs, Sheets, Slides, Forms, Tasks, People, Chat, Apps Script)\n' +
+      '5. Paste the Client ID and Client Secret into the fields above and save\n' +
+      '6. Then click "Connect Google account" to authorize access in your browser';
     process.stdout.write(JSON.stringify(result));
     return;
   }
 
-  // Check for existing auth tokens from workspace-mcp
-  const tokenLocations = [
-    join(homedir(), '.workspace-mcp', 'token.json'),
-    join(homedir(), '.workspace-mcp', 'credentials.json'),
-    join(homedir(), '.config', 'workspace-mcp', 'token.json'),
-  ];
+  result.fields.client_id_prefix = String(clientId).slice(0, 20) + '…';
+  result.fields.credentials_status = 'OAuth client credentials saved';
 
-  const tokenExists = tokenLocations.some(p => existsSync(p));
-
-  if (tokenExists) {
+  if (accessToken || refreshToken) {
     result.validated = true;
-    result.fields.credentials_status = 'OAuth credentials configured';
-    result.fields.auth_status = 'Auth tokens found — ready to use';
-    result.fields.client_id_prefix = clientId.slice(0, 20) + '...';
+    result.fields.auth_status = 'Connected — Google account authorized';
   } else {
     result.validated = false;
-    result.fields.credentials_status = 'OAuth credentials configured';
-    result.fields.auth_status = 'Auth tokens not found — complete setup by running: uvx workspace-mcp --single-user';
-    result.fields.client_id_prefix = clientId.slice(0, 20) + '...';
+    result.fields.auth_status = 'Not connected yet';
     result.fields.next_step =
-      'Run `uvx workspace-mcp --single-user` to open the Google OAuth browser flow and authorize access. ' +
-      'This only needs to be done once. Tokens are stored in ~/.workspace-mcp/';
+      'Click "Connect Google account" in Settings → Skills → Google Workspace to complete the OAuth flow.';
   }
 
   process.stdout.write(JSON.stringify(result));
 }
 
-main();
+main().catch((err) => {
+  process.stdout.write(JSON.stringify({
+    fields: {},
+    validated: false,
+    error: err instanceof Error ? err.message : String(err),
+  }));
+  process.exit(1);
+});

@@ -21,7 +21,9 @@ const TIMEOUT = 90_000; // ms — some Workspace ops are slow
  * @returns {object}
  */
 export function getConfig() {
-  const configPath = join(homedir(), '.orionomega', 'skills', 'google-workspace', 'config.json');
+  const skillsDir = process.env.ORIONOMEGA_SKILLS_DIR
+    || join(homedir(), '.orionomega', 'skills');
+  const configPath = join(skillsDir, 'google-workspace', 'config.json');
   if (existsSync(configPath)) {
     try {
       const config = JSON.parse(readFileSync(configPath, 'utf-8'));
