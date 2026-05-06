@@ -167,7 +167,19 @@ export const useChatStore = create<ChatStore>()((set) => ({
         set((s) => {
           const msgs = [...s.messages];
           const last = msgs.length > 0 ? msgs[msgs.length - 1] : null;
-          if (last && last.role === 'assistant' && !last.isBackground) {
+          // Only append to a plain assistant text message. Direct mode
+          // interleaves tool-call/dag-*/gate-*/error cards as assistant
+          // messages between text chunks; appending into those would
+          // hide the model's narrative text inside a tool card and the
+          // user would only see it after a refresh (when persisted text
+          // rehydrates as its own message).
+          const isAppendable =
+            last &&
+            last.role === 'assistant' &&
+            !last.isBackground &&
+            !last.toolCall &&
+            (!last.type || last.type === 'text');
+          if (isAppendable) {
             msgs[msgs.length - 1] = {
               ...last,
               content: last.content + content,
