@@ -346,9 +346,12 @@ export async function handleCreateGoogleAccount(
   if (!checkAuth(req, res, gatewayConfig)) return;
   try {
     const body = await readBody(req);
-    const data = spawnAccountsHelper(['create'], { stdin: body });
+    const data = spawnAccountsHelper<{ ok: boolean; account: { GOOGLE_OAUTH_CLIENT_SECRET?: string } }>(['create'], { stdin: body });
+    // Mask the secret on response for consistency with list/update so
+    // the raw secret is never echoed back over the wire.
+    const safe = data && data.account ? { ...data, account: maskAccountSecret(data.account) } : data;
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(data));
+    res.end(JSON.stringify(safe));
   } catch (err) {
     res.writeHead(400, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: err instanceof Error ? err.message : 'Failed to create account' }));
