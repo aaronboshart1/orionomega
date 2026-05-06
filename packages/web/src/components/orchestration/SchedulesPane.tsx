@@ -45,10 +45,16 @@ import {
   resumeSchedule,
   triggerSchedule,
   fetchExecutions,
+  encodeAttachmentsForSchedule,
   type Schedule,
+  type ScheduleAttachment,
   type Execution,
 } from '@/stores/schedules';
 import { nextRuns } from '@/lib/cron-forecast';
+import { PromptComposer } from './PromptComposer';
+import type { FileAttachment } from '@/components/chat/ChatInput';
+import { uuid } from '@/lib/uuid';
+import { isImageType } from '@/lib/file-types';
 
 interface FormState {
   id?: string;
@@ -62,6 +68,10 @@ interface FormState {
   maxRetries: number;
   timeoutSec: number;
   runAt: string;
+  /** Files staged with the prompt; replayed on every fire. */
+  attachments: FileAttachment[];
+  /** True once the user has touched the attachment list since hydration; controls whether the patch payload includes `attachments`. */
+  attachmentsDirty: boolean;
 }
 
 const EMPTY_FORM: FormState = {
@@ -75,7 +85,40 @@ const EMPTY_FORM: FormState = {
   maxRetries: 0,
   timeoutSec: 0,
   runAt: '',
+  attachments: [],
+  attachmentsDirty: false,
 };
+
+/**
+ * Reconstruct browser `File` objects from a persisted schedule's
+ * attachments so they round-trip through `PromptComposer` (which works
+ * in `FileAttachment` shape). Image previews are regenerated from the
+ * stored DataURL.
+ */
+function hydrateAttachments(stored: ScheduleAttachment[] | null | undefined): FileAttachment[] {
+  if (!stored || stored.length === 0) return [];
+  return stored.map((a) => {
+    let file: File;
+    if (a.data) {
+      // DataURL → Blob → File. Synchronous: split off base64 chunk and
+      // decode with atob; avoids the async fetch() round-trip.
+      const commaIdx = a.data.indexOf(',');
+      const b64 = commaIdx >= 0 ? a.data.slice(commaIdx + 1) : a.data;
+      try {
+        const bin = atob(b64);
+        const buf = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+        file = new File([buf], a.name, { type: a.type });
+      } catch {
+        file = new File([], a.name, { type: a.type });
+      }
+    } else {
+      file = new File([a.textContent ?? ''], a.name, { type: a.type });
+    }
+    const previewUrl = isImageType(a.type) && a.data ? a.data : undefined;
+    return { id: uuid(), file, name: a.name, size: a.size, type: a.type, previewUrl };
+  });
+}
 
 const PRESETS: { label: string; expr: string }[] = [
   { label: 'Every minute', expr: '* * * * *' },
@@ -267,6 +310,8 @@ export function SchedulesPane() {
       maxRetries: s.maxRetries,
       timeoutSec: s.timeoutSec,
       runAt: '',
+      attachments: hydrateAttachments(s.attachments),
+      attachmentsDirty: false,
     });
   }, []);
 
@@ -300,7 +345,13 @@ export function SchedulesPane() {
     setSubmitting(true);
     setError(null);
     try {
-      const basePayload = {
+      const encodedAttachments = await encodeAttachmentsForSchedule(editing.attachments);
+      const basePayload: Partial<Schedule> & {
+        name: string;
+        cronExpr: string;
+        prompt: string;
+        attachments?: ScheduleAttachment[];
+      } = {
         name: trimmedName,
         description: editing.description.trim(),
         cronExpr: editing.cronExpr.trim(),
@@ -311,6 +362,13 @@ export function SchedulesPane() {
         maxRetries: editing.maxRetries,
         timeoutSec: editing.timeoutSec,
       };
+      // For new schedules always send (server treats empty array as no
+      // attachments). For edits only send when the user actually touched
+      // the list, so an unchanged save doesn't overwrite a previously
+      // persisted attachment set with []s.
+      if (!editing.id || editing.attachmentsDirty) {
+        basePayload.attachments = encodedAttachments;
+      }
       const task = editing.id
         ? await updateSchedule(editing.id, basePayload)
         : await createSchedule(runAtIso ? { ...basePayload, runAt: runAtIso } : basePayload);
@@ -1634,15 +1692,16 @@ function ScheduleFormFields({
         />
       </label>
 
-      {/* 7. Prompt */}
+      {/* 7. Prompt — same UX as the chat composer (textarea + paperclip + drag-drop) */}
       <label className="flex flex-col gap-1">
         <span className="text-[10px] font-semibold uppercase tracking-widest text-zinc-500">Prompt</span>
-        <textarea
+        <PromptComposer
           value={form.prompt}
-          onChange={(e) => setForm({ ...form, prompt: e.target.value })}
+          onChange={(next) => setForm({ ...form, prompt: next })}
+          attachments={form.attachments}
+          onAttachmentsChange={(next) => setForm({ ...form, attachments: next, attachmentsDirty: true })}
           placeholder="Summarize yesterday's commits and post to #dev-updates"
           rows={4}
-          className="rounded bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200 border border-zinc-700 focus:border-emerald-500/60 outline-none resize-y"
         />
       </label>
 
@@ -1749,6 +1808,8 @@ function ScheduleSettingsForm({
     maxRetries: schedule.maxRetries,
     timeoutSec: schedule.timeoutSec,
     runAt: '',
+    attachments: hydrateAttachments(schedule.attachments),
+    attachmentsDirty: false,
   }));
   const [saving, setSaving] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
@@ -1767,6 +1828,8 @@ function ScheduleSettingsForm({
       maxRetries: schedule.maxRetries,
       timeoutSec: schedule.timeoutSec,
       runAt: '',
+      attachments: hydrateAttachments(schedule.attachments),
+      attachmentsDirty: false,
     });
   }, [schedule]);
 
@@ -1783,7 +1846,8 @@ function ScheduleSettingsForm({
     form.timezone !== schedule.timezone ||
     form.overlapPolicy !== schedule.overlapPolicy ||
     form.maxRetries !== schedule.maxRetries ||
-    form.timeoutSec !== schedule.timeoutSec;
+    form.timeoutSec !== schedule.timeoutSec ||
+    form.attachmentsDirty;
   const canSave = !saving && dirty && nameValid && cronValid && promptValid;
 
   const submit = async () => {
@@ -1791,7 +1855,7 @@ function ScheduleSettingsForm({
     setSaving(true);
     setLocalError(null);
     try {
-      await onSave({
+      const patch: Partial<Schedule> = {
         name: form.name.trim(),
         description: form.description.trim(),
         cronExpr: form.cronExpr.trim(),
@@ -1801,7 +1865,11 @@ function ScheduleSettingsForm({
         overlapPolicy: form.overlapPolicy,
         maxRetries: form.maxRetries,
         timeoutSec: form.timeoutSec,
-      });
+      };
+      if (form.attachmentsDirty) {
+        patch.attachments = await encodeAttachmentsForSchedule(form.attachments);
+      }
+      await onSave(patch);
     } catch (err) {
       setLocalError(err instanceof Error ? err.message : 'Save failed');
     } finally {

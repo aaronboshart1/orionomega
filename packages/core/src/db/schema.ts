@@ -363,6 +363,9 @@ export const scheduledTasks = sqliteTable('scheduled_tasks', {
   lastStatus: text('last_status'),
   runCount: integer('run_count').notNull().default(0),
   runAt: text('run_at'),
+  attachments: text('attachments', { mode: 'json' }).$type<
+    Array<{ name: string; size: number; type: string; data?: string; textContent?: string }>
+  >(),
 });
 
 /** Execution history for scheduled tasks. */

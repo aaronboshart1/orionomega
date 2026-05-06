@@ -7,6 +7,48 @@
  */
 
 import { create } from 'zustand';
+import { isImageType, isBinaryDocument } from '@/lib/file-types';
+import type { FileAttachment } from '@/components/chat/ChatInput';
+
+/**
+ * Persisted attachment shape for scheduled tasks. Mirrors the chat
+ * WebSocket attachment payload so the scheduler can replay the same
+ * `MainAgent.handleMessage(..., attachments, ...)` call shape on every
+ * fire. Binary types (images, PDF/DOCX/XLSX/PPTX) carry `data` as a
+ * base64 DataURL; text-based types carry `textContent` as UTF-8.
+ */
+export interface ScheduleAttachment {
+  name: string;
+  size: number;
+  type: string;
+  data?: string;
+  textContent?: string;
+}
+
+/**
+ * Read a list of `FileAttachment` (browser File handles) into the
+ * persisted `ScheduleAttachment` shape — same encoding rules as
+ * `sendChat()` in `lib/gateway.ts`. Used by the scheduler form before
+ * POSTing/PUTting to the schedules API.
+ */
+export async function encodeAttachmentsForSchedule(
+  attachments: FileAttachment[],
+): Promise<ScheduleAttachment[]> {
+  return Promise.all(
+    attachments.map(async (a) => {
+      if (isImageType(a.type) || isBinaryDocument(a.type)) {
+        const dataUrl = await new Promise<string>((resolve) => {
+          const reader = new FileReader();
+          reader.onloadend = () => resolve(reader.result as string);
+          reader.readAsDataURL(a.file);
+        });
+        return { name: a.name, size: a.size, type: a.type, data: dataUrl };
+      }
+      const textContent = await a.file.text();
+      return { name: a.name, size: a.size, type: a.type, textContent };
+    }),
+  );
+}
 
 export interface Schedule {
   id: string;
@@ -28,6 +70,7 @@ export interface Schedule {
   lastStatus: string | null;
   runCount: number;
   runAt: string | null;
+  attachments?: ScheduleAttachment[] | null;
 }
 
 export interface Execution {

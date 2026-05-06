@@ -53,6 +53,37 @@ const nameSchema = z
 
 const timezoneSchema = z.string().min(1).max(64);
 
+/** ~5MB cap on combined attachment payload — keeps schedule rows from
+ * blowing up the SQLite page cache and gives the readBody guard headroom. */
+const MAX_ATTACHMENTS_BYTES = 5 * 1024 * 1024;
+
+const attachmentSchema = z
+  .object({
+    name: z.string().min(1).max(512),
+    size: z.number().int().min(0),
+    type: z.string().max(255),
+    data: z.string().optional(),
+    textContent: z.string().optional(),
+  })
+  .refine((a) => a.data !== undefined || a.textContent !== undefined, {
+    message: 'attachment must include either `data` (base64) or `textContent`',
+  });
+
+const attachmentsSchema = z
+  .array(attachmentSchema)
+  .max(20)
+  .refine(
+    (list) => {
+      let total = 0;
+      for (const a of list) {
+        total += (a.data?.length ?? 0) + (a.textContent?.length ?? 0);
+        if (total > MAX_ATTACHMENTS_BYTES) return false;
+      }
+      return true;
+    },
+    { message: `attachments exceed combined limit of ${MAX_ATTACHMENTS_BYTES} bytes` },
+  );
+
 const createScheduleSchema = z.object({
   name: nameSchema,
   description: z.string().max(500).optional(),
@@ -72,6 +103,7 @@ const createScheduleSchema = z.object({
       message: 'runAt must be a future timestamp',
     })
     .optional(),
+  attachments: attachmentsSchema.optional(),
 });
 
 const updateScheduleSchema = z.object({
@@ -84,6 +116,7 @@ const updateScheduleSchema = z.object({
   overlapPolicy: z.enum(['skip', 'queue', 'allow']).optional(),
   maxRetries: z.number().int().min(0).max(5).optional(),
   timeoutSec: z.number().int().min(0).max(7_200).optional(),
+  attachments: attachmentsSchema.optional(),
 });
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -97,12 +130,19 @@ function errorResponse(res: ServerResponse, status: number, message: string, det
   jsonResponse(res, status, details === undefined ? { error: message } : { error: message, details });
 }
 
+/**
+ * Per-route body limit. Default `readBody` allows 1 MB; raise to 6 MB
+ * here so a schedule create/update carrying up to ~5 MB of base64 file
+ * attachments still fits with headroom for the rest of the JSON envelope.
+ */
+const SCHEDULE_BODY_LIMIT_BYTES = 6 * 1024 * 1024;
+
 async function readJsonBody<T>(
   req: IncomingMessage,
   schema: z.ZodSchema<T>,
 ): Promise<{ ok: true; data: T } | { ok: false; status: number; message: string; details?: unknown }> {
   try {
-    const body = await readBody(req);
+    const body = await readBody(req, SCHEDULE_BODY_LIMIT_BYTES);
     let parsed: unknown;
     try {
       parsed = JSON.parse(body);

@@ -41,6 +41,7 @@ Environment Variables:
 - `packages/skills-sdk/docs/ARCHITECTURE.md`: Skills SDK architecture documentation.
 - `packages/web/src/lib/z-index.ts`: Centralized z-index constants.
 - `packages/web/src/components/orchestration/SchedulesPane.tsx`: Schedules tab in the orchestration pane (master/detail; previously lived under Settings → Schedules and was promoted in Task #163).
+- `packages/web/src/components/orchestration/PromptComposer.tsx`: Reusable prompt input mirroring the chat composer (textarea + paperclip + drag-drop + attachment chips); used by the scheduler form so saved schedules can carry file attachments that get replayed on every fire.
 - `packages/web/src/lib/cron-forecast.ts`: Client-side next-N runs forecaster for cron previews.
 - `packages/web/src/app/layout.tsx`: Global layout and theme imports.
 - `packages/gateway/src/sessions.ts`: Default session ID (`DEFAULT_SESSION_ID`).

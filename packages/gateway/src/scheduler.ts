@@ -48,6 +48,19 @@ export interface CreateScheduleInput {
   timeoutSec?: number;
   /** ISO 8601 datetime for one-shot schedules. When set, task auto-pauses after first run. */
   runAt?: string;
+  /** Persisted attachments replayed on every fire. */
+  attachments?: ScheduleAttachmentInput[];
+}
+
+/** Attachment payload accepted by create/update — same shape MainAgent.handleMessage expects. */
+export interface ScheduleAttachmentInput {
+  name: string;
+  size: number;
+  type: string;
+  /** base64 DataURL for binary types. */
+  data?: string;
+  /** UTF-8 contents for text types. */
+  textContent?: string;
 }
 
 /** Subset of fields accepted on update. All optional. */
@@ -61,6 +74,7 @@ export interface UpdateScheduleInput {
   overlapPolicy?: 'skip' | 'queue' | 'allow';
   maxRetries?: number;
   timeoutSec?: number;
+  attachments?: ScheduleAttachmentInput[];
 }
 
 /** Runtime options for the scheduler engine, sourced from `scheduling:` config. */
@@ -264,6 +278,7 @@ export class SchedulerService {
       lastStatus: null,
       runCount: 0,
       runAt: input.runAt ?? null,
+      attachments: input.attachments && input.attachments.length > 0 ? input.attachments : null,
     };
 
     db.insert(scheduledTasks).values(row).run();
@@ -320,6 +335,9 @@ export class SchedulerService {
     if (patch.overlapPolicy !== undefined) updates.overlapPolicy = patch.overlapPolicy;
     if (patch.maxRetries !== undefined) updates.maxRetries = patch.maxRetries;
     if (patch.timeoutSec !== undefined) updates.timeoutSec = patch.timeoutSec;
+    if (patch.attachments !== undefined) {
+      updates.attachments = patch.attachments.length > 0 ? patch.attachments : null;
+    }
 
     db.update(scheduledTasks).set(updates).where(eq(scheduledTasks.id, id)).run();
 
@@ -648,7 +666,7 @@ export class SchedulerService {
           task.sessionId ?? 'default',
           task.prompt,
           undefined,
-          undefined,
+          task.attachments && task.attachments.length > 0 ? task.attachments : undefined,
           task.agentMode,
           abortController.signal,
         );
