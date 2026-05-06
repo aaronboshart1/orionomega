@@ -1,7 +1,7 @@
 {
   "$schema": "https://orionomega.dev/schemas/skill-manifest.v1.json",
   "name": "google-workspace",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Full-featured Google Workspace integration via workspace-mcp. Manage Gmail, Drive, Calendar, Docs, Sheets, Slides, Forms, Tasks, Contacts, Chat, Apps Script, and Custom Search. Powered by the open-source google_workspace_mcp server.",
   "author": "OrionOmega",
   "license": "MIT",
