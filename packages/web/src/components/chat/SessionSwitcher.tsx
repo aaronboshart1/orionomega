@@ -73,6 +73,9 @@ export function SessionSwitcher() {
 
   const deleteSession = useCallback(async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
+    const target = sessions.find((s) => s.id === id);
+    const label = target?.name?.trim() ? target.name : 'Untitled session';
+    if (!window.confirm(`Delete "${label}"? This can't be undone.`)) return;
     try {
       await fetch(`/api/gateway/api/sessions/${id}`, { method: 'DELETE' });
       if (id === sessionId) {
@@ -81,7 +84,7 @@ export function SessionSwitcher() {
         await fetchSessions();
       }
     } catch { /* ignore */ }
-  }, [sessionId, fetchSessions, createSession]);
+  }, [sessionId, sessions, fetchSessions, createSession]);
 
   const startRename = useCallback((id: string, name: string, e: React.MouseEvent) => {
     e.stopPropagation();
