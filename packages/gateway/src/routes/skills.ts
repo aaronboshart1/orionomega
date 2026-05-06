@@ -508,17 +508,51 @@ const WORKSPACE_MCP_BASE_PORT = (() => {
  */
 function resolveAccountForPort(
   accountId: string | null,
-): { id: string; port: number; label: string } | null {
+): { id: string; port: number; label: string; redirectUri: string } | null {
   try {
-    const data = spawnAccountsHelper<{ accounts: Array<{ id: string; port: number; label?: string }>; activeAccountId: string | null }>(['list']);
+    const data = spawnAccountsHelper<{
+      accounts: Array<{ id: string; port: number; label?: string; GOOGLE_OAUTH_REDIRECT_URI?: string }>;
+      activeAccountId: string | null;
+    }>(['list']);
     const id = accountId || data.activeAccountId || '';
     if (!id) return null;
     const found = data.accounts.find((a) => a.id === id);
     if (!found) return null;
-    return { id: found.id, port: found.port, label: found.label || found.id };
+    return {
+      id: found.id,
+      port: found.port,
+      label: found.label || found.id,
+      redirectUri: found.GOOGLE_OAUTH_REDIRECT_URI || `http://localhost:${found.port}`,
+    };
   } catch {
     return null;
   }
+}
+
+/**
+ * Extract host:port (port defaulted from scheme when missing) from any
+ * URL-ish string the user might paste OR any account redirect URI we've
+ * stored. Returns null when the value cannot be parsed.
+ *
+ * We use this to fail-fast on the most common multi-account misconfig:
+ * Google Cloud Console has redirect URI X registered, but the account's
+ * configured GOOGLE_OAUTH_REDIRECT_URI points at port Y. Google sends the
+ * user back to X, workspace-mcp tries to exchange the code with redirect
+ * URI Y → Google rejects → workspace-mcp surfaces it as the cryptic
+ * "Invalid or expired OAuth state parameter" error.
+ */
+function extractHostPort(value: string): { host: string; port: number } | null {
+  if (!value) return null;
+  const raw = value.trim();
+  for (const candidate of [raw, raw.startsWith('http') ? raw : `http://${raw}`]) {
+    try {
+      const u = new URL(candidate);
+      const port = u.port ? parseInt(u.port, 10) : (u.protocol === 'https:' ? 443 : 80);
+      if (!u.hostname || !Number.isFinite(port)) continue;
+      return { host: u.hostname.toLowerCase(), port };
+    } catch { /* try next */ }
+  }
+  return null;
 }
 
 /**
@@ -639,6 +673,33 @@ export async function handleGoogleOAuthCallback(
       }
 
       if (params && params.get('code')) {
+        // Pre-flight: the host:port in the pasted URL is what Google has
+        // registered for this OAuth client. If it doesn't match the
+        // account's configured GOOGLE_OAUTH_REDIRECT_URI, workspace-mcp
+        // will send the WRONG redirect_uri to Google during code
+        // exchange and Google will reject — surfacing as a cryptic
+        // "Invalid or expired OAuth state parameter" error from
+        // workspace-mcp. Catch it here with a clear, actionable error.
+        const pastedHp = extractHostPort(raw);
+        const configuredHp = extractHostPort(account.redirectUri);
+        if (pastedHp && configuredHp && (pastedHp.host !== configuredHp.host || pastedHp.port !== configuredHp.port)) {
+          log.warn('OAuth callback: host:port mismatch between pasted URL and account redirect URI', {
+            accountId: account.id,
+            pasted: `${pastedHp.host}:${pastedHp.port}`,
+            configured: `${configuredHp.host}:${configuredHp.port}`,
+          });
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            error: `Redirect URI mismatch for account "${account.label}".`,
+            detail:
+              `Google redirected you to ${pastedHp.host}:${pastedHp.port}, but this account is configured ` +
+              `with redirect URI ${account.redirectUri}. Google rejects the code exchange when these don't match. ` +
+              `Fix it one of two ways: (a) update the Redirect URI field above to http://${pastedHp.host}:${pastedHp.port} and click Save, ` +
+              `or (b) in Google Cloud Console add http://${configuredHp.host}:${configuredHp.port} as an Authorized redirect URI for this OAuth client. ` +
+              `Then click "Authenticate with Google" again to start a fresh flow.`,
+          }));
+          return;
+        }
         const target = new URL(`http://127.0.0.1:${port}/oauth2callback`);
         params.forEach((value, key) => target.searchParams.set(key, value));
         callbackUrl = target.toString();
