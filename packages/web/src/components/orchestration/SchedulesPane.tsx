@@ -30,6 +30,9 @@ import {
   XCircle,
   CircleDashed,
   Sparkles,
+  GitBranch,
+  Code2,
+  Repeat,
 } from 'lucide-react';
 import cronstrue from 'cronstrue';
 import {
@@ -1089,6 +1092,639 @@ function Field({ label, value }: { label: string; value: React.ReactNode }) {
   );
 }
 
+// =============================================================================
+// Visual cadence builder
+// -----------------------------------------------------------------------------
+// Maps to/from the underlying 5-field cron expression so casual users don't
+// need to learn cron syntax. The cron field below the builder is preserved
+// for power users — if they type something the builder can't represent, the
+// builder switches to a "custom" notice and stays out of the way.
+// =============================================================================
+
+type Cadence =
+  | { kind: 'minute'; every: number }
+  | { kind: 'hour'; minute: number; every: number }
+  | { kind: 'day'; hour: number; minute: number }
+  | { kind: 'week'; hour: number; minute: number; days: number[] }
+  | { kind: 'month'; hour: number; minute: number; day: number }
+  | { kind: 'custom' };
+
+const DOW_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
+
+/** Parse the day-of-week field into a sorted unique list of 0–6 (0=Sun). */
+function parseDowList(s: string): number[] | null {
+  const out = new Set<number>();
+  for (const part of s.split(',')) {
+    if (/^\d+$/.test(part)) {
+      out.add(Number(part) % 7);
+    } else if (/^(\d+)-(\d+)$/.test(part)) {
+      const m = part.match(/^(\d+)-(\d+)$/)!;
+      const a = Number(m[1]);
+      const b = Number(m[2]);
+      if (a > b) return null;
+      for (let i = a; i <= b; i++) out.add(i % 7);
+    } else {
+      return null;
+    }
+  }
+  return Array.from(out).sort((x, y) => x - y);
+}
+
+/** Best-effort parse of a 5-field cron expression into a structured cadence. */
+function parseCadence(cron: string): Cadence {
+  const parts = cron.trim().split(/\s+/);
+  if (parts.length !== 5) return { kind: 'custom' };
+  const [m, h, dom, mon, dow] = parts;
+  if (mon !== '*') return { kind: 'custom' };
+  const isDigit = (s: string) => /^\d+$/.test(s);
+  const starSlash = (s: string) => /^\*\/(\d+)$/.exec(s);
+
+  // every minute (bare `*`)
+  if (m === '*' && h === '*' && dom === '*' && dow === '*') {
+    return { kind: 'minute', every: 1 };
+  }
+  // every-N minutes
+  const ms = starSlash(m);
+  if (ms && h === '*' && dom === '*' && dow === '*') {
+    return { kind: 'minute', every: Number(ms[1]) };
+  }
+  // every-N hours at minute M
+  const hs = starSlash(h);
+  if (isDigit(m) && hs && dom === '*' && dow === '*') {
+    return { kind: 'hour', minute: Number(m), every: Number(hs[1]) };
+  }
+  // every hour at minute M
+  if (isDigit(m) && h === '*' && dom === '*' && dow === '*') {
+    return { kind: 'hour', minute: Number(m), every: 1 };
+  }
+  // weekly at H:M on selected days
+  if (isDigit(m) && isDigit(h) && dom === '*' && dow !== '*') {
+    const days = parseDowList(dow);
+    if (days && days.length > 0) return { kind: 'week', hour: Number(h), minute: Number(m), days };
+  }
+  // monthly at H:M on day D
+  if (isDigit(m) && isDigit(h) && isDigit(dom) && dow === '*') {
+    return { kind: 'month', hour: Number(h), minute: Number(m), day: Number(dom) };
+  }
+  // daily at H:M
+  if (isDigit(m) && isDigit(h) && dom === '*' && dow === '*') {
+    return { kind: 'day', hour: Number(h), minute: Number(m) };
+  }
+  return { kind: 'custom' };
+}
+
+/** Serialize a structured cadence back to a 5-field cron expression. */
+function serializeCadence(c: Cadence): string {
+  switch (c.kind) {
+    case 'minute': return `*/${c.every} * * * *`;
+    case 'hour':   return c.every === 1 ? `${c.minute} * * * *` : `${c.minute} */${c.every} * * *`;
+    case 'day':    return `${c.minute} ${c.hour} * * *`;
+    case 'week': {
+      const days = c.days.length === 0 ? '*' : c.days.slice().sort((a, b) => a - b).join(',');
+      return `${c.minute} ${c.hour} * * ${days}`;
+    }
+    case 'month':  return `${c.minute} ${c.hour} ${c.day} * *`;
+    case 'custom': return '';
+  }
+}
+
+function clampInt(s: string, lo: number, hi: number): number {
+  const n = Number.parseInt(s, 10);
+  if (Number.isNaN(n)) return lo;
+  return Math.max(lo, Math.min(hi, n));
+}
+
+/**
+ * Visual cron builder. Controlled by the parent form's cron string. Switching
+ * frequency tabs picks sensible defaults; editing fields emits an updated
+ * cron expression. If the parent's cron string isn't representable here,
+ * we surface a friendly notice rather than silently overwriting it.
+ */
+function CadenceBuilder({ value, onChange }: { value: string; onChange: (cron: string) => void }) {
+  const [cadence, setCadence] = useState<Cadence>(() => parseCadence(value));
+  const lastEmittedRef = useRef<string>(value);
+
+  // Re-parse only when the cron value was changed externally (e.g. user edits
+  // the raw cron field, picks a preset, or selects a template). Skipping the
+  // re-parse for our own emits avoids fighting the user mid-edit.
+  useEffect(() => {
+    if (value !== lastEmittedRef.current) {
+      setCadence(parseCadence(value));
+      lastEmittedRef.current = value;
+    }
+  }, [value]);
+
+  const update = useCallback((next: Cadence) => {
+    setCadence(next);
+    if (next.kind === 'custom') return;
+    const serialized = serializeCadence(next);
+    if (serialized && serialized !== value) {
+      lastEmittedRef.current = serialized;
+      onChange(serialized);
+    }
+  }, [onChange, value]);
+
+  const switchKind = (kind: Exclude<Cadence['kind'], 'custom'>) => {
+    switch (kind) {
+      case 'minute': return update({ kind, every: 5 });
+      case 'hour':   return update({ kind, minute: 0, every: 1 });
+      case 'day':    return update({ kind, hour: 9, minute: 0 });
+      case 'week':   return update({ kind, hour: 9, minute: 0, days: [1, 2, 3, 4, 5] });
+      case 'month':  return update({ kind, hour: 9, minute: 0, day: 1 });
+    }
+  };
+
+  const KINDS: { k: Exclude<Cadence['kind'], 'custom'>; label: string }[] = [
+    { k: 'minute', label: 'Minute' },
+    { k: 'hour',   label: 'Hour' },
+    { k: 'day',    label: 'Day' },
+    { k: 'week',   label: 'Week' },
+    { k: 'month',  label: 'Month' },
+  ];
+
+  return (
+    <div className="rounded border border-zinc-700/60 bg-zinc-800/30 p-3">
+      <div className="mb-2 flex items-center gap-1.5">
+        <Repeat size={11} className="text-zinc-500" aria-hidden="true" />
+        <span className="text-[10px] font-semibold uppercase tracking-widest text-zinc-500">Cadence</span>
+      </div>
+      <div role="radiogroup" aria-label="Schedule frequency" className="mb-3 flex flex-wrap items-center gap-1">
+        {KINDS.map(({ k, label }) => {
+          const active = cadence.kind === k;
+          return (
+            <button
+              key={k}
+              type="button"
+              role="radio"
+              aria-checked={active}
+              tabIndex={active ? 0 : -1}
+              onClick={() => switchKind(k)}
+              className={`rounded-md px-2.5 py-1.5 text-[11px] font-medium transition-all duration-150 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 ${
+                active
+                  ? 'bg-emerald-500/20 text-emerald-300 ring-1 ring-emerald-500/50'
+                  : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'
+              }`}
+            >
+              {label}
+            </button>
+          );
+        })}
+      </div>
+
+      {cadence.kind === 'custom' && (
+        <div className="rounded border border-amber-500/30 bg-amber-950/20 px-2.5 py-1.5 text-[10px] text-amber-300">
+          Custom cron expression — edit it directly in the field below, or pick a frequency above to switch back to the visual builder.
+        </div>
+      )}
+
+      {cadence.kind === 'minute' && (
+        <div className="flex flex-wrap items-center gap-2 text-[11px] text-zinc-300">
+          <span>Every</span>
+          <select
+            aria-label="Every N minutes"
+            value={cadence.every}
+            onChange={(e) => update({ kind: 'minute', every: Number(e.target.value) })}
+            className="rounded bg-zinc-800 px-2 py-1 text-xs text-zinc-200 border border-zinc-700"
+          >
+            {[1, 2, 5, 10, 15, 20, 30].map((n) => (
+              <option key={n} value={n}>{n}</option>
+            ))}
+          </select>
+          <span>minutes</span>
+        </div>
+      )}
+
+      {cadence.kind === 'hour' && (
+        <div className="flex flex-wrap items-center gap-2 text-[11px] text-zinc-300">
+          <span>At minute</span>
+          <input
+            type="number"
+            min={0}
+            max={59}
+            aria-label="Minute of the hour"
+            value={cadence.minute}
+            onChange={(e) => update({ ...cadence, minute: clampInt(e.target.value, 0, 59) })}
+            className="w-16 rounded bg-zinc-800 px-2 py-1 text-xs text-zinc-200 border border-zinc-700"
+          />
+          <span>of every</span>
+          <select
+            aria-label="Every N hours"
+            value={cadence.every}
+            onChange={(e) => update({ ...cadence, every: Number(e.target.value) })}
+            className="rounded bg-zinc-800 px-2 py-1 text-xs text-zinc-200 border border-zinc-700"
+          >
+            {[1, 2, 3, 4, 6, 8, 12].map((n) => (
+              <option key={n} value={n}>{n}</option>
+            ))}
+          </select>
+          <span>hour{cadence.every === 1 ? '' : 's'}</span>
+        </div>
+      )}
+
+      {cadence.kind === 'day' && (
+        <CadenceTimeRow
+          hour={cadence.hour}
+          minute={cadence.minute}
+          prefix="Every day at"
+          onChange={(h, m) => update({ kind: 'day', hour: h, minute: m })}
+        />
+      )}
+
+      {cadence.kind === 'week' && (
+        <div className="flex flex-col gap-2">
+          <div className="flex flex-wrap items-center gap-1">
+            <span className="mr-1 text-[11px] text-zinc-300">On</span>
+            {DOW_LABELS.map((label, i) => {
+              const selected = cadence.days.includes(i);
+              return (
+                <button
+                  key={i}
+                  type="button"
+                  aria-pressed={selected}
+                  aria-label={`Toggle ${label}`}
+                  onClick={() => {
+                    const next = new Set(cadence.days);
+                    if (selected) next.delete(i); else next.add(i);
+                    update({ ...cadence, days: Array.from(next).sort((a, b) => a - b) });
+                  }}
+                  className={`min-w-[36px] rounded-md px-1.5 py-1 text-[10px] font-medium transition-all ${
+                    selected
+                      ? 'bg-emerald-500/20 text-emerald-300 ring-1 ring-emerald-500/40'
+                      : 'text-zinc-400 ring-1 ring-zinc-700 hover:bg-zinc-800 hover:text-zinc-200'
+                  }`}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+          <CadenceTimeRow
+            hour={cadence.hour}
+            minute={cadence.minute}
+            prefix="At"
+            onChange={(h, m) => update({ ...cadence, hour: h, minute: m })}
+          />
+          {cadence.days.length === 0 && (
+            <span className="text-[10px] text-amber-400">Pick at least one day.</span>
+          )}
+        </div>
+      )}
+
+      {cadence.kind === 'month' && (
+        <div className="flex flex-col gap-2">
+          <div className="flex flex-wrap items-center gap-2 text-[11px] text-zinc-300">
+            <span>On day</span>
+            <input
+              type="number"
+              min={1}
+              max={31}
+              aria-label="Day of month"
+              value={cadence.day}
+              onChange={(e) => update({ ...cadence, day: clampInt(e.target.value, 1, 31) })}
+              className="w-16 rounded bg-zinc-800 px-2 py-1 text-xs text-zinc-200 border border-zinc-700"
+            />
+            <span>of every month</span>
+          </div>
+          <CadenceTimeRow
+            hour={cadence.hour}
+            minute={cadence.minute}
+            prefix="At"
+            onChange={(h, m) => update({ ...cadence, hour: h, minute: m })}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CadenceTimeRow({
+  hour,
+  minute,
+  prefix,
+  onChange,
+}: {
+  hour: number;
+  minute: number;
+  prefix: string;
+  onChange: (h: number, m: number) => void;
+}) {
+  const value = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+  return (
+    <div className="flex items-center gap-2 text-[11px] text-zinc-300">
+      <span>{prefix}</span>
+      <input
+        type="time"
+        aria-label="Time of day"
+        value={value}
+        onChange={(e) => {
+          const [h, m] = e.target.value.split(':').map((s) => Number(s));
+          if (!Number.isNaN(h) && !Number.isNaN(m)) onChange(h, m);
+        }}
+        className="rounded bg-zinc-800 px-2 py-1 text-xs text-zinc-200 border border-zinc-700"
+      />
+    </div>
+  );
+}
+
+/**
+ * Controlled mirror of `AgentModeToggle` from the chat input. Same visual
+ * treatment (blue/violet/emerald per mode) so users immediately recognize
+ * the control, but bound to the schedule form's local state instead of the
+ * global agent-mode store.
+ */
+function ControlledAgentModeToggle({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: 'orchestrate' | 'direct' | 'code';
+  onChange: (m: 'orchestrate' | 'direct' | 'code') => void;
+  disabled?: boolean;
+}) {
+  const MODES: {
+    id: 'direct' | 'orchestrate' | 'code';
+    label: string;
+    icon: React.ReactNode;
+    activeClass: string;
+    ringClass: string;
+    title: string;
+  }[] = [
+    {
+      id: 'direct',
+      label: 'Direct',
+      icon: <Zap size={13} aria-hidden="true" />,
+      activeClass: 'bg-blue-600 text-white shadow-sm',
+      ringClass: 'focus:ring-blue-500',
+      title: 'Direct: single-agent streaming response',
+    },
+    {
+      id: 'orchestrate',
+      label: 'Orchestrate',
+      icon: <GitBranch size={13} aria-hidden="true" />,
+      activeClass: 'bg-violet-600 text-white shadow-sm',
+      ringClass: 'focus:ring-violet-500',
+      title: 'Orchestrate: multi-agent DAG planner + parallel workers',
+    },
+    {
+      id: 'code',
+      label: 'Code',
+      icon: <Code2 size={13} aria-hidden="true" />,
+      activeClass: 'bg-emerald-600 text-white shadow-sm',
+      ringClass: 'focus:ring-emerald-500',
+      title: 'Code: coding DAG with implementation loop and architect review',
+    },
+  ];
+
+  return (
+    <div
+      role="radiogroup"
+      aria-label="Agent execution mode"
+      className={`flex w-fit items-center rounded-lg border border-zinc-700 bg-zinc-900 p-0.5 ${
+        disabled ? 'pointer-events-none opacity-40' : ''
+      }`}
+    >
+      {MODES.map((m) => {
+        const active = value === m.id;
+        return (
+          <button
+            key={m.id}
+            type="button"
+            role="radio"
+            aria-checked={active}
+            aria-label={m.title}
+            tabIndex={active ? 0 : -1}
+            title={m.title}
+            onClick={() => !disabled && onChange(m.id)}
+            className={`flex min-h-[32px] items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-all duration-150 ease-out focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-offset-zinc-900 ${m.ringClass} ${
+              active ? m.activeClass : 'text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300'
+            }`}
+          >
+            {m.icon}
+            <span>{m.label}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
+ * Shared body for both the create-editor and the in-detail settings form.
+ * Layout follows the agreed UX:
+ *   1. Agent mode (top, button-group like the chat input)
+ *   2. Name (own row, full width)
+ *   3. Visual cadence builder
+ *   4. Cron expression (kept for power users)
+ *   5. Next-5-runs preview
+ *   6. Description
+ *   7. Prompt
+ *   8. Advanced (timezone / overlap / timeout / retries / one-shot)
+ */
+function ScheduleFormFields({
+  form,
+  setForm,
+  isCreate,
+}: {
+  form: FormState;
+  setForm: (f: FormState) => void;
+  isCreate: boolean;
+}) {
+  const cronValid = useMemo(() => isCronValid(form.cronExpr), [form.cronExpr]);
+  const cronDescription = useMemo(() => describeLocal(form.cronExpr), [form.cronExpr]);
+  const upcoming = useMemo(() => (cronValid ? nextRuns(form.cronExpr, 5) : []), [form.cronExpr, cronValid]);
+  const nameTrimmed = form.name.trim();
+  const nameValid = nameTrimmed.length > 0 && NAME_REGEX.test(nameTrimmed);
+
+  return (
+    <div className="flex flex-col gap-3 p-4">
+      {/* 1. Agent mode (top) */}
+      <div className="flex flex-col gap-1.5">
+        <span className="text-[10px] font-semibold uppercase tracking-widest text-zinc-500">Agent mode</span>
+        <ControlledAgentModeToggle
+          value={form.agentMode}
+          onChange={(m) => setForm({ ...form, agentMode: m })}
+        />
+      </div>
+
+      {/* 2. Name (own row) */}
+      <label className="flex flex-col gap-1">
+        <span className="text-[10px] font-semibold uppercase tracking-widest text-zinc-500">Name</span>
+        <input
+          type="text"
+          value={form.name}
+          onChange={(e) => setForm({ ...form, name: e.target.value })}
+          placeholder="Daily standup digest"
+          aria-invalid={nameTrimmed.length > 0 && !nameValid}
+          className={`w-full rounded bg-zinc-800 px-2.5 py-2 text-sm text-zinc-200 border outline-none ${
+            nameTrimmed.length > 0 && !nameValid
+              ? 'border-red-600 focus:border-red-500'
+              : 'border-zinc-700 focus:border-emerald-500/60'
+          }`}
+        />
+        {nameTrimmed.length > 0 && !nameValid && (
+          <span className="text-[10px] text-red-400">
+            Use letters, digits, spaces, hyphens, or underscores. Must start with a letter or digit.
+          </span>
+        )}
+      </label>
+
+      {/* 3. Visual cadence builder */}
+      <CadenceBuilder
+        value={form.cronExpr}
+        onChange={(cron) => setForm({ ...form, cronExpr: cron })}
+      />
+
+      {/* 4. Raw cron (advanced, but always visible per UX request) */}
+      <label className="flex flex-col gap-1">
+        <span className="text-[10px] font-semibold uppercase tracking-widest text-zinc-500">
+          Cron expression <span className="ml-1 normal-case text-zinc-600">(advanced)</span>
+        </span>
+        <input
+          type="text"
+          value={form.cronExpr}
+          onChange={(e) => setForm({ ...form, cronExpr: e.target.value })}
+          placeholder="0 9 * * *"
+          aria-invalid={!cronValid}
+          className={`rounded bg-zinc-800 px-2 py-1.5 text-xs font-mono text-zinc-200 border outline-none ${
+            cronValid ? 'border-zinc-700 focus:border-emerald-500/60' : 'border-red-600 focus:border-red-500'
+          }`}
+        />
+        <span className={`text-[10px] ${cronValid ? 'text-zinc-400' : 'text-red-400'}`}>
+          {cronDescription}
+        </span>
+        <div className="mt-0.5 flex flex-wrap gap-1">
+          {PRESETS.map((p) => (
+            <button
+              key={p.expr}
+              type="button"
+              onClick={() => setForm({ ...form, cronExpr: p.expr })}
+              className="rounded bg-zinc-800 px-1.5 py-0.5 text-[9px] text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200"
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+      </label>
+
+      {/* 5. Next-5-runs forecast */}
+      {upcoming.length > 0 && (
+        <div className="rounded border border-zinc-800 bg-zinc-900/30 px-2.5 py-1.5">
+          <div className="mb-1 text-[9px] font-semibold uppercase tracking-widest text-zinc-500">
+            Next 5 runs <span className="normal-case text-zinc-600">(local time)</span>
+          </div>
+          <ul className="grid grid-cols-1 gap-y-0.5 text-[10px]">
+            {upcoming.map((d, i) => (
+              <li key={i} className="flex justify-between">
+                <span className="text-zinc-300 tabular-nums">{d.toLocaleString()}</span>
+                <span className="text-zinc-500">{formatRelative(d.toISOString())}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* 6. Description */}
+      <label className="flex flex-col gap-1">
+        <span className="text-[10px] font-semibold uppercase tracking-widest text-zinc-500">Description (optional)</span>
+        <input
+          type="text"
+          value={form.description}
+          onChange={(e) => setForm({ ...form, description: e.target.value })}
+          className="rounded bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200 border border-zinc-700 focus:border-emerald-500/60 outline-none"
+        />
+      </label>
+
+      {/* 7. Prompt */}
+      <label className="flex flex-col gap-1">
+        <span className="text-[10px] font-semibold uppercase tracking-widest text-zinc-500">Prompt</span>
+        <textarea
+          value={form.prompt}
+          onChange={(e) => setForm({ ...form, prompt: e.target.value })}
+          placeholder="Summarize yesterday's commits and post to #dev-updates"
+          rows={4}
+          className="rounded bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200 border border-zinc-700 focus:border-emerald-500/60 outline-none resize-y"
+        />
+      </label>
+
+      {/* 8. Advanced */}
+      <details className="rounded border border-zinc-700/60 bg-zinc-800/30 px-3 py-2">
+        <summary className="cursor-pointer select-none text-[11px] text-zinc-300">Advanced</summary>
+        <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-4">
+          <label className="flex flex-col gap-1">
+            <span className="text-[10px] text-zinc-500">Timezone</span>
+            <select
+              value={form.timezone}
+              onChange={(e) => setForm({ ...form, timezone: e.target.value })}
+              className="rounded border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200"
+            >
+              {!TIMEZONE_OPTIONS.includes(form.timezone) && (
+                <option value={form.timezone}>{form.timezone}</option>
+              )}
+              {TIMEZONE_OPTIONS.map((tz) => (
+                <option key={tz} value={tz}>{tz}</option>
+              ))}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-[10px] text-zinc-500">Overlap</span>
+            <select
+              value={form.overlapPolicy}
+              onChange={(e) => setForm({ ...form, overlapPolicy: e.target.value as FormState['overlapPolicy'] })}
+              className="rounded border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200"
+            >
+              <option value="skip">skip</option>
+              <option value="queue">queue</option>
+              <option value="allow">allow</option>
+            </select>
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-[10px] text-zinc-500">Timeout (sec)</span>
+            <input
+              type="number"
+              min={0}
+              max={7200}
+              value={form.timeoutSec}
+              onChange={(e) => {
+                const n = Number.parseInt(e.target.value, 10);
+                setForm({ ...form, timeoutSec: Number.isNaN(n) ? 0 : Math.max(0, Math.min(7200, n)) });
+              }}
+              className="rounded border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200"
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-[10px] text-zinc-500">Max retries (0–5, reserved)</span>
+            <input
+              type="number"
+              min={0}
+              max={5}
+              value={form.maxRetries}
+              onChange={(e) => {
+                const n = Number.parseInt(e.target.value, 10);
+                setForm({ ...form, maxRetries: Number.isNaN(n) ? 0 : Math.max(0, Math.min(5, n)) });
+              }}
+              className="rounded border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200"
+            />
+          </label>
+          {isCreate && (
+            <label className="col-span-2 flex flex-col gap-1">
+              <span className="text-[10px] text-zinc-500">One-shot run at (optional)</span>
+              <input
+                type="datetime-local"
+                value={form.runAt}
+                onChange={(e) => setForm({ ...form, runAt: e.target.value })}
+                className="w-fit rounded border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200"
+              />
+              <span className="text-[10px] text-zinc-500">
+                Leave empty for a recurring schedule. When set, the cron expression is ignored on the first fire.
+              </span>
+            </label>
+          )}
+        </div>
+      </details>
+    </div>
+  );
+}
+
 /**
  * In-detail Settings sub-section: lets the user edit the selected schedule
  * inline (without leaving detail view) and Save patches via PUT. Only
@@ -1134,8 +1770,7 @@ function ScheduleSettingsForm({
     });
   }, [schedule]);
 
-  const cronValid = useMemo(() => isCronValid(form.cronExpr), [form.cronExpr]);
-  const upcoming = useMemo(() => (cronValid ? nextRuns(form.cronExpr, 5) : []), [form.cronExpr, cronValid]);
+  const cronValid = isCronValid(form.cronExpr);
   const nameTrimmed = form.name.trim();
   const nameValid = nameTrimmed.length > 0 && NAME_REGEX.test(nameTrimmed);
   const promptValid = form.prompt.trim().length > 0;
@@ -1175,140 +1810,14 @@ function ScheduleSettingsForm({
   };
 
   return (
-    <div className="flex flex-col gap-3 px-4 py-3">
+    <div className="flex flex-col">
       {localError && (
-        <div className="rounded border border-red-500/30 bg-red-950/20 px-2 py-1.5 text-[11px] text-red-300">
+        <div className="mx-4 mt-3 rounded border border-red-500/30 bg-red-950/20 px-2 py-1.5 text-[11px] text-red-300">
           {localError}
         </div>
       )}
-      <div className="grid grid-cols-2 gap-3">
-        <label className="flex flex-col gap-1">
-          <span className="text-[10px] font-semibold uppercase tracking-widest text-zinc-500">Name</span>
-          <input
-            type="text"
-            value={form.name}
-            onChange={(e) => setForm({ ...form, name: e.target.value })}
-            aria-invalid={nameTrimmed.length > 0 && !nameValid}
-            className={`rounded bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200 border outline-none ${
-              nameTrimmed.length > 0 && !nameValid
-                ? 'border-red-600 focus:border-red-500'
-                : 'border-zinc-700 focus:border-emerald-500/60'
-            }`}
-          />
-        </label>
-        <label className="flex flex-col gap-1">
-          <span className="text-[10px] font-semibold uppercase tracking-widest text-zinc-500">Cron</span>
-          <input
-            type="text"
-            value={form.cronExpr}
-            onChange={(e) => setForm({ ...form, cronExpr: e.target.value })}
-            aria-invalid={!cronValid}
-            className={`rounded bg-zinc-800 px-2 py-1.5 text-xs font-mono text-zinc-200 border outline-none ${
-              cronValid ? 'border-zinc-700 focus:border-emerald-500/60' : 'border-red-600 focus:border-red-500'
-            }`}
-          />
-          <span className={`text-[10px] ${cronValid ? 'text-zinc-400' : 'text-red-400'}`}>
-            {describeLocal(form.cronExpr)}
-          </span>
-        </label>
-      </div>
-
-      {upcoming.length > 0 && (
-        <div className="rounded border border-zinc-800 bg-zinc-900/30 px-2.5 py-1.5">
-          <div className="mb-1 text-[9px] font-semibold uppercase tracking-widest text-zinc-500">
-            Next 5 runs <span className="normal-case text-zinc-600">(local time)</span>
-          </div>
-          <ul className="text-[10px]">
-            {upcoming.map((d, i) => (
-              <li key={i} className="flex justify-between">
-                <span className="text-zinc-300 tabular-nums">{d.toLocaleString()}</span>
-                <span className="text-zinc-500">{formatRelative(d.toISOString())}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      <label className="flex flex-col gap-1">
-        <span className="text-[10px] font-semibold uppercase tracking-widest text-zinc-500">Description</span>
-        <input
-          type="text"
-          value={form.description}
-          onChange={(e) => setForm({ ...form, description: e.target.value })}
-          className="rounded bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200 border border-zinc-700 focus:border-emerald-500/60 outline-none"
-        />
-      </label>
-
-      <label className="flex flex-col gap-1">
-        <span className="text-[10px] font-semibold uppercase tracking-widest text-zinc-500">Prompt</span>
-        <textarea
-          value={form.prompt}
-          onChange={(e) => setForm({ ...form, prompt: e.target.value })}
-          rows={4}
-          className="rounded bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200 border border-zinc-700 focus:border-emerald-500/60 outline-none resize-y"
-        />
-      </label>
-
-      <details className="rounded border border-zinc-700/60 bg-zinc-800/30 px-3 py-2">
-        <summary className="cursor-pointer text-[11px] text-zinc-300 select-none">Advanced</summary>
-        <div className="mt-3 grid grid-cols-2 md:grid-cols-4 gap-3">
-          <label className="flex flex-col gap-1">
-            <span className="text-[10px] text-zinc-500">Mode</span>
-            <select
-              value={form.agentMode}
-              onChange={(e) => setForm({ ...form, agentMode: e.target.value as FormState['agentMode'] })}
-              className="rounded bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200 border border-zinc-700"
-            >
-              <option value="orchestrate">orchestrate</option>
-              <option value="direct">direct</option>
-              <option value="code">code</option>
-            </select>
-          </label>
-          <label className="flex flex-col gap-1">
-            <span className="text-[10px] text-zinc-500">Timezone</span>
-            <select
-              value={form.timezone}
-              onChange={(e) => setForm({ ...form, timezone: e.target.value })}
-              className="rounded bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200 border border-zinc-700"
-            >
-              {!TIMEZONE_OPTIONS.includes(form.timezone) && (
-                <option value={form.timezone}>{form.timezone}</option>
-              )}
-              {TIMEZONE_OPTIONS.map((tz) => (
-                <option key={tz} value={tz}>{tz}</option>
-              ))}
-            </select>
-          </label>
-          <label className="flex flex-col gap-1">
-            <span className="text-[10px] text-zinc-500">Overlap</span>
-            <select
-              value={form.overlapPolicy}
-              onChange={(e) => setForm({ ...form, overlapPolicy: e.target.value as FormState['overlapPolicy'] })}
-              className="rounded bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200 border border-zinc-700"
-            >
-              <option value="skip">skip</option>
-              <option value="queue">queue</option>
-              <option value="allow">allow</option>
-            </select>
-          </label>
-          <label className="flex flex-col gap-1">
-            <span className="text-[10px] text-zinc-500">Timeout (sec)</span>
-            <input
-              type="number"
-              min={0}
-              max={7200}
-              value={form.timeoutSec}
-              onChange={(e) => {
-                const n = Number.parseInt(e.target.value, 10);
-                setForm({ ...form, timeoutSec: Number.isNaN(n) ? 0 : Math.max(0, Math.min(7200, n)) });
-              }}
-              className="rounded bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200 border border-zinc-700"
-            />
-          </label>
-        </div>
-      </details>
-
-      <div className="flex items-center gap-2 pt-1">
+      <ScheduleFormFields form={form} setForm={setForm} isCreate={false} />
+      <div className="flex items-center gap-2 px-4 pb-4 -mt-1">
         <button
           type="button"
           onClick={() => void submit()}
@@ -1339,9 +1848,7 @@ function ScheduleEditor({
   onCancel: () => void;
   submitting: boolean;
 }) {
-  const cronValid = useMemo(() => isCronValid(form.cronExpr), [form.cronExpr]);
-  const cronDescription = useMemo(() => describeLocal(form.cronExpr), [form.cronExpr]);
-  const upcoming = useMemo(() => (cronValid ? nextRuns(form.cronExpr, 5) : []), [form.cronExpr, cronValid]);
+  const cronValid = isCronValid(form.cronExpr);
   const nameTrimmed = form.name.trim();
   const nameValid = nameTrimmed.length > 0 && NAME_REGEX.test(nameTrimmed);
   const promptValid = form.prompt.trim().length > 0;
@@ -1373,186 +1880,11 @@ function ScheduleEditor({
         </div>
       </div>
 
-      <div className="flex flex-col gap-3 p-4">
-        <div className="grid grid-cols-2 gap-3">
-          <label className="flex flex-col gap-1">
-            <span className="text-[10px] font-semibold uppercase tracking-widest text-zinc-500">Name</span>
-            <input
-              type="text"
-              value={form.name}
-              onChange={(e) => setForm({ ...form, name: e.target.value })}
-              placeholder="Daily standup digest"
-              aria-invalid={nameTrimmed.length > 0 && !nameValid}
-              className={`rounded bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200 border outline-none ${
-                nameTrimmed.length > 0 && !nameValid
-                  ? 'border-red-600 focus:border-red-500'
-                  : 'border-zinc-700 focus:border-emerald-500/60'
-              }`}
-            />
-            {nameTrimmed.length > 0 && !nameValid && (
-              <span className="text-[10px] text-red-400">
-                Use letters, digits, spaces, hyphens, or underscores. Must start with a letter or digit.
-              </span>
-            )}
-          </label>
-
-          <label className="flex flex-col gap-1">
-            <span className="text-[10px] font-semibold uppercase tracking-widest text-zinc-500">Cron expression</span>
-            <input
-              type="text"
-              value={form.cronExpr}
-              onChange={(e) => setForm({ ...form, cronExpr: e.target.value })}
-              placeholder="0 9 * * *"
-              aria-invalid={!cronValid}
-              className={`rounded bg-zinc-800 px-2 py-1.5 text-xs font-mono text-zinc-200 border outline-none ${
-                cronValid ? 'border-zinc-700 focus:border-emerald-500/60' : 'border-red-600 focus:border-red-500'
-              }`}
-            />
-            <span className={`text-[10px] ${cronValid ? 'text-zinc-400' : 'text-red-400'}`}>
-              {cronDescription}
-            </span>
-            <div className="mt-0.5 flex flex-wrap gap-1">
-              {PRESETS.map((p) => (
-                <button
-                  key={p.expr}
-                  type="button"
-                  onClick={() => setForm({ ...form, cronExpr: p.expr })}
-                  className="rounded bg-zinc-800 px-1.5 py-0.5 text-[9px] text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200"
-                >
-                  {p.label}
-                </button>
-              ))}
-            </div>
-          </label>
-        </div>
-
-        {upcoming.length > 0 && (
-          <div className="rounded border border-zinc-800 bg-zinc-900/30 px-2.5 py-1.5">
-            <div className="mb-1 text-[9px] font-semibold uppercase tracking-widest text-zinc-500">
-              Next 5 runs <span className="normal-case text-zinc-600">(local time)</span>
-            </div>
-            <ul className="grid grid-cols-1 gap-y-0.5 text-[10px]">
-              {upcoming.map((d, i) => (
-                <li key={i} className="flex justify-between">
-                  <span className="text-zinc-300 tabular-nums">{d.toLocaleString()}</span>
-                  <span className="text-zinc-500">{formatRelative(d.toISOString())}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-
-        <label className="flex flex-col gap-1">
-          <span className="text-[10px] font-semibold uppercase tracking-widest text-zinc-500">Description (optional)</span>
-          <input
-            type="text"
-            value={form.description}
-            onChange={(e) => setForm({ ...form, description: e.target.value })}
-            className="rounded bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200 border border-zinc-700 focus:border-emerald-500/60 outline-none"
-          />
-        </label>
-
-        <label className="flex flex-col gap-1">
-          <span className="text-[10px] font-semibold uppercase tracking-widest text-zinc-500">Prompt</span>
-          <textarea
-            value={form.prompt}
-            onChange={(e) => setForm({ ...form, prompt: e.target.value })}
-            placeholder="Summarize yesterday's commits and post to #dev-updates"
-            rows={4}
-            className="rounded bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200 border border-zinc-700 focus:border-emerald-500/60 outline-none resize-y"
-          />
-        </label>
-
-        <details className="rounded border border-zinc-700/60 bg-zinc-800/30 px-3 py-2">
-          <summary className="cursor-pointer text-[11px] text-zinc-300 select-none">Advanced</summary>
-          <div className="mt-3 grid grid-cols-2 md:grid-cols-4 gap-3">
-            <label className="flex flex-col gap-1">
-              <span className="text-[10px] text-zinc-500">Mode</span>
-              <select
-                value={form.agentMode}
-                onChange={(e) => setForm({ ...form, agentMode: e.target.value as FormState['agentMode'] })}
-                className="rounded bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200 border border-zinc-700"
-              >
-                <option value="orchestrate">orchestrate</option>
-                <option value="direct">direct</option>
-                <option value="code">code</option>
-              </select>
-            </label>
-            <label className="flex flex-col gap-1">
-              <span className="text-[10px] text-zinc-500">Timezone</span>
-              <select
-                value={form.timezone}
-                onChange={(e) => setForm({ ...form, timezone: e.target.value })}
-                className="rounded bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200 border border-zinc-700"
-              >
-                {!TIMEZONE_OPTIONS.includes(form.timezone) && (
-                  <option value={form.timezone}>{form.timezone}</option>
-                )}
-                {TIMEZONE_OPTIONS.map((tz) => (
-                  <option key={tz} value={tz}>{tz}</option>
-                ))}
-              </select>
-            </label>
-            <label className="flex flex-col gap-1">
-              <span className="text-[10px] text-zinc-500">Overlap</span>
-              <select
-                value={form.overlapPolicy}
-                onChange={(e) => setForm({ ...form, overlapPolicy: e.target.value as FormState['overlapPolicy'] })}
-                className="rounded bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200 border border-zinc-700"
-              >
-                <option value="skip">skip</option>
-                <option value="queue">queue</option>
-                <option value="allow">allow</option>
-              </select>
-            </label>
-            <label className="flex flex-col gap-1">
-              <span className="text-[10px] text-zinc-500">Timeout (sec)</span>
-              <input
-                type="number"
-                min={0}
-                max={7200}
-                value={form.timeoutSec}
-                onChange={(e) => {
-                  const n = Number.parseInt(e.target.value, 10);
-                  setForm({ ...form, timeoutSec: Number.isNaN(n) ? 0 : Math.max(0, Math.min(7200, n)) });
-                }}
-                className="rounded bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200 border border-zinc-700"
-              />
-            </label>
-            <label className="flex flex-col gap-1">
-              <span className="text-[10px] text-zinc-500">Max retries (0–5, reserved)</span>
-              <input
-                type="number"
-                min={0}
-                max={5}
-                value={form.maxRetries}
-                onChange={(e) => {
-                  const n = Number.parseInt(e.target.value, 10);
-                  setForm({ ...form, maxRetries: Number.isNaN(n) ? 0 : Math.max(0, Math.min(5, n)) });
-                }}
-                className="rounded bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200 border border-zinc-700"
-              />
-            </label>
-            {!form.id && (
-              <label className="flex flex-col gap-1 col-span-2">
-                <span className="text-[10px] text-zinc-500">One-shot run at (optional)</span>
-                <input
-                  type="datetime-local"
-                  value={form.runAt}
-                  onChange={(e) => setForm({ ...form, runAt: e.target.value })}
-                  className="rounded bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200 border border-zinc-700 w-fit"
-                />
-                <span className="text-[10px] text-zinc-500">
-                  Leave empty for a recurring schedule. When set, the cron expression is ignored on the first fire.
-                </span>
-              </label>
-            )}
-          </div>
-        </details>
-      </div>
+      <ScheduleFormFields form={form} setForm={setForm} isCreate={!form.id} />
     </div>
   );
 }
+
 
 function EmptyState({ onTemplate }: { onTemplate: (t: { name: string; description: string; cronExpr: string; prompt: string; agentMode: FormState['agentMode'] }) => void }) {
   return (
