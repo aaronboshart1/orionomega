@@ -291,36 +291,50 @@ export async function handleGoogleOAuthCallback(
     let callbackUrl: string | null = null;
 
     if (payload.url) {
+      // The pasted value points to the user's configured redirect URI
+      // (e.g. http://localhost:4100/?code=...&state=...) which has no
+      // listener on the gateway host. Always replay against workspace-mcp's
+      // actual local OAuth callback endpoint, preserving ALL query
+      // parameters (code, state, scope, iss, authuser, ...). state is
+      // required for workspace-mcp's CSRF validation, so we must extract
+      // every param even from schemeless URLs and bare query strings.
+      const raw = payload.url.trim();
+      let params: URLSearchParams | null = null;
+
+      // Try as absolute URL first
       try {
-        const parsed = new URL(payload.url);
-
-        // Validate that the URL contains an authorization code
-        if (!parsed.searchParams.get('code')) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({
-            error: 'The pasted URL does not contain an authorization code. Make sure you copied the full URL from your browser after Google sign-in.',
-          }));
-          return;
-        }
-
-        // Replay the full URL against localhost, preserving port, path, and
-        // ALL query parameters (state, code, scope, iss, authuser, etc.).
-        // workspace-mcp needs these for CSRF validation and token exchange.
-        parsed.hostname = '127.0.0.1';
-        callbackUrl = parsed.toString();
-
-        log.info('OAuth callback: replaying full redirect URL against localhost');
-        log.info('OAuth callback target', { target: `http://127.0.0.1:${parsed.port || WORKSPACE_MCP_PORT}${parsed.pathname}` });
+        params = new URL(raw).searchParams;
       } catch {
-        // Not a valid URL — treat the whole string as a bare authorization code
-        const code = payload.url.trim();
-        if (!code) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'No authorization code found.' }));
-          return;
+        // Try as schemeless URL (e.g. "localhost:4100/?code=...")
+        try {
+          params = new URL(`http://${raw}`).searchParams;
+        } catch {
+          // Try as bare query string (with or without leading '?')
+          const qs = raw.startsWith('?') ? raw.slice(1) : raw;
+          if (qs.includes('=')) {
+            params = new URLSearchParams(qs);
+          }
         }
-        callbackUrl = `http://127.0.0.1:${WORKSPACE_MCP_PORT}/oauth2callback?code=${encodeURIComponent(code)}`;
+      }
+
+      if (params && params.get('code')) {
+        const target = new URL(`http://127.0.0.1:${WORKSPACE_MCP_PORT}/oauth2callback`);
+        params.forEach((value, key) => target.searchParams.set(key, value));
+        callbackUrl = target.toString();
+        log.info('OAuth callback: replaying redirect params against workspace-mcp', {
+          target: `http://127.0.0.1:${WORKSPACE_MCP_PORT}/oauth2callback`,
+          hasState: params.has('state'),
+        });
+      } else if (raw && !raw.includes('=') && !raw.includes('?')) {
+        // Looks like a bare authorization code (no = or ? characters)
+        callbackUrl = `http://127.0.0.1:${WORKSPACE_MCP_PORT}/oauth2callback?code=${encodeURIComponent(raw)}`;
         log.info('OAuth callback: using bare code, assembled callback URL');
+      } else {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          error: 'The pasted value does not contain an authorization code. Copy the FULL URL from your browser address bar after Google sign-in (it should include both code= and state= parameters).',
+        }));
+        return;
       }
     } else if (payload.code) {
       const code = payload.code.trim();
