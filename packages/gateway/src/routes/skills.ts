@@ -427,6 +427,11 @@ export async function handleGoogleOAuthStart(
   let body = '';
   try { body = await readBody(req); } catch {}
   const accountId = extractAccountId(req, body) || '';
+  if (accountId && !VALID_ACCOUNT_ID.test(accountId)) {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Invalid accountId' }));
+    return;
+  }
 
   const result = spawnSync('node', [resolved.scriptPath], {
     encoding: 'utf-8',
@@ -500,6 +505,11 @@ export async function handleGoogleOAuthCallback(
     const body = await readBody(req);
     const payload = JSON.parse(body) as { url?: string; code?: string; accountId?: string };
     const accountId = (typeof payload.accountId === 'string' && payload.accountId) ? payload.accountId : null;
+    if (accountId && !VALID_ACCOUNT_ID.test(accountId)) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid accountId' }));
+      return;
+    }
     const port = getAccountPort(accountId);
 
     let callbackUrl: string | null = null;
@@ -615,6 +625,11 @@ export function handleGoogleOAuthStatus(
   }
 
   const accountId = extractAccountId(req);
+  if (accountId && !VALID_ACCOUNT_ID.test(accountId)) {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Invalid accountId' }));
+    return;
+  }
   const result = spawnSync('node', [resolved.scriptPath], {
     encoding: 'utf-8',
     timeout: 10000,

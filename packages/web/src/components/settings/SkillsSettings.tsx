@@ -229,6 +229,10 @@ function GoogleOAuthSection({ skillSettings }: { skillSettings: Record<string, u
       if (res.ok) {
         const data = await res.json() as AuthStatus;
         setAuthStatus(data);
+        // Mirror the result into the per-account map so the dropdown
+        // reflects the latest email + token age immediately after auth
+        // succeeds (rather than waiting for a full account list reload).
+        setStatusByAccount((prev) => ({ ...prev, [accountId]: data }));
         return data.authenticated;
       }
     } catch {}
