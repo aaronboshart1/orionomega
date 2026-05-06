@@ -119,6 +119,14 @@ export async function buildSkillToolset(
 
     const env: Record<string, string> = {};
     for (const [k, v] of Object.entries(cfg.fields)) env[k] = String(v);
+    // Thread the resolved skills dir into every handler invocation so
+    // hooks/handlers (e.g. google-workspace's per-account file layout
+    // resolver) read from the SAME directory the gateway is using.
+    // Without this, `_accounts.getSkillsDir()` falls back to
+    // `~/.orionomega/skills` and misses the Replit-style
+    // `./.orionomega/skills` location, breaking active-account
+    // resolution at tool-call time.
+    env.ORIONOMEGA_SKILLS_DIR = path.resolve(skillsDir);
 
     const skillDir = loaded.skillDir;
     for (const t of loaded.manifest.tools ?? []) {
