@@ -78,6 +78,7 @@ export function OrchestrationPane() {
   const hindsightConnected = useConnectionStore((s) => s.hindsightConnected);
 
   const workflowIds = Object.keys(workflows);
+  const activeIsDirect = !!(activeWorkflowId && inlineDAGs[activeWorkflowId]?.isDirect);
 
   return (
     <div className="flex h-full flex-col bg-[var(--background)]">
@@ -321,17 +322,19 @@ export function OrchestrationPane() {
         </div>
       ) : (
         <>
-          <div className="flex-[4] min-h-0 border-b border-zinc-800 relative overflow-hidden">
-            <div className="flex items-center px-3 py-1.5 border-b border-zinc-800/60 bg-zinc-900/30">
-              <span className="text-[10px] font-semibold uppercase tracking-widest text-zinc-500">Graph</span>
+          {!activeIsDirect && (
+            <div className="flex-[4] min-h-0 border-b border-zinc-800 relative overflow-hidden">
+              <div className="flex items-center px-3 py-1.5 border-b border-zinc-800/60 bg-zinc-900/30">
+                <span className="text-[10px] font-semibold uppercase tracking-widest text-zinc-500">Graph</span>
+              </div>
+              <ErrorBoundary>
+                <DAGVisualization />
+              </ErrorBoundary>
             </div>
-            <ErrorBoundary>
-              <DAGVisualization />
-            </ErrorBoundary>
-          </div>
+          )}
 
           <div
-            className={`border-b border-zinc-800 overflow-hidden transition-[flex] duration-300 ease-in-out ${activitySectionCollapsed ? 'flex-none' : 'flex-[4] min-h-0'}`}
+            className={`border-b border-zinc-800 overflow-hidden transition-[flex] duration-300 ease-in-out ${activitySectionCollapsed ? 'flex-none' : (activeIsDirect ? 'flex-[8] min-h-0' : 'flex-[4] min-h-0')}`}
           >
             {selectedWorker ? <WorkerDetail /> : <ActivityFeed />}
           </div>
