@@ -28,25 +28,54 @@ function inspectFlatToken(filePath, fallbackEmail) {
   } catch { return null; }
 }
 
-function findToken(credDir) {
+function findToken(credDir, expectedEmail) {
+  // Resolve the token for the account's *intended* email first to avoid
+  // first-file-wins reporting the wrong status when multiple token
+  // artifacts exist in the same per-account credentials dir (e.g. the
+  // user re-authenticated under a different Google address).
   if (!existsSync(credDir)) return null;
   let entries;
   try { entries = readdirSync(credDir, { withFileTypes: true }); } catch { return null; }
-  // Strategy 1: flat <email>.json
+
+  const wanted = (expectedEmail || '').toLowerCase();
+
+  // Pass 1 (preferred): exact match for `<expectedEmail>.json` or
+  // `<expectedEmail>/token.json`.
+  if (wanted) {
+    for (const entry of entries) {
+      if (entry.isFile() && entry.name.toLowerCase() === `${wanted}.json`) {
+        const info = inspectFlatToken(join(credDir, entry.name), entry.name.replace(/\.json$/, ''));
+        if (info) return { ...info, matched: 'exact' };
+      }
+    }
+    for (const entry of entries) {
+      if (entry.isDirectory() && entry.name.toLowerCase() === wanted) {
+        const tokenPath = join(credDir, entry.name, 'token.json');
+        if (existsSync(tokenPath)) {
+          const info = inspectFlatToken(tokenPath, entry.name);
+          if (info) return { ...info, matched: 'exact' };
+        }
+      }
+    }
+  }
+
+  // Pass 2 (fallback): any valid token in this account's dir. We mark
+  // the result as `matched: 'fallback'` so callers can surface a
+  // "connected as <other email>" hint instead of pretending it's the
+  // expected account.
   for (const entry of entries) {
     if (entry.isFile() && entry.name.endsWith('.json')) {
       const email = entry.name.replace(/\.json$/, '');
       const info = inspectFlatToken(join(credDir, entry.name), email);
-      if (info) return info;
+      if (info) return { ...info, matched: 'fallback' };
     }
   }
-  // Strategy 2: <email>/token.json
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const tokenPath = join(credDir, entry.name, 'token.json');
     if (existsSync(tokenPath)) {
       const info = inspectFlatToken(tokenPath, entry.name);
-      if (info) return info;
+      if (info) return { ...info, matched: 'fallback' };
     }
   }
   return null;
@@ -59,12 +88,13 @@ function main() {
     return;
   }
   const credDir = getAccountCredentialsDir(account.id);
-  const info = findToken(credDir);
+  const info = findToken(credDir, account.USER_GOOGLE_EMAIL);
   if (!info) {
     process.stdout.write(JSON.stringify({
       authenticated: false,
       accountId: account.id,
       accountLabel: account.label,
+      expectedEmail: account.USER_GOOGLE_EMAIL || null,
       reason: 'No valid tokens found',
     }));
     return;
@@ -74,6 +104,8 @@ function main() {
     accountId: account.id,
     accountLabel: account.label,
     email: info.email || account.USER_GOOGLE_EMAIL,
+    expectedEmail: account.USER_GOOGLE_EMAIL || null,
+    emailMatch: info.matched, // 'exact' | 'fallback'
     hasRefreshToken: info.hasRefreshToken,
     tokenAge: info.tokenAge,
     lastModified: info.lastModified,

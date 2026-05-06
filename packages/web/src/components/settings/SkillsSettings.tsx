@@ -145,6 +145,8 @@ interface GoogleAccount {
 interface AuthStatus {
   authenticated: boolean;
   email?: string;
+  expectedEmail?: string | null;
+  emailMatch?: 'exact' | 'fallback';
   tokenAge?: string;
   reason?: string;
   accountId?: string;
