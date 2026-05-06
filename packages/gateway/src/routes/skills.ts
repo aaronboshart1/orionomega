@@ -468,9 +468,10 @@ export async function handleGoogleOAuthCallback(
     let callbackUrl: string | null = null;
 
     if (payload.url) {
-      // The pasted value points to the user's configured redirect URI
-      // (e.g. http://localhost:4100/?code=...&state=...) which has no
-      // listener on the gateway host. Always replay against workspace-mcp's
+      // The pasted value points to the user's per-account configured
+      // redirect URI (e.g. http://localhost:9877/?code=...&state=...) which
+      // has no listener on the gateway host. Always replay against the
+      // workspace-mcp instance bound to that account's loopback port —
       // actual local OAuth callback endpoint, preserving ALL query
       // parameters (code, state, scope, iss, authuser, ...). state is
       // required for workspace-mcp's CSRF validation, so we must extract
@@ -482,7 +483,7 @@ export async function handleGoogleOAuthCallback(
       try {
         params = new URL(raw).searchParams;
       } catch {
-        // Try as schemeless URL (e.g. "localhost:4100/?code=...")
+        // Try as schemeless URL (e.g. "localhost:9877/?code=...")
         try {
           params = new URL(`http://${raw}`).searchParams;
         } catch {

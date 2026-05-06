@@ -30,7 +30,7 @@ Full-featured Google Workspace integration via the open-source [workspace-mcp](h
 3. Skill configured via Settings → Skills → Google Workspace:
    - Paste the OAuth **Client ID** and **Client Secret**
    - Set the **Default Google Email** (`USER_GOOGLE_EMAIL`) — required to start the OAuth flow
-   - (Optional) Override **Redirect URI** if not running locally on `http://localhost:4100`
+   - (Optional) Override **Redirect URI** if not running on the account's default loopback URL (shown next to the field; defaults to `http://localhost:<port>` where `port = GOOGLE_WORKSPACE_MCP_BASE_PORT + slot`, base 9877)
    - Save, then click **Connect Google account** to complete the in-app OAuth flow. Tokens are stored in the skill's `config.json` (or `~/.google_workspace_mcp/credentials/`) and refreshed automatically.
 
 ## Tools

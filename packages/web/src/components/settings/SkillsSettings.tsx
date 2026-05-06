@@ -171,6 +171,8 @@ function GoogleOAuthSection({ skillSettings }: { skillSettings: Record<string, u
   const [draftDirty, setDraftDirty] = useState(false);
 
   const selected = accounts.find((a) => a.id === selectedId) || null;
+  const accountPort = selected?.port ?? 9877;
+  const accountRedirect = selected?.GOOGLE_OAUTH_REDIRECT_URI || `http://localhost:${accountPort}`;
 
   const fetchAccounts = useCallback(async () => {
     try {
@@ -601,44 +603,42 @@ function GoogleOAuthSection({ skillSettings }: { skillSettings: Record<string, u
           {showRemoteHelp && (
             <div className="space-y-2 text-[10px] text-zinc-400 leading-relaxed">
               <p className="font-medium text-zinc-300">
-                If you are accessing OrionOmega from a remote machine (VM, cloud server, etc.),
-                the Google OAuth redirect to localhost will fail because it targets your browser{"'"}s
-                machine, not the server.
+                Each account has its own dedicated loopback port. The
+                selected account ({selected?.label || selectedId}) uses
+                {' '}<code className="text-zinc-300">{accountRedirect}</code>.
+                Pick the option that matches your setup.
               </p>
 
               <div>
-                <p className="font-medium text-zinc-300 mb-1">Option 1: SSH Port Forwarding (Recommended)</p>
-                <p>Forward the OAuth callback port from the server to your local machine:</p>
+                <p className="font-medium text-zinc-300 mb-1">Self-hosted Linux VM (recommended)</p>
+                <p>
+                  Register{' '}
+                  <code className="text-zinc-300">{accountRedirect}</code>
+                  {' '}as an Authorized redirect URI in your{' '}
+                  <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 underline">
+                    Google Cloud Console
+                  </a>
+                  {' '}OAuth client. If your browser is on a different
+                  machine, forward the port over SSH:
+                </p>
                 <code className="block mt-1 px-2 py-1 rounded bg-zinc-900 text-green-400 font-mono text-[10px] select-all">
-                  ssh -L 4100:localhost:4100 user@your-server-ip
+                  ssh -L {accountPort}:localhost:{accountPort} user@your-server-ip
                 </code>
-                <p className="mt-1">Then authenticate normally — the redirect will work through the tunnel.</p>
+                <p className="mt-1">Then authenticate normally — the redirect lands back on this machine.</p>
               </div>
 
               <div>
-                <p className="font-medium text-zinc-300 mb-1">Option 2: Manual Code Entry</p>
+                <p className="font-medium text-zinc-300 mb-1">Replit / no port access — manual code entry</p>
                 <ol className="list-decimal list-inside space-y-0.5">
                   <li>Click &quot;Authenticate with Google&quot; above</li>
                   <li>Complete the Google sign-in in the popup</li>
-                  <li>After signing in, your browser will redirect to a localhost URL that won{"'"}t load</li>
+                  <li>Your browser redirects to a localhost URL that won{"'"}t load — that is expected</li>
                   <li>Copy the <strong>entire URL</strong> from your browser{"'"}s address bar</li>
                   <li>Paste it into the field below and click Submit</li>
                 </ol>
                 <p className="mt-1 text-zinc-500">
-                  The URL looks like: <code className="text-zinc-400">http://localhost:4100?code=4/0A...&scope=...</code>
-                </p>
-              </div>
-
-              <div>
-                <p className="font-medium text-zinc-300 mb-1">Option 3: Custom Redirect URI</p>
-                <p>
-                  Set the <strong>Redirect URI</strong> field above to your server{"'"}s accessible address
-                  (e.g., <code className="text-zinc-400">http://your-server-ip:4100</code>).
-                  You must also add this URI in your{' '}
-                  <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 underline">
-                    Google Cloud Console
-                  </a>
-                  {' '}OAuth client configuration under &quot;Authorized redirect URIs&quot;.
+                  The URL looks like:{' '}
+                  <code className="text-zinc-400">{accountRedirect}/?code=4/0A...&amp;scope=...</code>
                 </p>
               </div>
             </div>

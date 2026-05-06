@@ -1,38 +1,40 @@
 /**
  * Shared multi-account helpers for the google-workspace skill.
  *
- * Account model (lives inside `<skillsDir>/google-workspace/config.json`
- * under `fields.accounts`):
+ * On-disk layout (under `<skillsDir>/google-workspace/`):
  *
- *   {
- *     id: string,                   // stable slug (e.g. "default", "work")
- *     label: string,                // human-friendly name shown in UI
- *     port: number,                 // workspace-mcp listener port (basePort + slot)
- *     GOOGLE_OAUTH_CLIENT_ID: string,
- *     GOOGLE_OAUTH_CLIENT_SECRET: string,
- *     GOOGLE_OAUTH_REDIRECT_URI: string,
- *     USER_GOOGLE_EMAIL: string,
- *     createdAt: string,
- *   }
+ *   config.json                 # only shared fields (Programmable Search keys, PSE)
+ *   accounts/
+ *     index.json                # { version: 1, activeAccountId: string|null }
+ *     <accountId>.json          # one file per account, full record:
+ *                               # { id, label, port, GOOGLE_OAUTH_CLIENT_ID,
+ *                               #   GOOGLE_OAUTH_CLIENT_SECRET,
+ *                               #   GOOGLE_OAUTH_REDIRECT_URI,
+ *                               #   USER_GOOGLE_EMAIL, createdAt }
  *
- * The active account id is stored at `fields.activeAccountId`.
+ * Migration: on first read, if `accounts/` is empty we look at the legacy
+ * `config.json` shapes and migrate:
+ *   - embedded `fields.accounts` map (interim shape) → split out into files
+ *   - top-level single-account fields (oldest shape) → one "default" account
+ * After migration, embedded account fields are removed from `config.json`
+ * so the per-file layout is the single source of truth.
  *
- * On first read, legacy single-account configs (top-level
- * GOOGLE_OAUTH_CLIENT_ID/etc.) are migrated into a synthetic "default"
- * account so existing setups keep working without manual intervention.
- *
- * Per-account credentials live at:
- *   <wmRoot>/<accountId>/.google_workspace_mcp/credentials/<email>.json
- * where <wmRoot> is set via the spawned process's HOME (workspace-mcp
- * always reads its credentials from `~/.google_workspace_mcp`).
+ * Per-account workspace-mcp credentials live at:
+ *   ~/.google_workspace_mcp_accounts/<accountId>/.google_workspace_mcp/credentials/<email>.json
+ * (We override `HOME` for the spawned `workspace-mcp` so its hardcoded
+ * `~/.google_workspace_mcp/...` path is per-account.)
  */
 
-import { readFileSync, existsSync, mkdirSync, writeFileSync, openSync, closeSync, unlinkSync, statSync } from 'node:fs';
+import {
+  readFileSync, existsSync, mkdirSync, writeFileSync, openSync, closeSync,
+  unlinkSync, statSync, readdirSync, renameSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 
 export const DEFAULT_BASE_PORT = 9877;
 export const VALID_ACCOUNT_ID = /^[a-zA-Z0-9_-]{1,64}$/;
+const INDEX_VERSION = 1;
 
 export function getBasePort() {
   const raw = process.env.GOOGLE_WORKSPACE_MCP_BASE_PORT;
@@ -45,121 +47,233 @@ export function getSkillsDir() {
     || join(homedir(), '.orionomega', 'skills');
 }
 
-export function getConfigPath(skillsDir = getSkillsDir()) {
-  return join(skillsDir, 'google-workspace', 'config.json');
+export function getSkillRoot(skillsDir = getSkillsDir()) {
+  return join(skillsDir, 'google-workspace');
 }
+
+export function getConfigPath(skillsDir = getSkillsDir()) {
+  return join(getSkillRoot(skillsDir), 'config.json');
+}
+
+export function getAccountsDir(skillsDir = getSkillsDir()) {
+  return join(getSkillRoot(skillsDir), 'accounts');
+}
+
+function getIndexPath(skillsDir) { return join(getAccountsDir(skillsDir), 'index.json'); }
+function getAccountFilePath(skillsDir, id) { return join(getAccountsDir(skillsDir), `${id}.json`); }
 
 /** Root directory under which each account gets an isolated $HOME. */
 export function getAccountsRoot() {
   return join(homedir(), '.google_workspace_mcp_accounts');
 }
-
 /** Per-account isolated $HOME (so workspace-mcp's `~/.google_workspace_mcp/...` is unique). */
 export function getAccountHome(accountId) {
   return join(getAccountsRoot(), accountId);
 }
-
 /** Per-account credentials directory (where workspace-mcp writes `<email>.json`). */
 export function getAccountCredentialsDir(accountId) {
   return join(getAccountHome(accountId), '.google_workspace_mcp', 'credentials');
 }
-
 /** Per-account state file storing the running OAuth server PID + port. */
 export function getAccountStateFile(accountId) {
   return join(getAccountHome(accountId), '.oauth_server_pid');
 }
-
 /** Per-account log file for the workspace-mcp child process. */
 export function getAccountLogFile(accountId) {
   return join(getAccountHome(accountId), 'oauth-server.log');
 }
 
-function emptyConfig() {
+function safeReadJson(path) {
+  if (!existsSync(path)) return null;
+  try { return JSON.parse(readFileSync(path, 'utf-8')); } catch { return null; }
+}
+
+function writeJsonAtomic(path, obj) {
+  const tmp = `${path}.tmp`;
+  writeFileSync(tmp, JSON.stringify(obj, null, 2), 'utf-8');
+  renameSync(tmp, path);
+}
+
+function readConfigJson(skillsDir) {
+  const p = getConfigPath(skillsDir);
+  const parsed = safeReadJson(p);
+  if (!parsed) return { name: 'google-workspace', enabled: true, configured: false, fields: {} };
   return {
-    name: 'google-workspace',
-    enabled: true,
-    configured: false,
-    fields: {},
+    name: parsed.name ?? 'google-workspace',
+    enabled: parsed.enabled ?? true,
+    configured: parsed.configured ?? false,
+    fields: parsed.fields ?? {},
+    authMethod: parsed.authMethod,
+    configuredAt: parsed.configuredAt,
   };
 }
 
-function readRawConfig(skillsDir) {
-  const p = getConfigPath(skillsDir);
-  if (!existsSync(p)) return emptyConfig();
-  try {
-    const parsed = JSON.parse(readFileSync(p, 'utf-8'));
-    return {
-      name: parsed.name ?? 'google-workspace',
-      enabled: parsed.enabled ?? true,
-      configured: parsed.configured ?? false,
-      fields: parsed.fields ?? {},
-      authMethod: parsed.authMethod,
-      configuredAt: parsed.configuredAt,
-    };
-  } catch {
-    return emptyConfig();
-  }
+function writeConfigJson(skillsDir, config) {
+  mkdirSync(getSkillRoot(skillsDir), { recursive: true });
+  writeJsonAtomic(getConfigPath(skillsDir), config);
 }
 
-function writeRawConfig(skillsDir, config) {
-  const dir = join(skillsDir, 'google-workspace');
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, 'config.json'), JSON.stringify(config, null, 2), 'utf-8');
+function readIndex(skillsDir) {
+  const idx = safeReadJson(getIndexPath(skillsDir));
+  if (idx && typeof idx === 'object') {
+    return {
+      version: idx.version ?? INDEX_VERSION,
+      activeAccountId: typeof idx.activeAccountId === 'string' ? idx.activeAccountId : null,
+    };
+  }
+  return { version: INDEX_VERSION, activeAccountId: null };
+}
+
+function writeIndex(skillsDir, activeAccountId) {
+  mkdirSync(getAccountsDir(skillsDir), { recursive: true });
+  writeJsonAtomic(getIndexPath(skillsDir), { version: INDEX_VERSION, activeAccountId });
+}
+
+function readAccountFiles(skillsDir) {
+  const dir = getAccountsDir(skillsDir);
+  if (!existsSync(dir)) return {};
+  const out = {};
+  for (const name of readdirSync(dir)) {
+    if (!name.endsWith('.json') || name === 'index.json') continue;
+    const id = name.slice(0, -5);
+    if (!VALID_ACCOUNT_ID.test(id)) continue;
+    const a = safeReadJson(join(dir, name));
+    if (a && typeof a === 'object' && a.id === id) out[id] = a;
+  }
+  return out;
+}
+
+function writeAccountFile(skillsDir, account) {
+  mkdirSync(getAccountsDir(skillsDir), { recursive: true });
+  writeJsonAtomic(getAccountFilePath(skillsDir, account.id), account);
+}
+
+function deleteAccountFile(skillsDir, id) {
+  const p = getAccountFilePath(skillsDir, id);
+  try { unlinkSync(p); } catch {}
+}
+
+/** Remove per-account fields that should never live at the top of config.json. */
+function stripAccountFields(fields) {
+  const out = { ...(fields || {}) };
+  for (const k of [
+    'accounts',
+    'activeAccountId',
+    'GOOGLE_OAUTH_CLIENT_ID',
+    'GOOGLE_OAUTH_CLIENT_SECRET',
+    'GOOGLE_OAUTH_REDIRECT_URI',
+    'USER_GOOGLE_EMAIL',
+  ]) delete out[k];
+  return out;
+}
+
+function buildAccountRecord({ id, label, port, fields = {}, createdAt }) {
+  return {
+    id,
+    label: String(label || id).slice(0, 64),
+    port,
+    GOOGLE_OAUTH_CLIENT_ID: String(fields.GOOGLE_OAUTH_CLIENT_ID || ''),
+    GOOGLE_OAUTH_CLIENT_SECRET: String(fields.GOOGLE_OAUTH_CLIENT_SECRET || ''),
+    GOOGLE_OAUTH_REDIRECT_URI: String(fields.GOOGLE_OAUTH_REDIRECT_URI || `http://localhost:${port}`),
+    USER_GOOGLE_EMAIL: String(fields.USER_GOOGLE_EMAIL || ''),
+    createdAt: createdAt || new Date().toISOString(),
+  };
 }
 
 /**
- * Build an in-memory accounts map from raw config, performing a one-shot
- * migration of legacy top-level OAuth fields into a synthetic "default"
- * account when the config has none.
- *
- * Returns the (possibly modified) raw config plus a normalized
- * `accounts` array sorted by creation order, so callers can rely on
- * stable ordering for port assignment.
+ * One-shot migration from legacy `config.json` shapes into the per-file
+ * layout. Idempotent: a no-op once `accounts/` has at least one record.
+ * Returns true if anything was migrated.
  */
-export function loadAccountsState(skillsDir = getSkillsDir()) {
-  const raw = readRawConfig(skillsDir);
-  const fields = raw.fields ?? {};
-  let accounts = fields.accounts && typeof fields.accounts === 'object' ? { ...fields.accounts } : null;
-  let activeAccountId = typeof fields.activeAccountId === 'string' ? fields.activeAccountId : null;
-  let migrated = false;
+function migrateLegacyIfNeeded(skillsDir) {
+  const existing = readAccountFiles(skillsDir);
+  if (Object.keys(existing).length > 0) return false;
 
-  if (!accounts || Object.keys(accounts).length === 0) {
-    accounts = {};
-    const legacyClientId = fields.GOOGLE_OAUTH_CLIENT_ID;
-    const legacyClientSecret = fields.GOOGLE_OAUTH_CLIENT_SECRET;
-    const legacyEmail = fields.USER_GOOGLE_EMAIL;
-    const legacyRedirect = fields.GOOGLE_OAUTH_REDIRECT_URI;
-    if (legacyClientId || legacyClientSecret || legacyEmail) {
-      accounts.default = {
-        id: 'default',
-        label: 'Default',
-        port: getBasePort(),
-        GOOGLE_OAUTH_CLIENT_ID: legacyClientId || '',
-        GOOGLE_OAUTH_CLIENT_SECRET: legacyClientSecret || '',
-        GOOGLE_OAUTH_REDIRECT_URI: legacyRedirect || `http://localhost:${getBasePort()}`,
-        USER_GOOGLE_EMAIL: legacyEmail || '',
-        createdAt: new Date().toISOString(),
-      };
-      activeAccountId = 'default';
+  const cfg = readConfigJson(skillsDir);
+  const f = cfg.fields || {};
+  let migrated = false;
+  let activeId = null;
+
+  // Shape A: interim `fields.accounts` map written by an earlier version
+  // of this task. Split each into its own file.
+  if (f.accounts && typeof f.accounts === 'object' && Object.keys(f.accounts).length > 0) {
+    for (const [id, a] of Object.entries(f.accounts)) {
+      if (!VALID_ACCOUNT_ID.test(id)) continue;
+      const port = Number.isFinite(a.port) ? a.port : getBasePort();
+      writeAccountFile(skillsDir, buildAccountRecord({
+        id,
+        label: a.label,
+        port,
+        fields: a,
+        createdAt: a.createdAt,
+      }));
       migrated = true;
     }
+    activeId = typeof f.activeAccountId === 'string' && f.accounts[f.activeAccountId]
+      ? f.activeAccountId
+      : Object.keys(f.accounts)[0] || null;
+  } else if (f.GOOGLE_OAUTH_CLIENT_ID || f.GOOGLE_OAUTH_CLIENT_SECRET || f.USER_GOOGLE_EMAIL) {
+    // Shape B: original single-account top-level fields. Wrap as "default".
+    const port = getBasePort();
+    writeAccountFile(skillsDir, buildAccountRecord({
+      id: 'default',
+      label: 'Default',
+      port,
+      fields: f,
+    }));
+    activeId = 'default';
+    migrated = true;
   }
 
-  if (activeAccountId && !accounts[activeAccountId]) {
-    activeAccountId = null;
+  if (migrated) {
+    writeIndex(skillsDir, activeId);
+    // Strip migrated fields from config.json so the per-file layout is
+    // the single source of truth. Shared PSE keys stay.
+    cfg.fields = stripAccountFields(f);
+    writeConfigJson(skillsDir, cfg);
   }
+  return migrated;
+}
+
+/**
+ * Acquire an exclusive file-based lock (O_EXCL) to serialize all
+ * account-mutating operations across the gateway and concurrently
+ * spawned hooks. Stale locks (>10s old) are reclaimed.
+ */
+function acquireAccountsLock(skillsDir, timeoutMs = 5000) {
+  mkdirSync(getAccountsDir(skillsDir), { recursive: true });
+  const lockPath = join(getAccountsDir(skillsDir), '.lock');
+  const start = Date.now();
+  for (;;) {
+    try {
+      const fd = openSync(lockPath, 'wx');
+      return () => { try { closeSync(fd); } catch {} try { unlinkSync(lockPath); } catch {} };
+    } catch (err) {
+      if (err && err.code !== 'EEXIST') throw err;
+      try {
+        const st = statSync(lockPath);
+        if (Date.now() - st.mtimeMs > 10_000) { try { unlinkSync(lockPath); } catch {} continue; }
+      } catch {}
+      if (Date.now() - start > timeoutMs) {
+        throw new Error('Could not acquire accounts lock (timeout)');
+      }
+      const end = Date.now() + 25;
+      while (Date.now() < end) { /* spin */ }
+    }
+  }
+}
+
+export function loadAccountsState(skillsDir = getSkillsDir()) {
+  migrateLegacyIfNeeded(skillsDir);
+  const accounts = readAccountFiles(skillsDir);
+  const idx = readIndex(skillsDir);
+  let activeAccountId = idx.activeAccountId;
+  if (activeAccountId && !accounts[activeAccountId]) activeAccountId = null;
   if (!activeAccountId) {
     const ids = Object.keys(accounts);
     if (ids.length > 0) activeAccountId = ids[0];
   }
-
-  // Persist migration so subsequent reads are consistent.
-  if (migrated) {
-    raw.fields = { ...fields, accounts, activeAccountId };
-    try { writeRawConfig(skillsDir, raw); } catch {}
-  }
-
-  return { raw, accounts, activeAccountId };
+  return { accounts, activeAccountId };
 }
 
 export function listAccounts(skillsDir = getSkillsDir()) {
@@ -171,8 +285,8 @@ export function listAccounts(skillsDir = getSkillsDir()) {
 }
 
 export function getAccount(skillsDir, accountId) {
-  const { accounts } = loadAccountsState(skillsDir);
   if (!accountId) return null;
+  const { accounts } = loadAccountsState(skillsDir);
   return accounts[accountId] || null;
 }
 
@@ -182,52 +296,33 @@ export function getActiveAccount(skillsDir = getSkillsDir()) {
   return accounts[activeAccountId] || null;
 }
 
-/**
- * Acquire an exclusive file-based lock to serialize read-modify-write of
- * config.json across the gateway and concurrently-spawned hooks. Uses
- * `O_EXCL` create on a sidecar `.lock` file with bounded retries +
- * stale-lock fallback (lock files older than 10s are reclaimed).
- */
-function acquireConfigLock(skillsDir, timeoutMs = 5000) {
-  const dir = join(skillsDir, 'google-workspace');
-  mkdirSync(dir, { recursive: true });
-  const lockPath = join(dir, 'config.json.lock');
-  const start = Date.now();
-  for (;;) {
-    try {
-      const fd = openSync(lockPath, 'wx');
-      return () => { try { closeSync(fd); } catch {} try { unlinkSync(lockPath); } catch {} };
-    } catch (err) {
-      if (err && err.code !== 'EEXIST') throw err;
-      // Stale lock detection: if older than 10s, force-reclaim.
-      try {
-        const st = statSync(lockPath);
-        if (Date.now() - st.mtimeMs > 10_000) { try { unlinkSync(lockPath); } catch {} continue; }
-      } catch {}
-      if (Date.now() - start > timeoutMs) {
-        throw new Error('Could not acquire config.json lock (timeout)');
-      }
-      // Tight busy-wait is fine here — contention is rare and short-lived.
-      const end = Date.now() + 25;
-      while (Date.now() < end) { /* spin */ }
-    }
-  }
-}
-
-/** Mutate accounts (mutator receives accounts map) and persist atomically. */
+/** Mutate accounts under the lock and persist as files + index. */
 function withAccounts(skillsDir, mutator) {
-  const release = acquireConfigLock(skillsDir);
+  const release = acquireAccountsLock(skillsDir);
   try {
-    const { raw, accounts, activeAccountId } = loadAccountsState(skillsDir);
+    const { accounts, activeAccountId } = loadAccountsState(skillsDir);
     const next = { ...accounts };
     let nextActive = activeAccountId;
-    const result = mutator(next, (id) => { nextActive = id; });
-    raw.fields = { ...(raw.fields || {}), accounts: next, activeAccountId: nextActive };
-    raw.configured = Object.values(next).some(
-      (a) => a.GOOGLE_OAUTH_CLIENT_ID && a.GOOGLE_OAUTH_CLIENT_SECRET,
-    );
-    raw.configuredAt = new Date().toISOString();
-    writeRawConfig(skillsDir, raw);
+    let toDelete = [];
+    const result = mutator(next, (id) => { nextActive = id; }, (id) => { toDelete.push(id); });
+    // Persist any added/updated account files.
+    for (const a of Object.values(next)) writeAccountFile(skillsDir, a);
+    // Remove deleted ones from disk.
+    for (const id of toDelete) deleteAccountFile(skillsDir, id);
+    // Persist index.
+    if (nextActive && !next[nextActive]) nextActive = Object.keys(next)[0] || null;
+    writeIndex(skillsDir, nextActive);
+    // Reflect aggregate "configured" flag in config.json (shared metadata)
+    // and strip any leftover embedded account fields from earlier shapes.
+    try {
+      const cfg = readConfigJson(skillsDir);
+      cfg.fields = stripAccountFields(cfg.fields);
+      cfg.configured = Object.values(next).some(
+        (a) => a.GOOGLE_OAUTH_CLIENT_ID && a.GOOGLE_OAUTH_CLIENT_SECRET,
+      );
+      cfg.configuredAt = new Date().toISOString();
+      writeConfigJson(skillsDir, cfg);
+    } catch {}
     return result;
   } finally {
     release();
@@ -255,16 +350,7 @@ export function createAccount(skillsDir, { id, label, fields = {} } = {}) {
     let n = 2;
     while (accounts[finalId]) finalId = `${baseId}-${n++}`;
     const port = nextFreePort(accounts);
-    const account = {
-      id: finalId,
-      label: String(label || finalId).slice(0, 64),
-      port,
-      GOOGLE_OAUTH_CLIENT_ID: String(fields.GOOGLE_OAUTH_CLIENT_ID || ''),
-      GOOGLE_OAUTH_CLIENT_SECRET: String(fields.GOOGLE_OAUTH_CLIENT_SECRET || ''),
-      GOOGLE_OAUTH_REDIRECT_URI: String(fields.GOOGLE_OAUTH_REDIRECT_URI || `http://localhost:${port}`),
-      USER_GOOGLE_EMAIL: String(fields.USER_GOOGLE_EMAIL || ''),
-      createdAt: new Date().toISOString(),
-    };
+    const account = buildAccountRecord({ id: finalId, label, port, fields });
     accounts[finalId] = account;
     if (Object.keys(accounts).length === 1) setActive(finalId);
     return account;
@@ -286,9 +372,10 @@ export function updateAccount(skillsDir, accountId, patch) {
 }
 
 export function deleteAccount(skillsDir, accountId) {
-  return withAccounts(skillsDir, (accounts, setActive) => {
+  return withAccounts(skillsDir, (accounts, setActive, markDelete) => {
     if (!accounts[accountId]) throw new Error(`Account "${accountId}" not found`);
     delete accounts[accountId];
+    markDelete(accountId);
     const remaining = Object.keys(accounts);
     setActive(remaining[0] || null);
     return { ok: true, activeAccountId: remaining[0] || null };
@@ -307,7 +394,7 @@ export function setActiveAccount(skillsDir, accountId) {
  * Resolve the account to use for a hook invocation.
  *  1. explicit `accountId` arg (e.g. from CLI flag)
  *  2. GOOGLE_WORKSPACE_ACCOUNT_ID env (set by the gateway)
- *  3. activeAccountId from config
+ *  3. activeAccountId from index
  */
 export function resolveAccount(skillsDir = getSkillsDir(), explicitId = null) {
   const { accounts, activeAccountId } = loadAccountsState(skillsDir);

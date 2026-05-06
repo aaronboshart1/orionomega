@@ -10,15 +10,11 @@
 
 import { spawn } from 'node:child_process';
 import { readFileSync, existsSync } from 'node:fs';
-import { join, dirname } from 'node:path';
-import { homedir } from 'node:os';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 import { resolveAccount, getAccountHome, getSkillsDir } from '../hooks/_accounts.js';
 
 const MAX_OUTPUT = 30_000; // chars
 const TIMEOUT = 90_000; // ms — some Workspace ops are slow
-
-void dirname; void fileURLToPath; // reserved for future use
 
 /**
  * Read skill config from ~/.orionomega/skills/google-workspace/config.json
@@ -66,7 +62,6 @@ function buildEnv() {
   if (config.GOOGLE_PSE_API_KEY) env.GOOGLE_PSE_API_KEY = config.GOOGLE_PSE_API_KEY;
   if (config.GOOGLE_PSE_ENGINE_ID) env.GOOGLE_PSE_ENGINE_ID = config.GOOGLE_PSE_ENGINE_ID;
 
-  void homedir;
   return env;
 }
 
