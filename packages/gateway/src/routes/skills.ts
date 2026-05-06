@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { createConnection } from 'node:net';
 import {
   SkillLoader,
   readSkillConfig,
@@ -500,20 +501,46 @@ const WORKSPACE_MCP_BASE_PORT = (() => {
 })();
 
 /**
- * Look up the workspace-mcp port for a given account id. When the caller
- * omits `accountId` we resolve to the *active* account's port (instead of
- * blindly using the base port), so legacy callers that don't thread the
- * account id through still hit the right loopback listener.
+ * Resolve a known account to its loopback port + label. Returns `null`
+ * when the account id (or, if omitted, the active account) cannot be
+ * resolved — callers MUST treat that as a hard 400 instead of falling
+ * back to the wrong account or to the base port.
  */
-function getAccountPort(accountId: string | null): number {
+function resolveAccountForPort(
+  accountId: string | null,
+): { id: string; port: number; label: string } | null {
   try {
-    const data = spawnAccountsHelper<{ accounts: Array<{ id: string; port: number }>; activeAccountId: string | null }>(['list']);
+    const data = spawnAccountsHelper<{ accounts: Array<{ id: string; port: number; label?: string }>; activeAccountId: string | null }>(['list']);
     const id = accountId || data.activeAccountId || '';
+    if (!id) return null;
     const found = data.accounts.find((a) => a.id === id);
-    return found?.port ?? WORKSPACE_MCP_BASE_PORT;
+    if (!found) return null;
+    return { id: found.id, port: found.port, label: found.label || found.id };
   } catch {
-    return WORKSPACE_MCP_BASE_PORT;
+    return null;
   }
+}
+
+/**
+ * Probe whether something is listening on `127.0.0.1:<port>` by attempting
+ * a short TCP connect. Resolves quickly so the OAuth callback handler can
+ * fail fast with a useful error instead of waiting for the HTTP timeout.
+ */
+function probeLocalListener(port: number, timeoutMs = 1500): Promise<boolean> {
+  return new Promise((resolve) => {
+    const sock = createConnection({ host: '127.0.0.1', port });
+    let done = false;
+    const finish = (ok: boolean) => {
+      if (done) return;
+      done = true;
+      try { sock.destroy(); } catch {}
+      resolve(ok);
+    };
+    sock.setTimeout(timeoutMs);
+    sock.once('connect', () => finish(true));
+    sock.once('timeout', () => finish(false));
+    sock.once('error', () => finish(false));
+  });
 }
 
 /**
@@ -549,7 +576,37 @@ export async function handleGoogleOAuthCallback(
       res.end(JSON.stringify({ error: 'Invalid accountId' }));
       return;
     }
-    const port = getAccountPort(accountId);
+    const account = resolveAccountForPort(accountId);
+    if (!account) {
+      // Hard fail instead of silently replaying against the active account
+      // or the base port — submitting against the wrong account would only
+      // produce a confusing CSRF/state mismatch from workspace-mcp.
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        error: accountId
+          ? `Unknown account "${accountId}". Refresh the page and pick an existing account.`
+          : 'No account specified and no active account is configured.',
+      }));
+      return;
+    }
+    const port = account.port;
+
+    // The per-account workspace-mcp child process holds the OAuth state
+    // (CSRF token) that this callback is replaying. If the child isn't
+    // currently running, replaying the callback can't possibly succeed —
+    // return a clear, fast error instead of hanging on a 15s HTTP timeout.
+    const listenerAlive = await probeLocalListener(port, 1500);
+    if (!listenerAlive) {
+      log.warn('OAuth callback: per-account workspace-mcp listener is not running', {
+        accountId: account.id, port,
+      });
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        error: `The local OAuth listener for account "${account.label}" is not running on port ${port}.`,
+        detail: 'Click "Authenticate with Google" again to restart the local listener, then re-paste the redirect URL within a few minutes.',
+      }));
+      return;
+    }
 
     let callbackUrl: string | null = null;
 
@@ -586,14 +643,14 @@ export async function handleGoogleOAuthCallback(
         params.forEach((value, key) => target.searchParams.set(key, value));
         callbackUrl = target.toString();
         log.info('OAuth callback: replaying redirect params against workspace-mcp', {
-          accountId, port,
+          accountId: account.id, port,
           target: `http://127.0.0.1:${port}/oauth2callback`,
           hasState: params.has('state'),
         });
       } else if (raw && !raw.includes('=') && !raw.includes('?')) {
         // Looks like a bare authorization code (no = or ? characters)
         callbackUrl = `http://127.0.0.1:${port}/oauth2callback?code=${encodeURIComponent(raw)}`;
-        log.info('OAuth callback: using bare code, assembled callback URL', { accountId, port });
+        log.info('OAuth callback: using bare code, assembled callback URL', { accountId: account.id, port });
       } else {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
@@ -609,7 +666,7 @@ export async function handleGoogleOAuthCallback(
         return;
       }
       callbackUrl = `http://127.0.0.1:${port}/oauth2callback?code=${encodeURIComponent(code)}`;
-      log.info('OAuth callback: using code field, assembled callback URL', { accountId, port });
+      log.info('OAuth callback: using code field, assembled callback URL', { accountId: account.id, port });
     }
 
     if (!callbackUrl) {
@@ -620,12 +677,33 @@ export async function handleGoogleOAuthCallback(
 
     log.info('OAuth callback: fetching', { url: callbackUrl.replace(/code=[^&]+/, 'code=<REDACTED>') });
 
-    // Replay the OAuth callback against workspace-mcp's local listener
-    const proxyRes = await fetch(callbackUrl, {
-      method: 'GET',
-      redirect: 'manual',  // Don't follow redirects — workspace-mcp may redirect after success
-      signal: AbortSignal.timeout(15000),
-    });
+    // Replay the OAuth callback against workspace-mcp's local listener.
+    // Shorter timeout than before — the listener is on loopback and we
+    // already probed it, so 8s is plenty and avoids hanging the UI.
+    let proxyRes: Response;
+    try {
+      proxyRes = await fetch(callbackUrl, {
+        method: 'GET',
+        redirect: 'manual',  // Don't follow redirects — workspace-mcp may redirect after success
+        signal: AbortSignal.timeout(8000),
+      });
+    } catch (fetchErr) {
+      const isAbort = fetchErr instanceof Error && (fetchErr.name === 'TimeoutError' || fetchErr.name === 'AbortError');
+      const message = isAbort
+        ? `Timed out waiting for workspace-mcp on port ${port} to process the callback.`
+        : (fetchErr instanceof Error ? fetchErr.message : 'Failed to reach workspace-mcp');
+      log.error('OAuth callback: replay request failed', {
+        accountId: account.id, port, error: message,
+      });
+      res.writeHead(502, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        error: message,
+        detail: isAbort
+          ? 'The local listener accepted the connection but did not respond in time. Click "Authenticate with Google" again to start a fresh OAuth flow.'
+          : undefined,
+      }));
+      return;
+    }
 
     // workspace-mcp returns 200 on success, or may redirect (3xx) after storing the token
     if (proxyRes.ok || (proxyRes.status >= 300 && proxyRes.status < 400)) {

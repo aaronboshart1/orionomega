@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Loader2, RefreshCw, ChevronDown, ChevronRight, AlertCircle, CheckCircle } from 'lucide-react';
 
 interface SkillSettingSchema {
@@ -176,7 +176,25 @@ function GoogleOAuthSection({ skillSettings }: { skillSettings: Record<string, u
   const accountPort = selected?.port ?? 9877;
   const accountRedirect = selected?.GOOGLE_OAUTH_REDIRECT_URI || `http://localhost:${accountPort}`;
 
+  // Parse the *draft* redirect URI's port so the inline warning updates
+  // as the user types. We never auto-rewrite their value — we just warn
+  // when it can't possibly route back to the per-account listener.
+  const draftRedirectPort = (() => {
+    const raw = (fieldDraft.GOOGLE_OAUTH_REDIRECT_URI || '').trim();
+    if (!raw) return null;
+    try {
+      const u = new URL(raw);
+      return parseInt(u.port, 10) || (u.protocol === 'https:' ? 443 : 80);
+    } catch {
+      return null;
+    }
+  })();
+  const redirectPortMismatch = selected
+    && draftRedirectPort !== null
+    && draftRedirectPort !== selected.port;
+
   const [statusByAccount, setStatusByAccount] = useState<Record<string, AuthStatus>>({});
+  const manualInputRef = useRef<HTMLInputElement | null>(null);
 
   const fetchAccountStatuses = useCallback(async (accs: GoogleAccount[]) => {
     // Fetch per-account auth status in parallel so the dropdown can
@@ -360,6 +378,7 @@ function GoogleOAuthSection({ skillSettings }: { skillSettings: Record<string, u
     if (!manualCodeInput.trim() || !selectedId) return;
     setSubmittingCode(true);
     setError('');
+    let succeeded = false;
     try {
       const isUrl = manualCodeInput.includes('code=') || manualCodeInput.startsWith('http');
       const payload: Record<string, string> = { accountId: selectedId };
@@ -371,9 +390,21 @@ function GoogleOAuthSection({ skillSettings }: { skillSettings: Record<string, u
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error((data as { error?: string }).error || 'Failed to submit authorization code');
+      const data = await res.json().catch(() => ({} as { error?: string; detail?: string }));
+      if (!res.ok) {
+        // Surface the gateway's error verbatim, including any `detail`
+        // hint, so the user knows exactly what to fix (timeout vs. dead
+        // listener vs. unknown account vs. CSRF/state mismatch).
+        const parts = [
+          (data as { error?: string }).error || `HTTP ${res.status}`,
+          (data as { detail?: string }).detail,
+        ].filter(Boolean);
+        throw new Error(parts.join(' — '));
+      }
 
+      succeeded = true;
+      // Only clear the input + hide the manual entry box on success.
+      // On failure we keep both so the user can fix and retry.
       setManualCodeInput('');
       setShowManualEntry(false);
       let attempts = 0;
@@ -387,8 +418,18 @@ function GoogleOAuthSection({ skillSettings }: { skillSettings: Record<string, u
       }, 2000);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to submit code');
+      // Restore focus so the user can immediately fix and resubmit
+      // without re-clicking the field.
+      setTimeout(() => manualInputRef.current?.focus(), 0);
     } finally {
       setSubmittingCode(false);
+      // Stop the outer "Waiting for authentication…" spinner the moment
+      // the submit returns (success OR failure) so the UI never looks
+      // stuck. On success the status poll below will turn the panel
+      // green once workspace-mcp confirms; the spinner shouldn't be
+      // tied to that polling loop.
+      void succeeded;
+      setAuthenticating(false);
     }
   };
 
@@ -561,9 +602,21 @@ function GoogleOAuthSection({ skillSettings }: { skillSettings: Record<string, u
                 value={fieldDraft.GOOGLE_OAUTH_REDIRECT_URI ?? ''}
                 onChange={(e) => updateDraft('GOOGLE_OAUTH_REDIRECT_URI', e.target.value)}
                 placeholder={`http://localhost:${selected.port}`}
-                className="mt-0.5 w-full rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-[11px] font-mono text-zinc-200 outline-none focus:border-blue-500"
+                className={`mt-0.5 w-full rounded border bg-zinc-900 px-2 py-1 text-[11px] font-mono text-zinc-200 outline-none ${
+                  redirectPortMismatch ? 'border-amber-600 focus:border-amber-500' : 'border-zinc-700 focus:border-blue-500'
+                }`}
               />
               <span className="mt-0.5 block text-[10px] text-zinc-600">Local listener port: {selected.port}</span>
+              {redirectPortMismatch && (
+                <span className="mt-1 block rounded border border-amber-700/50 bg-amber-900/20 px-1.5 py-1 text-[10px] text-amber-300">
+                  Port mismatch: this Redirect URI uses port {draftRedirectPort}, but the
+                  local listener for &quot;{selected.label}&quot; is on port {selected.port}.
+                  Self-hosted: register <code>http://localhost:{selected.port}</code> in
+                  Google Cloud Console and set this field to match. On Replit: keep this
+                  field at <code>http://localhost:{selected.port}</code> and complete
+                  OAuth via the manual code entry below.
+                </span>
+              )}
             </label>
             <label className="text-[10px] text-zinc-500">
               Google Email
@@ -705,13 +758,20 @@ function GoogleOAuthSection({ skillSettings }: { skillSettings: Record<string, u
             </div>
           )}
 
+          <p className="text-[10px] text-zinc-500">
+            We&apos;ll forward this to the local workspace-mcp listener for{' '}
+            <span className="text-zinc-300">{selected?.label || selectedId}</span>{' '}
+            on port <span className="text-zinc-300">{accountPort}</span>.
+          </p>
           <div className="flex gap-1.5">
             <input
+              ref={manualInputRef}
               type="text"
               value={manualCodeInput}
               onChange={(e) => setManualCodeInput(e.target.value)}
               placeholder="Paste redirect URL or authorization code here"
               className="flex-1 rounded border border-zinc-600 bg-zinc-900 px-2 py-1 text-[11px] text-zinc-200 outline-none focus:border-blue-500 placeholder:text-zinc-600"
+              autoFocus
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && manualCodeInput.trim()) {
                   handleSubmitManualCode();
