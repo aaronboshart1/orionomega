@@ -267,10 +267,16 @@ function GoogleOAuthSection({ skillSettings }: { skillSettings: Record<string, u
     setSelectedId(id);
     if (id === activeAccountId) return;
     // Make this the active account so agent calls + oauth-start use it.
+    // Only mirror to local state after the gateway confirms the change
+    // so a transient failure can't leave the UI showing an "active"
+    // account that the gateway never persisted.
     try {
-      await fetch(`/api/gateway/api/skills/google-workspace/accounts/${encodeURIComponent(id)}/activate`, { method: 'POST' });
-      setActiveAccountId(id);
-    } catch {}
+      const r = await fetch(`/api/gateway/api/skills/google-workspace/accounts/${encodeURIComponent(id)}/activate`, { method: 'POST' });
+      if (r.ok) setActiveAccountId(id);
+      else setError('Failed to switch active account');
+    } catch {
+      setError('Failed to switch active account');
+    }
   };
 
   const handleCreateAccount = async () => {
@@ -290,8 +296,8 @@ function GoogleOAuthSection({ skillSettings }: { skillSettings: Record<string, u
       const newId = (data as { account?: GoogleAccount }).account?.id;
       if (newId) {
         setSelectedId(newId);
-        await fetch(`/api/gateway/api/skills/google-workspace/accounts/${encodeURIComponent(newId)}/activate`, { method: 'POST' });
-        setActiveAccountId(newId);
+        const r = await fetch(`/api/gateway/api/skills/google-workspace/accounts/${encodeURIComponent(newId)}/activate`, { method: 'POST' });
+        if (r.ok) setActiveAccountId(newId);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create account');

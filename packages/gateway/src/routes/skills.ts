@@ -170,12 +170,15 @@ export async function handlePutSkillConfig(
         cleanFields[k] = v;
       }
       try {
-        const data = spawnAccountsHelper(
+        const data = spawnAccountsHelper<{ ok: boolean; account: { GOOGLE_OAUTH_CLIENT_SECRET?: string } }>(
           ['update', accountId],
           { stdin: JSON.stringify({ fields: cleanFields }) },
         );
+        // Flatten + mask: legacy callers expect `{ ok, account }`, not
+        // `{ ok, account: { ok, account } }`.
+        const account = data && data.account ? maskAccountSecret(data.account) : data;
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true, account: data }));
+        res.end(JSON.stringify({ ok: true, account }));
       } catch (err) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err instanceof Error ? err.message : 'Failed to update account' }));

@@ -19,9 +19,17 @@ async function readStdin() {
 }
 
 function tokenCount(credDir) {
+  // Mirror oauth-status.js detection: count both flat `<email>.json`
+  // tokens AND directory-style `<email>/token.json` layouts so this
+  // hook stays consistent with the live status endpoint.
   if (!existsSync(credDir)) return 0;
   try {
-    return readdirSync(credDir).filter((n) => n.endsWith('.json')).length;
+    let n = 0;
+    for (const entry of readdirSync(credDir, { withFileTypes: true })) {
+      if (entry.isFile() && entry.name.endsWith('.json')) n++;
+      else if (entry.isDirectory() && existsSync(`${credDir}/${entry.name}/token.json`)) n++;
+    }
+    return n;
   } catch { return 0; }
 }
 
