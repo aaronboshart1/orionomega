@@ -174,6 +174,32 @@ function GoogleOAuthSection({ skillSettings }: { skillSettings: Record<string, u
   const accountPort = selected?.port ?? 9877;
   const accountRedirect = selected?.GOOGLE_OAUTH_REDIRECT_URI || `http://localhost:${accountPort}`;
 
+  const [statusByAccount, setStatusByAccount] = useState<Record<string, AuthStatus>>({});
+
+  const fetchAccountStatuses = useCallback(async (accs: GoogleAccount[]) => {
+    // Fetch per-account auth status in parallel so the dropdown can
+    // surface the *actual* connected email + token age (not just the
+    // configured default email).
+    const results = await Promise.all(
+      accs.map(async (a) => {
+        try {
+          const r = await fetch(`/api/gateway/api/skills/google-workspace/oauth/status?accountId=${encodeURIComponent(a.id)}`);
+          if (!r.ok) return [a.id, null] as const;
+          return [a.id, await r.json() as AuthStatus] as const;
+        } catch {
+          return [a.id, null] as const;
+        }
+      }),
+    );
+    setStatusByAccount((prev) => {
+      const next = { ...prev };
+      for (const [id, status] of results) {
+        if (status) next[id] = status; else delete next[id];
+      }
+      return next;
+    });
+  }, []);
+
   const fetchAccounts = useCallback(async () => {
     try {
       const res = await fetch('/api/gateway/api/skills/google-workspace/accounts');
@@ -185,10 +211,11 @@ function GoogleOAuthSection({ skillSettings }: { skillSettings: Record<string, u
         if (prev && data.accounts.some((a) => a.id === prev)) return prev;
         return data.activeAccountId || data.accounts[0]?.id || null;
       });
+      void fetchAccountStatuses(data.accounts);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load accounts');
     }
-  }, []);
+  }, [fetchAccountStatuses]);
 
   const checkStatus = useCallback(async (accountId: string | null) => {
     if (!accountId) {
@@ -414,11 +441,23 @@ function GoogleOAuthSection({ skillSettings }: { skillSettings: Record<string, u
           className="flex-1 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-[11px] text-zinc-200 outline-none focus:border-blue-500"
         >
           {accounts.length === 0 && <option value="">— No accounts —</option>}
-          {accounts.map((a) => (
-            <option key={a.id} value={a.id}>
-              {a.label}{a.id === activeAccountId ? ' (active)' : ''}{a.USER_GOOGLE_EMAIL ? ` · ${a.USER_GOOGLE_EMAIL}` : ''}
-            </option>
-          ))}
+          {accounts.map((a) => {
+            const st = statusByAccount[a.id];
+            // Prefer the *actually* connected email from the live OAuth
+            // status; fall back to the configured email for accounts
+            // that haven't completed OAuth yet.
+            const email = st?.authenticated && st.email ? st.email : a.USER_GOOGLE_EMAIL;
+            const age = st?.authenticated ? st.tokenAge : null;
+            const tail = [
+              email || null,
+              age ? `token ${age}` : (st && !st.authenticated ? 'not connected' : null),
+            ].filter(Boolean).join(' · ');
+            return (
+              <option key={a.id} value={a.id}>
+                {a.label}{a.id === activeAccountId ? ' (active)' : ''}{tail ? ` · ${tail}` : ''}
+              </option>
+            );
+          })}
           <option value="__add__">+ Add account…</option>
         </select>
         {selected && (

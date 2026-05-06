@@ -144,7 +144,44 @@ export async function handlePutSkillConfig(
 
   try {
     const body = await readBody(req);
-    const payload = JSON.parse(body) as Partial<SkillConfig> & { settings?: Record<string, unknown> };
+    const payload = JSON.parse(body) as Partial<SkillConfig> & {
+      settings?: Record<string, unknown>;
+      accountId?: string;
+    };
+
+    // Account-aware compatibility path: when callers PUT
+    // /api/skills/google-workspace/config?accountId=… (or include
+    // `accountId` in the body), forward per-account fields to the
+    // multi-account CLI instead of writing them into the shared
+    // config.json (where they no longer live).
+    const accountId = extractAccountId(req, body) || payload.accountId || null;
+    if (skillName === 'google-workspace' && accountId) {
+      if (!VALID_ACCOUNT_ID.test(accountId)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid accountId' }));
+        return;
+      }
+      const fields = (payload.settings ?? {}) as Record<string, unknown>;
+      // Strip masked secrets so we don't overwrite real values with mask sentinels.
+      const cleanFields: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(fields)) {
+        if (v === MASK_SENTINEL) continue;
+        if (typeof v === 'string' && v.startsWith('••••')) continue;
+        cleanFields[k] = v;
+      }
+      try {
+        const data = spawnAccountsHelper(
+          ['update', accountId],
+          { stdin: JSON.stringify({ fields: cleanFields }) },
+        );
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, account: data }));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err instanceof Error ? err.message : 'Failed to update account' }));
+      }
+      return;
+    }
 
     const configDir = getConfiguredSkillsDir();
     const existing = readSkillConfig(configDir, skillName);
