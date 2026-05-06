@@ -925,6 +925,8 @@
   },
   "hooks": {
     "healthCheck": "hooks/health.js",
-    "postInstall": "hooks/setup.js"
+    "postInstall": "hooks/setup.js",
+    "oauthStart": "hooks/oauth-start.js",
+    "oauthStatus": "hooks/oauth-status.js"
   }
 }

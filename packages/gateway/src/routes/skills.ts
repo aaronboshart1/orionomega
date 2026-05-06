@@ -75,6 +75,24 @@ async function discoverAllSkills(): Promise<{ manifests: SkillManifest[]; config
   return { manifests, configDir };
 }
 
+/**
+ * Resolve a hook script for a skill, honoring the user's override directory
+ * first and falling back to the shipped default-skills location. Returns the
+ * absolute script path along with the directory the skill was resolved from
+ * (the parent of `<skillName>/`), so handlers can pass it to child processes.
+ */
+function resolveSkillHook(
+  skillName: string,
+  relativeScript: string,
+): { scriptPath: string; skillRoot: string } | null {
+  const candidates = [getConfiguredSkillsDir(), getDefaultSkillsDir()];
+  for (const root of candidates) {
+    const p = join(root, skillName, relativeScript);
+    if (existsSync(p)) return { scriptPath: p, skillRoot: root };
+  }
+  return null;
+}
+
 function isSecretField(prop: SkillSettingSchema): boolean {
   const types = Array.isArray(prop.type) ? prop.type : [prop.type];
   return types.includes(SkillSettingType.Password) || prop.widget === 'secret';
@@ -212,14 +230,18 @@ export async function handleGoogleOAuthStart(
 ): Promise<void> {
   if (!checkAuth(req, res, gatewayConfig)) return;
 
-  const scriptPath = join(getConfiguredSkillsDir(), 'google-workspace', 'hooks', 'oauth-start.js');
-  if (!existsSync(scriptPath)) {
+  const resolved = resolveSkillHook('google-workspace', join('hooks', 'oauth-start.js'));
+  if (!resolved) {
     res.writeHead(404, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'OAuth start script not found' }));
     return;
   }
 
-  const result = spawnSync('node', [scriptPath], { encoding: 'utf-8', timeout: 60000, env: { ...process.env } });
+  const result = spawnSync('node', [resolved.scriptPath], {
+    encoding: 'utf-8',
+    timeout: 60000,
+    env: { ...process.env, ORIONOMEGA_SKILLS_DIR: getConfiguredSkillsDir() },
+  });
   try {
     const parsed = JSON.parse(result.stdout) as Record<string, unknown>;
     if (parsed.error) {
@@ -355,14 +377,18 @@ export function handleGoogleOAuthStatus(
 ): void {
   if (!checkAuth(req, res, gatewayConfig)) return;
 
-  const scriptPath = join(getConfiguredSkillsDir(), 'google-workspace', 'hooks', 'oauth-status.js');
-  if (!existsSync(scriptPath)) {
+  const resolved = resolveSkillHook('google-workspace', join('hooks', 'oauth-status.js'));
+  if (!resolved) {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ authenticated: false, reason: 'Status script not found' }));
     return;
   }
 
-  const result = spawnSync('node', [scriptPath], { encoding: 'utf-8', timeout: 10000, env: { ...process.env } });
+  const result = spawnSync('node', [resolved.scriptPath], {
+    encoding: 'utf-8',
+    timeout: 10000,
+    env: { ...process.env, ORIONOMEGA_SKILLS_DIR: getConfiguredSkillsDir() },
+  });
   try {
     const parsed = JSON.parse(result.stdout) as Record<string, unknown>;
     res.writeHead(200, { 'Content-Type': 'application/json' });

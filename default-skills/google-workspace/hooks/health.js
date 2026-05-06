@@ -31,7 +31,9 @@ async function main() {
   let clientSecret = process.env.GOOGLE_OAUTH_CLIENT_SECRET;
 
   if (!clientId || !clientSecret) {
-    const configPath = join(homedir(), '.orionomega', 'skills', 'google-workspace', 'config.json');
+    const skillsDir = process.env.ORIONOMEGA_SKILLS_DIR
+      || join(homedir(), '.orionomega', 'skills');
+    const configPath = join(skillsDir, 'google-workspace', 'config.json');
     if (existsSync(configPath)) {
       try {
         const cfg = JSON.parse(readFileSync(configPath, 'utf-8'));

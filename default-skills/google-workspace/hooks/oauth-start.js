@@ -46,7 +46,12 @@ function readLogTail(maxBytes = 1000) {
 }
 
 async function main() {
-  const configPath = join(homedir(), '.orionomega', 'skills', 'google-workspace', 'config.json');
+  // The gateway injects ORIONOMEGA_SKILLS_DIR with the configured skills
+  // directory (where the user's saved settings live). Fall back to the
+  // legacy default for direct CLI invocation.
+  const skillsDir = process.env.ORIONOMEGA_SKILLS_DIR
+    || join(homedir(), '.orionomega', 'skills');
+  const configPath = join(skillsDir, 'google-workspace', 'config.json');
   let config = {};
   if (existsSync(configPath)) {
     config = JSON.parse(readFileSync(configPath, 'utf-8')).fields || {};
