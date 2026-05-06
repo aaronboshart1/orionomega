@@ -24,7 +24,7 @@
   },
   "scripts": {
     "prebuild": "node ../../scripts/generate-build-info.mjs core",
-    "build": "tsc && cp -r src/db/migrations dist/db/migrations",
+    "build": "tsc && rm -rf dist/db/migrations && mkdir -p dist/db && cp -r src/db/migrations dist/db/migrations",
     "clean": "rm -rf dist src/generated",
     "ensure-build-info": "node ../../scripts/generate-build-info.mjs core",
     "test": "vitest run"
