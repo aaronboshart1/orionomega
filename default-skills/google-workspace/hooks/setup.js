@@ -1,17 +1,12 @@
 #!/usr/bin/env node
 /**
- * Post-setup validation hook for the google-workspace skill.
+ * Post-setup validation hook for the google-workspace skill (multi-account).
  *
- * Runs after the user submits the skill settings form. Reads the
- * submitted config from stdin (the SDK passes `{ fields, ... }`),
- * validates that OAuth client credentials are present, and reports
- * whether the in-app OAuth flow has been completed (i.e. an access or
- * refresh token has been stored).
- *
- * The OAuth browser flow itself is driven by the gateway via
- * `hooks/oauth-start.js` and `hooks/oauth-status.js`, not by this
- * script — this script only validates the resulting state.
+ * Reports overall configuration status based on the configured accounts.
+ * Always exits 0; only the stdout JSON is consumed.
  */
+import { listAccounts, getAccountCredentialsDir } from './_accounts.js';
+import { existsSync, readdirSync } from 'node:fs';
 
 async function readStdin() {
   const chunks = [];
@@ -19,61 +14,50 @@ async function readStdin() {
   return await new Promise((resolve) => {
     process.stdin.on('data', (chunk) => chunks.push(chunk));
     process.stdin.on('end', () => resolve(chunks.join('')));
-    // If stdin is not piped at all, resolve quickly with whatever we have.
     setTimeout(() => resolve(chunks.join('')), 500);
   });
 }
 
-async function main() {
-  let config = {};
+function tokenCount(credDir) {
+  if (!existsSync(credDir)) return 0;
   try {
-    const raw = await readStdin();
-    if (raw.trim()) config = JSON.parse(raw);
-  } catch {
-    // tolerate missing/invalid stdin — fall back to env vars
-  }
+    return readdirSync(credDir).filter((n) => n.endsWith('.json')).length;
+  } catch { return 0; }
+}
 
-  const fields = config.fields ?? {};
-  const clientId = fields.GOOGLE_OAUTH_CLIENT_ID || process.env.GOOGLE_OAUTH_CLIENT_ID;
-  const clientSecret = fields.GOOGLE_OAUTH_CLIENT_SECRET || process.env.GOOGLE_OAUTH_CLIENT_SECRET;
-  const accessToken = fields.GOOGLE_ACCESS_TOKEN;
-  const refreshToken = fields.GOOGLE_REFRESH_TOKEN;
+async function main() {
+  try { await readStdin(); } catch {}
 
+  const { accounts, activeAccountId } = listAccounts();
   const result = { fields: {}, validated: false };
 
-  if (!clientId || !clientSecret) {
+  if (accounts.length === 0) {
     result.fields.setup_instructions =
+      'No accounts configured yet. In Settings → Skills → Google Workspace, click "+ Add account", then:\n' +
       '1. Visit https://console.cloud.google.com → APIs & Services → Credentials\n' +
       '2. Create an OAuth 2.0 Client ID (Application type: Web application)\n' +
-      '3. Add an Authorized redirect URI matching GOOGLE_OAUTH_REDIRECT_URI (default: http://localhost:4100)\n' +
-      '4. Enable the APIs you want to use (Gmail, Drive, Calendar, Docs, Sheets, Slides, Forms, Tasks, People, Chat, Apps Script)\n' +
-      '5. Paste the Client ID and Client Secret into the fields above and save\n' +
-      '6. Then click "Connect Google account" to authorize access in your browser';
+      '3. Add an Authorized redirect URI matching the account\'s redirect URI\n' +
+      '4. Paste the Client ID, Client Secret and your Google email into the account form\n' +
+      '5. Click "Connect Google account" to complete the OAuth flow';
     process.stdout.write(JSON.stringify(result));
     return;
   }
 
-  result.fields.client_id_prefix = String(clientId).slice(0, 20) + '…';
-  result.fields.credentials_status = 'OAuth client credentials saved';
-
-  if (accessToken || refreshToken) {
-    result.validated = true;
-    result.fields.auth_status = 'Connected — Google account authorized';
-  } else {
-    result.validated = false;
-    result.fields.auth_status = 'Not connected yet';
-    result.fields.next_step =
-      'Click "Connect Google account" in Settings → Skills → Google Workspace to complete the OAuth flow.';
-  }
+  const ready = accounts.filter((a) =>
+    a.GOOGLE_OAUTH_CLIENT_ID && a.GOOGLE_OAUTH_CLIENT_SECRET && tokenCount(getAccountCredentialsDir(a.id)) > 0,
+  );
+  result.fields.accounts_count = String(accounts.length);
+  result.fields.active_account = activeAccountId || '(none)';
+  result.fields.connected_accounts = ready.map((a) => `${a.label} (${a.USER_GOOGLE_EMAIL || a.id})`).join(', ') || '(none yet)';
+  result.validated = ready.length > 0;
+  result.fields.auth_status = result.validated
+    ? `${ready.length}/${accounts.length} account(s) connected`
+    : 'No accounts have completed the OAuth flow yet';
 
   process.stdout.write(JSON.stringify(result));
 }
 
 main().catch((err) => {
-  process.stdout.write(JSON.stringify({
-    fields: {},
-    validated: false,
-    error: err instanceof Error ? err.message : String(err),
-  }));
+  process.stdout.write(JSON.stringify({ fields: {}, validated: false, error: err instanceof Error ? err.message : String(err) }));
   process.exit(1);
 });

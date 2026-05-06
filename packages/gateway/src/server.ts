@@ -30,7 +30,12 @@ import { ActivityService } from './activity.js';
 import { handleStatus } from './routes/status.js';
 import { handleGetConfig, handlePutConfig } from './routes/config.js';
 import { handleLogsMeta, handleLogsTail, handleLogsStream, handleLogsDownload } from './routes/logs.js';
-import { handleGetSkills, handlePutSkillConfig, handleGoogleOAuthStart, handleGoogleOAuthStatus, handleGoogleOAuthCallback } from './routes/skills.js';
+import {
+  handleGetSkills, handlePutSkillConfig,
+  handleGoogleOAuthStart, handleGoogleOAuthStatus, handleGoogleOAuthCallback,
+  handleListGoogleAccounts, handleCreateGoogleAccount, handleUpdateGoogleAccount,
+  handleDeleteGoogleAccount, handleActivateGoogleAccount,
+} from './routes/skills.js';
 import { SchedulerService } from './scheduler.js';
 import {
   handleListSchedules,
@@ -1461,6 +1466,41 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
   if (pathname === '/api/skills/google-workspace/oauth/status' && method === 'GET') {
     handleGoogleOAuthStatus(req, res, config);
     return;
+  }
+
+  // --- Skills: Google Workspace multi-account CRUD ---
+  if (pathname === '/api/skills/google-workspace/accounts' && method === 'GET') {
+    handleListGoogleAccounts(req, res, config);
+    return;
+  }
+  if (pathname === '/api/skills/google-workspace/accounts' && method === 'POST') {
+    handleCreateGoogleAccount(req, res, config).catch((err) => {
+      log.error('Create google account route error', { error: err instanceof Error ? err.message : String(err) });
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Internal server error' }));
+    });
+    return;
+  }
+  const gAcctMatch = pathname.match(/^\/api\/skills\/google-workspace\/accounts\/([a-zA-Z0-9_-]+)(?:\/(activate))?$/);
+  if (gAcctMatch) {
+    const acctId = gAcctMatch[1]!;
+    const action = gAcctMatch[2];
+    if (action === 'activate' && method === 'POST') {
+      handleActivateGoogleAccount(req, res, acctId, config);
+      return;
+    }
+    if (!action && method === 'PUT') {
+      handleUpdateGoogleAccount(req, res, acctId, config).catch((err) => {
+        log.error('Update google account route error', { error: err instanceof Error ? err.message : String(err) });
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Internal server error' }));
+      });
+      return;
+    }
+    if (!action && method === 'DELETE') {
+      handleDeleteGoogleAccount(req, res, acctId, config);
+      return;
+    }
   }
 
   // --- Skills ---

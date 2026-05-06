@@ -223,6 +223,156 @@ export async function handlePutSkillConfig(
   }
 }
 
+/**
+ * Read an optional `accountId` from either the URL query string or the
+ * JSON body. The body wins when both are present.
+ */
+function extractAccountId(req: IncomingMessage, body?: string): string | null {
+  try {
+    const u = new URL(req.url || '', 'http://localhost');
+    const fromQuery = u.searchParams.get('accountId');
+    if (body) {
+      try {
+        const parsed = JSON.parse(body) as { accountId?: string };
+        if (typeof parsed.accountId === 'string' && parsed.accountId) return parsed.accountId;
+      } catch {}
+    }
+    return fromQuery && fromQuery.length > 0 ? fromQuery : null;
+  } catch {
+    return null;
+  }
+}
+
+const VALID_ACCOUNT_ID = /^[a-zA-Z0-9_-]{1,64}$/;
+
+function spawnAccountsHelper<T = unknown>(
+  args: string[],
+  options: { stdin?: string } = {},
+): T {
+  // Inline node script that exposes the _accounts.js helpers via argv.
+  // This lets the gateway perform multi-account CRUD without duplicating
+  // the migration / persistence logic in TypeScript.
+  const resolvedAccounts = resolveSkillHook('google-workspace', 'hooks/_accounts.js');
+  if (!resolvedAccounts) {
+    throw new Error('google-workspace skill is not installed (hooks/_accounts.js missing)');
+  }
+  const helperPath = join(resolvedAccounts.skillRoot, 'google-workspace', 'hooks', '_accounts_cli.js');
+  const result = spawnSync('node', [helperPath, ...args], {
+    encoding: 'utf-8',
+    timeout: 15000,
+    input: options.stdin,
+    env: { ...process.env, ORIONOMEGA_SKILLS_DIR: getConfiguredSkillsDir() },
+  });
+  const out = (result.stdout || '').trim();
+  if (result.status !== 0) {
+    const err = (result.stderr || '').trim() || out || 'Helper failed';
+    throw new Error(err);
+  }
+  if (!out) return undefined as T;
+  return JSON.parse(out) as T;
+}
+
+export function handleListGoogleAccounts(
+  req: IncomingMessage,
+  res: ServerResponse,
+  gatewayConfig: GatewayConfig,
+): void {
+  if (!checkAuth(req, res, gatewayConfig)) return;
+  try {
+    const data = spawnAccountsHelper<{ accounts: unknown[]; activeAccountId: string | null }>(['list']);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(data));
+  } catch (err) {
+    log.error('List google accounts failed', { error: err instanceof Error ? err.message : String(err) });
+    res.writeHead(500, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: err instanceof Error ? err.message : 'Failed to list accounts' }));
+  }
+}
+
+export async function handleCreateGoogleAccount(
+  req: IncomingMessage,
+  res: ServerResponse,
+  gatewayConfig: GatewayConfig,
+): Promise<void> {
+  if (!checkAuth(req, res, gatewayConfig)) return;
+  try {
+    const body = await readBody(req);
+    const data = spawnAccountsHelper(['create'], { stdin: body });
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(data));
+  } catch (err) {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: err instanceof Error ? err.message : 'Failed to create account' }));
+  }
+}
+
+export async function handleUpdateGoogleAccount(
+  req: IncomingMessage,
+  res: ServerResponse,
+  accountId: string,
+  gatewayConfig: GatewayConfig,
+): Promise<void> {
+  if (!checkAuth(req, res, gatewayConfig)) return;
+  if (!VALID_ACCOUNT_ID.test(accountId)) {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Invalid accountId' }));
+    return;
+  }
+  try {
+    const body = await readBody(req);
+    const data = spawnAccountsHelper(['update', accountId], { stdin: body });
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(data));
+  } catch (err) {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: err instanceof Error ? err.message : 'Failed to update account' }));
+  }
+}
+
+export function handleDeleteGoogleAccount(
+  req: IncomingMessage,
+  res: ServerResponse,
+  accountId: string,
+  gatewayConfig: GatewayConfig,
+): void {
+  if (!checkAuth(req, res, gatewayConfig)) return;
+  if (!VALID_ACCOUNT_ID.test(accountId)) {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Invalid accountId' }));
+    return;
+  }
+  try {
+    const data = spawnAccountsHelper(['delete', accountId]);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(data));
+  } catch (err) {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: err instanceof Error ? err.message : 'Failed to delete account' }));
+  }
+}
+
+export function handleActivateGoogleAccount(
+  req: IncomingMessage,
+  res: ServerResponse,
+  accountId: string,
+  gatewayConfig: GatewayConfig,
+): void {
+  if (!checkAuth(req, res, gatewayConfig)) return;
+  if (!VALID_ACCOUNT_ID.test(accountId)) {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Invalid accountId' }));
+    return;
+  }
+  try {
+    const data = spawnAccountsHelper(['activate', accountId]);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(data));
+  } catch (err) {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: err instanceof Error ? err.message : 'Failed to activate account' }));
+  }
+}
+
 export async function handleGoogleOAuthStart(
   req: IncomingMessage,
   res: ServerResponse,
@@ -237,10 +387,18 @@ export async function handleGoogleOAuthStart(
     return;
   }
 
+  let body = '';
+  try { body = await readBody(req); } catch {}
+  const accountId = extractAccountId(req, body) || '';
+
   const result = spawnSync('node', [resolved.scriptPath], {
     encoding: 'utf-8',
     timeout: 60000,
-    env: { ...process.env, ORIONOMEGA_SKILLS_DIR: getConfiguredSkillsDir() },
+    env: {
+      ...process.env,
+      ORIONOMEGA_SKILLS_DIR: getConfiguredSkillsDir(),
+      ...(accountId ? { GOOGLE_WORKSPACE_ACCOUNT_ID: accountId } : {}),
+    },
   });
   try {
     const parsed = JSON.parse(result.stdout) as Record<string, unknown>;
@@ -259,8 +417,25 @@ export async function handleGoogleOAuthStart(
   }
 }
 
-/** Default port that workspace-mcp listens on for both MCP and OAuth callbacks. */
-const WORKSPACE_MCP_PORT = 9877;
+/** Default base port (multi-account: each account gets basePort + slot). */
+const WORKSPACE_MCP_BASE_PORT = (() => {
+  const raw = process.env.GOOGLE_WORKSPACE_MCP_BASE_PORT;
+  const n = raw ? parseInt(raw, 10) : NaN;
+  return Number.isFinite(n) && n > 0 && n < 65535 ? n : 9877;
+})();
+
+/** Look up the workspace-mcp port for a given account id (falls back to base). */
+function getAccountPort(accountId: string | null): number {
+  if (!accountId) return WORKSPACE_MCP_BASE_PORT;
+  try {
+    const data = spawnAccountsHelper<{ accounts: Array<{ id: string; port: number }>; activeAccountId: string | null }>(['list']);
+    const id = accountId || data.activeAccountId || '';
+    const found = data.accounts.find((a) => a.id === id);
+    return found?.port ?? WORKSPACE_MCP_BASE_PORT;
+  } catch {
+    return WORKSPACE_MCP_BASE_PORT;
+  }
+}
 
 /**
  * Proxy endpoint for manual OAuth callback.
@@ -286,7 +461,9 @@ export async function handleGoogleOAuthCallback(
 
   try {
     const body = await readBody(req);
-    const payload = JSON.parse(body) as { url?: string; code?: string };
+    const payload = JSON.parse(body) as { url?: string; code?: string; accountId?: string };
+    const accountId = (typeof payload.accountId === 'string' && payload.accountId) ? payload.accountId : null;
+    const port = getAccountPort(accountId);
 
     let callbackUrl: string | null = null;
 
@@ -318,17 +495,18 @@ export async function handleGoogleOAuthCallback(
       }
 
       if (params && params.get('code')) {
-        const target = new URL(`http://127.0.0.1:${WORKSPACE_MCP_PORT}/oauth2callback`);
+        const target = new URL(`http://127.0.0.1:${port}/oauth2callback`);
         params.forEach((value, key) => target.searchParams.set(key, value));
         callbackUrl = target.toString();
         log.info('OAuth callback: replaying redirect params against workspace-mcp', {
-          target: `http://127.0.0.1:${WORKSPACE_MCP_PORT}/oauth2callback`,
+          accountId, port,
+          target: `http://127.0.0.1:${port}/oauth2callback`,
           hasState: params.has('state'),
         });
       } else if (raw && !raw.includes('=') && !raw.includes('?')) {
         // Looks like a bare authorization code (no = or ? characters)
-        callbackUrl = `http://127.0.0.1:${WORKSPACE_MCP_PORT}/oauth2callback?code=${encodeURIComponent(raw)}`;
-        log.info('OAuth callback: using bare code, assembled callback URL');
+        callbackUrl = `http://127.0.0.1:${port}/oauth2callback?code=${encodeURIComponent(raw)}`;
+        log.info('OAuth callback: using bare code, assembled callback URL', { accountId, port });
       } else {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
@@ -343,8 +521,8 @@ export async function handleGoogleOAuthCallback(
         res.end(JSON.stringify({ error: 'No authorization code found.' }));
         return;
       }
-      callbackUrl = `http://127.0.0.1:${WORKSPACE_MCP_PORT}/oauth2callback?code=${encodeURIComponent(code)}`;
-      log.info('OAuth callback: using code field, assembled callback URL');
+      callbackUrl = `http://127.0.0.1:${port}/oauth2callback?code=${encodeURIComponent(code)}`;
+      log.info('OAuth callback: using code field, assembled callback URL', { accountId, port });
     }
 
     if (!callbackUrl) {
@@ -398,10 +576,15 @@ export function handleGoogleOAuthStatus(
     return;
   }
 
+  const accountId = extractAccountId(req);
   const result = spawnSync('node', [resolved.scriptPath], {
     encoding: 'utf-8',
     timeout: 10000,
-    env: { ...process.env, ORIONOMEGA_SKILLS_DIR: getConfiguredSkillsDir() },
+    env: {
+      ...process.env,
+      ORIONOMEGA_SKILLS_DIR: getConfiguredSkillsDir(),
+      ...(accountId ? { GOOGLE_WORKSPACE_ACCOUNT_ID: accountId } : {}),
+    },
   });
   try {
     const parsed = JSON.parse(result.stdout) as Record<string, unknown>;

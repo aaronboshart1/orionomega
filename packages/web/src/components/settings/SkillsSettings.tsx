@@ -131,13 +131,32 @@ function SkillField({
   );
 }
 
+interface GoogleAccount {
+  id: string;
+  label: string;
+  port: number;
+  GOOGLE_OAUTH_CLIENT_ID: string;
+  GOOGLE_OAUTH_CLIENT_SECRET: string;
+  GOOGLE_OAUTH_REDIRECT_URI: string;
+  USER_GOOGLE_EMAIL: string;
+  createdAt?: string;
+}
+
+interface AuthStatus {
+  authenticated: boolean;
+  email?: string;
+  tokenAge?: string;
+  reason?: string;
+  accountId?: string;
+  accountLabel?: string;
+}
+
 function GoogleOAuthSection({ skillSettings }: { skillSettings: Record<string, unknown> }) {
-  const [authStatus, setAuthStatus] = useState<{
-    authenticated: boolean;
-    email?: string;
-    tokenAge?: string;
-    reason?: string;
-  } | null>(null);
+  void skillSettings;
+  const [accounts, setAccounts] = useState<GoogleAccount[]>([]);
+  const [activeAccountId, setActiveAccountId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [authenticating, setAuthenticating] = useState(false);
   const [error, setError] = useState('');
@@ -145,12 +164,39 @@ function GoogleOAuthSection({ skillSettings }: { skillSettings: Record<string, u
   const [manualCodeInput, setManualCodeInput] = useState('');
   const [submittingCode, setSubmittingCode] = useState(false);
   const [showRemoteHelp, setShowRemoteHelp] = useState(false);
+  const [addingAccount, setAddingAccount] = useState(false);
+  const [newAccountLabel, setNewAccountLabel] = useState('');
+  const [savingFields, setSavingFields] = useState(false);
+  const [fieldDraft, setFieldDraft] = useState<Partial<GoogleAccount>>({});
+  const [draftDirty, setDraftDirty] = useState(false);
 
-  const checkStatus = useCallback(async () => {
+  const selected = accounts.find((a) => a.id === selectedId) || null;
+
+  const fetchAccounts = useCallback(async () => {
     try {
-      const res = await fetch('/api/gateway/api/skills/google-workspace/oauth/status');
+      const res = await fetch('/api/gateway/api/skills/google-workspace/accounts');
+      if (!res.ok) throw new Error('Failed to load accounts');
+      const data = await res.json() as { accounts: GoogleAccount[]; activeAccountId: string | null };
+      setAccounts(data.accounts);
+      setActiveAccountId(data.activeAccountId);
+      setSelectedId((prev) => {
+        if (prev && data.accounts.some((a) => a.id === prev)) return prev;
+        return data.activeAccountId || data.accounts[0]?.id || null;
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load accounts');
+    }
+  }, []);
+
+  const checkStatus = useCallback(async (accountId: string | null) => {
+    if (!accountId) {
+      setAuthStatus(null);
+      return false;
+    }
+    try {
+      const res = await fetch(`/api/gateway/api/skills/google-workspace/oauth/status?accountId=${encodeURIComponent(accountId)}`);
       if (res.ok) {
-        const data = await res.json();
+        const data = await res.json() as AuthStatus;
         setAuthStatus(data);
         return data.authenticated;
       }
@@ -159,41 +205,133 @@ function GoogleOAuthSection({ skillSettings }: { skillSettings: Record<string, u
   }, []);
 
   useEffect(() => {
-    checkStatus().finally(() => setLoading(false));
-  }, [checkStatus]);
+    fetchAccounts().finally(() => setLoading(false));
+  }, [fetchAccounts]);
+
+  useEffect(() => {
+    if (selected) {
+      setFieldDraft({
+        label: selected.label,
+        GOOGLE_OAUTH_CLIENT_ID: selected.GOOGLE_OAUTH_CLIENT_ID,
+        GOOGLE_OAUTH_CLIENT_SECRET: selected.GOOGLE_OAUTH_CLIENT_SECRET,
+        GOOGLE_OAUTH_REDIRECT_URI: selected.GOOGLE_OAUTH_REDIRECT_URI,
+        USER_GOOGLE_EMAIL: selected.USER_GOOGLE_EMAIL,
+      });
+      setDraftDirty(false);
+    } else {
+      setFieldDraft({});
+    }
+    void checkStatus(selectedId);
+  }, [selectedId, selected, checkStatus]);
+
+  const handleSelect = async (id: string) => {
+    if (id === '__add__') {
+      setAddingAccount(true);
+      return;
+    }
+    setSelectedId(id);
+    if (id === activeAccountId) return;
+    // Make this the active account so agent calls + oauth-start use it.
+    try {
+      await fetch(`/api/gateway/api/skills/google-workspace/accounts/${encodeURIComponent(id)}/activate`, { method: 'POST' });
+      setActiveAccountId(id);
+    } catch {}
+  };
+
+  const handleCreateAccount = async () => {
+    const label = newAccountLabel.trim();
+    if (!label) return;
+    try {
+      const res = await fetch('/api/gateway/api/skills/google-workspace/accounts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error((data as { error?: string }).error || 'Failed to create account');
+      setNewAccountLabel('');
+      setAddingAccount(false);
+      await fetchAccounts();
+      const newId = (data as { account?: GoogleAccount }).account?.id;
+      if (newId) {
+        setSelectedId(newId);
+        await fetch(`/api/gateway/api/skills/google-workspace/accounts/${encodeURIComponent(newId)}/activate`, { method: 'POST' });
+        setActiveAccountId(newId);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create account');
+    }
+  };
+
+  const handleRemoveAccount = async () => {
+    if (!selected) return;
+    if (!confirm(`Remove account "${selected.label}"? This deletes its stored OAuth tokens.`)) return;
+    try {
+      const res = await fetch(`/api/gateway/api/skills/google-workspace/accounts/${encodeURIComponent(selected.id)}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error((data as { error?: string }).error || 'Failed to remove account');
+      }
+      setSelectedId(null);
+      await fetchAccounts();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to remove account');
+    }
+  };
+
+  const handleSaveFields = async () => {
+    if (!selected) return;
+    setSavingFields(true);
+    setError('');
+    try {
+      const res = await fetch(`/api/gateway/api/skills/google-workspace/accounts/${encodeURIComponent(selected.id)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label: fieldDraft.label, fields: fieldDraft }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error((data as { error?: string }).error || 'Failed to save');
+      setDraftDirty(false);
+      await fetchAccounts();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save');
+    } finally {
+      setSavingFields(false);
+    }
+  };
+
+  const updateDraft = (key: keyof GoogleAccount, value: string) => {
+    setFieldDraft((prev) => ({ ...prev, [key]: value }));
+    setDraftDirty(true);
+  };
 
   const handleSubmitManualCode = async () => {
-    if (!manualCodeInput.trim()) return;
+    if (!manualCodeInput.trim() || !selectedId) return;
     setSubmittingCode(true);
     setError('');
     try {
       const isUrl = manualCodeInput.includes('code=') || manualCodeInput.startsWith('http');
-      const payload = isUrl ? { url: manualCodeInput.trim() } : { code: manualCodeInput.trim() };
+      const payload: Record<string, string> = { accountId: selectedId };
+      if (isUrl) payload.url = manualCodeInput.trim();
+      else payload.code = manualCodeInput.trim();
 
       const res = await fetch('/api/gateway/api/skills/google-workspace/oauth/callback', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
-
       const data = await res.json();
-      if (!res.ok) {
-        throw new Error((data as { error?: string }).error || 'Failed to submit authorization code');
-      }
+      if (!res.ok) throw new Error((data as { error?: string }).error || 'Failed to submit authorization code');
 
       setManualCodeInput('');
       setShowManualEntry(false);
-      // Poll for a few seconds to confirm token was saved
       let attempts = 0;
       const poll = setInterval(async () => {
         attempts++;
-        const isAuth = await checkStatus();
+        const isAuth = await checkStatus(selectedId);
         if (isAuth || attempts >= 10) {
           clearInterval(poll);
           setAuthenticating(false);
-          if (isAuth) {
-            setError('');
-          }
         }
       }, 2000);
     } catch (err) {
@@ -204,45 +342,33 @@ function GoogleOAuthSection({ skillSettings }: { skillSettings: Record<string, u
   };
 
   const handleAuthenticate = async () => {
+    if (!selectedId) return;
     setAuthenticating(true);
     setError('');
     setShowManualEntry(false);
 
-    // Open a blank window synchronously within the user gesture context.
-    // Browsers block window.open() called after an await (gesture context is lost).
     const popup = window.open('about:blank', '_blank');
-
     try {
       const res = await fetch('/api/gateway/api/skills/google-workspace/oauth/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accountId: selectedId }),
       });
-
       if (!res.ok) {
         popup?.close();
         const body = await res.json().catch(() => ({ error: 'Failed to start OAuth' }));
         throw new Error((body as { error?: string }).error || 'Failed to start OAuth flow');
       }
-
       const data = await res.json();
-
       if (data.authUrl) {
-        if (popup) {
-          popup.location.href = data.authUrl;
-        } else {
-          window.open(data.authUrl, '_blank');
-        }
-
-        // Show manual entry option after a short delay — remote users will need it
-        setTimeout(() => {
-          setShowManualEntry(true);
-        }, 5000);
-
+        if (popup) popup.location.href = data.authUrl;
+        else window.open(data.authUrl, '_blank');
+        setTimeout(() => setShowManualEntry(true), 5000);
         let attempts = 0;
         const maxAttempts = 40;
         const pollInterval = setInterval(async () => {
           attempts++;
-          const isAuth = await checkStatus();
+          const isAuth = await checkStatus(selectedId);
           if (isAuth || attempts >= maxAttempts) {
             clearInterval(pollInterval);
             setAuthenticating(false);
@@ -263,8 +389,6 @@ function GoogleOAuthSection({ skillSettings }: { skillSettings: Record<string, u
     }
   };
 
-  void skillSettings;
-
   if (loading) {
     return (
       <div className="flex items-center gap-2 py-2">
@@ -275,29 +399,154 @@ function GoogleOAuthSection({ skillSettings }: { skillSettings: Record<string, u
   }
 
   return (
-    <div className="space-y-2 pt-1 border-t border-zinc-800">
+    <div className="space-y-3 pt-1 border-t border-zinc-800">
       <h4 className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
-        Google Authentication
+        Google Accounts
       </h4>
 
-      <div className="flex items-center gap-2">
-        {authStatus?.authenticated ? (
-          <>
-            <CheckCircle size={12} className="text-green-500" />
-            <span className="text-[11px] text-green-400">
-              Authenticated as {authStatus.email}
-            </span>
-            {authStatus.tokenAge && (
-              <span className="text-[10px] text-zinc-600">({authStatus.tokenAge})</span>
-            )}
-          </>
-        ) : (
-          <>
-            <AlertCircle size={12} className="text-amber-500" />
-            <span className="text-[11px] text-amber-400">Not authenticated</span>
-          </>
+      {/* Account selector + add/remove */}
+      <div className="flex items-center gap-1.5">
+        <select
+          value={selectedId ?? ''}
+          onChange={(e) => handleSelect(e.target.value)}
+          className="flex-1 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-[11px] text-zinc-200 outline-none focus:border-blue-500"
+        >
+          {accounts.length === 0 && <option value="">— No accounts —</option>}
+          {accounts.map((a) => (
+            <option key={a.id} value={a.id}>
+              {a.label}{a.id === activeAccountId ? ' (active)' : ''}{a.USER_GOOGLE_EMAIL ? ` · ${a.USER_GOOGLE_EMAIL}` : ''}
+            </option>
+          ))}
+          <option value="__add__">+ Add account…</option>
+        </select>
+        {selected && (
+          <button
+            onClick={handleRemoveAccount}
+            className="rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-[11px] text-zinc-300 hover:bg-zinc-700"
+            title="Remove this account"
+          >
+            Remove
+          </button>
         )}
       </div>
+
+      {addingAccount && (
+        <div className="flex gap-1.5 rounded border border-zinc-700 bg-zinc-800/50 p-2">
+          <input
+            type="text"
+            placeholder="Account label (e.g. Work, Personal)"
+            value={newAccountLabel}
+            onChange={(e) => setNewAccountLabel(e.target.value)}
+            className="flex-1 rounded border border-zinc-600 bg-zinc-900 px-2 py-1 text-[11px] text-zinc-200 outline-none focus:border-blue-500"
+            onKeyDown={(e) => { if (e.key === 'Enter') handleCreateAccount(); }}
+            autoFocus
+          />
+          <button
+            onClick={handleCreateAccount}
+            disabled={!newAccountLabel.trim()}
+            className="rounded bg-blue-600 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-blue-500 disabled:opacity-40"
+          >
+            Add
+          </button>
+          <button
+            onClick={() => { setAddingAccount(false); setNewAccountLabel(''); }}
+            className="rounded bg-zinc-700 px-2 py-1 text-[11px] text-zinc-200 hover:bg-zinc-600"
+          >
+            Cancel
+          </button>
+        </div>
+      )}
+
+      {/* Per-account credential fields */}
+      {selected && (
+        <div className="space-y-1.5 rounded border border-zinc-800 bg-zinc-900/50 p-2">
+          <p className="text-[10px] uppercase tracking-wider text-zinc-500">Account: {selected.label}</p>
+          <div className="grid grid-cols-1 gap-1.5">
+            <label className="text-[10px] text-zinc-500">
+              Label
+              <input
+                type="text"
+                value={fieldDraft.label ?? ''}
+                onChange={(e) => updateDraft('label', e.target.value)}
+                className="mt-0.5 w-full rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-[11px] text-zinc-200 outline-none focus:border-blue-500"
+              />
+            </label>
+            <label className="text-[10px] text-zinc-500">
+              Client ID
+              <input
+                type="password"
+                value={fieldDraft.GOOGLE_OAUTH_CLIENT_ID ?? ''}
+                onChange={(e) => updateDraft('GOOGLE_OAUTH_CLIENT_ID', e.target.value)}
+                placeholder="123456789-xxxx.apps.googleusercontent.com"
+                className="mt-0.5 w-full rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-[11px] font-mono text-zinc-200 outline-none focus:border-blue-500"
+              />
+            </label>
+            <label className="text-[10px] text-zinc-500">
+              Client Secret
+              <input
+                type="password"
+                value={fieldDraft.GOOGLE_OAUTH_CLIENT_SECRET ?? ''}
+                onChange={(e) => updateDraft('GOOGLE_OAUTH_CLIENT_SECRET', e.target.value)}
+                placeholder="GOCSPX-xxxxxxxxxxxx"
+                className="mt-0.5 w-full rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-[11px] font-mono text-zinc-200 outline-none focus:border-blue-500"
+              />
+            </label>
+            <label className="text-[10px] text-zinc-500">
+              Redirect URI
+              <input
+                type="text"
+                value={fieldDraft.GOOGLE_OAUTH_REDIRECT_URI ?? ''}
+                onChange={(e) => updateDraft('GOOGLE_OAUTH_REDIRECT_URI', e.target.value)}
+                placeholder={`http://localhost:${selected.port}`}
+                className="mt-0.5 w-full rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-[11px] font-mono text-zinc-200 outline-none focus:border-blue-500"
+              />
+              <span className="mt-0.5 block text-[10px] text-zinc-600">Local listener port: {selected.port}</span>
+            </label>
+            <label className="text-[10px] text-zinc-500">
+              Google Email
+              <input
+                type="email"
+                value={fieldDraft.USER_GOOGLE_EMAIL ?? ''}
+                onChange={(e) => updateDraft('USER_GOOGLE_EMAIL', e.target.value)}
+                placeholder="user@gmail.com"
+                className="mt-0.5 w-full rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-[11px] text-zinc-200 outline-none focus:border-blue-500"
+              />
+            </label>
+          </div>
+          <div className="flex items-center gap-1.5 pt-0.5">
+            <button
+              onClick={handleSaveFields}
+              disabled={!draftDirty || savingFields}
+              className="rounded bg-blue-600 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-blue-500 disabled:opacity-40"
+            >
+              {savingFields ? <Loader2 size={10} className="animate-spin" /> : 'Save account'}
+            </button>
+            {!draftDirty && <span className="text-[10px] text-zinc-600">Saved</span>}
+          </div>
+        </div>
+      )}
+
+      {/* Auth status for selected account */}
+      {selected && (
+        <div className="flex items-center gap-2">
+          {authStatus?.authenticated ? (
+            <>
+              <CheckCircle size={12} className="text-green-500" />
+              <span className="text-[11px] text-green-400">
+                Authenticated as {authStatus.email}
+              </span>
+              {authStatus.tokenAge && (
+                <span className="text-[10px] text-zinc-600">({authStatus.tokenAge})</span>
+              )}
+            </>
+          ) : (
+            <>
+              <AlertCircle size={12} className="text-amber-500" />
+              <span className="text-[11px] text-amber-400">Not authenticated</span>
+            </>
+          )}
+        </div>
+      )}
 
       {error && (
         <p className="text-[11px] text-red-400">{error}</p>

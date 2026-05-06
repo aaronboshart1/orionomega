@@ -10,19 +10,22 @@
 
 import { spawn } from 'node:child_process';
 import { readFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
+import { fileURLToPath } from 'node:url';
+import { resolveAccount, getAccountHome, getSkillsDir } from '../hooks/_accounts.js';
 
 const MAX_OUTPUT = 30_000; // chars
 const TIMEOUT = 90_000; // ms — some Workspace ops are slow
+
+void dirname; void fileURLToPath; // reserved for future use
 
 /**
  * Read skill config from ~/.orionomega/skills/google-workspace/config.json
  * @returns {object}
  */
 export function getConfig() {
-  const skillsDir = process.env.ORIONOMEGA_SKILLS_DIR
-    || join(homedir(), '.orionomega', 'skills');
+  const skillsDir = getSkillsDir();
   const configPath = join(skillsDir, 'google-workspace', 'config.json');
   if (existsSync(configPath)) {
     try {
@@ -34,19 +37,36 @@ export function getConfig() {
 }
 
 /**
- * Build the env passed to workspace-mcp, injecting OAuth creds and
- * optional settings from skill config.
+ * Build the env passed to workspace-mcp, scoped to the active (or
+ * GOOGLE_WORKSPACE_ACCOUNT_ID-selected) account. HOME is overridden to
+ * the per-account directory so workspace-mcp's hardcoded
+ * `~/.google_workspace_mcp/credentials/<email>.json` is per-account.
  */
 function buildEnv() {
   const config = getConfig();
   const env = { ...process.env };
-  const clientId = config.GOOGLE_OAUTH_CLIENT_ID || process.env.GOOGLE_OAUTH_CLIENT_ID;
-  const clientSecret = config.GOOGLE_OAUTH_CLIENT_SECRET || process.env.GOOGLE_OAUTH_CLIENT_SECRET;
-  if (clientId) env.GOOGLE_OAUTH_CLIENT_ID = clientId;
-  if (clientSecret) env.GOOGLE_OAUTH_CLIENT_SECRET = clientSecret;
+  const account = resolveAccount();
+
+  if (account) {
+    env.HOME = getAccountHome(account.id);
+    if (account.GOOGLE_OAUTH_CLIENT_ID) env.GOOGLE_OAUTH_CLIENT_ID = account.GOOGLE_OAUTH_CLIENT_ID;
+    if (account.GOOGLE_OAUTH_CLIENT_SECRET) env.GOOGLE_OAUTH_CLIENT_SECRET = account.GOOGLE_OAUTH_CLIENT_SECRET;
+    if (account.USER_GOOGLE_EMAIL) env.USER_GOOGLE_EMAIL = account.USER_GOOGLE_EMAIL;
+    if (account.GOOGLE_OAUTH_REDIRECT_URI) env.GOOGLE_OAUTH_REDIRECT_URI = account.GOOGLE_OAUTH_REDIRECT_URI;
+  } else {
+    // Legacy single-account fallback (pre-migration): top-level fields.
+    const clientId = config.GOOGLE_OAUTH_CLIENT_ID || process.env.GOOGLE_OAUTH_CLIENT_ID;
+    const clientSecret = config.GOOGLE_OAUTH_CLIENT_SECRET || process.env.GOOGLE_OAUTH_CLIENT_SECRET;
+    if (clientId) env.GOOGLE_OAUTH_CLIENT_ID = clientId;
+    if (clientSecret) env.GOOGLE_OAUTH_CLIENT_SECRET = clientSecret;
+    if (config.USER_GOOGLE_EMAIL) env.USER_GOOGLE_EMAIL = config.USER_GOOGLE_EMAIL;
+  }
+
+  // Search PSE keys are shared across accounts (top-level fields).
   if (config.GOOGLE_PSE_API_KEY) env.GOOGLE_PSE_API_KEY = config.GOOGLE_PSE_API_KEY;
   if (config.GOOGLE_PSE_ENGINE_ID) env.GOOGLE_PSE_ENGINE_ID = config.GOOGLE_PSE_ENGINE_ID;
-  if (config.USER_GOOGLE_EMAIL) env.USER_GOOGLE_EMAIL = config.USER_GOOGLE_EMAIL;
+
+  void homedir;
   return env;
 }
 

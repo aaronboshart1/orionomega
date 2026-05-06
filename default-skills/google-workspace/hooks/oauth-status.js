@@ -1,86 +1,83 @@
 #!/usr/bin/env node
+/**
+ * Report OAuth authentication status for a specific Google Workspace account.
+ *
+ * Account selection:
+ *   - GOOGLE_WORKSPACE_ACCOUNT_ID env (set by the gateway), or
+ *   - the active account from config.json.
+ *
+ * stdout JSON:
+ *   { authenticated: boolean, accountId?, accountLabel?, email?, tokenAge?, reason? }
+ */
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { homedir } from 'node:os';
+import { resolveAccount, getAccountCredentialsDir, getSkillsDir } from './_accounts.js';
+
+function inspectFlatToken(filePath, fallbackEmail) {
+  try {
+    const token = JSON.parse(readFileSync(filePath, 'utf-8'));
+    if (!token.token && !token.refresh_token && !token.access_token) return null;
+    const stat = statSync(filePath);
+    const ageHours = Math.round((Date.now() - stat.mtimeMs) / 3600000);
+    return {
+      email: fallbackEmail,
+      hasRefreshToken: !!token.refresh_token,
+      tokenAge: ageHours < 24 ? `${ageHours}h ago` : `${Math.round(ageHours / 24)}d ago`,
+      lastModified: stat.mtime.toISOString(),
+    };
+  } catch { return null; }
+}
+
+function findToken(credDir) {
+  if (!existsSync(credDir)) return null;
+  let entries;
+  try { entries = readdirSync(credDir, { withFileTypes: true }); } catch { return null; }
+  // Strategy 1: flat <email>.json
+  for (const entry of entries) {
+    if (entry.isFile() && entry.name.endsWith('.json')) {
+      const email = entry.name.replace(/\.json$/, '');
+      const info = inspectFlatToken(join(credDir, entry.name), email);
+      if (info) return info;
+    }
+  }
+  // Strategy 2: <email>/token.json
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const tokenPath = join(credDir, entry.name, 'token.json');
+    if (existsSync(tokenPath)) {
+      const info = inspectFlatToken(tokenPath, entry.name);
+      if (info) return info;
+    }
+  }
+  return null;
+}
 
 function main() {
-  const credDir = join(homedir(), '.google_workspace_mcp', 'credentials');
-
-  if (!existsSync(credDir)) {
-    process.stdout.write(JSON.stringify({ authenticated: false, reason: 'No credentials directory' }));
+  const account = resolveAccount(getSkillsDir());
+  if (!account) {
+    process.stdout.write(JSON.stringify({ authenticated: false, reason: 'No Google Workspace account configured' }));
     return;
   }
-
-  try {
-    const entries = readdirSync(credDir, { withFileTypes: true });
-
-    // Strategy 1: Check for flat credential files (workspace-mcp ≥ 3.x stores
-    // tokens as credentials/<email>.json)
-    for (const entry of entries) {
-      if (entry.isFile() && entry.name.endsWith('.json')) {
-        const filePath = join(credDir, entry.name);
-        try {
-          const token = JSON.parse(readFileSync(filePath, 'utf-8'));
-          const stat = statSync(filePath);
-          const ageMs = Date.now() - stat.mtimeMs;
-          const ageHours = Math.round(ageMs / 3600000);
-
-          // Derive email from filename (strip .json)
-          const email = entry.name.replace(/\.json$/, '');
-
-          // Validate it looks like a real token file (has token or refresh_token)
-          if (!token.token && !token.refresh_token && !token.access_token) {
-            continue;
-          }
-
-          process.stdout.write(JSON.stringify({
-            authenticated: true,
-            email,
-            hasRefreshToken: !!(token.refresh_token),
-            tokenAge: ageHours < 24 ? `${ageHours}h ago` : `${Math.round(ageHours / 24)}d ago`,
-            lastModified: stat.mtime.toISOString(),
-          }));
-          return;
-        } catch {
-          // Skip unparseable files
-        }
-      }
-    }
-
-    // Strategy 2: Check for directory-based credential storage (older workspace-mcp
-    // versions store tokens as credentials/<email>/token.json)
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      const tokenPath = join(credDir, entry.name, 'token.json');
-      if (existsSync(tokenPath)) {
-        try {
-          const token = JSON.parse(readFileSync(tokenPath, 'utf-8'));
-          const stat = statSync(tokenPath);
-          const ageMs = Date.now() - stat.mtimeMs;
-          const ageHours = Math.round(ageMs / 3600000);
-
-          process.stdout.write(JSON.stringify({
-            authenticated: true,
-            email: entry.name,
-            hasRefreshToken: !!(token.refresh_token),
-            tokenAge: ageHours < 24 ? `${ageHours}h ago` : `${Math.round(ageHours / 24)}d ago`,
-            lastModified: stat.mtime.toISOString(),
-          }));
-          return;
-        } catch {
-          // Skip unparseable token files
-        }
-      }
-    }
-  } catch (err) {
+  const credDir = getAccountCredentialsDir(account.id);
+  const info = findToken(credDir);
+  if (!info) {
     process.stdout.write(JSON.stringify({
       authenticated: false,
-      reason: `Error reading credentials: ${err.message || String(err)}`,
+      accountId: account.id,
+      accountLabel: account.label,
+      reason: 'No valid tokens found',
     }));
     return;
   }
-
-  process.stdout.write(JSON.stringify({ authenticated: false, reason: 'No valid tokens found' }));
+  process.stdout.write(JSON.stringify({
+    authenticated: true,
+    accountId: account.id,
+    accountLabel: account.label,
+    email: info.email || account.USER_GOOGLE_EMAIL,
+    hasRefreshToken: info.hasRefreshToken,
+    tokenAge: info.tokenAge,
+    lastModified: info.lastModified,
+  }));
 }
 
 main();

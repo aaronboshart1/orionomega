@@ -1,158 +1,81 @@
 #!/usr/bin/env node
 /**
- * Health check hook for the google-workspace skill.
+ * Health check hook for the google-workspace skill (multi-account aware).
  *
- * Writes a JSON object to stdout describing skill health:
- *   { healthy: boolean, message: string, checks: [{label, ok, detail}] }
- *
- * Per the Skills SDK, healthCheck hooks should always exit 0 — only the
- * stdout JSON is consumed.
- *
- * Verifies, in order:
- *   1. `uvx` is on PATH (required to spawn workspace-mcp)
- *   2. OAuth client credentials are configured in the skill config
- *   3. OAuth tokens are present (obtained via the in-app OAuth flow)
- *   4. The MCP server can be initialized over stdio
+ * Reports overall health = healthy IF at least one configured account has
+ * OAuth credentials AND tokens. Per-account state is included in `checks`
+ * so the UI can show which accounts are wired up.
  */
-
 import { spawnSync } from 'node:child_process';
-import { readFileSync, readdirSync, existsSync } from 'node:fs';
-import { join, dirname } from 'node:path';
-import { homedir } from 'node:os';
-import { fileURLToPath } from 'node:url';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-
-function readConfig() {
-  const skillsDir = process.env.ORIONOMEGA_SKILLS_DIR
-    || join(homedir(), '.orionomega', 'skills');
-  const configPath = join(skillsDir, 'google-workspace', 'config.json');
-  if (!existsSync(configPath)) return {};
-  try {
-    return JSON.parse(readFileSync(configPath, 'utf-8')).fields ?? {};
-  } catch {
-    return {};
-  }
-}
+import { listAccounts, getAccountCredentialsDir } from './_accounts.js';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 function emit(healthy, message, checks) {
   process.stdout.write(JSON.stringify({ healthy, message, checks }, null, 2));
   process.exit(0);
 }
 
+function hasToken(credDir) {
+  if (!existsSync(credDir)) return false;
+  try {
+    for (const e of readdirSync(credDir, { withFileTypes: true })) {
+      if (e.isFile() && e.name.endsWith('.json')) {
+        try {
+          const t = JSON.parse(readFileSync(join(credDir, e.name), 'utf-8'));
+          if (t.token || t.access_token || t.refresh_token) return true;
+        } catch {}
+      } else if (e.isDirectory()) {
+        const p = join(credDir, e.name, 'token.json');
+        if (existsSync(p)) {
+          try {
+            const t = JSON.parse(readFileSync(p, 'utf-8'));
+            if (t.token || t.access_token || t.refresh_token) return true;
+          } catch {}
+        }
+      }
+    }
+  } catch {}
+  return false;
+}
+
 async function main() {
   const checks = [];
 
-  // 1. uvx on PATH
   const uvxCheck = spawnSync('uvx', ['--version'], { encoding: 'utf-8', timeout: 10_000 });
   if (uvxCheck.error || uvxCheck.status !== 0) {
-    checks.push({
-      label: 'uvx installed',
-      ok: false,
-      detail: 'uvx not found on PATH. Install with: curl -LsSf https://astral.sh/uv/install.sh | sh',
-    });
+    checks.push({ label: 'uvx installed', ok: false, detail: 'uvx not found on PATH. Install with: curl -LsSf https://astral.sh/uv/install.sh | sh' });
     return emit(false, 'uvx is required to run workspace-mcp.', checks);
   }
   checks.push({ label: 'uvx installed', ok: true, detail: uvxCheck.stdout?.trim() ?? 'ok' });
 
-  // 2. OAuth client credentials
-  const cfg = readConfig();
-  const clientId = cfg.GOOGLE_OAUTH_CLIENT_ID || process.env.GOOGLE_OAUTH_CLIENT_ID;
-  const clientSecret = cfg.GOOGLE_OAUTH_CLIENT_SECRET || process.env.GOOGLE_OAUTH_CLIENT_SECRET;
-  if (!clientId || !clientSecret) {
+  const { accounts, activeAccountId } = listAccounts();
+  if (accounts.length === 0) {
+    checks.push({ label: 'Accounts configured', ok: false, detail: 'No Google Workspace accounts configured. Add one in Settings → Skills → Google Workspace.' });
+    return emit(false, 'No Google Workspace accounts configured.', checks);
+  }
+  checks.push({ label: 'Accounts configured', ok: true, detail: `${accounts.length} account(s); active: ${activeAccountId || '(none)'}` });
+
+  let anyHealthy = false;
+  for (const a of accounts) {
+    const credsOk = !!(a.GOOGLE_OAUTH_CLIENT_ID && a.GOOGLE_OAUTH_CLIENT_SECRET);
+    const tokenOk = hasToken(getAccountCredentialsDir(a.id));
+    const ok = credsOk && tokenOk;
+    if (ok) anyHealthy = true;
     checks.push({
-      label: 'OAuth credentials configured',
-      ok: false,
-      detail: 'GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET are not set. Open Settings → Skills → Google Workspace and enter your OAuth client credentials.',
+      label: `Account: ${a.label}`,
+      ok,
+      detail: !credsOk
+        ? 'Missing OAuth client credentials'
+        : !tokenOk
+          ? 'Not yet authenticated (no OAuth tokens stored)'
+          : `Connected (${a.USER_GOOGLE_EMAIL || 'email unknown'})`,
     });
-    return emit(false, 'Google OAuth client credentials are not configured.', checks);
-  }
-  checks.push({
-    label: 'OAuth credentials configured',
-    ok: true,
-    detail: `Client ID: ${String(clientId).slice(0, 20)}…`,
-  });
-
-  // 3. OAuth tokens present. Tokens may live in either:
-  //    a) the skill's config.json fields (GOOGLE_ACCESS_TOKEN /
-  //       GOOGLE_REFRESH_TOKEN), populated by the gateway OAuth callback
-  //    b) workspace-mcp's own credentials dir at
-  //       ~/.google_workspace_mcp/credentials/<email>.json (also read by
-  //       hooks/oauth-status.js)
-  //    Either source counts as "authenticated" so the health check can't
-  //    drift away from the OAuth status hook.
-  const accessToken = cfg.GOOGLE_ACCESS_TOKEN;
-  const refreshToken = cfg.GOOGLE_REFRESH_TOKEN;
-  let tokenSource = '';
-  if (accessToken || refreshToken) {
-    tokenSource = refreshToken ? 'config.json (refresh token)' : 'config.json (access token)';
-  } else {
-    const credDir = join(homedir(), '.google_workspace_mcp', 'credentials');
-    if (existsSync(credDir)) {
-      try {
-        for (const entry of readdirSync(credDir, { withFileTypes: true })) {
-          if (entry.isFile() && entry.name.endsWith('.json')) {
-            const tok = JSON.parse(readFileSync(join(credDir, entry.name), 'utf-8'));
-            if (tok.token || tok.access_token || tok.refresh_token) {
-              tokenSource = `workspace-mcp credentials (${entry.name.replace(/\.json$/, '')})`;
-              break;
-            }
-          } else if (entry.isDirectory()) {
-            const tokPath = join(credDir, entry.name, 'token.json');
-            if (existsSync(tokPath)) {
-              const tok = JSON.parse(readFileSync(tokPath, 'utf-8'));
-              if (tok.token || tok.access_token || tok.refresh_token) {
-                tokenSource = `workspace-mcp credentials (${entry.name})`;
-                break;
-              }
-            }
-          }
-        }
-      } catch {}
-    }
-  }
-  if (!tokenSource) {
-    checks.push({
-      label: 'OAuth tokens present',
-      ok: false,
-      detail: 'No access or refresh token. Open Settings → Skills → Google Workspace and click "Connect Google account" to complete the OAuth flow.',
-    });
-    return emit(false, 'OAuth tokens missing — sign in via Settings → Skills → Google Workspace.', checks);
-  }
-  checks.push({
-    label: 'OAuth tokens present',
-    ok: true,
-    detail: tokenSource,
-  });
-
-  // 4. MCP server reachable — initialize over stdio. We use the same
-  //    transport the handlers use, but only perform `initialize` (no
-  //    tool call) so we don't make any Google API requests.
-  const { workspace } = await import(join(__dirname, '..', 'handlers', 'lib.js'));
-  // workspace() always does initialize → tools/call. To keep this
-  // health check cheap we call a known no-op tool with a tiny argument
-  // and tolerate a benign error response (we only care that the server
-  // started, initialized, and replied at all).
-  const probe = await Promise.race([
-    workspace('list_gmail_labels', {}),
-    new Promise((r) => setTimeout(() => r({ ok: false, error: 'probe timeout' }), 30_000)),
-  ]);
-
-  if (probe.ok || (probe.error && !/Failed to spawn|exited.*before responding|timed out/.test(probe.error))) {
-    checks.push({
-      label: 'workspace-mcp reachable',
-      ok: true,
-      detail: probe.ok ? 'Initialized and tool call returned data' : `Initialized (tool reported: ${probe.error.slice(0, 120)})`,
-    });
-    return emit(true, 'Google Workspace skill is healthy.', checks);
   }
 
-  checks.push({
-    label: 'workspace-mcp reachable',
-    ok: false,
-    detail: probe.error || 'Unknown error',
-  });
-  return emit(false, 'Could not reach workspace-mcp over stdio.', checks);
+  return emit(anyHealthy,
+    anyHealthy ? 'Google Workspace skill is healthy.' : 'No accounts are fully connected yet.',
+    checks);
 }
 
 main().catch((err) => {
