@@ -1141,7 +1141,8 @@
       "google_contacts",
       "google_chat",
       "google_apps_script",
-      "google_search"
+      "google_search",
+      "accounts"
     ],
     "maxTimeout": 180000
   },
