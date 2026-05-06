@@ -27,11 +27,12 @@ Full-featured Google Workspace integration via the open-source [workspace-mcp](h
 
 1. `uvx` installed (`pip install uv` or `curl -LsSf https://astral.sh/uv/install.sh | sh`)
 2. A Google Cloud project with OAuth 2.0 Web Application credentials and the Google APIs you intend to use enabled (Gmail, Drive, Calendar, Docs, Sheets, Slides, Forms, Tasks, People, Chat, Apps Script)
-3. Skill configured via Settings → Skills → Google Workspace:
-   - Paste the OAuth **Client ID** and **Client Secret**
-   - Set the **Default Google Email** (`USER_GOOGLE_EMAIL`) — required to start the OAuth flow
-   - (Optional) Override **Redirect URI** if not running on the account's default loopback URL (shown next to the field; defaults to `http://localhost:<port>` where `port = GOOGLE_WORKSPACE_MCP_BASE_PORT + slot`, base 9877)
-   - Save, then click **Connect Google account** to complete the in-app OAuth flow. Tokens are stored in the skill's `config.json` (or `~/.google_workspace_mcp/credentials/`) and refreshed automatically.
+3. Skill configured via Settings → Skills → Google Workspace (multi-account):
+   - Use the account dropdown at the top of the section. Pick an existing account or choose **+ Add account** to add another (e.g. "Personal", "Work"). Each account holds its own OAuth client.
+   - For the selected account, paste the OAuth **Client ID** and **Client Secret** and set the **Default Google Email** (`USER_GOOGLE_EMAIL`).
+   - Each account is bound to a dedicated loopback port `basePort + slot` (default base `9877`, override via `GOOGLE_WORKSPACE_MCP_BASE_PORT`). The matching **Redirect URI** is `http://localhost:<port>` and is shown inline; register that exact URL in the same Google Cloud OAuth client.
+   - Save, then click **Connect Google account** to complete the in-app OAuth flow. On a self-hosted Linux VM the OAuth round-trip completes against the per-account loopback URL. On Replit, use the **Manual code entry** field (the redirect localhost URL won't load — paste it back into the field).
+   - Per-account credentials are stored under `~/.google_workspace_mcp_accounts/<accountId>/.google_workspace_mcp/credentials/<email>.json` (workspace-mcp is run with `HOME` overridden so each account's tokens are fully isolated). Account records live as one file per account at `<skillsDir>/google-workspace/accounts/<id>.json`, with the active account in `accounts/index.json`. Removing an account scrubs both its config file and its `~/.google_workspace_mcp_accounts/<id>/` directory.
 
 ## Tools
 

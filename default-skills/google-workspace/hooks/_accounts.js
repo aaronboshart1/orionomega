@@ -27,7 +27,7 @@
 
 import {
   readFileSync, existsSync, mkdirSync, writeFileSync, openSync, closeSync,
-  unlinkSync, statSync, readdirSync, renameSync,
+  unlinkSync, statSync, readdirSync, renameSync, rmSync,
 } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
@@ -372,7 +372,7 @@ export function updateAccount(skillsDir, accountId, patch) {
 }
 
 export function deleteAccount(skillsDir, accountId) {
-  return withAccounts(skillsDir, (accounts, setActive, markDelete) => {
+  const result = withAccounts(skillsDir, (accounts, setActive, markDelete) => {
     if (!accounts[accountId]) throw new Error(`Account "${accountId}" not found`);
     delete accounts[accountId];
     markDelete(accountId);
@@ -380,6 +380,15 @@ export function deleteAccount(skillsDir, accountId) {
     setActive(remaining[0] || null);
     return { ok: true, activeAccountId: remaining[0] || null };
   });
+  // Securely scrub the per-account isolated $HOME so OAuth tokens, the
+  // workspace-mcp credentials directory, and the per-account log/state
+  // files do not linger after deletion (and cannot be reused if the
+  // same account id is recreated later).
+  try {
+    const home = getAccountHome(accountId);
+    rmSync(home, { recursive: true, force: true });
+  } catch {}
+  return result;
 }
 
 export function setActiveAccount(skillsDir, accountId) {
