@@ -538,7 +538,9 @@ export async function handleGoogleOAuthCallback(
   try {
     const body = await readBody(req);
     const payload = JSON.parse(body) as { url?: string; code?: string; accountId?: string };
-    const accountId = (typeof payload.accountId === 'string' && payload.accountId) ? payload.accountId : null;
+    // Accept accountId from EITHER ?accountId=… (consistent with
+    // start/status) OR the JSON body (legacy callers). Body wins.
+    const accountId = extractAccountId(req, body) || (typeof payload.accountId === 'string' && payload.accountId ? payload.accountId : null);
     if (accountId && !VALID_ACCOUNT_ID.test(accountId)) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Invalid accountId' }));
