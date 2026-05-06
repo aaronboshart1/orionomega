@@ -3,10 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Loader2,
-  CheckCircle,
-  AlertCircle,
   XCircle,
-  Power,
   RotateCw,
   Play,
   Wifi,
@@ -24,7 +21,7 @@ interface GatewayStatus {
   systemHealth: string;
 }
 
-type ActionState = 'idle' | 'stopping' | 'restarting' | 'starting' | 'polling';
+type ActionState = 'idle' | 'restarting' | 'starting' | 'polling' | 'restarting-hindsight';
 
 function formatUptime(seconds: number): string {
   const d = Math.floor(seconds / 86400);
@@ -128,32 +125,23 @@ export function GatewayTab() {
     }, 2000);
   }, [fetchStatus]);
 
-  const handleStop = async () => {
-    setActionState('stopping');
+  const handleRestartHindsight = async () => {
+    setActionState('restarting-hindsight');
     setError(null);
     try {
-      const res = await fetch('/api/gateway/api/shutdown', { method: 'POST', signal: AbortSignal.timeout(5000) });
+      const res = await fetch('/api/gateway/api/hindsight/restart', { method: 'POST', signal: AbortSignal.timeout(20000) });
       if (!res.ok) {
         const body = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
-        throw new Error((body as { error?: string }).error || `Stop failed (${res.status})`);
+        throw new Error((body as { error?: string }).error || `Hindsight restart failed (${res.status})`);
       }
-      if (mountedRef.current) {
-        setStatus(null);
-        setReachable(false);
-        setActionState('idle');
-      }
+      // Refresh status so the Hindsight stat card reflects the new state.
+      await fetchStatus();
     } catch (err) {
       if (mountedRef.current) {
-        const isNetworkError = err instanceof TypeError || (err instanceof DOMException && err.name === 'AbortError');
-        if (isNetworkError) {
-          setStatus(null);
-          setReachable(false);
-          setActionState('idle');
-        } else {
-          setError(err instanceof Error ? err.message : 'Failed to stop gateway');
-          setActionState('idle');
-        }
+        setError(err instanceof Error ? err.message : 'Failed to restart hindsight');
       }
+    } finally {
+      if (mountedRef.current) setActionState('idle');
     }
   };
 
@@ -217,17 +205,17 @@ export function GatewayTab() {
         </div>
       )}
 
-      {actionState === 'stopping' && (
-        <div className="flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-400">
-          <Loader2 size={14} className="animate-spin" />
-          <span>Stopping gateway…</span>
-        </div>
-      )}
-
       {actionState === 'restarting' && (
         <div className="flex items-center gap-2 rounded-md border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-xs text-blue-400">
           <Loader2 size={14} className="animate-spin" />
           <span>Restarting gateway…</span>
+        </div>
+      )}
+
+      {actionState === 'restarting-hindsight' && (
+        <div className="flex items-center gap-2 rounded-md border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-xs text-blue-400">
+          <Loader2 size={14} className="animate-spin" />
+          <span>Restarting hindsight…</span>
         </div>
       )}
 
@@ -276,20 +264,22 @@ export function GatewayTab() {
 
           <div className="flex items-center gap-2 pt-2">
             <button
-              onClick={handleStop}
-              disabled={busy}
-              className="flex items-center gap-1.5 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-xs font-medium text-red-400 transition-colors hover:bg-red-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <Power size={12} />
-              Stop
-            </button>
-            <button
               onClick={handleRestart}
               disabled={busy}
+              title="Runs `orionomega gateway restart` on the host"
               className="flex items-center gap-1.5 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs font-medium text-amber-400 transition-colors hover:bg-amber-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <RotateCw size={12} />
-              Restart
+              Restart Gateway
+            </button>
+            <button
+              onClick={handleRestartHindsight}
+              disabled={busy}
+              title="Runs `docker restart hindsight` on the host"
+              className="flex items-center gap-1.5 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs font-medium text-amber-400 transition-colors hover:bg-amber-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <RotateCw size={12} />
+              Restart Hindsight
             </button>
           </div>
         </>
@@ -319,7 +309,8 @@ export function GatewayTab() {
 
       <div className="rounded-md border border-zinc-800 bg-zinc-900/50 px-3 py-2 text-xs text-zinc-500 leading-relaxed">
         The gateway manages agent sessions, WebSocket connections, and API routing.
-        Use the controls above to stop, restart, or start the gateway service.
+        Use the controls above to restart the gateway (runs <span className="text-zinc-400">orionomega gateway restart</span>) or
+        the Hindsight memory container (runs <span className="text-zinc-400">docker restart hindsight</span>).
         Configuration changes (port, bind address) are available in the <span className="text-zinc-400">OmegaClaw</span> tab.
       </div>
     </div>

@@ -7,12 +7,13 @@
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { readFileSync, existsSync, statSync, realpathSync } from 'node:fs';
-import { resolve as resolvePath, normalize, dirname } from 'node:path';
+import { readFileSync, existsSync, statSync, realpathSync, writeFileSync, unlinkSync, mkdirSync } from 'node:fs';
+import { resolve as resolvePath, normalize, dirname, join as joinPath } from 'node:path';
+import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { spawn as spawnProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { readConfig, normalizeBindAddresses, MainAgent, CommandFileLoader, createLogger, setGlobalLogLevel, enableFileLogging, discoverModels, clearModelCache, auditApiRequest, setCodingOrchestatorEmitters, restartWebUI, getDb, BUILD_INFO as CORE_BUILD_INFO, getStaleBuildStatus, getDatabaseStatus } from '@orionomega/core';
+import { readConfig, normalizeBindAddresses, MainAgent, CommandFileLoader, createLogger, setGlobalLogLevel, enableFileLogging, discoverModels, clearModelCache, auditApiRequest, setCodingOrchestatorEmitters, getDb, BUILD_INFO as CORE_BUILD_INFO, getStaleBuildStatus, getDatabaseStatus } from '@orionomega/core';
 import type { MainAgentConfig, MainAgentCallbacks, LogLevel, PlannerOutput, StaleBuildStatus } from '@orionomega/core';
 import { BUILD_INFO as GATEWAY_BUILD_INFO } from './generated/build-info.js';
 import { setLogLevel as setHindsightLogLevel } from '@orionomega/hindsight';
@@ -1707,6 +1708,10 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
   }
 
   // --- Restart ---
+  // Invokes the `orionomega gateway restart` CLI command directly, which
+  // owns PID-file management, web-UI restart, and (when present) systemd
+  // delegation. We deliberately defer to the CLI rather than re-spawn the
+  // server in-process so the UI button and the CLI behave identically.
   if (pathname === '/api/restart' && method === 'POST') {
     const remote = req.socket.remoteAddress ?? '';
     const isLocal = remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1';
@@ -1715,35 +1720,55 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
       res.end(JSON.stringify({ error: 'Lifecycle endpoints are restricted to localhost' }));
       return;
     }
-    const serverPath = process.argv[1];
-    if (!serverPath) {
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Cannot determine server entry point for restart' }));
-      return;
-    }
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ message: 'Restarting…' }));
 
-    const childEnv = { ...process.env, ORIONOMEGA_RESTART_DELAY: '1000' };
-    const child = spawnProcess(process.execPath, [serverPath], {
+    // Detached + ignored stdio so the child survives this process exiting.
+    const child = spawnProcess('orionomega', ['gateway', 'restart'], {
       detached: true,
       stdio: 'ignore',
-      env: childEnv,
+      env: { ...process.env },
+    });
+    child.on('error', (err) => {
+      log.error('Failed to invoke `orionomega gateway restart`', { error: String(err) });
     });
     child.unref();
-    setTimeout(() => shutdown('API_RESTART'), 500);
+    return;
+  }
 
-    // Restart the web UI after the gateway restart response is sent.
-    // Delay ensures the HTTP response is delivered before this process restarts.
-    setTimeout(() => {
-      restartWebUI().then((result) => {
-        log.info('Web UI restarted after gateway restart', { stopped: result.stopped, started: result.started });
-      }).catch((err) => {
-        log.error('Failed to restart web UI after gateway restart', { error: String(err) });
-      });
-    }, 1000);
-
+  // --- Hindsight Restart ---
+  // Runs `docker restart hindsight`. Localhost-only. Does NOT touch the
+  // gateway process — only the Hindsight container is bounced.
+  if (pathname === '/api/hindsight/restart' && method === 'POST') {
+    const remote = req.socket.remoteAddress ?? '';
+    const isLocal = remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1';
+    if (!isLocal) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Lifecycle endpoints are restricted to localhost' }));
+      return;
+    }
+    const child = spawnProcess('docker', ['restart', 'hindsight'], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stderr = '';
+    child.stderr?.on('data', (b: Buffer) => { stderr += b.toString('utf-8'); });
+    child.on('error', (err) => {
+      if (!res.headersSent) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: `Failed to invoke docker: ${err.message}` }));
+      }
+    });
+    child.on('close', (code) => {
+      if (res.headersSent) return;
+      if (code === 0) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ message: 'Hindsight restarted' }));
+      } else {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: `docker restart hindsight exited ${code}: ${stderr.trim().slice(0, 300)}` }));
+      }
+    });
     return;
   }
 
@@ -1902,6 +1927,21 @@ function startListening(): void {
 
   startRateLimitCleanup();
 
+  // Write our PID to ~/.orionomega/gateway.pid so `orionomega gateway
+  // restart` (which reads this file to find & SIGTERM the running
+  // gateway) works regardless of how this process was launched —
+  // including the documented `pnpm --filter @orionomega/gateway start`
+  // path that doesn't go through the CLI's `startDev`. Without this,
+  // the UI Restart button would spawn a second gateway that fails to
+  // bind because the first never gets killed.
+  try {
+    const pidDir = joinPath(homedir(), '.orionomega');
+    mkdirSync(pidDir, { recursive: true });
+    writeFileSync(joinPath(pidDir, 'gateway.pid'), String(process.pid), 'utf-8');
+  } catch (err) {
+    log.warn('Failed to write gateway PID file', { error: err instanceof Error ? err.message : String(err) });
+  }
+
   for (let i = 0; i < bindAddresses.length; i++) {
     const address = bindAddresses[i];
     servers[i].listen(config.port, address, () => {
@@ -1955,6 +1995,16 @@ async function shutdown(signal: string): Promise<void> {
   shutdownInProgress = (async () => {
     log.info(` ${signal} received — shutting down gracefully…`);
     shuttingDown = true;
+
+    // Clean up the PID file we wrote at startup so a subsequent
+    // `orionomega gateway status` doesn't report a stale PID.
+    try {
+      const pidPath = joinPath(homedir(), '.orionomega', 'gateway.pid');
+      if (existsSync(pidPath)) {
+        const pid = parseInt(readFileSync(pidPath, 'utf-8').trim(), 10);
+        if (pid === process.pid) unlinkSync(pidPath);
+      }
+    } catch { /* best-effort */ }
 
     // C2: Stop accepting new work IMMEDIATELY.
     // Clear any pending bind-retry timers so they cannot fire mid-shutdown
