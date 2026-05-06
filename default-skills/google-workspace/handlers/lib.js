@@ -1,9 +1,14 @@
 /**
  * Shared utilities for Google Workspace skill handlers.
- * Wraps the workspace-mcp CLI tool for invoking Google Workspace APIs.
+ *
+ * Spawns `workspace-mcp` as an MCP server over stdio for each call and
+ * speaks JSON-RPC 2.0 (initialize → notifications/initialized →
+ * tools/call). The previous `--cli` one-shot mode does not exist in
+ * upstream workspace-mcp; the documented contract is the MCP stdio
+ * transport, so we use that.
  */
 
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
@@ -16,7 +21,6 @@ const TIMEOUT = 90_000; // ms — some Workspace ops are slow
  * @returns {object}
  */
 export function getConfig() {
-  // 1. Try skill config file
   const configPath = join(homedir(), '.orionomega', 'skills', 'google-workspace', 'config.json');
   if (existsSync(configPath)) {
     try {
@@ -28,91 +32,169 @@ export function getConfig() {
 }
 
 /**
- * Invoke a workspace-mcp CLI tool and return the result.
- * Uses `uvx workspace-mcp --cli <toolName> --args <json>` mode.
- *
- * @param {string} toolName - The exact workspace-mcp tool name (e.g. 'search_gmail_messages')
- * @param {object} args - Tool arguments (passed as JSON to --args)
- * @returns {{ ok: boolean, result?: string, error?: string }}
+ * Build the env passed to workspace-mcp, injecting OAuth creds and
+ * optional settings from skill config.
  */
-export function workspace(toolName, args = {}) {
+function buildEnv() {
   const config = getConfig();
-
   const env = { ...process.env };
-
-  // Inject OAuth credentials from skill config or environment
   const clientId = config.GOOGLE_OAUTH_CLIENT_ID || process.env.GOOGLE_OAUTH_CLIENT_ID;
   const clientSecret = config.GOOGLE_OAUTH_CLIENT_SECRET || process.env.GOOGLE_OAUTH_CLIENT_SECRET;
   if (clientId) env.GOOGLE_OAUTH_CLIENT_ID = clientId;
   if (clientSecret) env.GOOGLE_OAUTH_CLIENT_SECRET = clientSecret;
-
-  // Inject optional settings
   if (config.GOOGLE_PSE_API_KEY) env.GOOGLE_PSE_API_KEY = config.GOOGLE_PSE_API_KEY;
   if (config.GOOGLE_PSE_ENGINE_ID) env.GOOGLE_PSE_ENGINE_ID = config.GOOGLE_PSE_ENGINE_ID;
   if (config.USER_GOOGLE_EMAIL) env.USER_GOOGLE_EMAIL = config.USER_GOOGLE_EMAIL;
+  return env;
+}
 
-  const argsJson = JSON.stringify(args);
+/**
+ * Invoke a workspace-mcp tool via MCP stdio JSON-RPC and return the result.
+ *
+ * @param {string} toolName - Exact workspace-mcp tool name (e.g. 'search_gmail_messages')
+ * @param {object} args - Tool arguments (passed as the JSON-RPC `arguments` object)
+ * @returns {Promise<{ ok: boolean, result?: string, error?: string }>}
+ */
+export function workspace(toolName, args = {}) {
+  return new Promise((resolve) => {
+    const env = buildEnv();
 
-  const result = spawnSync(
-    'uvx',
-    ['workspace-mcp', '--cli', toolName, '--args', argsJson],
-    {
-      env,
-      timeout: TIMEOUT,
-      encoding: 'utf-8',
-      maxBuffer: 10 * 1024 * 1024, // 10 MB
-    }
-  );
+    const child = spawn(
+      'uvx',
+      ['workspace-mcp', '--single-user', '--transport', 'stdio'],
+      { env, stdio: ['pipe', 'pipe', 'pipe'] },
+    );
 
-  if (result.error) {
-    const msg = result.error.code === 'ETIMEDOUT'
-      ? `workspace-mcp timed out after ${TIMEOUT / 1000}s`
-      : result.error.message;
-    return { ok: false, error: msg };
-  }
+    let stdoutBuf = '';
+    let stderrBuf = '';
+    let settled = false;
+    const pending = new Map(); // id → resolver
+    let nextId = 1;
 
-  if (result.status !== 0) {
-    const stderr = result.stderr?.trim() ?? '';
-    const stdout = result.stdout?.trim() ?? '';
-    // workspace-mcp may write errors to stdout as JSON
-    if (stdout) {
+    const finish = (payload) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      // Graceful shutdown: SIGTERM, escalate to SIGKILL after 1s if the
+      // child (or any descendants spawned by uvx) ignores it. Without
+      // escalation a stuck workspace-mcp under repeated timeouts would
+      // leak processes.
       try {
-        const parsed = JSON.parse(stdout);
-        if (parsed.error) return { ok: false, error: parsed.error };
+        if (!child.killed && child.exitCode === null) {
+          child.kill('SIGTERM');
+          const killTimer = setTimeout(() => {
+            try {
+              if (!child.killed && child.exitCode === null) child.kill('SIGKILL');
+            } catch {}
+          }, 1000);
+          killTimer.unref?.();
+        }
       } catch {}
-    }
-    return { ok: false, error: stderr || `Process exited with code ${result.status}` };
-  }
+      resolve(payload);
+    };
 
-  const stdout = result.stdout?.trim() ?? '';
-  if (!stdout) return { ok: true, result: '(no output)' };
+    const timer = setTimeout(() => {
+      finish({ ok: false, error: `workspace-mcp timed out after ${TIMEOUT / 1000}s` });
+    }, TIMEOUT);
 
-  // Parse MCP tool result format: { content: [{ type: 'text', text: '...' }] }
-  try {
-    const parsed = JSON.parse(stdout);
+    child.on('error', (err) => {
+      finish({ ok: false, error: `Failed to spawn workspace-mcp: ${err.message}` });
+    });
 
-    if (parsed.isError) {
-      const errText = parsed.content
-        ?.filter(c => c.type === 'text')
-        .map(c => c.text)
-        .join('\n') ?? 'Unknown error';
-      return { ok: false, error: errText };
-    }
+    child.on('exit', (code, signal) => {
+      if (settled) return;
+      const stderr = stderrBuf.trim();
+      finish({
+        ok: false,
+        error: stderr || `workspace-mcp exited (code=${code}, signal=${signal}) before responding`,
+      });
+    });
 
-    if (Array.isArray(parsed.content)) {
-      const text = parsed.content
-        .filter(c => c.type === 'text')
-        .map(c => c.text)
-        .join('\n');
-      return { ok: true, result: text || '(empty response)' };
-    }
+    child.stderr.on('data', (chunk) => {
+      stderrBuf += chunk.toString('utf-8');
+    });
 
-    // Fallback: return raw JSON as text
-    return { ok: true, result: JSON.stringify(parsed, null, 2) };
-  } catch {
-    // Not JSON — return as-is (already a text response)
-    return { ok: true, result: stdout };
-  }
+    // MCP framing over stdio is newline-delimited JSON (each JSON-RPC
+    // message is one line on stdout).
+    child.stdout.on('data', (chunk) => {
+      stdoutBuf += chunk.toString('utf-8');
+      let idx;
+      while ((idx = stdoutBuf.indexOf('\n')) >= 0) {
+        const line = stdoutBuf.slice(0, idx).trim();
+        stdoutBuf = stdoutBuf.slice(idx + 1);
+        if (!line) continue;
+        let msg;
+        try { msg = JSON.parse(line); } catch { continue; }
+        if (msg && typeof msg.id !== 'undefined' && pending.has(msg.id)) {
+          const cb = pending.get(msg.id);
+          pending.delete(msg.id);
+          cb(msg);
+        }
+      }
+    });
+
+    const send = (obj) => {
+      try { child.stdin.write(JSON.stringify(obj) + '\n'); } catch {}
+    };
+    const request = (method, params) => new Promise((res) => {
+      const id = nextId++;
+      pending.set(id, res);
+      send({ jsonrpc: '2.0', id, method, params });
+    });
+    const notify = (method, params) => send({ jsonrpc: '2.0', method, params });
+
+    (async () => {
+      try {
+        const initRes = await request('initialize', {
+          protocolVersion: '2024-11-05',
+          capabilities: {},
+          clientInfo: { name: 'orionomega-google-workspace', version: '1.0.0' },
+        });
+        if (initRes.error) {
+          finish({ ok: false, error: `initialize failed: ${initRes.error.message || JSON.stringify(initRes.error)}` });
+          return;
+        }
+        notify('notifications/initialized', {});
+
+        const callRes = await request('tools/call', {
+          name: toolName,
+          arguments: args,
+        });
+
+        if (callRes.error) {
+          finish({ ok: false, error: callRes.error.message || JSON.stringify(callRes.error) });
+          return;
+        }
+
+        const result = callRes.result;
+        if (!result) {
+          finish({ ok: true, result: '(no output)' });
+          return;
+        }
+
+        if (result.isError) {
+          const errText = Array.isArray(result.content)
+            ? result.content.filter((c) => c.type === 'text').map((c) => c.text).join('\n')
+            : 'Tool returned isError';
+          finish({ ok: false, error: errText || 'Tool error' });
+          return;
+        }
+
+        if (Array.isArray(result.content)) {
+          const text = result.content
+            .filter((c) => c.type === 'text')
+            .map((c) => c.text)
+            .join('\n');
+          finish({ ok: true, result: text || '(empty response)' });
+          return;
+        }
+
+        finish({ ok: true, result: JSON.stringify(result, null, 2) });
+      } catch (err) {
+        finish({ ok: false, error: err instanceof Error ? err.message : String(err) });
+      }
+    })();
+  });
 }
 
 /**

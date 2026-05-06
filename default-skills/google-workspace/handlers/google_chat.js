@@ -25,7 +25,7 @@ async function main() {
   const { action: _, ...rest } = p;
   const args = cleanArgs(rest);
 
-  const res = workspace(toolName, args);
+  const res = await workspace(toolName, args);
   if (!res.ok) return respond({ error: res.error });
   return respond({ result: truncate(res.result) });
 }
