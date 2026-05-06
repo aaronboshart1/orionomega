@@ -380,6 +380,19 @@ export function deleteAccount(skillsDir, accountId) {
     setActive(remaining[0] || null);
     return { ok: true, activeAccountId: remaining[0] || null };
   });
+  // Best-effort terminate any still-running per-account workspace-mcp
+  // OAuth listener so deleting an account doesn't leave an orphan
+  // server bound to its loopback port. The PID was persisted to the
+  // account state file by oauth-start.js when it spawned the child.
+  try {
+    const stateFile = getAccountStateFile(accountId);
+    if (existsSync(stateFile)) {
+      const pid = parseInt(readFileSync(stateFile, 'utf-8').trim(), 10);
+      if (Number.isFinite(pid) && pid > 0) {
+        try { process.kill(pid, 'SIGTERM'); } catch {}
+      }
+    }
+  } catch {}
   // Securely scrub the per-account isolated $HOME so OAuth tokens, the
   // workspace-mcp credentials directory, and the per-account log/state
   // files do not linger after deletion (and cannot be reused if the

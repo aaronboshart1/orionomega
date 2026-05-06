@@ -264,17 +264,27 @@ function GoogleOAuthSection({ skillSettings }: { skillSettings: Record<string, u
       setAddingAccount(true);
       return;
     }
-    setSelectedId(id);
-    if (id === activeAccountId) return;
+    if (id === activeAccountId) {
+      setSelectedId(id);
+      return;
+    }
     // Make this the active account so agent calls + oauth-start use it.
-    // Only mirror to local state after the gateway confirms the change
-    // so a transient failure can't leave the UI showing an "active"
-    // account that the gateway never persisted.
+    // Only commit BOTH selected + active locally after the gateway
+    // confirms the change — otherwise revert selection so the UI never
+    // shows a "selected" account that's out of sync with the gateway's
+    // active account.
+    const previousSelected = selectedId;
+    setSelectedId(id);
     try {
       const r = await fetch(`/api/gateway/api/skills/google-workspace/accounts/${encodeURIComponent(id)}/activate`, { method: 'POST' });
-      if (r.ok) setActiveAccountId(id);
-      else setError('Failed to switch active account');
+      if (r.ok) {
+        setActiveAccountId(id);
+      } else {
+        setSelectedId(previousSelected);
+        setError('Failed to switch active account');
+      }
     } catch {
+      setSelectedId(previousSelected);
       setError('Failed to switch active account');
     }
   };
