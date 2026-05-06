@@ -592,12 +592,11 @@ function SkillCard({
             <p className="text-[11px] text-zinc-500">No configurable settings for this skill.</p>
           )}
 
-          {skill.name === 'google-workspace' && (
-            <GoogleOAuthSection skillSettings={localSettings} />
-          )}
-
           {(hasSchema || settingsDirty) && (
-            <div className="flex items-center justify-end gap-2 pt-1">
+            <div className="flex items-center justify-end gap-2 pt-1 border-t border-zinc-800/60 -mx-3 px-3 pt-2">
+              {settingsDirty && (
+                <span className="text-[11px] text-amber-400 mr-auto">Unsaved changes</span>
+              )}
               {saveResult === 'success' && (
                 <span className="text-[11px] text-green-400">Saved</span>
               )}
@@ -609,9 +608,13 @@ function SkillCard({
                 disabled={saving || !settingsDirty}
                 className="rounded bg-blue-600 px-3 py-1 text-[11px] font-medium text-white transition-colors hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed"
               >
-                {saving ? 'Saving...' : 'Save'}
+                {saving ? 'Saving...' : `Save ${skill.name} settings`}
               </button>
             </div>
+          )}
+
+          {skill.name === 'google-workspace' && (
+            <GoogleOAuthSection skillSettings={localSettings} />
           )}
         </div>
       )}
