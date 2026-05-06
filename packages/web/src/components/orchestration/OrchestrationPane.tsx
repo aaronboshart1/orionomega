@@ -8,7 +8,9 @@ import { WorkerDetail } from './WorkerDetail';
 import { WorkflowSummary } from './WorkflowSummary';
 import { MemoryFeed } from './MemoryFeed';
 import { LogsPane } from './LogsPane';
-import { X, Play, Pause, Square, FileText, Wifi, WifiOff, ScrollText } from 'lucide-react';
+import { SchedulesPane } from './SchedulesPane';
+import { useSchedulesStore } from '@/stores/schedules';
+import { X, Play, Pause, Square, FileText, Wifi, WifiOff, ScrollText, CalendarClock } from 'lucide-react';
 import { useGateway } from '@/lib/gateway';
 import { useFileViewerStore } from '@/stores/file-viewer';
 import { useConnectionStore } from '@/stores/connection';
@@ -59,6 +61,8 @@ export function OrchestrationPane() {
   const activitySectionCollapsed = useOrchestrationStore((s) => s.activitySectionCollapsed);
   const { sendWorkflowCommand } = useGateway();
   const fileCount = useFileViewerStore((s) => s.openFiles.length);
+  const scheduleCount = useSchedulesStore((s) => s.schedules.length);
+  const liveSchedules = useSchedulesStore((s) => s.liveTriggers.size);
   const gatewayConnected = useConnectionStore((s) => s.gatewayConnected);
   const hindsightConnected = useConnectionStore((s) => s.hindsightConnected);
 
@@ -100,6 +104,29 @@ export function OrchestrationPane() {
             <span className="ml-1.5 text-xs bg-violet-500/20 text-violet-400 rounded-full px-1.5 py-0.5 font-mono">
               {memoryCount}
             </span>
+          )}
+        </button>
+
+        <button
+          role="tab"
+          aria-selected={activeOrchTab === 'schedules'}
+          onClick={() => setActiveOrchTab('schedules')}
+          className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium transition-colors rounded-md ${
+            activeOrchTab === 'schedules'
+              ? 'bg-zinc-800 text-emerald-400 ring-1 ring-zinc-600'
+              : 'text-zinc-500 hover:bg-zinc-800/50 hover:text-zinc-300'
+          }`}
+          title="Scheduled tasks"
+        >
+          <CalendarClock size={12} />
+          Schedules
+          {scheduleCount > 0 && (
+            <span className="text-xs bg-emerald-500/20 text-emerald-400 rounded-full px-1.5 py-0.5 font-mono">
+              {scheduleCount}
+            </span>
+          )}
+          {liveSchedules > 0 && (
+            <span className="h-1.5 w-1.5 rounded-full bg-cyan-400 animate-pulse" title={`${liveSchedules} running now`} />
           )}
         </button>
 
@@ -269,6 +296,10 @@ export function OrchestrationPane() {
         // is active, so unmounting on tab-switch tears the stream down.
         <div className="flex-1 min-h-0 overflow-hidden">
           <LogsPane />
+        </div>
+      ) : activeOrchTab === 'schedules' ? (
+        <div className="flex-1 min-h-0 overflow-hidden">
+          <SchedulesPane />
         </div>
       ) : workflowIds.length === 0 ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center px-6">

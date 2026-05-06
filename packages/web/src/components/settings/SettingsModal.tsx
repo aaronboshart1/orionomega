@@ -6,10 +6,9 @@ import { X, Eye, EyeOff, Save, Loader2, CheckCircle, AlertCircle, ChevronDown, R
 import { TabGroup, type TabDef } from '../shared/TabGroup';
 import { SkillsTab as SkillsSettingsTab } from './SkillsSettings';
 import { GatewayTab } from './GatewayTab';
-import { SchedulesTab } from './SchedulesTab';
 import { Z } from '@/lib/z-index';
 
-type TabId = 'omegaclaw' | 'memory' | 'skills' | 'schedules' | 'webui' | 'gateway';
+type TabId = 'omegaclaw' | 'memory' | 'skills' | 'webui' | 'gateway';
 
 interface SettingsModalProps {
   open: boolean;
@@ -782,7 +781,7 @@ function WebUITab({
 }
 
 function getTabValidity(config: ConfigData | null): Record<TabId, boolean> {
-  if (!config) return { omegaclaw: false, memory: false, skills: false, schedules: true, webui: false, gateway: true };
+  if (!config) return { omegaclaw: false, memory: false, skills: false, webui: false, gateway: true };
 
   const apiKey = String(getNestedValue(config, 'models.apiKey') ?? '');
   const defaultModel = String(getNestedValue(config, 'models.default') ?? '');
@@ -799,14 +798,13 @@ function getTabValidity(config: ConfigData | null): Record<TabId, boolean> {
   const webuiPort = Number(getNestedValue(config, 'webui.port') ?? 0);
   const webuiValid = webuiPort > 0 && webuiPort <= 65535;
 
-  return { omegaclaw: omegaclawValid, memory: memoryValid, skills: skillsValid, schedules: true, webui: webuiValid, gateway: true };
+  return { omegaclaw: omegaclawValid, memory: memoryValid, skills: skillsValid, webui: webuiValid, gateway: true };
 }
 
 const TABS: { id: TabId; label: string }[] = [
   { id: 'omegaclaw', label: 'OmegaClaw' },
   { id: 'memory', label: 'Memory' },
   { id: 'skills', label: 'Skills' },
-  { id: 'schedules', label: 'Schedules' },
   { id: 'webui', label: 'WebUI' },
   { id: 'gateway', label: 'Gateway' },
 ];
@@ -1037,7 +1035,6 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
               {activeTab === 'omegaclaw' && <OmegaClawTab config={config} onChange={handleChange} models={anthropicModels} modelsLoading={modelsLoading} onRefreshModels={refetchModels} />}
               {activeTab === 'memory' && <MemoryTab config={config} onChange={handleChange} showRestartWarning={needsRestart} />}
               {activeTab === 'skills' && <SkillsTab config={config} onChange={handleChange} />}
-              {activeTab === 'schedules' && <SchedulesTab />}
               {activeTab === 'webui' && <WebUITab config={config} onChange={handleChange} />}
             </>
           )}

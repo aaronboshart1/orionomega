@@ -701,7 +701,7 @@ function rehydrateFromSnapshot(snapshot: any, bufferedEvents?: unknown[]): void 
           useOrchestrationStore.getState().setOrchPaneOpen(cs.orchPaneOpen);
         }
         if (cs.activePanel) {
-          const validTabs = new Set(['memory', 'workflow', 'files']);
+          const validTabs = new Set(['memory', 'workflow', 'files', 'logs', 'schedules']);
           if (validTabs.has(cs.activePanel)) {
             useOrchestrationStore.getState().setActiveOrchTab(cs.activePanel);
           }
