@@ -18,6 +18,7 @@
  *         `{ error }` on failure (process.exit(1)).
  */
 import { spawn } from 'node:child_process';
+import { createConnection } from 'node:net';
 import { readFileSync, existsSync, writeFileSync, mkdirSync, openSync, closeSync } from 'node:fs';
 import {
   resolveAccount,
@@ -77,13 +78,58 @@ async function main() {
   const logFile = getAccountLogFile(accountId);
   mkdirSync(accountHome, { recursive: true });
 
-  // Kill any existing OAuth server for this account
+  // Kill any existing OAuth server for this account.
+  //
+  // CRITICAL: we previously sent SIGTERM to just `oldPid`, which is the
+  // `uvx` wrapper. uvx execs python/uvicorn as a grandchild and the
+  // grandchild does NOT inherit the signal — so the actual workspace-mcp
+  // server kept running on `port` with its ORIGINAL env vars (including
+  // GOOGLE_OAUTH_REDIRECT_URI). The newly spawned process would then
+  // fail to bind the same port silently (in the detached log), the
+  // readiness probe would be answered by the OLD process, and Google
+  // would receive the OLD redirect URI even after the user updated it
+  // in Settings → saved → re-authenticated. Symptom: Google 400
+  // "redirect_uri_mismatch" pointing at the previous port/host.
+  //
+  // Fix: kill the entire process group (negative pid — works because we
+  // spawn with detached:true so uvx is the group leader), escalate to
+  // SIGKILL, AND wait until the port is actually free before spawning
+  // the replacement.
+  const killGroup = (pid, sig) => { try { process.kill(-pid, sig); } catch { try { process.kill(pid, sig); } catch {} } };
   if (existsSync(stateFile)) {
     try {
       const oldPid = parseInt(readFileSync(stateFile, 'utf-8').trim(), 10);
-      process.kill(oldPid, 'SIGTERM');
-      await new Promise((r) => setTimeout(r, 1000));
+      if (Number.isFinite(oldPid) && oldPid > 0) {
+        killGroup(oldPid, 'SIGTERM');
+        await new Promise((r) => setTimeout(r, 800));
+        killGroup(oldPid, 'SIGKILL');
+      }
     } catch {}
+  }
+  // Wait up to 5s for the port to become free regardless of how the old
+  // listener was tracked — defends against orphan listeners from prior
+  // crashes whose pid we no longer have.
+  const portFree = (p) => new Promise((resolve) => {
+    const sock = createConnection({ host: '127.0.0.1', port: p });
+    let done = false;
+    const finish = (free) => { if (done) return; done = true; try { sock.destroy(); } catch {}; resolve(free); };
+    sock.setTimeout(400);
+    sock.once('connect', () => finish(false));
+    sock.once('timeout', () => finish(true));
+    sock.once('error', () => finish(true));
+  });
+  let freed = false;
+  for (let i = 0; i < 10; i++) {
+    if (await portFree(port)) { freed = true; break; }
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  if (!freed) {
+    process.stdout.write(JSON.stringify({
+      error:
+        `Port ${port} is still in use by a previous workspace-mcp listener for account "${account.label}" ` +
+        `that wouldn't shut down. Find and kill it: \`lsof -i :${port}\` then \`kill -9 <pid>\`, then click Authenticate again.`,
+    }));
+    process.exit(1);
   }
 
   // CRITICAL: PORT must be set explicitly because workspace-mcp reads it first
