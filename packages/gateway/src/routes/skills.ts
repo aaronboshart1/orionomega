@@ -309,6 +309,14 @@ function spawnAccountsHelper<T = unknown>(
   return JSON.parse(out) as T;
 }
 
+/** Mask the OAuth client secret in account records sent to the browser. */
+function maskAccountSecret<T extends { GOOGLE_OAUTH_CLIENT_SECRET?: string }>(a: T): T {
+  if (a && typeof a.GOOGLE_OAUTH_CLIENT_SECRET === 'string' && a.GOOGLE_OAUTH_CLIENT_SECRET.length > 0) {
+    return { ...a, GOOGLE_OAUTH_CLIENT_SECRET: '••••' };
+  }
+  return a;
+}
+
 export function handleListGoogleAccounts(
   req: IncomingMessage,
   res: ServerResponse,
@@ -316,9 +324,10 @@ export function handleListGoogleAccounts(
 ): void {
   if (!checkAuth(req, res, gatewayConfig)) return;
   try {
-    const data = spawnAccountsHelper<{ accounts: unknown[]; activeAccountId: string | null }>(['list']);
+    const data = spawnAccountsHelper<{ accounts: Array<{ GOOGLE_OAUTH_CLIENT_SECRET?: string }>; activeAccountId: string | null }>(['list']);
+    const masked = { ...data, accounts: data.accounts.map(maskAccountSecret) };
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(data));
+    res.end(JSON.stringify(masked));
   } catch (err) {
     log.error('List google accounts failed', { error: err instanceof Error ? err.message : String(err) });
     res.writeHead(500, { 'Content-Type': 'application/json' });
@@ -357,9 +366,27 @@ export async function handleUpdateGoogleAccount(
   }
   try {
     const body = await readBody(req);
-    const data = spawnAccountsHelper(['update', accountId], { stdin: body });
+    // Strip masked-secret sentinels before forwarding so we don't
+    // overwrite the real secret with the mask string when the user
+    // submits the form without changing the secret field.
+    let stdin = body;
+    try {
+      const parsed = JSON.parse(body || '{}') as Record<string, unknown> & { fields?: Record<string, unknown> };
+      const stripMasked = (obj: Record<string, unknown>) => {
+        for (const k of Object.keys(obj)) {
+          const v = obj[k];
+          if (v === MASK_SENTINEL) delete obj[k];
+          else if (typeof v === 'string' && v.startsWith('••••')) delete obj[k];
+        }
+      };
+      stripMasked(parsed);
+      if (parsed.fields && typeof parsed.fields === 'object') stripMasked(parsed.fields as Record<string, unknown>);
+      stdin = JSON.stringify(parsed);
+    } catch {}
+    const data = spawnAccountsHelper<{ ok: boolean; account: { GOOGLE_OAUTH_CLIENT_SECRET?: string } }>(['update', accountId], { stdin });
+    const safe = data && data.account ? { ...data, account: maskAccountSecret(data.account) } : data;
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(data));
+    res.end(JSON.stringify(safe));
   } catch (err) {
     res.writeHead(400, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: err instanceof Error ? err.message : 'Failed to update account' }));
@@ -466,9 +493,13 @@ const WORKSPACE_MCP_BASE_PORT = (() => {
   return Number.isFinite(n) && n > 0 && n < 65535 ? n : 9877;
 })();
 
-/** Look up the workspace-mcp port for a given account id (falls back to base). */
+/**
+ * Look up the workspace-mcp port for a given account id. When the caller
+ * omits `accountId` we resolve to the *active* account's port (instead of
+ * blindly using the base port), so legacy callers that don't thread the
+ * account id through still hit the right loopback listener.
+ */
 function getAccountPort(accountId: string | null): number {
-  if (!accountId) return WORKSPACE_MCP_BASE_PORT;
   try {
     const data = spawnAccountsHelper<{ accounts: Array<{ id: string; port: number }>; activeAccountId: string | null }>(['list']);
     const id = accountId || data.activeAccountId || '';
