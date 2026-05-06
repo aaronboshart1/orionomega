@@ -2,7 +2,7 @@
 /**
  * Google Docs handler — create, read, edit, format documents.
  */
-import { workspace, readParams, respond, fail, truncate, cleanArgs } from './lib.js';
+import { workspace, readParams, respond, fail, truncate, cleanArgs, pickAccountFromArgs } from './lib.js';
 
 const ACTION_MAP = {
   get:                   'get_doc_content',
@@ -47,9 +47,10 @@ async function main() {
     delete rest.comment_content;
   }
 
-  const args = cleanArgs(rest);
+  const { accountId, rest: rest2 } = pickAccountFromArgs(rest);
+  const args = cleanArgs(rest2);
 
-  const res = await workspace(toolName, args);
+  const res = await workspace(toolName, args, { accountId });
   if (!res.ok) return respond({ error: res.error });
   return respond({ result: truncate(res.result) });
 }

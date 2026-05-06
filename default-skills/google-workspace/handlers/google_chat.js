@@ -2,7 +2,7 @@
 /**
  * Google Chat handler — send/search messages, manage spaces, reactions, attachments.
  */
-import { workspace, readParams, respond, fail, truncate, cleanArgs } from './lib.js';
+import { workspace, readParams, respond, fail, truncate, cleanArgs, pickAccountFromArgs } from './lib.js';
 
 const ACTION_MAP = {
   get_messages:         'get_messages',
@@ -23,9 +23,10 @@ async function main() {
   }
 
   const { action: _, ...rest } = p;
-  const args = cleanArgs(rest);
+  const { accountId, rest: rest2 } = pickAccountFromArgs(rest);
+  const args = cleanArgs(rest2);
 
-  const res = await workspace(toolName, args);
+  const res = await workspace(toolName, args, { accountId });
   if (!res.ok) return respond({ error: res.error });
   return respond({ result: truncate(res.result) });
 }

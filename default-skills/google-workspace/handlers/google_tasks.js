@@ -2,7 +2,7 @@
 /**
  * Google Tasks handler — list, create, update, complete tasks and task lists.
  */
-import { workspace, readParams, respond, fail, truncate, cleanArgs } from './lib.js';
+import { workspace, readParams, respond, fail, truncate, cleanArgs, pickAccountFromArgs } from './lib.js';
 
 const ACTION_MAP = {
   list:        'list_tasks',
@@ -36,9 +36,10 @@ async function main() {
     delete rest.list_action;
   }
 
-  const args = cleanArgs(rest);
+  const { accountId, rest: rest2 } = pickAccountFromArgs(rest);
+  const args = cleanArgs(rest2);
 
-  const res = await workspace(toolName, args);
+  const res = await workspace(toolName, args, { accountId });
   if (!res.ok) return respond({ error: res.error });
   return respond({ result: truncate(res.result) });
 }

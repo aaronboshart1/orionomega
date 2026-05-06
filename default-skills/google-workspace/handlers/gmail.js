@@ -3,7 +3,7 @@
  * Gmail handler — search, read, send, draft, organize email.
  * Actions map to workspace-mcp CLI tool names.
  */
-import { workspace, readParams, respond, fail, truncate, cleanArgs } from './lib.js';
+import { workspace, readParams, respond, fail, truncate, cleanArgs, pickAccountFromArgs } from './lib.js';
 
 // Maps action name → workspace-mcp tool name
 const ACTION_MAP = {
@@ -34,9 +34,10 @@ async function main() {
 
   // Build args from params (exclude 'action' itself)
   const { action: _, ...rest } = p;
-  const args = cleanArgs(rest);
+  const { accountId, rest: rest2 } = pickAccountFromArgs(rest);
+  const args = cleanArgs(rest2);
 
-  const res = await workspace(toolName, args);
+  const res = await workspace(toolName, args, { accountId });
   if (!res.ok) return respond({ error: res.error });
   return respond({ result: truncate(res.result) });
 }

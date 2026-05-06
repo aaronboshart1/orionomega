@@ -8,9 +8,14 @@
   "homepage": "https://workspacemcp.com",
   "repository": "https://github.com/aaronboshart1/orionomega",
   "orionomega": ">=0.1.0",
-  "os": ["linux", "darwin"],
+  "os": [
+    "linux",
+    "darwin"
+  ],
   "requires": {
-    "commands": ["uvx"],
+    "commands": [
+      "uvx"
+    ],
     "env": [],
     "skills": []
   },
@@ -31,10 +36,26 @@
   },
   "triggers": {
     "keywords": [
-      "gmail", "email", "google drive", "drive", "google calendar", "calendar",
-      "google docs", "google sheets", "spreadsheet", "google slides", "slides",
-      "google forms", "google tasks", "tasks", "google contacts", "contacts",
-      "google chat", "apps script", "google search", "workspace"
+      "gmail",
+      "email",
+      "google drive",
+      "drive",
+      "google calendar",
+      "calendar",
+      "google docs",
+      "google sheets",
+      "spreadsheet",
+      "google slides",
+      "slides",
+      "google forms",
+      "google tasks",
+      "tasks",
+      "google contacts",
+      "contacts",
+      "google chat",
+      "apps script",
+      "google search",
+      "workspace"
     ],
     "patterns": [
       "\\b(send|read|search)\\s+(email|mail)\\b",
@@ -42,7 +63,12 @@
       "\\b(create|view|list|update|delete)\\s+(event|calendar|meeting)\\b",
       "\\bgoogle\\s+(drive|docs|sheets|slides|forms|calendar|tasks|contacts|chat)\\b"
     ],
-    "commands": ["/workspace", "/gmail", "/gdrive", "/gcal"]
+    "commands": [
+      "/workspace",
+      "/gmail",
+      "/gdrive",
+      "/gcal"
+    ]
   },
   "tools": [
     {
@@ -56,13 +82,26 @@
           "action": {
             "type": "string",
             "enum": [
-              "search", "get", "get_batch", "send", "draft",
-              "get_thread", "get_thread_batch",
-              "list_labels", "manage_label", "modify_labels", "batch_modify_labels",
-              "list_filters", "manage_filter",
+              "search",
+              "get",
+              "get_batch",
+              "send",
+              "draft",
+              "get_thread",
+              "get_thread_batch",
+              "list_labels",
+              "manage_label",
+              "modify_labels",
+              "batch_modify_labels",
+              "list_filters",
+              "manage_filter",
               "get_attachment"
             ],
             "description": "Gmail action to perform"
+          },
+          "account": {
+            "type": "string",
+            "description": "Optional. Which Google account to use (account id, label, or Google email). Defaults to the active account. Use the `accounts` tool with action=\"list\" to discover available accounts."
           },
           "query": {
             "type": "string",
@@ -74,7 +113,9 @@
           },
           "message_ids": {
             "type": "array",
-            "items": { "type": "string" },
+            "items": {
+              "type": "string"
+            },
             "description": "List of message IDs (for get_batch, batch_modify_labels)"
           },
           "thread_id": {
@@ -83,7 +124,9 @@
           },
           "thread_ids": {
             "type": "array",
-            "items": { "type": "string" },
+            "items": {
+              "type": "string"
+            },
             "description": "List of thread IDs (for get_thread_batch)"
           },
           "to": {
@@ -108,22 +151,31 @@
           },
           "body_format": {
             "type": "string",
-            "enum": ["text", "html"],
+            "enum": [
+              "text",
+              "html"
+            ],
             "description": "Body format: text or html (default: text)"
           },
           "label_ids": {
             "type": "array",
-            "items": { "type": "string" },
+            "items": {
+              "type": "string"
+            },
             "description": "Label IDs to add/remove (for modify_labels, batch_modify_labels)"
           },
           "add_label_ids": {
             "type": "array",
-            "items": { "type": "string" },
+            "items": {
+              "type": "string"
+            },
             "description": "Label IDs to add"
           },
           "remove_label_ids": {
             "type": "array",
-            "items": { "type": "string" },
+            "items": {
+              "type": "string"
+            },
             "description": "Label IDs to remove"
           },
           "label_name": {
@@ -132,7 +184,11 @@
           },
           "label_action": {
             "type": "string",
-            "enum": ["create", "update", "delete"],
+            "enum": [
+              "create",
+              "update",
+              "delete"
+            ],
             "description": "Label management action"
           },
           "attachment_index": {
@@ -144,7 +200,9 @@
             "description": "Maximum number of results to return (default 10)"
           }
         },
-        "required": ["action"]
+        "required": [
+          "action"
+        ]
       }
     },
     {
@@ -158,12 +216,26 @@
           "action": {
             "type": "string",
             "enum": [
-              "search", "get", "download_url", "share_link",
-              "create", "create_folder", "import",
-              "list", "copy", "update",
-              "manage_access", "set_permissions", "get_permissions", "check_public"
+              "search",
+              "get",
+              "download_url",
+              "share_link",
+              "create",
+              "create_folder",
+              "import",
+              "list",
+              "copy",
+              "update",
+              "manage_access",
+              "set_permissions",
+              "get_permissions",
+              "check_public"
             ],
             "description": "Drive action to perform"
+          },
+          "account": {
+            "type": "string",
+            "description": "Optional. Which Google account to use (account id, label, or Google email). Defaults to the active account. Use the `accounts` tool with action=\"list\" to discover available accounts."
           },
           "file_id": {
             "type": "string",
@@ -195,7 +267,12 @@
           },
           "role": {
             "type": "string",
-            "enum": ["reader", "commenter", "writer", "owner"],
+            "enum": [
+              "reader",
+              "commenter",
+              "writer",
+              "owner"
+            ],
             "description": "Permission role (for set_permissions, manage_access)"
           },
           "share_with": {
@@ -207,7 +284,9 @@
             "description": "Number of results per page (for list, search)"
           }
         },
-        "required": ["action"]
+        "required": [
+          "action"
+        ]
       }
     },
     {
@@ -220,8 +299,16 @@
         "properties": {
           "action": {
             "type": "string",
-            "enum": ["list_calendars", "get_events", "manage_event"],
+            "enum": [
+              "list_calendars",
+              "get_events",
+              "manage_event"
+            ],
             "description": "Calendar action to perform"
+          },
+          "account": {
+            "type": "string",
+            "description": "Optional. Which Google account to use (account id, label, or Google email). Defaults to the active account. Use the `accounts` tool with action=\"list\" to discover available accounts."
           },
           "calendar_id": {
             "type": "string",
@@ -261,12 +348,20 @@
           },
           "attendees": {
             "type": "array",
-            "items": { "type": "string" },
+            "items": {
+              "type": "string"
+            },
             "description": "List of attendee email addresses"
           },
           "event_action": {
             "type": "string",
-            "enum": ["create", "get", "update", "delete", "list"],
+            "enum": [
+              "create",
+              "get",
+              "update",
+              "delete",
+              "list"
+            ],
             "description": "Event sub-action (for manage_event)"
           },
           "max_results": {
@@ -274,7 +369,9 @@
             "description": "Maximum events to return (for get_events)"
           }
         },
-        "required": ["action"]
+        "required": [
+          "action"
+        ]
       }
     },
     {
@@ -288,13 +385,29 @@
           "action": {
             "type": "string",
             "enum": [
-              "get", "create", "modify_text", "get_markdown", "export_pdf",
-              "search", "find_replace", "list_in_folder",
-              "insert_elements", "update_paragraph", "insert_image",
-              "update_headers_footers", "batch_update", "inspect_structure",
-              "create_table", "list_comments", "manage_comment"
+              "get",
+              "create",
+              "modify_text",
+              "get_markdown",
+              "export_pdf",
+              "search",
+              "find_replace",
+              "list_in_folder",
+              "insert_elements",
+              "update_paragraph",
+              "insert_image",
+              "update_headers_footers",
+              "batch_update",
+              "inspect_structure",
+              "create_table",
+              "list_comments",
+              "manage_comment"
             ],
             "description": "Docs action to perform"
+          },
+          "account": {
+            "type": "string",
+            "description": "Optional. Which Google account to use (account id, label, or Google email). Defaults to the active account. Use the `accounts` tool with action=\"list\" to discover available accounts."
           },
           "document_id": {
             "type": "string",
@@ -328,9 +441,18 @@
             "type": "string",
             "description": "Replacement text (for find_replace)"
           },
-          "bold": { "type": "boolean", "description": "Apply bold formatting" },
-          "italic": { "type": "boolean", "description": "Apply italic formatting" },
-          "font_size": { "type": "number", "description": "Font size in points" },
+          "bold": {
+            "type": "boolean",
+            "description": "Apply bold formatting"
+          },
+          "italic": {
+            "type": "boolean",
+            "description": "Apply italic formatting"
+          },
+          "font_size": {
+            "type": "number",
+            "description": "Font size in points"
+          },
           "heading_level": {
             "type": "number",
             "description": "Heading level 1-6 (for update_paragraph)"
@@ -357,7 +479,12 @@
           },
           "comment_action": {
             "type": "string",
-            "enum": ["create", "reply", "resolve", "delete"],
+            "enum": [
+              "create",
+              "reply",
+              "resolve",
+              "delete"
+            ],
             "description": "Comment action (for manage_comment)"
           },
           "comment_content": {
@@ -365,7 +492,9 @@
             "description": "Comment text (for manage_comment create/reply)"
           }
         },
-        "required": ["action"]
+        "required": [
+          "action"
+        ]
       }
     },
     {
@@ -379,11 +508,22 @@
           "action": {
             "type": "string",
             "enum": [
-              "read", "write", "create", "list", "get_info",
-              "format", "create_sheet",
-              "list_comments", "manage_comment", "conditional_format"
+              "read",
+              "write",
+              "create",
+              "list",
+              "get_info",
+              "format",
+              "create_sheet",
+              "list_comments",
+              "manage_comment",
+              "conditional_format"
             ],
             "description": "Sheets action to perform"
+          },
+          "account": {
+            "type": "string",
+            "description": "Optional. Which Google account to use (account id, label, or Google email). Defaults to the active account. Use the `accounts` tool with action=\"list\" to discover available accounts."
           },
           "spreadsheet_id": {
             "type": "string",
@@ -395,7 +535,9 @@
           },
           "values": {
             "type": "array",
-            "items": { "type": "array" },
+            "items": {
+              "type": "array"
+            },
             "description": "2D array of values to write (for write)"
           },
           "title": {
@@ -404,7 +546,9 @@
           },
           "sheet_names": {
             "type": "array",
-            "items": { "type": "string" },
+            "items": {
+              "type": "string"
+            },
             "description": "Sheet names for initial sheets (for create)"
           },
           "clear_values": {
@@ -429,7 +573,12 @@
           },
           "comment_action": {
             "type": "string",
-            "enum": ["create", "reply", "resolve", "delete"],
+            "enum": [
+              "create",
+              "reply",
+              "resolve",
+              "delete"
+            ],
             "description": "Comment action"
           },
           "comment_content": {
@@ -437,7 +586,9 @@
             "description": "Comment text"
           }
         },
-        "required": ["action"]
+        "required": [
+          "action"
+        ]
       }
     },
     {
@@ -451,11 +602,19 @@
           "action": {
             "type": "string",
             "enum": [
-              "create", "get", "batch_update",
-              "get_page", "get_thumbnail",
-              "list_comments", "manage_comment"
+              "create",
+              "get",
+              "batch_update",
+              "get_page",
+              "get_thumbnail",
+              "list_comments",
+              "manage_comment"
             ],
             "description": "Slides action to perform"
+          },
+          "account": {
+            "type": "string",
+            "description": "Optional. Which Google account to use (account id, label, or Google email). Defaults to the active account. Use the `accounts` tool with action=\"list\" to discover available accounts."
           },
           "presentation_id": {
             "type": "string",
@@ -471,7 +630,11 @@
           },
           "thumbnail_size": {
             "type": "string",
-            "enum": ["SMALL", "MEDIUM", "LARGE"],
+            "enum": [
+              "SMALL",
+              "MEDIUM",
+              "LARGE"
+            ],
             "description": "Thumbnail image size (for get_thumbnail)"
           },
           "requests": {
@@ -484,7 +647,12 @@
           },
           "comment_action": {
             "type": "string",
-            "enum": ["create", "reply", "resolve", "delete"],
+            "enum": [
+              "create",
+              "reply",
+              "resolve",
+              "delete"
+            ],
             "description": "Comment action"
           },
           "comment_content": {
@@ -492,7 +660,9 @@
             "description": "Comment text"
           }
         },
-        "required": ["action"]
+        "required": [
+          "action"
+        ]
       }
     },
     {
@@ -506,10 +676,18 @@
           "action": {
             "type": "string",
             "enum": [
-              "create", "get", "list_responses", "get_response",
-              "set_publish", "batch_update"
+              "create",
+              "get",
+              "list_responses",
+              "get_response",
+              "set_publish",
+              "batch_update"
             ],
             "description": "Forms action to perform"
+          },
+          "account": {
+            "type": "string",
+            "description": "Optional. Which Google account to use (account id, label, or Google email). Defaults to the active account. Use the `accounts` tool with action=\"list\" to discover available accounts."
           },
           "form_id": {
             "type": "string",
@@ -540,7 +718,9 @@
             "description": "Array of update request objects (for batch_update)"
           }
         },
-        "required": ["action"]
+        "required": [
+          "action"
+        ]
       }
     },
     {
@@ -554,10 +734,18 @@
           "action": {
             "type": "string",
             "enum": [
-              "list", "get", "manage",
-              "list_lists", "get_list", "manage_list"
+              "list",
+              "get",
+              "manage",
+              "list_lists",
+              "get_list",
+              "manage_list"
             ],
             "description": "Tasks action to perform"
+          },
+          "account": {
+            "type": "string",
+            "description": "Optional. Which Google account to use (account id, label, or Google email). Defaults to the active account. Use the `accounts` tool with action=\"list\" to discover available accounts."
           },
           "task_list_id": {
             "type": "string",
@@ -577,7 +765,10 @@
           },
           "status": {
             "type": "string",
-            "enum": ["needsAction", "completed"],
+            "enum": [
+              "needsAction",
+              "completed"
+            ],
             "description": "Task completion status"
           },
           "due": {
@@ -590,16 +781,28 @@
           },
           "task_action": {
             "type": "string",
-            "enum": ["create", "get", "update", "delete", "complete"],
+            "enum": [
+              "create",
+              "get",
+              "update",
+              "delete",
+              "complete"
+            ],
             "description": "Task sub-action (for manage)"
           },
           "list_action": {
             "type": "string",
-            "enum": ["create", "update", "delete"],
+            "enum": [
+              "create",
+              "update",
+              "delete"
+            ],
             "description": "Task list sub-action (for manage_list)"
           }
         },
-        "required": ["action"]
+        "required": [
+          "action"
+        ]
       }
     },
     {
@@ -613,10 +816,20 @@
           "action": {
             "type": "string",
             "enum": [
-              "search", "get", "list", "manage",
-              "list_groups", "get_group", "manage_group", "batch_manage"
+              "search",
+              "get",
+              "list",
+              "manage",
+              "list_groups",
+              "get_group",
+              "manage_group",
+              "batch_manage"
             ],
             "description": "Contacts action to perform"
+          },
+          "account": {
+            "type": "string",
+            "description": "Optional. Which Google account to use (account id, label, or Google email). Defaults to the active account. Use the `accounts` tool with action=\"list\" to discover available accounts."
           },
           "query": {
             "type": "string",
@@ -652,12 +865,20 @@
           },
           "contact_action": {
             "type": "string",
-            "enum": ["create", "update", "delete"],
+            "enum": [
+              "create",
+              "update",
+              "delete"
+            ],
             "description": "Contact sub-action (for manage)"
           },
           "group_action": {
             "type": "string",
-            "enum": ["create", "update", "delete"],
+            "enum": [
+              "create",
+              "update",
+              "delete"
+            ],
             "description": "Group sub-action (for manage_group)"
           },
           "group_name": {
@@ -669,7 +890,9 @@
             "description": "Number of results to return (default 20)"
           }
         },
-        "required": ["action"]
+        "required": [
+          "action"
+        ]
       }
     },
     {
@@ -683,10 +906,18 @@
           "action": {
             "type": "string",
             "enum": [
-              "get_messages", "send", "search",
-              "react", "list_spaces", "download_attachment"
+              "get_messages",
+              "send",
+              "search",
+              "react",
+              "list_spaces",
+              "download_attachment"
             ],
             "description": "Chat action to perform"
+          },
+          "account": {
+            "type": "string",
+            "description": "Optional. Which Google account to use (account id, label, or Google email). Defaults to the active account. Use the `accounts` tool with action=\"list\" to discover available accounts."
           },
           "space_id": {
             "type": "string",
@@ -721,7 +952,9 @@
             "description": "Number of messages to return (for get_messages)"
           }
         },
-        "required": ["action"]
+        "required": [
+          "action"
+        ]
       }
     },
     {
@@ -735,10 +968,21 @@
           "action": {
             "type": "string",
             "enum": [
-              "list", "get", "get_content", "create", "update_content",
-              "run", "list_deployments", "manage_deployment", "list_processes"
+              "list",
+              "get",
+              "get_content",
+              "create",
+              "update_content",
+              "run",
+              "list_deployments",
+              "manage_deployment",
+              "list_processes"
             ],
             "description": "Apps Script action to perform"
+          },
+          "account": {
+            "type": "string",
+            "description": "Optional. Which Google account to use (account id, label, or Google email). Defaults to the active account. Use the `accounts` tool with action=\"list\" to discover available accounts."
           },
           "script_id": {
             "type": "string",
@@ -774,11 +1018,17 @@
           },
           "deployment_action": {
             "type": "string",
-            "enum": ["create", "update", "delete"],
+            "enum": [
+              "create",
+              "update",
+              "delete"
+            ],
             "description": "Deployment sub-action (for manage_deployment)"
           }
         },
-        "required": ["action"]
+        "required": [
+          "action"
+        ]
       }
     },
     {
@@ -791,8 +1041,15 @@
         "properties": {
           "action": {
             "type": "string",
-            "enum": ["search", "get_engine_info"],
+            "enum": [
+              "search",
+              "get_engine_info"
+            ],
             "description": "Search action to perform"
+          },
+          "account": {
+            "type": "string",
+            "description": "Optional. Which Google account to use (account id, label, or Google email). Defaults to the active account. Use the `accounts` tool with action=\"list\" to discover available accounts."
           },
           "q": {
             "type": "string",
@@ -808,12 +1065,17 @@
           },
           "safe": {
             "type": "string",
-            "enum": ["active", "off"],
+            "enum": [
+              "active",
+              "off"
+            ],
             "description": "Safe search setting"
           },
           "search_type": {
             "type": "string",
-            "enum": ["image"],
+            "enum": [
+              "image"
+            ],
             "description": "Search type (omit for web, 'image' for image search)"
           },
           "site_search": {
@@ -833,15 +1095,53 @@
             "description": "Country restriction (e.g. 'countryUS')"
           }
         },
-        "required": ["action"]
+        "required": [
+          "action"
+        ]
+      }
+    },
+    {
+      "name": "accounts",
+      "description": "List configured Google Workspace accounts and view/change which one is active by default. Use this to discover available accounts before calling other Google tools when the user asks about a specific mailbox/calendar.",
+      "handler": "handlers/accounts.js",
+      "timeout": 10000,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "list",
+              "get_active",
+              "set_active"
+            ],
+            "description": "list: show all accounts and which is active. get_active: return the currently active account. set_active: change which account is the default for subsequent calls."
+          },
+          "account": {
+            "type": "string",
+            "description": "For set_active: the account id, label, or Google email to make active."
+          }
+        },
+        "required": [
+          "action"
+        ]
       }
     }
   ],
   "workerProfile": {
     "tools": [
-      "gmail", "google_drive", "google_calendar", "google_docs",
-      "google_sheets", "google_slides", "google_forms", "google_tasks",
-      "google_contacts", "google_chat", "google_apps_script", "google_search"
+      "gmail",
+      "google_drive",
+      "google_calendar",
+      "google_docs",
+      "google_sheets",
+      "google_slides",
+      "google_forms",
+      "google_tasks",
+      "google_contacts",
+      "google_chat",
+      "google_apps_script",
+      "google_search"
     ],
     "maxTimeout": 180000
   },

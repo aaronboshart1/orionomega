@@ -2,7 +2,7 @@
 /**
  * Google Sheets handler — read/write cells, create spreadsheets, format ranges.
  */
-import { workspace, readParams, respond, fail, truncate, cleanArgs } from './lib.js';
+import { workspace, readParams, respond, fail, truncate, cleanArgs, pickAccountFromArgs } from './lib.js';
 
 const ACTION_MAP = {
   read:                'read_sheet_values',
@@ -39,9 +39,10 @@ async function main() {
     delete rest.comment_content;
   }
 
-  const args = cleanArgs(rest);
+  const { accountId, rest: rest2 } = pickAccountFromArgs(rest);
+  const args = cleanArgs(rest2);
 
-  const res = await workspace(toolName, args);
+  const res = await workspace(toolName, args, { accountId });
   if (!res.ok) return respond({ error: res.error });
   return respond({ result: truncate(res.result) });
 }

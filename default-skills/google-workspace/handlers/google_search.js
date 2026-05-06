@@ -2,7 +2,7 @@
 /**
  * Google Custom Search handler — web and image search via Programmable Search Engine.
  */
-import { workspace, readParams, respond, fail, truncate, cleanArgs } from './lib.js';
+import { workspace, readParams, respond, fail, truncate, cleanArgs, pickAccountFromArgs } from './lib.js';
 
 const ACTION_MAP = {
   search:          'search_custom',
@@ -21,9 +21,10 @@ async function main() {
   if (p.action === 'search' && !p.q) fail('q (search query) is required for search action');
 
   const { action: _, ...rest } = p;
-  const args = cleanArgs(rest);
+  const { accountId, rest: rest2 } = pickAccountFromArgs(rest);
+  const args = cleanArgs(rest2);
 
-  const res = await workspace(toolName, args);
+  const res = await workspace(toolName, args, { accountId });
   if (!res.ok) return respond({ error: res.error });
   return respond({ result: truncate(res.result) });
 }

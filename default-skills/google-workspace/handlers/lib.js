@@ -11,7 +11,7 @@
 import { spawn } from 'node:child_process';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { resolveAccount, getAccountHome, getSkillsDir } from '../hooks/_accounts.js';
+import { resolveAccount, getAccountHome, getSkillsDir, loadAccountsState, setActiveAccount } from '../hooks/_accounts.js';
 
 const MAX_OUTPUT = 30_000; // chars
 const TIMEOUT = 90_000; // ms — some Workspace ops are slow
@@ -38,10 +38,10 @@ export function getConfig() {
  * the per-account directory so workspace-mcp's hardcoded
  * `~/.google_workspace_mcp/credentials/<email>.json` is per-account.
  */
-function buildEnv() {
+function buildEnv(accountId = null) {
   const config = getConfig();
   const env = { ...process.env };
-  const account = resolveAccount();
+  const account = resolveAccount(undefined, accountId);
 
   if (account) {
     env.HOME = getAccountHome(account.id);
@@ -72,9 +72,43 @@ function buildEnv() {
  * @param {object} args - Tool arguments (passed as the JSON-RPC `arguments` object)
  * @returns {Promise<{ ok: boolean, result?: string, error?: string }>}
  */
-export function workspace(toolName, args = {}) {
+/**
+ * Peel an optional account selector off of an args object. Recognises
+ * `account`, `account_id`, and `accountId` (any one of the three the
+ * model might emit) and matches against either the account `id` OR
+ * the human label OR the linked Google email — whatever the agent
+ * has handy. Returns `{ accountId, rest }` where `rest` is the args
+ * object without the selector field.
+ */
+export function pickAccountFromArgs(args = {}) {
+  const raw = args.account ?? args.account_id ?? args.accountId ?? null;
+  const rest = { ...args };
+  delete rest.account;
+  delete rest.account_id;
+  delete rest.accountId;
+  if (!raw) return { accountId: null, rest };
+  const needle = String(raw).trim().toLowerCase();
+  try {
+    const { accounts } = loadAccountsState();
+    for (const a of Object.values(accounts)) {
+      if (
+        a.id?.toLowerCase() === needle ||
+        a.label?.toLowerCase() === needle ||
+        a.USER_GOOGLE_EMAIL?.toLowerCase() === needle
+      ) {
+        return { accountId: a.id, rest };
+      }
+    }
+  } catch {}
+  // Unknown name — pass through anyway so resolveAccount can fail loudly
+  // with a useful "account not found" message instead of silently using
+  // the active account.
+  return { accountId: String(raw), rest };
+}
+
+export function workspace(toolName, args = {}, opts = {}) {
   return new Promise((resolve) => {
-    const env = buildEnv();
+    const env = buildEnv(opts.accountId ?? null);
 
     const child = spawn(
       'uvx',
