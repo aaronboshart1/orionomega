@@ -36,8 +36,8 @@ import {
   buildCanUseTool,
   buildPermissionRequestHook,
 } from './permission-policy.js';
-import { SkillLoader, SkillExecutor, readSkillConfig } from '@orionomega/skills-sdk';
-import type { SkillTool } from '@orionomega/skills-sdk';
+import { SkillExecutor } from '@orionomega/skills-sdk';
+import { buildSkillToolset } from '../agent/skill-tools.js';
 import path from 'node:path';
 
 const log = createLogger('agent-sdk-bridge');
@@ -362,81 +362,48 @@ async function buildSkillMcpServer(
   skillIds: string[],
   skillsDir: string,
 ): Promise<McpSdkServerConfigWithInstance> {
-  const loader = new SkillLoader(skillsDir);
   const executor = new SkillExecutor();
   const toolDefs: ReturnType<typeof tool>[] = [];
 
-  for (const skillId of skillIds) {
-    let loadedSkill;
-    try {
-      loadedSkill = await loader.load(skillId);
-    } catch (err) {
-      log.warn(
-        `buildSkillMcpServer: skipping skill "${skillId}" — failed to load: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      continue;
-    }
+  // Reuse the shared skill-toolset builder so the orchestration worker path
+  // and the direct-chat path agree on which skills are eligible (loaded,
+  // enabled, configured) and how their handlers/env are resolved. The MCP
+  // server still surfaces each tool under its raw (non-namespaced) name —
+  // workers see one skill per MCP server, so collisions can't occur there
+  // and changing the surface name would be a behaviour change.
+  const { tools: entries } = await buildSkillToolset(skillIds, skillsDir);
 
-    const skillConfig = readSkillConfig(skillsDir, skillId);
-    if (!skillConfig.enabled) {
-      log.warn(`buildSkillMcpServer: skipping skill "${skillId}" — disabled`);
-      continue;
-    }
+  for (const entry of entries) {
+    const zodShape = jsonSchemaToZodShape(entry.inputSchema);
+    const mcpTool = tool(
+      entry.rawName,
+      entry.description,
+      zodShape,
+      async (args: Record<string, unknown>) => {
+        try {
+          const result = await executor.executeHandler(
+            entry.handlerPath,
+            args,
+            { cwd: entry.cwd, timeout: entry.timeout, env: entry.env },
+          );
+          const text =
+            typeof result === 'string'
+              ? result
+              : JSON.stringify(result, null, 2);
+          return { content: [{ type: 'text' as const, text }] };
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          log.warn(`Skill tool "${entry.rawName}" failed: ${errMsg}`);
+          return {
+            content: [{ type: 'text' as const, text: `Error: ${errMsg}` }],
+            isError: true,
+          };
+        }
+      },
+    );
 
-    // Build env vars from skill config fields
-    const skillEnv: Record<string, string> = {};
-    for (const [key, value] of Object.entries(skillConfig.fields)) {
-      skillEnv[key] = String(value);
-    }
-
-    const skillDir = loadedSkill.skillDir;
-    const skillTools: SkillTool[] = loadedSkill.manifest.tools ?? [];
-
-    for (const toolDef of skillTools) {
-      const zodShape = jsonSchemaToZodShape(
-        toolDef.inputSchema as Record<string, unknown>,
-      );
-
-      // Capture loop variables for the async handler closure
-      const capturedHandlerPath = path.resolve(skillDir, toolDef.handler);
-      const capturedTimeout = toolDef.timeout ?? 30_000;
-      const capturedSkillDir = skillDir;
-      const capturedEnv = skillEnv;
-
-      const mcpTool = tool(
-        toolDef.name,
-        toolDef.description,
-        zodShape,
-        async (args: Record<string, unknown>) => {
-          try {
-            const result = await executor.executeHandler(
-              capturedHandlerPath,
-              args,
-              {
-                cwd: capturedSkillDir,
-                timeout: capturedTimeout,
-                env: capturedEnv,
-              },
-            );
-            const text =
-              typeof result === 'string'
-                ? result
-                : JSON.stringify(result, null, 2);
-            return { content: [{ type: 'text' as const, text }] };
-          } catch (err) {
-            const errMsg = err instanceof Error ? err.message : String(err);
-            log.warn(`Skill tool "${toolDef.name}" failed: ${errMsg}`);
-            return {
-              content: [{ type: 'text' as const, text: `Error: ${errMsg}` }],
-              isError: true,
-            };
-          }
-        },
-      );
-
-      toolDefs.push(mcpTool);
-      log.info(`Registered MCP skill tool: ${toolDef.name} (from ${skillId})`);
-    }
+    toolDefs.push(mcpTool);
+    log.info(`Registered MCP skill tool: ${entry.rawName} (from ${entry.skillId})`);
   }
 
   return createSdkMcpServer({ name: 'orionomega-skills', tools: toolDefs });

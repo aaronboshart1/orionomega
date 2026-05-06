@@ -14,6 +14,7 @@ import { existsSync } from 'node:fs';
 import { exec as execCb } from 'node:child_process';
 import { promisify } from 'node:util';
 import { detectInstallDirWrites } from '../utils/install-dir.js';
+import { executeSkillToolEntry, type SkillToolEntry } from './skill-tools.js';
 
 const execAsync = promisify(execCb);
 const log = createLogger('conversation');
@@ -352,6 +353,16 @@ export async function streamConversation(opts: {
    * have a sensible redirect target. See `executeMainTool` for details.
    */
   runDir?: string;
+  /**
+   * Skill-provided tools to advertise alongside the base 3 (`read_file`,
+   * `exec`, `write_file`). Built per-turn by the caller (typically
+   * MainAgent.respondConversationally) from the currently-enabled manifest
+   * skills. Names are namespaced (`<skillId>__<toolName>`) to keep two
+   * skills with overlapping tool names from clobbering each other in the
+   * flat tool list. When the model invokes one of these, the loop routes
+   * the call through SkillExecutor instead of the built-in tool dispatcher.
+   */
+  skillTools?: SkillToolEntry[];
   onText: (text: string, streaming: boolean, done: boolean) => void;
   onThinking?: (text: string, streaming: boolean, done: boolean) => void;
   onThinkingStep?: (step: { id: string; name: string; status: 'pending' | 'active' | 'done'; startedAt?: number; completedAt?: number; elapsedMs?: number; detail?: string }) => void;
@@ -364,6 +375,18 @@ export async function streamConversation(opts: {
   abortSignal?: AbortSignal;
 }): Promise<{ text: string; inputTokens: number; outputTokens: number; cacheCreationTokens: number; cacheReadTokens: number }> {
   const { client, model, systemPrompt, workspaceDir, runDir, onText, onThinking, onThinkingStep, onToolStart, onToolEnd, abortSignal } = opts;
+  const skillTools = opts.skillTools ?? [];
+  const skillToolByName = new Map(skillTools.map((t) => [t.name, t] as const));
+  const combinedTools = skillTools.length === 0
+    ? MAIN_AGENT_TOOLS
+    : [
+        ...MAIN_AGENT_TOOLS,
+        ...skillTools.map((t) => ({
+          name: t.name,
+          description: t.description,
+          input_schema: t.inputSchema as { type: 'object'; properties?: Record<string, unknown>; required?: string[] },
+        })),
+      ];
   let messages = [...opts.messages];
 
   if (opts.maxInputTokens && messages.length > 2) {
@@ -433,7 +456,7 @@ export async function streamConversation(opts: {
       system: systemPrompt,
       messages,
       maxTokens,
-      tools: MAIN_AGENT_TOOLS,
+      tools: combinedTools,
     });
 
     let roundText = '';
@@ -572,13 +595,16 @@ export async function streamConversation(opts: {
         continue;
       }
 
+      const skillEntry = skillToolByName.get(tc.name);
       const toolSummary = tc.name === 'exec'
         ? `Running: ${String(tc.input.command ?? '').slice(0, 80)}`
         : tc.name === 'read_file'
           ? `Reading: ${String(tc.input.path ?? '')}`
           : tc.name === 'write_file'
             ? `Writing: ${String(tc.input.path ?? '')}`
-            : `Tool: ${tc.name}`;
+            : skillEntry
+              ? `Skill: ${skillEntry.skillId}.${skillEntry.rawName}`
+              : `Tool: ${tc.name}`;
       onThinking?.(toolSummary, true, false);
       const toolStepId = `tool-${tc.id}`;
       const toolFile = tc.name === 'read_file' || tc.name === 'write_file'
@@ -600,7 +626,9 @@ export async function streamConversation(opts: {
 
       const toolStart = Date.now();
       log.verbose(`Tool call: ${tc.name}`, { input: tc.input });
-      const result = await executeMainTool(tc.name, tc.input, workspaceDir, runDir);
+      const result = skillEntry
+        ? await executeSkillToolEntry(skillEntry, tc.input)
+        : await executeMainTool(tc.name, tc.input, workspaceDir, runDir);
       const toolDuration = Date.now() - toolStart;
       onThinkingStep?.({ id: toolStepId, name: toolSummary, status: 'done', completedAt: Date.now(), elapsedMs: toolDuration });
       onToolEnd?.({

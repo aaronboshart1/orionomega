@@ -39,6 +39,7 @@ import {
 import { MemoryBridge } from './memory-bridge.js';
 import { OrchestrationBridge } from './orchestration-bridge.js';
 import { ContextAssembler } from '../memory/context-assembler.js';
+import { buildSkillToolset, type SkillToolEntry } from './skill-tools.js';
 
 const log = createLogger('main-agent');
 
@@ -1693,6 +1694,38 @@ export class MainAgent {
     }
     wrappedOnThinking('Generating response…', true, false);
 
+    // Build the per-turn skill tool list so direct-chat can invoke
+    // enabled manifest skills (e.g. google-workspace.gmail) alongside the
+    // built-in read_file / exec / write_file tools. Rebuilt every turn so
+    // skill enable/disable / config changes pick up on the next message
+    // without restarting the agent. A single broken or disabled skill is
+    // skipped (with a warn log) by `buildSkillToolset` and never poisons
+    // the rest of the list.
+    let skillTools: SkillToolEntry[] = [];
+    if (this.config.skillsDir) {
+      try {
+        const skillLoader = new SkillLoader(this.config.skillsDir);
+        const manifests = await skillLoader.discoverAll();
+        const built = await buildSkillToolset(
+          manifests.map((m) => m.name),
+          this.config.skillsDir,
+          skillLoader,
+        );
+        skillTools = built.tools;
+        if (built.failures.length > 0) {
+          log.info('Skill toolset built with failures', {
+            ok: built.tools.length,
+            failed: built.failures.length,
+            failures: built.failures,
+          });
+        }
+      } catch (err) {
+        log.warn('Failed to build direct-mode skill toolset', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
     try {
       // Forward direct-mode tool calls into the orchestration event stream
       // so the Activity Feed / Workflow tab show them like any other run.
@@ -1737,6 +1770,7 @@ export class MainAgent {
         onToolEnd: directToolEnd,
         maxInputTokens: 100_000,
         abortSignal,
+        skillTools,
       });
       if (!checkDetached()) {
         this.emitStep('llm', 'Generating response', 'done');
