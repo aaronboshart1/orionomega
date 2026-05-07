@@ -1,11 +1,16 @@
 'use client';
 
 import dynamic from 'next/dynamic';
+import { useEffect } from 'react';
 import { PanelRightOpen, PanelRightClose, X } from 'lucide-react';
 import { ChatPane } from '@/components/chat/ChatPane';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { useOrchestrationStore, useOrchHydrated } from '@/stores/orchestration';
 import { Z } from '@/lib/z-index';
+
+// Tailwind's `md` breakpoint — orch pane uses `md:block` / `md:relative`
+// to switch from mobile fullscreen overlay to desktop split-view.
+const MD_BREAKPOINT_PX = 768;
 
 const OrchestrationPane = dynamic(
   () => import('@/components/orchestration/OrchestrationPane').then((m) => m.OrchestrationPane),
@@ -23,6 +28,24 @@ export function HomeClient() {
   const orchHydrated = useOrchHydrated();
   const orchPaneOpen = useOrchestrationStore((s) => s.orchPaneOpen);
   const setOrchPaneOpen = useOrchestrationStore((s) => s.setOrchPaneOpen);
+
+  // On mobile (< md), the orch pane renders as a fullscreen `fixed inset-0`
+  // overlay and the chat container is `hidden md:block`, removing the chat
+  // input from the DOM. Combined with the persisted `orchPaneOpen: true`
+  // default, that meant a mobile user landing on the app saw the orch pane
+  // covering the chat and could not type. Auto-close on first hydrated mount
+  // when the viewport is mobile so the chat input is always reachable on
+  // load. Desktop split-view (≥ md) is preserved — the pane stays open.
+  // Users can still explicitly open it on mobile via the toggle button; the
+  // close happens once on mount, not on every resize.
+  useEffect(() => {
+    if (!orchHydrated) return;
+    if (typeof window === 'undefined') return;
+    if (window.innerWidth >= MD_BREAKPOINT_PX) return;
+    if (useOrchestrationStore.getState().orchPaneOpen) {
+      setOrchPaneOpen(false);
+    }
+  }, [orchHydrated, setOrchPaneOpen]);
 
   const showOrchPane = orchHydrated && orchPaneOpen;
 

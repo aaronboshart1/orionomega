@@ -45,6 +45,7 @@ Environment Variables:
 - `packages/web/src/lib/cron-forecast.ts`: Client-side next-N runs forecaster for cron previews.
 - `packages/web/src/app/layout.tsx`: Global layout and theme imports.
 - `packages/gateway/src/sessions.ts`: Default session ID (`DEFAULT_SESSION_ID`).
+- `packages/web/src/components/HomeClient.tsx`: Top-level chat / orch-pane layout. On mobile (< 768 px) the orch pane is auto-closed once on hydrated mount so the chat input stays reachable (the orch overlay is `fixed inset-0` and the chat container is `hidden md:block`, so a persisted `orchPaneOpen: true` would otherwise hide the chat entirely on phones).
 
 ## Architecture decisions
 
