@@ -445,15 +445,31 @@ export async function getRepoStatus(repoDir: string): Promise<RepoStatus> {
   }
 
   const lastCommit = await getLastCommit(repoDir);
-  // getLastCommit failure is also a useful HEAD-side signal.
-  if (!lastCommit && branchResult.success) {
+  // Detect empty-repo case (cloned successfully but no commits yet — git
+  // creates the working dir without an initial HEAD). Both `rev-parse HEAD`
+  // AND `rev-parse --abbrev-ref HEAD` fail with "ambiguous argument 'HEAD'".
+  // Show a friendlier message than the raw git stderr.
+  const isEmptyRepo = !lastCommit && !branchResult.success && /ambiguous argument 'HEAD'/.test(branchResult.stderr || '');
+  if (isEmptyRepo) {
+    // Replace the scary diagnostic with one clear line, and try to surface
+    // the placeholder branch name git would use for the first commit.
+    delete diagnostics.branchErr;
+    const symbolicHead = await runGit('symbolic-ref --short HEAD', repoDir);
+    diagnostics.headErr = `Repository is empty (no commits yet). The code agent will create the initial commit on '${symbolicHead.success ? symbolicHead.stdout : 'main'}'.`;
+  } else if (!lastCommit && branchResult.success) {
     // Branch resolved but HEAD didn't — explicitly probe to capture stderr.
     const headProbe = await runGit('rev-parse HEAD', repoDir);
     if (!headProbe.success) diagnostics.headErr = headProbe.stderr || `exit ${headProbe.exitCode}`;
   }
+  // Empty-repo: prefer the symbolic-ref-derived branch name over "unknown".
+  let displayBranch = branch;
+  if (isEmptyRepo) {
+    const symbolicHead = await runGit('symbolic-ref --short HEAD', repoDir);
+    if (symbolicHead.success && symbolicHead.stdout) displayBranch = `${symbolicHead.stdout} (empty)`;
+  }
 
   return {
-    branch,
+    branch: displayBranch,
     remoteUrl,
     isClean: stagedFiles.length === 0 && modifiedFiles.length === 0 && untrackedFiles.length === 0,
     stagedFiles,
