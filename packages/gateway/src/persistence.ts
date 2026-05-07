@@ -402,30 +402,140 @@ export class PersistenceService {
    * Append a message to a session.
    */
   appendMessage(sessionId: string, message: MessageInput, seq?: number): void {
-    try {
-      const resolvedSeq = seq ?? this.getLatestSeq(sessionId) + 1;
+    const metadataJson = message.metadata ? JSON.stringify(message.metadata) : null;
+    const attachmentsJson = message.attachments ? JSON.stringify(message.attachments) : null;
+    const statusValue = message.status ?? null;
+    const replyToValue = message.replyToId ?? null;
 
-      this.db
-        .insert(messages)
-        .values({
-          id: message.id,
-          sessionId,
-          seq: resolvedSeq,
-          role: message.role,
-          content: message.content,
-          metadata: message.metadata ? JSON.stringify(message.metadata) : null,
-          replyToId: message.replyToId ?? null,
-          attachments: message.attachments ? JSON.stringify(message.attachments) : null,
-          status: message.status ?? null,
-        })
-        .run();
-
-      // Invalidate message page cache for this session
+    const invalidateCache = (): void => {
       for (const key of this.messagePageCache.keys()) {
         if (key.startsWith(sessionId + ':')) {
           this.messagePageCache.delete(key);
         }
       }
+    };
+
+    // Idempotent path: if a row with this id already exists for this session,
+    // either no-op (when payload is unchanged) or UPDATE in place (when the
+    // payload has grown — typical streaming-completion case). The original
+    // `seq` is preserved so message ordering stays stable.
+    try {
+      const existing = this.db
+        .select()
+        .from(messages)
+        .where(eq(messages.id, message.id))
+        .get();
+
+      if (existing) {
+        if (existing.sessionId !== sessionId) {
+          // Same id under a different session is a real bug — surface it.
+          const err = new Error(
+            `messages.id collision across sessions: ${message.id} exists under ${existing.sessionId}, refused write to ${sessionId}`,
+          );
+          log.error('[persistence:appendMessage] Cross-session id collision', {
+            sessionId, messageId: message.id, existingSessionId: existing.sessionId,
+          });
+          throw err;
+        }
+
+        const unchanged =
+          existing.role === message.role &&
+          existing.content === message.content &&
+          existing.metadata === metadataJson &&
+          existing.attachments === attachmentsJson &&
+          existing.status === statusValue &&
+          existing.replyToId === replyToValue;
+
+        if (unchanged) {
+          log.debug('[persistence:appendMessage] Duplicate write collapsed (no-op)', {
+            sessionId, messageId: message.id,
+          });
+          return;
+        }
+
+        this.db
+          .update(messages)
+          .set({
+            role: message.role,
+            content: message.content,
+            metadata: metadataJson,
+            replyToId: replyToValue,
+            attachments: attachmentsJson,
+            status: statusValue,
+          })
+          .where(eq(messages.id, message.id))
+          .run();
+        invalidateCache();
+        log.debug('[persistence:appendMessage] Duplicate write merged into UPDATE', {
+          sessionId, messageId: message.id,
+        });
+        return;
+      }
+
+      const resolvedSeq = seq ?? this.getLatestSeq(sessionId) + 1;
+
+      try {
+        this.db
+          .insert(messages)
+          .values({
+            id: message.id,
+            sessionId,
+            seq: resolvedSeq,
+            role: message.role,
+            content: message.content,
+            metadata: metadataJson,
+            replyToId: replyToValue,
+            attachments: attachmentsJson,
+            status: statusValue,
+          })
+          .run();
+      } catch (err) {
+        // Race fallback: a concurrent writer beat us to the INSERT. Treat the
+        // UNIQUE-constraint failure as an UPDATE rather than a hard error.
+        const code = (err as { code?: string }).code;
+        const msg = (err as Error).message ?? '';
+        const isUnique =
+          code === 'SQLITE_CONSTRAINT_PRIMARYKEY' ||
+          code === 'SQLITE_CONSTRAINT_UNIQUE' ||
+          /UNIQUE constraint failed/i.test(msg);
+        if (!isUnique) throw err;
+
+        // Re-check ownership before applying the UPDATE — in the rare race
+        // where the conflicting row belongs to a different session, refuse
+        // the write rather than silently overwriting another session's row.
+        const conflictingRow = this.db
+          .select()
+          .from(messages)
+          .where(eq(messages.id, message.id))
+          .get();
+        if (conflictingRow && conflictingRow.sessionId !== sessionId) {
+          const collisionErr = new Error(
+            `messages.id collision across sessions (race): ${message.id} now owned by ${conflictingRow.sessionId}, refused write to ${sessionId}`,
+          );
+          log.error('[persistence:appendMessage] Cross-session id collision (race)', {
+            sessionId, messageId: message.id, existingSessionId: conflictingRow.sessionId,
+          });
+          throw collisionErr;
+        }
+
+        this.db
+          .update(messages)
+          .set({
+            role: message.role,
+            content: message.content,
+            metadata: metadataJson,
+            replyToId: replyToValue,
+            attachments: attachmentsJson,
+            status: statusValue,
+          })
+          .where(and(eq(messages.id, message.id), eq(messages.sessionId, sessionId)))
+          .run();
+        log.debug('[persistence:appendMessage] Insert race resolved via UPDATE', {
+          sessionId, messageId: message.id,
+        });
+      }
+
+      invalidateCache();
     } catch (err) {
       log.error('[persistence:appendMessage] Failed', { sessionId, messageId: message.id, error: (err as Error).message });
       throw err;

@@ -543,7 +543,22 @@ export class SessionManager {
   addMessage(sessionId: string, message: Message): void {
     const session = this.sessions.get(sessionId);
     if (!session) return;
-    this.pushToArrayWithCap(session.messages, message, MAX_MESSAGES_PER_SESSION);
+
+    // Producer guard: if a message with this id already exists in the session
+    // (typical streaming-completion replay or a double `done` event from the
+    // text callback), update the existing entry in-place instead of pushing a
+    // duplicate. This stops the duplicate `appendEvent` write entirely and
+    // makes the SQLite path a benign UPDATE via the idempotent appendMessage.
+    const existingIdx = session.messages.findIndex((m) => m.id === message.id);
+    const isDuplicateProducer = existingIdx !== -1;
+    if (isDuplicateProducer) {
+      session.messages[existingIdx] = {
+        ...session.messages[existingIdx],
+        ...message,
+      };
+    } else {
+      this.pushToArrayWithCap(session.messages, message, MAX_MESSAGES_PER_SESSION);
+    }
     session.updatedAt = new Date().toISOString();
 
     // SQLite dual-write: persist message and event
@@ -557,13 +572,17 @@ export class SessionManager {
           replyToId: message.replyToId,
           status: message.type,
         });
-        this.persistence!.appendEvent(sessionId, 'message', {
-          role: message.role,
-          content: message.content,
-          messageId: message.id,
-          type: message.type,
-          ...(message.metadata ? { metadata: message.metadata } : {}),
-        });
+        // Skip event-log re-append for duplicate-producer replays — the
+        // original event is already on the log; we only updated the row.
+        if (!isDuplicateProducer) {
+          this.persistence!.appendEvent(sessionId, 'message', {
+            role: message.role,
+            content: message.content,
+            messageId: message.id,
+            type: message.type,
+            ...(message.metadata ? { metadata: message.metadata } : {}),
+          });
+        }
       } catch (err) {
         log.warn('[session:sqlite:write] Failed to write message to SQLite', {
           sessionId, messageId: message.id, error: (err as Error).message,
