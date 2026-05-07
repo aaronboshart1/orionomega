@@ -161,11 +161,15 @@ export async function handleGitRoute(
     if (method === 'GET') {
       const sel = store.getSessionRepo(sid);
       let status: RepoStatus | null = null;
+      let statusError: string | null = null;
       if (sel) {
         try { status = await getRepoStatus(sel.localPath); }
-        catch (err) { log.warn('Repo status read failed', { sid, error: err instanceof Error ? err.message : String(err) }); }
+        catch (err) {
+          statusError = err instanceof Error ? err.message : String(err);
+          log.warn('Repo status read failed', { sid, error: statusError });
+        }
       }
-      sendJson(res, 200, { selection: sel, status });
+      sendJson(res, 200, { selection: sel, status, statusError });
       return true;
     }
     if (method === 'PUT') {
@@ -213,9 +217,13 @@ export async function handleGitRoute(
     try {
       const result = await ensureSessionClone(sel.remoteUrl, sel.localPath, sel.branch);
       let status: RepoStatus | null = null;
+      let statusError: string | null = null;
       try { status = await getRepoStatus(sel.localPath); }
-      catch (err) { log.warn('Repo status read failed', { sid, error: err instanceof Error ? err.message : String(err) }); }
-      sendJson(res, 200, { result, status });
+      catch (err) {
+        statusError = err instanceof Error ? err.message : String(err);
+        log.warn('Repo status read failed', { sid, error: statusError });
+      }
+      sendJson(res, 200, { result, status, statusError });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       log.error('Session repo sync failed', { sid, error: msg });

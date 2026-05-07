@@ -126,7 +126,11 @@ async function runGit(
   cwd: string,
   env?: Record<string, string>,
 ): Promise<GitResult> {
-  const command = `git ${args}`;
+  // `-c safe.directory=*` bypasses git's "dubious ownership" check for repos
+  // whose on-disk uid differs from the gateway process uid. The user opted
+  // into the repo via the Git tab, so the ownership signal isn't useful here
+  // and silently turns every status/HEAD read into "unknown".
+  const command = `git -c safe.directory=* ${args}`;
   log.verbose('Running git command', { command, cwd });
 
   try {

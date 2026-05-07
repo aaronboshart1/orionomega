@@ -85,9 +85,12 @@ export function GitPane() {
       const list = await api<{ repos: KnownRepo[] }>('/api/git/repos');
       setRepos(list.repos);
       if (sessionId) {
-        const sel = await api<{ selection: SelectedRepo | null; status: RepoStatus | null }>(`/api/git/sessions/${encodeURIComponent(sessionId)}/repo`);
+        const sel = await api<{ selection: SelectedRepo | null; status: RepoStatus | null; statusError?: string | null }>(`/api/git/sessions/${encodeURIComponent(sessionId)}/repo`);
         setSelection(sel.selection);
         setStatus(sel.status ?? null);
+        if (sel.selection && !sel.status && sel.statusError) {
+          setError(`Could not read repo status: ${sel.statusError}`);
+        }
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load');
@@ -170,7 +173,7 @@ export function GitPane() {
     setError(null);
     setInfo(null);
     try {
-      const r = await api<{ result: { cloned: boolean; fetched: boolean; fastForwarded: boolean; headCommit: string | null }; status: RepoStatus | null }>(
+      const r = await api<{ result: { cloned: boolean; fetched: boolean; fastForwarded: boolean; headCommit: string | null }; status: RepoStatus | null; statusError?: string | null }>(
         `/api/git/sessions/${encodeURIComponent(sessionId)}/repo/sync`,
         { method: 'POST' },
       );
@@ -181,6 +184,9 @@ export function GitPane() {
         r.result.fastForwarded ? 'fast-forwarded' : null,
       ].filter(Boolean);
       setStatus(r.status ?? null);
+      if (r.statusError) {
+        setError(`Could not read repo status: ${r.statusError}`);
+      }
       setInfo(`Synced (${parts.join(', ') || 'no changes'}). HEAD ${head}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Sync failed');
