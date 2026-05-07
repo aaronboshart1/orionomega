@@ -11,7 +11,7 @@
 
 import { exec as execCb } from 'node:child_process';
 import { promisify } from 'node:util';
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import { join, resolve as resolvePath } from 'node:path';
 import { createLogger } from '../../logging/logger.js';
 
@@ -590,6 +590,16 @@ export async function ensureSessionClone(
   let fetched = false;
   let fastForwarded = false;
 
+  // Detect a half-cloned directory left behind by a previous failed
+  // `git clone -b <branch>` (some git versions leave `.git` in place even
+  // when the requested branch doesn't exist, which traps subsequent calls
+  // in the "existing clone" branch with an unresolvable HEAD).
+  const isBrokenClone = existsSync(gitDir) && (await getHeadCommit(abs)) === null;
+  if (isBrokenClone) {
+    log.warn('ensureSessionClone: detected half-cloned dir without HEAD — wiping', { localPath: abs });
+    rmSync(abs, { recursive: true, force: true });
+  }
+
   if (!existsSync(gitDir)) {
     // Fresh clone. Reuse cloneRepo so the auth/branch flag handling stays
     // in one place. cloneRepo expects (workspaceDir, opts.targetDir).
@@ -608,6 +618,10 @@ export async function ensureSessionClone(
         log.warn('ensureSessionClone: requested branch missing — retrying with remote default', {
           remoteUrl, branch,
         });
+        // Wipe any partial directory git left behind so the cloneRepo
+        // short-circuit (`if (.git exists) return targetDir`) doesn't
+        // reuse the broken state.
+        if (existsSync(abs)) rmSync(abs, { recursive: true, force: true });
         await cloneRepo(remoteUrl, parent, { targetDir: abs });
       } else {
         throw err;
