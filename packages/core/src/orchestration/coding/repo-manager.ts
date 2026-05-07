@@ -571,7 +571,23 @@ export async function ensureSessionClone(
     const parent = abs.replace(/\/[^/]+\/?$/, '') || '/';
     if (!existsSync(parent)) mkdirSync(parent, { recursive: true });
     log.info('ensureSessionClone: cloning', { remoteUrl, localPath: abs, branch });
-    await cloneRepo(remoteUrl, parent, { targetDir: abs, branch });
+    try {
+      await cloneRepo(remoteUrl, parent, { targetDir: abs, branch });
+    } catch (err) {
+      // If the requested branch doesn't exist on the remote (common when the
+      // user added a repo without overriding the "main" default but the repo
+      // actually uses master / develop / etc.), fall back to cloning the
+      // remote's HEAD so the session still gets a usable working tree.
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/Remote branch .* not found in upstream origin/i.test(msg)) {
+        log.warn('ensureSessionClone: requested branch missing — retrying with remote default', {
+          remoteUrl, branch,
+        });
+        await cloneRepo(remoteUrl, parent, { targetDir: abs });
+      } else {
+        throw err;
+      }
+    }
     cloned = true;
   } else {
     // Verify the existing clone points at the same remote — otherwise we'd
