@@ -38,6 +38,8 @@ import {
 } from './conversation.js';
 import { MemoryBridge } from './memory-bridge.js';
 import { OrchestrationBridge } from './orchestration-bridge.js';
+import { stageAttachments, AttachmentStagingError, type StagedAttachment } from './attachment-staging.js';
+import { resolve as _resolvePath } from 'node:path';
 import { ContextAssembler } from '../memory/context-assembler.js';
 import { buildSkillToolset, type SkillRef, type SkillToolEntry } from './skill-tools.js';
 import { existsSync as _existsSync } from 'node:fs';
@@ -948,6 +950,31 @@ export class MainAgent {
     // doc for the rationale.
     const runId = `run-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
     const convOutputId = this.getOrAllocateConvOutputId(sid);
+
+    // Task #192: stage chat attachments to disk so every DAG worker
+    // (AGENT/CODING_AGENT/TOOL) can reach the bytes via absolute paths.
+    // Idempotent across retries (same convOutputId → same staging dir →
+    // existing-byte-identical files are skipped). Write failures abort
+    // the dispatch with a verbatim user-facing error.
+    let stagedAttachments: StagedAttachment[] = [];
+    if (attachments && attachments.length > 0) {
+      // EVERY uploaded attachment must reach disk. An attachment with no
+      // bytes (no `data`, no `textContent`) is a wire-layer failure that
+      // we surface as a staging error and abort dispatch — the planner
+      // would otherwise hallucinate against a file the workers can't see.
+      const sessionDir = _resolvePath(this.config.workspaceDir, 'output', convOutputId);
+      try {
+        stagedAttachments = stageAttachments({ attachments, sessionDir });
+      } catch (err) {
+        const msg = err instanceof AttachmentStagingError
+          ? err.message
+          : (err instanceof Error ? err.message : String(err));
+        log.error('Attachment staging failed — aborting dispatch', { error: msg });
+        this.callbacks.onText(`⚠️ Failed to stage uploaded file(s): ${msg}`, false, true);
+        return;
+      }
+    }
+    const stagedOpts = stagedAttachments.length > 0 ? { stagedAttachments } : {};
     this.foregroundRunId = runId;
     this.foregroundUserMessage = userContent;
     this.activeAbort = new AbortController();
@@ -1062,6 +1089,7 @@ export class MainAgent {
         await this.orchestration.dispatchCodingWorkflow(
           userContent,
           (e) => this.pushHistory(sid, e as HistoryEntry),
+          stagedOpts,
         );
         return;
       }
@@ -1072,7 +1100,7 @@ export class MainAgent {
         await this.orchestration.dispatchFullDAG(
           userContent,
           (e) => this.pushHistory(sid, e as HistoryEntry),
-          { requireConfirmation: isGuardedRequest(trimmed) },
+          { requireConfirmation: isGuardedRequest(trimmed), ...stagedOpts },
         );
         return;
       }
@@ -1094,7 +1122,7 @@ export class MainAgent {
         await this.orchestration.dispatchFullDAG(
           userContent,
           (e) => this.pushHistory(sid, e as HistoryEntry),
-          { requireConfirmation: guarded },
+          { requireConfirmation: guarded, ...stagedOpts },
         );
         return; // Returns immediately — DAG runs async
       }
@@ -1117,7 +1145,7 @@ export class MainAgent {
           await this.orchestration.dispatchFullDAG(
             userContent,
             (e) => this.pushHistory(sid, e as HistoryEntry),
-            { requireConfirmation: isGuardedRequest(trimmed) },
+            { requireConfirmation: isGuardedRequest(trimmed), ...stagedOpts },
           );
           break;
       }

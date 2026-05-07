@@ -13,6 +13,8 @@ import { GraphExecutor } from '../orchestration/executor.js';
 import type { ExecutorConfig } from '../orchestration/executor.js';
 import { prepareCodingDispatch } from './coding-dispatch.js';
 import { parseCodingRequest, RemoteResolutionError } from '../orchestration/coding/coding-orchestrator.js';
+import type { StagedAttachment } from './attachment-staging.js';
+import { renderStagedAttachmentsBlock } from './attachment-staging.js';
 import { EventBus } from '../orchestration/event-bus.js';
 import { OrchestratorCommands } from '../orchestration/commands.js';
 import { CheckpointManager } from '../orchestration/checkpoint.js';
@@ -63,7 +65,7 @@ export interface OrchestrationConfig {
  * Kept extremely narrow (only the fields code mode needs to override) so
  * future overrides are added intentionally rather than by accident.
  */
-type ExecutorOverrides = Pick<ExecutorConfig, 'codingRepoDir'>;
+type ExecutorOverrides = Pick<ExecutorConfig, 'codingRepoDir' | 'stagedAttachments'>;
 
 /** An active, running workflow. */
 interface ActiveWorkflow {
@@ -219,6 +221,42 @@ export class OrchestrationBridge {
        * under the same `runId`, giving operators one folder per run.
        */
       workflowId?: string;
+      /**
+       * Task #192: chat attachments already staged to disk by
+       * `MainAgent.handleMessage`. Prepended to the planner task and
+       * forwarded to the executor so every AGENT/CODING_AGENT/TOOL
+       * worker is told the absolute paths.
+       */
+      stagedAttachments?: StagedAttachment[];
+    } = {},
+  ): Promise<void> {
+    // Prepend the staged-attachments block to the task so the planner's
+    // preamble lists every file with its absolute path, MIME, and size.
+    const stagedBlock = renderStagedAttachmentsBlock(opts.stagedAttachments ?? []);
+    const taskWithAttachments = stagedBlock ? `${stagedBlock}\n\n${task}` : task;
+    // Defense-in-depth: also forward the staged list via the executor
+    // overrides so per-worker context injection works even when the
+    // planner LLM elides the preamble in the worker tasks it emits.
+    const mergedOverrides: ExecutorOverrides | undefined = (opts.executorOverrides || opts.stagedAttachments?.length)
+      ? {
+          ...(opts.executorOverrides ?? {}),
+          ...(opts.stagedAttachments?.length ? { stagedAttachments: opts.stagedAttachments } : {}),
+        }
+      : undefined;
+    return this.dispatchFullDAGInternal(taskWithAttachments, pushHistory, {
+      ...(opts.requireConfirmation !== undefined ? { requireConfirmation: opts.requireConfirmation } : {}),
+      ...(mergedOverrides ? { executorOverrides: mergedOverrides } : {}),
+      ...(opts.workflowId ? { workflowId: opts.workflowId } : {}),
+    });
+  }
+
+  private async dispatchFullDAGInternal(
+    task: string,
+    pushHistory: (entry: { role: string; content: string }) => void,
+    opts: {
+      requireConfirmation?: boolean;
+      executorOverrides?: ExecutorOverrides;
+      workflowId?: string;
     } = {},
   ): Promise<void> {
     this.emitStep('memory', 'Recalling memory', 'active');
@@ -311,6 +349,7 @@ export class OrchestrationBridge {
   async dispatchCodingWorkflow(
     task: string,
     pushHistory: (entry: { role: string; content: string }) => void,
+    opts: { stagedAttachments?: StagedAttachment[] } = {},
   ): Promise<void> {
     // Per Task #172: every code-mode call is its own run.
     //   1. Resolve the remote URL up-front (fail fast on unresolvable).
@@ -383,6 +422,7 @@ export class OrchestrationBridge {
     await this.dispatchFullDAG(prepared.codingTaskPreamble, pushHistory, {
       executorOverrides: { codingRepoDir: prepared.checkoutPath },
       workflowId: prepared.runId,
+      ...(opts.stagedAttachments?.length ? { stagedAttachments: opts.stagedAttachments } : {}),
     });
   }
 
@@ -746,6 +786,9 @@ ${userTask}`;
       maxRetries: this.config.maxRetries,
       checkpointInterval: 1,
       codingRepoDir: effectiveCodingRepoDir,
+      ...(executorOverrides?.stagedAttachments?.length
+        ? { stagedAttachments: executorOverrides.stagedAttachments }
+        : {}),
       humanGateCallback: async (action: string, description: string, signal: AbortSignal): Promise<boolean> => {
         const gateId = randomBytes(8).toString('hex');
         const timestamp = new Date().toISOString();

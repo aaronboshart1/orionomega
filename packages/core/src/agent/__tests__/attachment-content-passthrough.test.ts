@@ -214,7 +214,7 @@ describe('attachment content passthrough (Task #182)', () => {
     expect(text?.text).toContain('[Attached image: pic.png');
   });
 
-  it('fails loudly (warns the user, drops the file) when a binary attachment has no `data`', async () => {
+  it('fails loudly and aborts dispatch when a binary attachment has no `data` (Task #192 staging contract)', async () => {
     const { calls } = stubAnthropicAndCaptureMessages(agent);
     stubOrchestration(agent);
 
@@ -226,11 +226,12 @@ describe('attachment content passthrough (Task #182)', () => {
       'direct',
     );
 
-    // The user-facing warning was surfaced via onText.
+    // The verbatim staging error reaches the user via onText.
     expect(textCalls.some((t) => t.includes('has no inline content'))).toBe(true);
-    // No image block was synthesised — the turn went out as plain text.
-    const multimodal = findMultimodalUserMessage(calls[0]!);
-    expect(multimodal).toBeNull();
+    // Dispatch was aborted before the model was called — no Anthropic
+    // turn was emitted (the staging contract supersedes Task #182's
+    // older warn-and-continue behaviour for missing-bytes attachments).
+    expect(calls).toHaveLength(0);
   });
 
   it('strips the `data:<mime>;base64,` DataURL prefix and accepts a bare base64 payload', async () => {

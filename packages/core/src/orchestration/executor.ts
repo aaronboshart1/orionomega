@@ -233,6 +233,15 @@ export interface ExecutorConfig {
   onMemoryIO?: (event: { op: 'retain' | 'recall'; bank: string; detail: string; meta?: Record<string, unknown> }) => void;
   /** Default working directory for CODING_AGENT nodes (repo root). */
   codingRepoDir?: string;
+  /**
+   * Task #192: chat attachments staged to disk by `MainAgent.handleMessage`.
+   * When present, the executor prepends an "Attached files (on disk)"
+   * block to every AGENT injectedContext and CODING_AGENT task so workers
+   * are told the absolute paths of files they can Read/cat directly.
+   * TOOL nodes inherit the same paths via the planner preamble (the
+   * planner's task already lists them).
+   */
+  stagedAttachments?: import('../agent/attachment-staging.js').StagedAttachment[];
   /** Dedicated directory for storing run artifacts. When set, run output goes to {runsDir}/{workflowId}/ instead of {workspaceDir}/output/{workflowId}/. */
   runsDir?: string;
 }
@@ -713,6 +722,18 @@ export class GraphExecutor {
       case 'TOOL': {
         // Build rich context from multiple sources
         let injectedContext: string | undefined;
+        // Task #192: staged-attachments paths must reach BOTH AGENT and
+        // TOOL workers. AGENT consumes `injectedContext` as natural
+        // language; TOOL workers are shell-style invocations that still
+        // benefit from knowing the absolute paths (e.g. a TOOL whose
+        // command is `cat $FILE` — the planner can substitute one of
+        // these absolute paths). Built once here so it applies to both.
+        const stagedAttachmentsBlock = this.config.stagedAttachments?.length
+          ? `## Attached files (staged on disk — read via absolute paths)\n` +
+            this.config.stagedAttachments
+              .map((s) => `- ${s.absPath}  (mime: ${s.mimeType}, size: ${s.size} bytes, name: ${s.name})`)
+              .join('\n')
+          : '';
         if (node.type === 'AGENT' && node.agent?.task) {
           const contextParts: string[] = [];
 
@@ -753,9 +774,21 @@ export class GraphExecutor {
             contextParts.push(`## Known Infrastructure\n- Hindsight API: ${config.hindsight.url}\n- Default bank: ${config.hindsight.defaultBank ?? 'default'}`);
           }
 
+          // 4. Task #192: chat attachments staged to disk. Prepend so the
+          // worker sees absolute paths regardless of upstream/memory size.
+          if (stagedAttachmentsBlock) {
+            contextParts.unshift(stagedAttachmentsBlock);
+          }
+
           if (contextParts.length > 0) {
             injectedContext = contextParts.join('\n\n');
           }
+        } else if (node.type === 'TOOL' && stagedAttachmentsBlock) {
+          // Task #192: TOOL nodes don't build a multi-section
+          // injectedContext, but we still surface the staged-attachments
+          // listing so the worker (and any planner-emitted command
+          // template substitution) sees the absolute paths.
+          injectedContext = stagedAttachmentsBlock;
         }
 
         // Each worker gets its own output directory to prevent file pollution
@@ -825,10 +858,21 @@ export class GraphExecutor {
           }
         }
 
+        // Task #192: prepend staged-attachments block so CODING_AGENT
+        // workers know where on disk the user's uploads live.
+        const stagedBlock = this.config.stagedAttachments?.length
+          ? `## Attached files (staged on disk — read via absolute paths)\n` +
+            this.config.stagedAttachments
+              .map((s) => `- ${s.absPath}  (mime: ${s.mimeType}, size: ${s.size} bytes, name: ${s.name})`)
+              .join('\n') +
+            '\n\n'
+          : '';
+
         // Inject upstream context into the task description
+        const baseTask = node.codingAgent?.task ?? node.agent?.task ?? '';
         const codingTask = codingContext.length > 0
-          ? `${node.codingAgent?.task ?? node.agent?.task ?? ''}\n\n## Context from previous steps:\n${codingContext.join('\n\n')}`
-          : node.codingAgent?.task ?? node.agent?.task ?? '';
+          ? `${stagedBlock}${baseTask}\n\n## Context from previous steps:\n${codingContext.join('\n\n')}`
+          : `${stagedBlock}${baseTask}`;
 
         // Create output directory for the coding agent
         const codingOutputDir = `${this.getRunDir()}/${node.id}`;
