@@ -130,7 +130,10 @@ async function runGit(
   // whose on-disk uid differs from the gateway process uid. The user opted
   // into the repo via the Git tab, so the ownership signal isn't useful here
   // and silently turns every status/HEAD read into "unknown".
-  const command = `git -c safe.directory=* ${args}`;
+  // Single-quote `safe.directory=*` so the shell can't glob-expand `*`
+  // against files in `cwd`. Without quoting, a cwd containing a file named
+  // `safe.directory=foo` would silently corrupt the flag.
+  const command = `git -c 'safe.directory=*' ${args}`;
   log.verbose('Running git command', { command, cwd });
 
   try {
