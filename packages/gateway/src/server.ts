@@ -24,7 +24,7 @@ import { EventStreamer } from './events.js';
 import { WebSocketHandler } from './websocket.js';
 import { ServerSessionStore } from './state-store.js';
 import { handleHealth, handleMetrics } from './routes/health.js';
-import { handleListSessions, handleGetSession, handleCreateSession, handleRenameSession, handleDeleteSession, handleGetSessionActivityPaginated, handleGetSessionMessages } from './routes/sessions.js';
+import { handleListSessions, handleGetSession, handleCreateSession, handleRenameSession, handleDeleteSession, handleGetSessionActivityPaginated, handleGetSessionMessages, handleExportSession, SESSION_EXPORT_ROUTE } from './routes/sessions.js';
 import { PersistenceService } from './persistence.js';
 import { handleLogActivity, handleGetActivity } from './routes/activity.js';
 import { ActivityService } from './activity.js';
@@ -1339,6 +1339,14 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
   const sessionMessagesMatch = pathname.match(/^\/api\/sessions\/([a-z0-9_-]+)\/messages$/);
   if (sessionMessagesMatch && method === 'GET') {
     handleGetSessionMessages(req, res, persistenceService, sessionMessagesMatch[1]!);
+    return;
+  }
+
+  // --- Export ---
+  // GET /api/sessions/:id/export — full session snapshot as a downloadable JSON file.
+  const sessionExportMatch = pathname.match(SESSION_EXPORT_ROUTE);
+  if (sessionExportMatch && method === 'GET') {
+    handleExportSession(req, res, persistenceService, sessionManager, sessionExportMatch[1]!);
     return;
   }
 

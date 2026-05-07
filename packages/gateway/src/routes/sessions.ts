@@ -448,6 +448,12 @@ export function handleGetSessionEvents(
 }
 
 /**
+ * URL pattern for the session export route. Exported so the gateway
+ * router and tests share a single source of truth.
+ */
+export const SESSION_EXPORT_ROUTE = /^\/api\/sessions\/([a-z0-9_-]+)\/export$/;
+
+/**
  * Handle GET /api/sessions/:id/export — full session snapshot export.
  *
  * Returns the complete persisted state for a session, suitable for
