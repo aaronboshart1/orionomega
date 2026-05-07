@@ -13,7 +13,7 @@ import { GraphExecutor } from '../orchestration/executor.js';
 import type { ExecutorConfig } from '../orchestration/executor.js';
 import { prepareCodingDispatch, type SessionRepoSelection } from './coding-dispatch.js';
 import { parseCodingRequest, RemoteResolutionError } from '../orchestration/coding/coding-orchestrator.js';
-import { addWorktree, removeWorktree, mergeBranchInto } from '../orchestration/coding/repo-manager.js';
+import { addWorktree, removeWorktree, mergeBranchInto, pushChanges } from '../orchestration/coding/repo-manager.js';
 import type { StagedAttachment } from './attachment-staging.js';
 import { renderStagedAttachmentsBlock } from './attachment-staging.js';
 import { EventBus } from '../orchestration/event-bus.js';
@@ -406,6 +406,15 @@ export class OrchestrationBridge {
     //      deep inside the DAG instead of a clear up-front message.
     const { repoUrl: repoHint, branch } = parseCodingRequest(task);
 
+    // Visible per-turn sync notice for session-repo dispatches. Surfaces
+    // the implicit `ensureSessionClone` step that prepareCodingDispatch
+    // performs so the user sees the fetch+ff happen before planning.
+    if (opts.sessionRepo) {
+      this.callbacks.onText(
+        `Sync repo: fetching ${opts.sessionRepo.remoteUrl} (${opts.sessionRepo.branch || 'default branch'}) → ${opts.sessionRepo.localPath}`,
+        false, true,
+      );
+    }
     let prepared: Awaited<ReturnType<typeof prepareCodingDispatch>>;
     try {
       prepared = await prepareCodingDispatch({
@@ -488,6 +497,15 @@ export class OrchestrationBridge {
       ? async (plan: PlannerOutput) => {
           const codingNodes = [...plan.graph.nodes.values()].filter((n) => n.type === 'CODING_AGENT');
           if (codingNodes.length < 2) return; // single-agent — no benefit, skip
+          // Strip any planner-emitted git push from CODING_AGENT task bodies
+          // when worktrees will engage. Push happens centrally in
+          // postExecute AFTER merge-back so the remote always reflects the
+          // consolidated state. We only neutralize push (commit stays — we
+          // need committed work on the wt-* branches to merge from).
+          const stripPushFromTask = (task: string) =>
+            task
+              .replace(/^[ \t]*git[ \t]+push[^\n]*\n?/gim, '')
+              .replace(/(`{1,3})git push[^`\n]*\1/gi, '');
           // Scope worktrees to TRUE PARALLEL IMPLEMENTERS only: nodes that
           // share an identical `dependsOn` set with at least one sibling.
           // This naturally excludes single-instance control-flow CODING_AGENT
@@ -505,6 +523,10 @@ export class OrchestrationBridge {
           }
           const parallelImplementers = codingNodes.filter((n) => (groups.get(groupKey(n))?.length ?? 0) >= 2);
           if (parallelImplementers.length < 2) return; // no parallel fan-out, skip
+          // Strip push from EVERY coding-agent task body — push is centralised.
+          for (const n of codingNodes) {
+            if (n.codingAgent?.task) n.codingAgent.task = stripPushFromTask(n.codingAgent.task);
+          }
           const allocations: { nodeId: string; worktreePath: string; branch: string }[] = [];
           const worktreesRoot = `${baseClonePath}/.worktrees`;
           for (const node of parallelImplementers) {
@@ -571,9 +593,23 @@ export class OrchestrationBridge {
                   `Coding workflow integration FAILED — ${mergeFailures.length} worktree branch(es) ` +
                   `did not merge cleanly into ${baseBranch}:\n${summary}\n\n` +
                   `The session clone (${baseClonePath}) is left in its current state for manual resolution. ` +
-                  `Final push (if any) was not performed.`;
+                  `Final push was not performed.`;
                 this.callbacks.onText(msg, false, true);
                 throw new Error(`Worktree merge-back failed for ${mergeFailures.length} branch(es)`);
+              }
+              // Centralised push: now that base branch contains the merged
+              // work from every parallel implementer, push it once. This
+              // replaces the planner-emitted push (which we stripped above)
+              // and guarantees the remote reflects the consolidated state.
+              if (success) {
+                try {
+                  await pushChanges(baseClonePath, { branch: baseBranch });
+                  this.callbacks.onText(`Pushed ${baseBranch} to origin (consolidated from ${allocations.length} worktree(s)).`, false, true);
+                } catch (pushErr) {
+                  const em = pushErr instanceof Error ? pushErr.message : String(pushErr);
+                  this.callbacks.onText(`Final push to origin/${baseBranch} failed: ${em}`, false, true);
+                  throw new Error(`Final consolidated push failed: ${em}`);
+                }
               }
             },
           };
@@ -1066,7 +1102,16 @@ ${userTask}`;
         } catch (postErr) {
           const pmsg = postErr instanceof Error ? postErr.message : String(postErr);
           log.error('postExecute hook failed', { error: pmsg, workflowId });
-          this.callbacks.onText(`Worktree cleanup failed: ${pmsg}`, false, true);
+          // Treat consolidation/merge/push failures as a TERMINAL workflow
+          // failure: downgrade executeSucceeded so anything downstream that
+          // checks the workflow outcome (status snapshots, schedules, the
+          // user-facing chat result) sees a failure rather than a silent
+          // success. The hook already emitted a detailed user-facing
+          // explanation; we add the canonical "Workflow failed" line here.
+          if (executeSucceeded) {
+            executeSucceeded = false;
+            this.callbacks.onText(`Workflow failed: ${pmsg}`, false, true);
+          }
         }
       }
       this.cleanupWorkflow(workflowId);
