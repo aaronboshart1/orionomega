@@ -274,6 +274,10 @@ async function initMainAgent(): Promise<void> {
     hindsight: freshConfig.hindsight,
     autoResume: freshConfig.orchestration?.autoResume ?? false,
     ...(codingRepoDir ? { codingRepoDir } : {}),
+    // `coding.defaultRemote` from config.yaml — used by the code-mode
+    // remote resolver as the third fallback (after `repo:<url>` hint and
+    // the `coding.repoDir` origin).
+    ...(freshConfig.coding?.defaultRemote ? { codingDefaultRemote: freshConfig.coding.defaultRemote } : {}),
   };
 
   let currentTextId = randomBytes(8).toString('hex');

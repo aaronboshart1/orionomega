@@ -115,6 +115,12 @@ export interface MainAgentConfig {
   autoResume?: boolean;
   /** Path to the source repo for coding mode. */
   codingRepoDir?: string;
+  /**
+   * Default remote URL used by code mode when the user omits a
+   * `repo:<url>` hint and `codingRepoDir` either isn't set or has no
+   * `origin` remote. Plumbed from `coding.defaultRemote` in `config.yaml`.
+   */
+  codingDefaultRemote?: string;
   /** Dedicated directory for storing run artifacts. Defaults to ~/.orionomega/runs. */
   runsDir?: string;
 }
@@ -679,6 +685,7 @@ export class MainAgent {
         codingAgentTimeout: this.config.codingAgentTimeout,
         maxRetries: this.config.maxRetries,
         codingRepoDir: this.config.codingRepoDir,
+        codingDefaultRemote: this.config.codingDefaultRemote,
       },
       wrappedCallbacks,
       this.memory,

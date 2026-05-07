@@ -11,6 +11,8 @@ import { Planner } from '../orchestration/planner.js';
 // Coding mode uses the standard Planner → Executor pipeline with a coding-specific task preamble.
 import { GraphExecutor } from '../orchestration/executor.js';
 import type { ExecutorConfig } from '../orchestration/executor.js';
+import { prepareCodingDispatch } from './coding-dispatch.js';
+import { parseCodingRequest, RemoteResolutionError } from '../orchestration/coding/coding-orchestrator.js';
 import { EventBus } from '../orchestration/event-bus.js';
 import { OrchestratorCommands } from '../orchestration/commands.js';
 import { CheckpointManager } from '../orchestration/checkpoint.js';
@@ -42,9 +44,26 @@ export interface OrchestrationConfig {
   maxRetries: number;
   /** Path to the source repo for coding mode (default working directory). */
   codingRepoDir?: string;
+  /**
+   * Default remote URL for code-mode runs when the user doesn't include
+   * a `repo:<url>` hint. Plumbed from `coding.defaultRemote` in
+   * `config.yaml`. Used by the resolver inside
+   * {@link prepareCodingDispatch} after `codingRepoDir`.
+   */
+  codingDefaultRemote?: string;
   /** Dedicated directory for storing run artifacts. Defaults to ~/.orionomega/runs. */
   runsDir?: string;
 }
+
+/**
+ * Per-dispatch override for the executor config. Code-mode dispatches
+ * use this to pin every CODING_AGENT node's cwd to the per-run checkout
+ * path even when the planner LLM forgets to include `cwd` on a node.
+ *
+ * Kept extremely narrow (only the fields code mode needs to override) so
+ * future overrides are added intentionally rather than by accident.
+ */
+type ExecutorOverrides = Pick<ExecutorConfig, 'codingRepoDir'>;
 
 /** An active, running workflow. */
 interface ActiveWorkflow {
@@ -103,6 +122,14 @@ export class OrchestrationBridge {
     plan: PlannerOutput;
     task: string;
     pushHistory: (entry: { role: string; content: string }) => void;
+    /**
+     * Per-dispatch executor overrides captured at confirmation time and
+     * replayed verbatim on approval. Without this, code-mode dispatches
+     * that hit `requireConfirmation` would lose their per-run
+     * `codingRepoDir` override and fall back to the bridge's persistent
+     * config — silently dropping the agent into the install tree.
+     */
+    executorOverrides?: ExecutorOverrides;
   }>();
 
   constructor(
@@ -179,7 +206,20 @@ export class OrchestrationBridge {
   async dispatchFullDAG(
     task: string,
     pushHistory: (entry: { role: string; content: string }) => void,
-    opts: { requireConfirmation?: boolean } = {},
+    opts: {
+      requireConfirmation?: boolean;
+      executorOverrides?: ExecutorOverrides;
+      /**
+       * Pre-minted workflow ID. When provided, overrides the planner's
+       * randomly-generated `plan.graph.id` so the executor's
+       * `getRunDir()` (which is keyed off `graph.id`) and any pre-clone
+       * folder share the same identifier. Code mode uses this so the
+       * pre-clone path `<workspaceDir>/output/<runId>/<repoName>` and
+       * the executor artifacts dir `<workspaceDir>/output/<runId>` live
+       * under the same `runId`, giving operators one folder per run.
+       */
+      workflowId?: string;
+    } = {},
   ): Promise<void> {
     this.emitStep('memory', 'Recalling memory', 'active');
     this.callbacks.onThinking('Planning…', true, false);
@@ -197,9 +237,26 @@ export class OrchestrationBridge {
       this.emitStep('planning', 'Generating plan', 'done', `${nodeCount} node${nodeCount !== 1 ? 's' : ''} in DAG`);
       this.callbacks.onThinking('', true, true);
 
+      // Override the planner's random graph.id with the caller's
+      // pre-minted workflowId (used by code mode — see opts docs).
+      // Safe because `Graph` is a plain mutable object literal and
+      // nothing has consumed `plan.graph.id` yet at this point.
+      if (opts.workflowId) {
+        plan.graph.id = opts.workflowId;
+      }
+
       if (opts.requireConfirmation) {
-        // Store for confirmation and emit confirm event
-        this.pendingConfirmations.set(plan.graph.id, { plan, task, pushHistory });
+        // Store for confirmation and emit confirm event. Carry the
+        // per-dispatch executor overrides through the confirmation
+        // round-trip so approval replays them verbatim — code mode
+        // relies on this to keep `codingRepoDir` pinned to the per-run
+        // checkout under guarded execution.
+        this.pendingConfirmations.set(plan.graph.id, {
+          plan,
+          task,
+          pushHistory,
+          ...(opts.executorOverrides ? { executorOverrides: opts.executorOverrides } : {}),
+        });
 
         const confirmInfo: DAGConfirmInfo = {
           workflowId: plan.graph.id,
@@ -220,7 +277,7 @@ export class OrchestrationBridge {
         return;
       }
 
-      await this.dispatchAsync(plan, pushHistory);
+      await this.dispatchAsync(plan, pushHistory, opts.executorOverrides);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       log.error('dispatchFullDAG error', { error: msg });
@@ -255,30 +312,88 @@ export class OrchestrationBridge {
     task: string,
     pushHistory: (entry: { role: string; content: string }) => void,
   ): Promise<void> {
-    // Resolve the repo directory for the coding session
-    const repoDir = this.config.codingRepoDir ?? this.config.workspaceDir;
+    // Per Task #172: every code-mode call is its own run.
+    //   1. Resolve the remote URL up-front (fail fast on unresolvable).
+    //   2. Clone into `<workspaceDir>/output/<runId>/<repoName>` BEFORE the
+    //      planner sees the task, so the preamble can name the exact
+    //      checkout path + HEAD commit.
+    //   3. Pin every downstream CODING_AGENT node's cwd to that path via
+    //      the executor override, defending against the planner LLM
+    //      occasionally forgetting to set `node.codingAgent.cwd`.
+    //   4. Drop the legacy `repoDir = codingRepoDir ?? workspaceDir` path
+    //      that silently put the agent in the gateway's process cwd when
+    //      no repo was configured — that produced "not a git repo" errors
+    //      deep inside the DAG instead of a clear up-front message.
+    const { repoUrl: repoHint, branch } = parseCodingRequest(task);
 
-    // Build the coding-specific task preamble that instructs the planner
-    // to structure the DAG as a coding workflow
-    const codingTask = this.buildCodingTask(task, repoDir);
+    let prepared: Awaited<ReturnType<typeof prepareCodingDispatch>>;
+    try {
+      prepared = await prepareCodingDispatch({
+        userTask: task,
+        workspaceDir: this.config.workspaceDir,
+        ...(branch ? { branch } : {}),
+        remote: {
+          ...(repoHint !== undefined ? { repoHint } : {}),
+          ...(this.config.codingRepoDir !== undefined ? { sourceRepoDir: this.config.codingRepoDir } : {}),
+          ...(this.config.codingDefaultRemote !== undefined ? { defaultRemote: this.config.codingDefaultRemote } : {}),
+          cwdForFallback: process.cwd(),
+        },
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // Surface the verbatim resolver / clone error to the user so they
+      // can pick the easiest remediation path. RemoteResolutionError's
+      // message lists every config knob; clone errors carry the real
+      // git output (auth, network, branch mismatch, etc.).
+      log.error('dispatchCodingWorkflow setup failed', {
+        error: msg,
+        kind: err instanceof RemoteResolutionError ? 'remote-resolution' : 'clone-or-other',
+      });
+      this.callbacks.onText(`Code mode setup failed: ${msg}`, false, true);
+      pushHistory({ role: 'assistant', content: `[Code mode setup failed] ${msg}` });
+      return;
+    }
 
     log.info('Dispatching coding workflow via standard orchestration pipeline', {
-      repoDir,
+      runId: prepared.runId,
+      remoteUrl: prepared.remoteUrl,
+      branch: prepared.branch,
+      checkoutPath: prepared.checkoutPath,
+      headCommit: prepared.headCommit,
       taskPreview: task.slice(0, 120),
     });
 
-    // Delegate to the standard DAG dispatch — this gives us the full
-    // orchestration pipeline: Planner → GraphExecutor → EventBus → DAG visualizer
-    await this.dispatchFullDAG(codingTask, pushHistory);
+    // Surface the prepared run to the user so they can see the clone
+    // landed where they expect (and which commit the agent forked from).
+    const shortHead = prepared.headCommit ? prepared.headCommit.slice(0, 8) : 'unknown';
+    this.callbacks.onText(
+      `Code mode prepared: cloned ${prepared.remoteUrl} (${prepared.branch}) → ${prepared.checkoutPath} @ ${shortHead}`,
+      false, true,
+    );
+
+    // Delegate to the standard DAG dispatch — full pipeline (Planner →
+    // GraphExecutor → EventBus → DAG visualiser) — but:
+    //   * pass the per-run checkout path as an executor override so every
+    //     CODING_AGENT node inherits it as `cwd`.
+    //   * pin the workflow id to our pre-minted runId so the executor's
+    //     run-artifacts dir (`<workspaceDir>/output/<workflowId>`) is the
+    //     SAME folder as the pre-clone parent dir
+    //     (`<workspaceDir>/output/<runId>` containing the `<repoName>`
+    //     checkout). One folder per run, single inspection point.
+    await this.dispatchFullDAG(prepared.codingTaskPreamble, pushHistory, {
+      executorOverrides: { codingRepoDir: prepared.checkoutPath },
+      workflowId: prepared.runId,
+    });
   }
 
   /**
-   * Build the coding-specific task string that instructs the planner to
-   * create a coding workflow DAG.
-   *
-   * The preamble provides explicit instructions for the planner to include
-   * repo management, CODING_AGENT nodes, testing, and git operations.
+   * @deprecated Replaced by `buildCodingTaskPreamble` in
+   * `./coding-dispatch.ts`, which is invoked from
+   * {@link dispatchCodingWorkflow} after the repo has been pre-cloned.
+   * Kept exported as a private to avoid a noisy diff for any in-flight
+   * callers; can be removed once nothing references it.
    */
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   private buildCodingTask(userTask: string, repoDir: string): string {
     return `## CODING MODE — Structured Software Engineering Workflow
 
@@ -339,6 +454,7 @@ ${userTask}`;
   private async dispatchAsync(
     plan: PlannerOutput,
     pushHistory: (entry: { role: string; content: string }) => void,
+    executorOverrides?: ExecutorOverrides,
   ): Promise<string> {
     const workflowId = plan.graph.id;
 
@@ -356,7 +472,7 @@ ${userTask}`;
     pushHistory({ role: 'assistant', content: `[Dispatched] ${plan.summary}` });
 
     // Fire-and-forget: execute in the background
-    void this.executeBackground(plan, pushHistory).catch((err) => {
+    void this.executeBackground(plan, pushHistory, executorOverrides).catch((err) => {
       const msg = err instanceof Error ? err.message : String(err);
       log.error('Background execution failed', { error: msg, workflowId });
       this.callbacks.onText(`Workflow failed: ${msg}`, false, true);
@@ -372,8 +488,9 @@ ${userTask}`;
   private async executeBackground(
     plan: PlannerOutput,
     pushHistory: (entry: { role: string; content: string }) => void,
+    executorOverrides?: ExecutorOverrides,
   ): Promise<void> {
-    await this.executePlan(plan, pushHistory);
+    await this.executePlan(plan, pushHistory, undefined, undefined, executorOverrides);
   }
 
   // ── Confirmation resolution ───────────────────────────────────────
@@ -395,7 +512,9 @@ ${userTask}`;
 
     if (approved) {
       this.callbacks.onText('Approved. Starting execution…', false, true);
-      void this.dispatchAsync(pending.plan, pending.pushHistory);
+      // Replay the captured executor overrides on approval — see the
+      // pendingConfirmations comment for why this matters for code mode.
+      void this.dispatchAsync(pending.plan, pending.pushHistory, pending.executorOverrides);
     } else {
       this.callbacks.onText('Cancelled.', false, true, targetId);
       pending.pushHistory({ role: 'assistant', content: '[Cancelled by user]' });
@@ -604,11 +723,20 @@ ${userTask}`;
     pushHistory: (entry: { role: string; content: string }) => void,
     startLayer?: number,
     restoredState?: WorkflowState,
+    executorOverrides?: ExecutorOverrides,
   ): Promise<void> {
     const workflowId = plan.graph.id;
     const workflowName = plan.graph.name;
 
     this.pendingPlans.delete(workflowId);
+
+    // Per-dispatch overrides win over the bridge's persistent config.
+    // Currently only `codingRepoDir` is overridable — see
+    // {@link ExecutorOverrides}. Code-mode dispatches set this to the
+    // per-run checkout path so the executor's CODING_AGENT cwd fallback
+    // chain (`node.codingAgent?.cwd ?? this.config.codingRepoDir ?? …`)
+    // can never accidentally land in the install tree.
+    const effectiveCodingRepoDir = executorOverrides?.codingRepoDir ?? this.config.codingRepoDir;
 
     const executorConfig: ExecutorConfig = {
       workspaceDir: this.config.workspaceDir,
@@ -617,7 +745,7 @@ ${userTask}`;
       codingAgentTimeout: this.config.codingAgentTimeout,
       maxRetries: this.config.maxRetries,
       checkpointInterval: 1,
-      codingRepoDir: this.config.codingRepoDir,
+      codingRepoDir: effectiveCodingRepoDir,
       humanGateCallback: async (action: string, description: string, signal: AbortSignal): Promise<boolean> => {
         const gateId = randomBytes(8).toString('hex');
         const timestamp = new Date().toISOString();

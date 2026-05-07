@@ -233,6 +233,14 @@ export interface OrionOmegaConfig {
   coding?: {
     /** Absolute path to the default repo for CODING_AGENT nodes. */
     repoDir?: string;
+    /**
+     * Default remote URL for code-mode runs when the user doesn't include
+     * a `repo:<url>` hint in the task. Used by the coding orchestrator's
+     * remote-resolver after `repoDir` has been consulted. Should be an
+     * HTTPS or SSH URL that `git clone` understands (e.g.
+     * `https://github.com/owner/repo.git` or `git@github.com:owner/repo.git`).
+     */
+    defaultRemote?: string;
   };
 
   /**

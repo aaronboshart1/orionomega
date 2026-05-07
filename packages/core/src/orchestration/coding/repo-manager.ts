@@ -441,3 +441,37 @@ export async function getRepoRoot(dir: string): Promise<string | null> {
   const result = await runGit('rev-parse --show-toplevel', dir);
   return result.success ? result.stdout : null;
 }
+
+/**
+ * Get the URL of a named remote in the repository at `dir`.
+ *
+ * @param dir - A directory inside a git repository.
+ * @param remote - Remote name. Defaults to `'origin'`.
+ * @returns The remote URL, or `null` if the remote (or repo) does not exist.
+ */
+export async function getRemoteUrl(dir: string, remote = 'origin'): Promise<string | null> {
+  const result = await runGit(`remote get-url ${remote}`, dir);
+  if (!result.success) return null;
+  return result.stdout.trim() || null;
+}
+
+/**
+ * Resolve the current HEAD commit hash of a git repository.
+ *
+ * @param dir - A directory inside a git repository.
+ * @returns The full SHA of HEAD, or `null` if it cannot be determined.
+ */
+export async function getHeadCommit(dir: string): Promise<string | null> {
+  const result = await runGit('rev-parse HEAD', dir);
+  if (!result.success) return null;
+  return result.stdout.trim() || null;
+}
+
+/**
+ * Derive the repository name from a URL (filename portion of the path,
+ * with any trailing `.git` stripped). Public so the orchestrator can pick
+ * the same per-run checkout subdirectory name `cloneRepo` would use.
+ */
+export function repoNameFromRemoteUrl(repoUrl: string): string {
+  return repoNameFromUrl(repoUrl);
+}

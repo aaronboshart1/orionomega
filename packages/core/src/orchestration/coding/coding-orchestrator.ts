@@ -44,6 +44,9 @@ import {
   commitChanges,
   pushChanges,
   getRepoStatus,
+  getRemoteUrl,
+  getHeadCommit,
+  repoNameFromRemoteUrl,
 } from './repo-manager.js';
 import {
   analyzeCodebase,
@@ -128,8 +131,27 @@ export interface CodingOrchestratorConfig {
   codingModeConfig: CodingModeConfig;
   fallbackModel: string;
   highPowerModel: string;
-  /** Path to the orionomega source repo (used as default when no repo: hint given). */
+  /**
+   * Optional path to a local git checkout used **only** as a remote
+   * resolution hint: the resolver runs `git remote get-url origin` inside
+   * this directory to discover the upstream URL when the user's task
+   * doesn't include a `repo:<url>` hint. The directory itself is never
+   * used as the agent's working tree — every run clones into its own
+   * `<workspaceDir>/output/<runId>/<repoName>` checkout.
+   */
   sourceRepoDir?: string;
+  /**
+   * Optional explicit default remote URL used by `resolveCodingRemote()`
+   * after `sourceRepoDir`. Surfaced to operators as `coding.defaultRemote`
+   * in `config.yaml`.
+   */
+  defaultRemote?: string;
+  /**
+   * Optional fallback directory for `git remote get-url origin` resolution
+   * when neither `sourceRepoDir` nor `defaultRemote` matches. Defaults to
+   * `process.cwd()` when omitted; injection is exposed for tests.
+   */
+  cwdForRemoteFallback?: string;
   /**
    * Per-command wall-clock budget (seconds) for build/test/lint validation
    * commands, propagated from `orchestration.validationTimeout`. Defaults
@@ -203,23 +225,104 @@ function now(): string {
   return new Date().toISOString();
 }
 
-/** Parse repoUrl + branch from a task description heuristic. */
-export function parseCodingRequest(task: string, defaultRepoDir?: string): { repoUrl: string; branch: string; taskDescription: string } {
-  // Try to extract "repo:<url>" and "branch:<name>" from the task string.
+/**
+ * Parse the optional `repo:<url>` and `branch:<name>` hints from a coding
+ * task description. Returns `repoUrl: undefined` when no hint is present —
+ * the caller is then responsible for resolving the remote via
+ * {@link resolveCodingRemote}. The previous `file://./` fallback was
+ * intentionally removed: pointing the agent at the gateway's process cwd
+ * silently dropped runs into the install tree (which is never a real
+ * source repo) instead of failing fast with a clear message.
+ */
+export function parseCodingRequest(task: string): { repoUrl: string | undefined; branch: string; taskDescription: string } {
   const repoMatch = task.match(/repo(?:url)?:\s*(\S+)/i);
   const branchMatch = task.match(/branch:\s*(\S+)/i);
+  return {
+    repoUrl: repoMatch?.[1],
+    branch: branchMatch?.[1] ?? 'main',
+    taskDescription: task,
+  };
+}
 
-  let repoUrl: string;
-  if (repoMatch?.[1]) {
-    repoUrl = repoMatch[1];
-  } else if (defaultRepoDir) {
-    repoUrl = `file://${defaultRepoDir}`;
-  } else {
-    repoUrl = 'file://./';
+/**
+ * Typed error raised when no remote URL can be resolved for a coding run.
+ * Carries a user-facing message that explains every fallback path that was
+ * tried so the operator can pick the easiest one to fix.
+ */
+export class RemoteResolutionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'RemoteResolutionError';
+  }
+}
+
+/**
+ * Inputs to {@link resolveCodingRemote}. Kept as a discrete type so tests
+ * can call the resolver without spinning up a full orchestrator config.
+ */
+export interface RemoteResolutionContext {
+  /** A `repo:<url>` hint extracted from the user's task, if any. */
+  repoHint?: string;
+  /**
+   * Optional path to a local git checkout. If it has an `origin` remote,
+   * its URL is used. The checkout itself is never reused as the working
+   * tree — see `CodingOrchestratorConfig.sourceRepoDir`.
+   */
+  sourceRepoDir?: string;
+  /** Operator-configured default remote URL (`coding.defaultRemote`). */
+  defaultRemote?: string;
+  /**
+   * Final fallback: read `git remote get-url origin` from this directory
+   * (typically the install / project root). Skipped when `null`.
+   */
+  cwdForFallback?: string | null;
+}
+
+/**
+ * Resolve the remote URL for a code-mode run from contextual clues.
+ *
+ * Priority order, matching the task spec:
+ *   1. Explicit `repo:<url>` hint in the task description.
+ *   2. `git remote get-url origin` inside `sourceRepoDir` (if it's a repo).
+ *   3. `defaultRemote` from `config.yaml` (`coding.defaultRemote`).
+ *   4. `git remote get-url origin` inside `cwdForFallback` (typically the
+ *      install / project root) as a last-ditch attempt.
+ *
+ * When all four miss, throws {@link RemoteResolutionError} with a message
+ * that names every option the operator can set to recover. Callers
+ * surface this verbatim to the user — the previous code silently fell back
+ * to `file://./`, which dropped runs into the gateway process's cwd and
+ * led to "not a git repository" failures further down the DAG.
+ */
+export async function resolveCodingRemote(ctx: RemoteResolutionContext): Promise<string> {
+  if (ctx.repoHint && ctx.repoHint.trim().length > 0) {
+    return ctx.repoHint.trim();
   }
 
-  const branch = branchMatch?.[1] ?? 'main';
-  return { repoUrl, branch, taskDescription: task };
+  if (ctx.sourceRepoDir && existsSync(ctx.sourceRepoDir)) {
+    const origin = await getRemoteUrl(ctx.sourceRepoDir, 'origin').catch(() => null);
+    if (origin) return origin;
+  }
+
+  if (ctx.defaultRemote && ctx.defaultRemote.trim().length > 0) {
+    return ctx.defaultRemote.trim();
+  }
+
+  if (ctx.cwdForFallback && existsSync(ctx.cwdForFallback)) {
+    const origin = await getRemoteUrl(ctx.cwdForFallback, 'origin').catch(() => null);
+    if (origin) return origin;
+  }
+
+  throw new RemoteResolutionError(
+    'Could not resolve a git remote for this coding run. ' +
+    'Try one of these (in order of effort): ' +
+    '(1) Include `repo:<https-or-ssh-url>` in your message; ' +
+    '(2) set `coding.defaultRemote` in config.yaml to your repo URL; ' +
+    '(3) set `coding.repoDir` (sourceRepoDir) to a local checkout whose ' +
+    '`origin` remote points at the upstream repo; or ' +
+    '(4) launch the gateway from inside a working git checkout so ' +
+    '`git remote get-url origin` resolves.',
+  );
 }
 
 // ── CodingOrchestrator ────────────────────────────────────────────────────────
@@ -243,17 +346,26 @@ export class CodingOrchestrator {
    */
   async run(task: string, conversationId: string, progress?: CodingProgressCallback): Promise<CodingSessionResult> {
     const sessionId = uuid();
-    const { repoUrl, branch, taskDescription } = parseCodingRequest(task, this.cfg.sourceRepoDir);
-    const workspacePath = resolvePath(this.cfg.workspaceDir, `coding-${sessionId.slice(0, 8)}`);
+    const { repoUrl: repoHint, branch, taskDescription } = parseCodingRequest(task);
+    const repoUrl = await this._resolveRemote(repoHint);
+    // Per-run output directory mirroring the GraphExecutor convention
+    // (`<workspaceDir>/output/<runId>`). The clone lives **inside** this
+    // directory so each run is fully isolated and the checkout, plus any
+    // run-summary artifacts, can be inspected after the fact under one
+    // path. Previously we minted `coding-<sessionId8>` directly under
+    // `workspaceDir`, which both broke the convention and got reused
+    // across follow-up runs in the same session.
+    const runDir = resolvePath(this.cfg.workspaceDir, 'output', sessionId);
     const startedAt = Date.now();
 
-    // Persist session record
+    // Persist session record. `workspacePath` here is the run-output dir;
+    // the actual checkout will live underneath it (see `_runWorkflow`).
     await this.db.insert(codingSessions).values({
       id: sessionId,
       conversationId,
       repoUrl,
       branch,
-      workspacePath,
+      workspacePath: runDir,
       status: 'running',
       createdAt: now(),
       updatedAt: now(),
@@ -284,7 +396,7 @@ export class CodingOrchestrator {
 
     try {
       const result = await this._runWorkflow(
-        sessionId, executionId, workspacePath, repoUrl, branch,
+        sessionId, executionId, runDir, repoUrl, branch,
         taskDescription, template, startedAt, conversationId, progress,
       );
       return result;
@@ -317,12 +429,13 @@ export class CodingOrchestrator {
    */
   async start(task: string, conversationId: string): Promise<string> {
     const sessionId = uuid();
-    const { repoUrl, branch, taskDescription } = parseCodingRequest(task, this.cfg.sourceRepoDir);
-    const workspacePath = resolvePath(this.cfg.workspaceDir, `coding-${sessionId.slice(0, 8)}`);
+    const { repoUrl: repoHint, branch, taskDescription } = parseCodingRequest(task);
+    const repoUrl = await this._resolveRemote(repoHint);
+    const runDir = resolvePath(this.cfg.workspaceDir, 'output', sessionId);
     const startedAt = Date.now();
 
     await this.db.insert(codingSessions).values({
-      id: sessionId, conversationId, repoUrl, branch, workspacePath,
+      id: sessionId, conversationId, repoUrl, branch, workspacePath: runDir,
       status: 'running', createdAt: now(), updatedAt: now(),
     });
 
@@ -341,7 +454,7 @@ export class CodingOrchestrator {
     });
 
     // Fire-and-forget
-    this._runWorkflow(sessionId, executionId, workspacePath, repoUrl, branch, taskDescription, template, startedAt, conversationId)
+    this._runWorkflow(sessionId, executionId, runDir, repoUrl, branch, taskDescription, template, startedAt, conversationId)
       .catch((err) => {
         const msg = err instanceof Error ? err.message : String(err);
         log.error('Coding workflow failed', { sessionId, error: msg });
@@ -372,7 +485,7 @@ export class CodingOrchestrator {
   private async _runWorkflow(
     sessionId: string,
     executionId: string,
-    workspacePath: string,
+    runDir: string,
     repoUrl: string,
     branch: string,
     taskDescription: string,
@@ -387,55 +500,38 @@ export class CodingOrchestrator {
     let reviewDecision: 'approve' | 'reject' | 'request-changes' = 'approve';
     let implementationCostUsd: number | undefined;
     let implementationToolCalls: number | undefined;
+    let headCommit: string | null = null;
     const stepResults: CodingSessionResult['stepResults'] = [];
 
-    // Resolve the actual working directory for the coding session.
-    // For file:// repos, we work directly in the local repo.
-    // For remote repos, we clone into the workspace.
-    let targetDir = workspacePath;
+    // Each run gets its own checkout under the run-output directory:
+    //   <workspaceDir>/output/<sessionId>/<repoName>
+    // No reuse across runs (follow-ups are fresh runs by spec) and no
+    // `file://./` fallback to the gateway's process cwd.
+    const repoName = repoNameFromRemoteUrl(repoUrl);
+    let targetDir = resolvePath(runDir, repoName);
 
-    // ── Step 1: Clone / sync repo ──────────────────────────────────────────
+    // ── Step 1: Clone repo into the run-output folder ──────────────────────
     await this._runStep(sessionId, executionId, 'clone', 'Clone / sync repo', 'git', progress, async () => {
-      progress?.onStepProgress('clone', 'Preparing workspace…', 10);
-      _emitters?.stepProgress({ nodeId: 'clone', message: 'Preparing workspace…', percentage: 10 }, sessionId);
-      mkdirSync(workspacePath, { recursive: true });
+      progress?.onStepProgress('clone', 'Preparing run output folder…', 10);
+      _emitters?.stepProgress({ nodeId: 'clone', message: 'Preparing run output folder…', percentage: 10 }, sessionId);
+      mkdirSync(runDir, { recursive: true });
 
-      if (repoUrl.startsWith('file://')) {
-        const localPath = resolvePath(repoUrl.replace('file://', ''));
-        if (!existsSync(localPath)) {
-          throw new Error(`Local repo path does not exist: ${localPath}`);
-        }
+      const cloneMsg = `Cloning ${repoUrl} (branch: ${branch})…`;
+      progress?.onStepProgress('clone', cloneMsg, 30);
+      _emitters?.stepProgress({ nodeId: 'clone', message: cloneMsg, percentage: 30 }, sessionId);
 
-        // Verify it's a git repo
-        const isRepo = await isGitRepo(localPath);
-        if (isRepo) {
-          const root = await getRepoRoot(localPath);
-          targetDir = root ?? localPath;
-          log.info('Using local git repo', { targetDir });
-        } else {
-          targetDir = localPath;
-          log.info('Using local directory (not a git repo)', { targetDir });
-        }
+      // Always clone — even file:// URLs and the local sourceRepoDir's
+      // resolved origin URL go through `cloneRepo` so the agent only ever
+      // touches the per-run checkout, never the operator's working tree.
+      targetDir = await cloneRepo(repoUrl, runDir, { branch, shallow: true });
 
-        const msg = `Local workspace validated: ${targetDir}`;
-        progress?.onStepProgress('clone', msg, 100);
-        _emitters?.stepProgress({ nodeId: 'clone', message: msg, percentage: 100 }, sessionId);
-      } else {
-        // Remote repo — clone via repo-manager
-        const msg = `Cloning ${repoUrl}…`;
-        progress?.onStepProgress('clone', msg, 30);
-        _emitters?.stepProgress({ nodeId: 'clone', message: msg, percentage: 30 }, sessionId);
+      headCommit = await getHeadCommit(targetDir);
+      const shortHead = headCommit ? headCommit.slice(0, 8) : 'unknown';
 
-        targetDir = await cloneRepo(repoUrl, workspacePath, {
-          branch,
-          shallow: true,
-        });
+      const output = `Cloned ${repoUrl}#${branch} → ${targetDir} @ ${shortHead}`;
+      progress?.onStepProgress('clone', `Clone complete (HEAD ${shortHead})`, 100);
+      _emitters?.stepProgress({ nodeId: 'clone', message: `Clone complete (HEAD ${shortHead})`, percentage: 100 }, sessionId);
 
-        progress?.onStepProgress('clone', 'Clone complete', 100);
-        _emitters?.stepProgress({ nodeId: 'clone', message: 'Clone complete', percentage: 100 }, sessionId);
-      }
-
-      const output = `Repo prepared at ${targetDir}`;
       stepResults.push({ nodeId: 'clone', label: 'Clone / sync repo', status: 'completed', output });
       return output;
     });
@@ -639,9 +735,25 @@ export class CodingOrchestrator {
             .map((r) => `- **[${r.id}]** ${r.description}\n  - Acceptance: ${r.acceptance}`)
             .join('\n');
 
+      // Repository block — gives the implementer unambiguous, self-contained
+      // grounding so it never has to guess where the code is. The orchestrator
+      // also sets `cwd: targetDir` on the SDK call below; this block makes
+      // the same fact visible to the model so any `git` commands it issues
+      // resolve correctly without an explicit `cd`.
+      const repositoryBlock = [
+        '## Repository',
+        `- Remote URL: ${repoUrl}`,
+        `- Branch: ${branch}`,
+        `- Checkout path (your cwd): ${targetDir}`,
+        `- HEAD commit: ${headCommit ?? 'unknown'}`,
+        '- Run all git commands from this checkout path. Do NOT `cd` to any other directory and do NOT clone or open any other working tree.',
+      ].join('\n');
+
       const contextParts: string[] = [
         `# Coding Task\n\n${taskDescription}`,
         priorDecisionsBlock,
+        '',
+        repositoryBlock,
         '',
         `## Codebase Analysis\n\n${analysisText}`,
         '',
@@ -926,99 +1038,74 @@ export class CodingOrchestrator {
     });
 
     // ── Step 6: Commit and push ────────────────────────────────────────────
+    // Always stage/commit/push. The checkout is always a real git repo
+    // (we own the clone), so the legacy "not a git repo — skip" branch
+    // and the "push failed (non-fatal)" swallow are gone. A push failure
+    // FAILS the run with the verbatim git error so the user sees exactly
+    // what credential/permission/branch problem to fix.
     await this._runStep(sessionId, executionId, 'commit', 'Commit and push', 'git', progress, async () => {
-      progress?.onStepProgress('commit', 'Checking for changes…', 10);
-      _emitters?.stepProgress({ nodeId: 'commit', message: 'Checking for changes…', percentage: 10 }, sessionId);
+      progress?.onStepProgress('commit', 'Staging changes…', 20);
+      _emitters?.stepProgress({ nodeId: 'commit', message: 'Staging changes…', percentage: 20 }, sessionId);
+      await stageChanges(targetDir);
 
-      // Only commit if the target is a git repo
-      const isRepo = await isGitRepo(targetDir).catch(() => false);
-      if (!isRepo) {
-        const msg = 'Not a git repo — skipping commit';
+      // Even with zero changes we still emit a clean commit-completed event
+      // so downstream consumers can rely on a stable shape; the local-only
+      // case is just the no-changes early return.
+      const status = await getRepoStatus(targetDir);
+      if (status.isClean && status.stagedFiles.length === 0) {
+        const msg = 'No changes to commit — nothing to push';
+        commitHash = 'no-changes';
         progress?.onStepProgress('commit', msg, 100);
         _emitters?.stepProgress({ nodeId: 'commit', message: msg, percentage: 100 }, sessionId);
-        commitHash = 'no-commit';
+        _emitters?.commitCompleted({ commitHash, branch }, sessionId);
         stepResults.push({ nodeId: 'commit', label: 'Commit and push', status: 'completed', output: msg });
         return msg;
       }
 
+      progress?.onStepProgress('commit', 'Creating commit…', 50);
+      _emitters?.stepProgress({ nodeId: 'commit', message: 'Creating commit…', percentage: 50 }, sessionId);
+      // Per Task #172: commit message is the user's task description
+      // verbatim. No `feat:` prefix, no truncation, no paraphrase, no
+      // "Generated by OrionOmega" trailer — operators wanted the commit
+      // log to read like a human wrote it (and to keep the full request
+      // searchable in `git log --grep`). A trimmed-but-empty fallback
+      // exists only because `git commit` rejects empty messages outright.
+      const trimmedTask = taskDescription.trim();
+      const commitMsg = trimmedTask.length > 0
+        ? trimmedTask
+        : 'OrionOmega coding run (no task description provided)';
+      const commitResult = await commitChanges(
+        targetDir,
+        commitMsg,
+        'OrionOmega Coding Agent',
+        'coding-agent@orionomega',
+      );
+
+      // Prefer rev-parse over a regex on git's localised commit output.
+      commitHash = (await getHeadCommit(targetDir))
+        ?? commitResult.stdout.match(/\[[\w/]+ ([a-f0-9]+)\]/)?.[1]
+        ?? 'committed';
+
+      progress?.onStepProgress('commit', `Committed as ${commitHash.slice(0, 8)}`, 70);
+      _emitters?.stepProgress({ nodeId: 'commit', message: `Committed as ${commitHash.slice(0, 8)}`, percentage: 70 }, sessionId);
+      _emitters?.commitCompleted({ commitHash: commitHash.slice(0, 8), branch }, sessionId);
+
+      progress?.onStepProgress('commit', 'Pushing to remote…', 85);
+      _emitters?.stepProgress({ nodeId: 'commit', message: 'Pushing to remote…', percentage: 85 }, sessionId);
       try {
-        // Stage all changes via repo-manager
-        progress?.onStepProgress('commit', 'Staging changes…', 30);
-        _emitters?.stepProgress({ nodeId: 'commit', message: 'Staging changes…', percentage: 30 }, sessionId);
-        await stageChanges(targetDir);
-
-        // Check if there are actually changes to commit
-        const status = await getRepoStatus(targetDir);
-        if (status.isClean && status.stagedFiles.length === 0) {
-          const msg = 'No changes to commit';
-          progress?.onStepProgress('commit', msg, 100);
-          _emitters?.stepProgress({ nodeId: 'commit', message: msg, percentage: 100 }, sessionId);
-          commitHash = 'no-changes';
-          stepResults.push({ nodeId: 'commit', label: 'Commit and push', status: 'completed', output: msg });
-          return msg;
-        }
-
-        // Commit via repo-manager
-        progress?.onStepProgress('commit', 'Creating commit…', 50);
-        _emitters?.stepProgress({ nodeId: 'commit', message: 'Creating commit…', percentage: 50 }, sessionId);
-
-        const commitMsg = `feat: ${taskDescription.slice(0, 72)}\n\nGenerated by OrionOmega Coding Agent`;
-        const commitResult = await commitChanges(
-          targetDir,
-          commitMsg,
-          'OrionOmega Coding Agent',
-          'coding-agent@orionomega',
-        );
-
-        // Extract commit hash from git output
-        const hashMatch = commitResult.stdout.match(/\[[\w/]+ ([a-f0-9]+)\]/);
-        if (hashMatch) {
-          commitHash = hashMatch[1];
-        } else {
-          // Fallback: read HEAD
-          const { exec: execCb } = await import('node:child_process');
-          const { promisify } = await import('node:util');
-          const execAsync = promisify(execCb);
-          try {
-            const { stdout } = await execAsync('git rev-parse HEAD', { cwd: targetDir });
-            commitHash = stdout.trim();
-          } catch {
-            commitHash = 'committed';
-          }
-        }
-
-        progress?.onStepProgress('commit', `Committed as ${commitHash.slice(0, 8)}`, 70);
-        _emitters?.stepProgress({ nodeId: 'commit', message: `Committed as ${commitHash.slice(0, 8)}`, percentage: 70 }, sessionId);
-        _emitters?.commitCompleted({ commitHash: commitHash.slice(0, 8), branch }, sessionId);
-
-        // Push for remote repos
-        if (!repoUrl.startsWith('file://')) {
-          try {
-            progress?.onStepProgress('commit', 'Pushing to remote…', 85);
-            _emitters?.stepProgress({ nodeId: 'commit', message: 'Pushing to remote…', percentage: 85 }, sessionId);
-            await pushChanges(targetDir, { branch });
-            progress?.onStepProgress('commit', 'Pushed to remote', 100);
-            _emitters?.stepProgress({ nodeId: 'commit', message: 'Pushed to remote', percentage: 100 }, sessionId);
-          } catch (pushErr) {
-            const pushMsg = pushErr instanceof Error ? pushErr.message : String(pushErr);
-            log.warn('Push failed (non-fatal)', { error: pushMsg });
-            progress?.onStepProgress('commit', `Committed locally (push failed: ${pushMsg.slice(0, 60)})`, 100);
-            _emitters?.stepProgress({ nodeId: 'commit', message: 'Committed locally (push skipped)', percentage: 100 }, sessionId);
-          }
-        } else {
-          progress?.onStepProgress('commit', 'Committed locally', 100);
-          _emitters?.stepProgress({ nodeId: 'commit', message: 'Committed locally', percentage: 100 }, sessionId);
-        }
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        log.warn('Commit step failed (non-fatal)', { error: msg });
-        progress?.onStepProgress('commit', `Commit skipped: ${msg.slice(0, 80)}`, 100);
-        _emitters?.stepProgress({ nodeId: 'commit', message: `Commit skipped: ${msg.slice(0, 80)}`, percentage: 100 }, sessionId);
-        commitHash = 'no-commit';
-        _emitters?.commitCompleted({ commitHash: 'no-commit', branch }, sessionId);
+        await pushChanges(targetDir, { branch });
+      } catch (pushErr) {
+        // Verbatim git error — the user needs the original message to
+        // diagnose auth / permissions / branch-protection failures.
+        const pushMsg = pushErr instanceof Error ? pushErr.message : String(pushErr);
+        log.error('Push failed — failing run', { error: pushMsg, repoUrl, branch });
+        throw new Error(`git push failed (remote=${repoUrl}, branch=${branch}):\n${pushMsg}`);
       }
 
-      const output = `Committed: ${commitHash || 'no-commit'}`;
+      progress?.onStepProgress('commit', 'Pushed to remote', 100);
+      _emitters?.stepProgress({ nodeId: 'commit', message: 'Pushed to remote', percentage: 100 }, sessionId);
+
+      const output = `Committed ${commitHash.slice(0, 8)} and pushed to ${repoUrl} (${branch})`;
       stepResults.push({ nodeId: 'commit', label: 'Commit and push', status: 'completed', output });
       return output;
     });
@@ -1127,6 +1214,21 @@ export class CodingOrchestrator {
   }
 
   // ── Step runner ─────────────────────────────────────────────────────────────
+
+  /**
+   * Instance-level wrapper around {@link resolveCodingRemote}. Sources the
+   * `sourceRepoDir` / `defaultRemote` / cwd-fallback values from the
+   * orchestrator's config so callers only have to pass the optional
+   * `repo:<url>` hint extracted from the user's message.
+   */
+  private async _resolveRemote(repoHint: string | undefined): Promise<string> {
+    return resolveCodingRemote({
+      ...(repoHint !== undefined ? { repoHint } : {}),
+      ...(this.cfg.sourceRepoDir !== undefined ? { sourceRepoDir: this.cfg.sourceRepoDir } : {}),
+      ...(this.cfg.defaultRemote !== undefined ? { defaultRemote: this.cfg.defaultRemote } : {}),
+      cwdForFallback: this.cfg.cwdForRemoteFallback ?? process.cwd(),
+    });
+  }
 
   private async _runStep(
     sessionId: string,
