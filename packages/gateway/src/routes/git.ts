@@ -20,7 +20,7 @@
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { resolve as resolvePath } from 'node:path';
-import { ensureSessionClone, getRepoStatus } from '@orionomega/core';
+import { ensureSessionClone, getRepoStatus, isValidGitRefName } from '@orionomega/core';
 import type { RepoStatus } from '@orionomega/core';
 import { getReposStore, type KnownRepo, type SelectedRepo } from '../repos-store.js';
 import { createLogger } from '@orionomega/core';
@@ -106,6 +106,10 @@ export async function handleGitRoute(
         // Expand bare GitHub slugs.
         let url = body.remoteUrl.trim();
         if (/^[\w.-]+\/[\w.-]+$/.test(url)) url = `https://github.com/${url}.git`;
+        if (body.defaultBranch !== undefined && !isValidGitRefName(body.defaultBranch)) {
+          sendErr(res, 400, 'defaultBranch must be a valid git ref name (letters, digits, _-./, no leading - or .)');
+          return true;
+        }
         const repo = store.upsertKnownRepo({
           remoteUrl: url,
           ...(body.label ? { label: body.label } : {}),
@@ -126,6 +130,10 @@ export async function handleGitRoute(
     if (method === 'PATCH') {
       try {
         const body = (await readJsonBody(req)) as { label?: string; defaultBranch?: string };
+        if (body.defaultBranch !== undefined && !isValidGitRefName(body.defaultBranch)) {
+          sendErr(res, 400, 'defaultBranch must be a valid git ref name');
+          return true;
+        }
         const updated = store.updateKnownRepo(id, {
           ...(body.label !== undefined ? { label: body.label } : {}),
           ...(body.defaultBranch !== undefined ? { defaultBranch: body.defaultBranch } : {}),
@@ -167,6 +175,10 @@ export async function handleGitRoute(
         const repo = store.getKnownRepo(body.repoId);
         if (!repo) { sendErr(res, 404, 'Repo not found'); return true; }
         const branch = (body.branch || repo.defaultBranch || 'main').trim();
+        if (!isValidGitRefName(branch)) {
+          sendErr(res, 400, 'branch must be a valid git ref name (letters, digits, _-./, no leading - or .)');
+          return true;
+        }
         // Always allocate a per-session clone path. Sharing one localPath
         // across sessions defeats session isolation (parallel coding agents
         // in different sessions would collide on the working tree).

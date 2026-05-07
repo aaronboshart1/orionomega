@@ -488,9 +488,26 @@ export class OrchestrationBridge {
       ? async (plan: PlannerOutput) => {
           const codingNodes = [...plan.graph.nodes.values()].filter((n) => n.type === 'CODING_AGENT');
           if (codingNodes.length < 2) return; // single-agent — no benefit, skip
+          // Scope worktrees to TRUE PARALLEL IMPLEMENTERS only: nodes that
+          // share an identical `dependsOn` set with at least one sibling.
+          // This naturally excludes single-instance control-flow CODING_AGENT
+          // nodes (sync/clone, validate, commit/push) which sit alone in
+          // their layer and must run on the session branch so the final
+          // push reflects the merged state.
+          const groupKey = (n: { dependsOn?: string[] }) =>
+            JSON.stringify([...(n.dependsOn ?? [])].sort());
+          const groups = new Map<string, typeof codingNodes>();
+          for (const n of codingNodes) {
+            const k = groupKey(n);
+            const arr = groups.get(k) ?? [];
+            arr.push(n);
+            groups.set(k, arr);
+          }
+          const parallelImplementers = codingNodes.filter((n) => (groups.get(groupKey(n))?.length ?? 0) >= 2);
+          if (parallelImplementers.length < 2) return; // no parallel fan-out, skip
           const allocations: { nodeId: string; worktreePath: string; branch: string }[] = [];
           const worktreesRoot = `${baseClonePath}/.worktrees`;
-          for (const node of codingNodes) {
+          for (const node of parallelImplementers) {
             const safeNodeId = node.id.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 32);
             const wtBranch = `wt-${prepared.runId}-${safeNodeId}`;
             const wtPath = `${worktreesRoot}/${safeNodeId}`;
@@ -517,11 +534,13 @@ export class OrchestrationBridge {
           );
           return {
             postExecute: async (success: boolean) => {
+              const mergeFailures: { branch: string; error: string }[] = [];
               if (success) {
-                // Merge each worker branch back into the base branch.
-                // Sequential to keep history clean and conflicts isolated.
-                // mergeBranchInto throws on conflict; we catch and surface
-                // verbatim so the user can resolve in the session clone.
+                // Sequential merge keeps history clean and isolates conflicts.
+                // mergeBranchInto throws on conflict; we collect failures and
+                // surface them as a unified error after pruning so the
+                // workflow result reflects partial-integration as a failure
+                // rather than silently succeeding.
                 for (const alloc of allocations) {
                   try {
                     await mergeBranchInto(
@@ -532,10 +551,7 @@ export class OrchestrationBridge {
                   } catch (mErr) {
                     const em = mErr instanceof Error ? mErr.message : String(mErr);
                     log.error('Worktree merge failed', { branch: alloc.branch, error: em });
-                    this.callbacks.onText(
-                      `Worktree branch ${alloc.branch} did not merge cleanly into ${baseBranch}: ${em}`,
-                      false, true,
-                    );
+                    mergeFailures.push({ branch: alloc.branch, error: em });
                   }
                 }
               }
@@ -546,6 +562,18 @@ export class OrchestrationBridge {
                 } catch (rmErr) {
                   log.warn('Failed to remove worktree', { path: alloc.worktreePath, error: rmErr instanceof Error ? rmErr.message : String(rmErr) });
                 }
+              }
+              if (mergeFailures.length > 0) {
+                const summary = mergeFailures
+                  .map((f) => `  • ${f.branch}: ${f.error}`)
+                  .join('\n');
+                const msg =
+                  `Coding workflow integration FAILED — ${mergeFailures.length} worktree branch(es) ` +
+                  `did not merge cleanly into ${baseBranch}:\n${summary}\n\n` +
+                  `The session clone (${baseClonePath}) is left in its current state for manual resolution. ` +
+                  `Final push (if any) was not performed.`;
+                this.callbacks.onText(msg, false, true);
+                throw new Error(`Worktree merge-back failed for ${mergeFailures.length} branch(es)`);
               }
             },
           };

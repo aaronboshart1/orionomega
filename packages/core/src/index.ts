@@ -190,7 +190,7 @@ export {
   mergeBranchInto,
   getLastCommit,
 } from './orchestration/coding/index.js';
-export { getRepoStatus } from './orchestration/coding/repo-manager.js';
+export { getRepoStatus, isValidGitRefName, assertValidGitRefName } from './orchestration/coding/repo-manager.js';
 export type {
   EnsureSessionCloneResult,
   AddWorktreeResult,

@@ -90,6 +90,34 @@ export interface RepoStatus {
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
 /**
+ * Strict git ref-name validator (subset of git-check-ref-format rules,
+ * plus extra hardening because we sometimes interpolate refs into shell
+ * `exec` strings). Rejects anything that could be misread as a shell
+ * argument boundary, an option flag, or a path traversal.
+ *
+ * Allowed: ASCII letters, digits, `_`, `-`, `.`, `/`. Branch may be 1–250
+ * chars. Disallowed: leading `-` or `.`, double-dot `..`, leading or
+ * trailing `/`, double `//`, `@{` (refspec sigil), `^`, `~`, `:`, `?`,
+ * `*`, `[`, `\`, whitespace, control characters, and `.git`/`.lock`
+ * suffixes.
+ */
+export function isValidGitRefName(name: unknown): name is string {
+  if (typeof name !== 'string' || name.length === 0 || name.length > 250) return false;
+  if (!/^[A-Za-z0-9._/-]+$/.test(name)) return false;
+  if (name.startsWith('-') || name.startsWith('.') || name.startsWith('/')) return false;
+  if (name.endsWith('/') || name.endsWith('.') || name.endsWith('.lock') || name.endsWith('.git')) return false;
+  if (name.includes('..') || name.includes('//') || name.includes('@{')) return false;
+  return true;
+}
+
+/** Throw if `name` is not a valid git ref name. Use at every shell boundary. */
+export function assertValidGitRefName(name: unknown, label = 'branch'): asserts name is string {
+  if (!isValidGitRefName(name)) {
+    throw new Error(`Invalid ${label} name: refusing to interpolate untrusted value into git command`);
+  }
+}
+
+/**
  * Run a git command in the given directory. Throws if the command fails.
  * @internal
  */
@@ -530,6 +558,7 @@ export async function ensureSessionClone(
   localPath: string,
   branch = 'main',
 ): Promise<EnsureSessionCloneResult> {
+  assertValidGitRefName(branch);
   const abs = resolvePath(localPath);
   const gitDir = join(abs, '.git');
   let cloned = false;
@@ -631,6 +660,8 @@ export async function addWorktree(
   }
 
   // Check whether the branch already exists locally.
+  assertValidGitRefName(branch);
+  assertValidGitRefName(baseBranch, 'baseBranch');
   const branchExists = await runGit(`rev-parse --verify --quiet refs/heads/${branch}`, sessionClonePath);
   const args = branchExists.success
     ? `worktree add "${abs}" ${branch}`
@@ -677,6 +708,7 @@ export async function mergeBranchInto(
   sourceBranch: string,
   message: string,
 ): Promise<GitResult> {
+  assertValidGitRefName(sourceBranch, 'sourceBranch');
   const safeMsg = message.replace(/"/g, '\\"');
   const result = await runGit(`merge --no-ff -m "${safeMsg}" ${sourceBranch}`, sessionClonePath);
   if (!result.success) {
