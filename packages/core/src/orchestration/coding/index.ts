@@ -77,6 +77,7 @@ export {
   CodingOrchestrator,
   setCodingOrchestatorEmitters,
   parseCodingRequest,
+  normalizeRepoHint,
 } from './coding-orchestrator.js';
 export type {
   CodingOrchestratorConfig,

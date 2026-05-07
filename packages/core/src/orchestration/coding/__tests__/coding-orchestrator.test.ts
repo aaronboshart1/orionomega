@@ -27,6 +27,7 @@ import {
   parseCodingRequest,
   resolveCodingRemote,
   RemoteResolutionError,
+  normalizeRepoHint,
 } from '../coding-orchestrator.js';
 import { repoNameFromRemoteUrl } from '../repo-manager.js';
 
@@ -65,6 +66,115 @@ describe('parseCodingRequest', () => {
     const out = parseCodingRequest('Just refactor the auth module please');
     expect(out.repoUrl).toBeUndefined();
     expect(out.branch).toBe('main');
+  });
+
+  it('accepts conversational "the repo is <slug>" form and expands GitHub bare slugs', () => {
+    const out = parseCodingRequest('the repo is aaronboshart1/orionomega');
+    expect(out.repoUrl).toBe('https://github.com/aaronboshart1/orionomega.git');
+  });
+
+  it('accepts "repo is <slug>" without leading article', () => {
+    const out = parseCodingRequest('repo is foo/bar');
+    expect(out.repoUrl).toBe('https://github.com/foo/bar.git');
+  });
+
+  it('accepts "use repo <url>" / "clone <url>" forms', () => {
+    expect(parseCodingRequest('please use repo foo/bar to start').repoUrl)
+      .toBe('https://github.com/foo/bar.git');
+    expect(parseCodingRequest('clone https://github.com/x/y.git and refactor').repoUrl)
+      .toBe('https://github.com/x/y.git');
+  });
+
+  it('accepts repo=<value> equals form', () => {
+    expect(parseCodingRequest('go ahead repo=foo/bar').repoUrl)
+      .toBe('https://github.com/foo/bar.git');
+  });
+
+  it('strips trailing punctuation from conversational hints', () => {
+    expect(parseCodingRequest('the repo is foo/bar.').repoUrl)
+      .toBe('https://github.com/foo/bar.git');
+    expect(parseCodingRequest('the repo is foo/bar, please proceed').repoUrl)
+      .toBe('https://github.com/foo/bar.git');
+  });
+
+  it('preserves explicit https URLs and SSH forms verbatim', () => {
+    expect(parseCodingRequest('repo:git@github.com:foo/bar.git').repoUrl)
+      .toBe('git@github.com:foo/bar.git');
+    expect(parseCodingRequest('repo:https://gitlab.com/foo/bar.git').repoUrl)
+      .toBe('https://gitlab.com/foo/bar.git');
+  });
+
+  it('appends .git to GitHub HTTPS URLs missing the suffix', () => {
+    expect(parseCodingRequest('repo:https://github.com/foo/bar').repoUrl)
+      .toBe('https://github.com/foo/bar.git');
+  });
+
+  it('strips quotes / backticks around the repo value', () => {
+    expect(parseCodingRequest('the repo is `foo/bar`').repoUrl)
+      .toBe('https://github.com/foo/bar.git');
+    expect(parseCodingRequest('the repo is "foo/bar"').repoUrl)
+      .toBe('https://github.com/foo/bar.git');
+  });
+
+  it('does NOT capture filler words from loose conversational phrasing', () => {
+    // "clone the repo" must not capture "the" as a repo. The legacy
+    // resolver would then propagate that nonsense through to git clone.
+    expect(parseCodingRequest('please clone the repo and refactor').repoUrl)
+      .toBeUndefined();
+    expect(parseCodingRequest('use repo and report back').repoUrl)
+      .toBeUndefined();
+    expect(parseCodingRequest('the repo is great, lets fix it').repoUrl)
+      .toBeUndefined(); // "great," is not a slug
+  });
+
+  it('does NOT match incidental words containing "repo" as a substring', () => {
+    // `\brepo` word-boundary guard prevents matching "monorepo:" etc.
+    expect(parseCodingRequest('this is a monorepo: please refactor').repoUrl)
+      .toBeUndefined();
+  });
+
+  it('does NOT capture branch from "default branch is main" English prose', () => {
+    // Loose `branch\s+(\S+)` would have grabbed "is" or "main" here.
+    // Only "branch is <name>" with explicit "branch is" prefix matches.
+    const out = parseCodingRequest('the default branch is main');
+    // Conservative: this DOES match "branch is main" by design — that's
+    // the conversational branch form. The regression we're guarding
+    // against is matching a plain `branch <word>` (no "is", no delimiter).
+    expect(out.branch).toBe('main');
+    // But "switch branch upstream please" must NOT capture "upstream".
+    expect(parseCodingRequest('switch branch upstream please').branch)
+      .toBe('main');
+  });
+
+  it('strict `repo:` form trusts the user even with weird-looking values', () => {
+    // Backwards-compat: legacy callers may pass internal hostnames or
+    // file:// URLs that don't match the slug heuristic. The strict
+    // tagged form must not be filtered by looksLikeRepoToken.
+    expect(parseCodingRequest('repo:file:///srv/repos/internal.git').repoUrl)
+      .toBe('file:///srv/repos/internal.git');
+  });
+});
+
+describe('normalizeRepoHint', () => {
+  it('returns undefined for empty / whitespace input', () => {
+    expect(normalizeRepoHint(undefined)).toBeUndefined();
+    expect(normalizeRepoHint('')).toBeUndefined();
+    expect(normalizeRepoHint('   ')).toBeUndefined();
+  });
+
+  it('expands bare GitHub slugs to clone URLs', () => {
+    expect(normalizeRepoHint('owner/repo')).toBe('https://github.com/owner/repo.git');
+    expect(normalizeRepoHint('aaronboshart1/orionomega'))
+      .toBe('https://github.com/aaronboshart1/orionomega.git');
+  });
+
+  it('passes through full URLs and SSH refs unchanged', () => {
+    expect(normalizeRepoHint('https://gitlab.com/foo/bar.git'))
+      .toBe('https://gitlab.com/foo/bar.git');
+    expect(normalizeRepoHint('git@github.com:foo/bar.git'))
+      .toBe('git@github.com:foo/bar.git');
+    expect(normalizeRepoHint('ssh://git@host/foo/bar.git'))
+      .toBe('ssh://git@host/foo/bar.git');
   });
 });
 
