@@ -2,7 +2,8 @@
 
 import { useRef, useState, useCallback, useMemo, useEffect } from 'react';
 import { Virtuoso, VirtuosoHandle } from 'react-virtuoso';
-import { Settings2, ArrowDown, AlertOctagon, Settings, Users, Square } from 'lucide-react';
+import { Settings2, ArrowDown, AlertOctagon, Settings, Users, Square, Download } from 'lucide-react';
+import { exportSessionAsJson } from '@/lib/download';
 import { useChatStore, useChatHydrated } from '@/stores/chat';
 import { useOrchestrationStore, useOrchHydrated } from '@/stores/orchestration';
 import { useConnectionStore } from '@/stores/connection';
@@ -109,7 +110,36 @@ export function ChatPane() {
   const [atBottom, setAtBottom] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const [exportStatus, setExportStatus] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
   const hydrated = chatHydrated && orchHydrated;
+
+  useEffect(() => {
+    if (!exportStatus) return;
+    const t = setTimeout(() => setExportStatus(null), 2500);
+    return () => clearTimeout(t);
+  }, [exportStatus]);
+
+  const handleExportCurrent = useCallback(async () => {
+    const sid = useConnectionStore.getState().sessionId;
+    if (!sid) {
+      setExportStatus({ kind: 'err', text: 'No active session' });
+      return;
+    }
+    let name: string | null = null;
+    try {
+      const resp = await fetch(`/api/gateway/api/sessions/${encodeURIComponent(sid)}`);
+      if (resp.ok) {
+        const data = await resp.json() as { name?: string };
+        name = data?.name ?? null;
+      }
+    } catch { /* ignore — fall back to id */ }
+    try {
+      const filename = await exportSessionAsJson(sid, name);
+      setExportStatus({ kind: 'ok', text: `Exported ${filename}` });
+    } catch (err) {
+      setExportStatus({ kind: 'err', text: (err as Error).message || 'Export failed' });
+    }
+  }, []);
 
   // Allow other panes (e.g. LogsPane) to open the Settings modal.
   useEffect(() => {
@@ -353,6 +383,29 @@ export function ChatPane() {
         )}
         <ConnectionStatus />
         <BackgroundTaskIndicator />
+        <div className="relative">
+          <button
+            onClick={() => void handleExportCurrent()}
+            className="rounded-md p-2.5 md:px-2.5 md:py-1.5 text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200 min-h-[44px] min-w-[44px] md:min-h-0 md:min-w-0 flex items-center justify-center gap-1.5"
+            title="Export current session as JSON"
+            aria-label="Export current session as JSON"
+          >
+            <Download size={16} />
+            <span className="hidden md:inline text-xs">Export</span>
+          </button>
+          {exportStatus && (
+            <div
+              role="status"
+              className={`pointer-events-none absolute right-0 top-full z-50 mt-1 whitespace-nowrap rounded-md border px-2 py-1 text-[11px] shadow-lg ${
+                exportStatus.kind === 'ok'
+                  ? 'border-emerald-700/50 bg-emerald-950/90 text-emerald-200'
+                  : 'border-red-700/50 bg-red-950/90 text-red-200'
+              }`}
+            >
+              {exportStatus.text}
+            </div>
+          )}
+        </div>
         <button
           onClick={() => setSettingsOpen(true)}
           className="rounded-md p-2.5 md:px-2.5 md:py-1.5 text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200 min-h-[44px] min-w-[44px] md:min-h-0 md:min-w-0 flex items-center justify-center gap-1.5"

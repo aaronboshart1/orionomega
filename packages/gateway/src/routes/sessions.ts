@@ -467,7 +467,26 @@ export function handleExportSession(
     return;
   }
 
-  res.writeHead(200, { 'Content-Type': 'application/json' });
+  // Build a human-readable filename for direct-link downloads. Mirrors the
+  // sanitization the web client uses so the resulting file is safe on common
+  // filesystems regardless of which side initiates the download.
+  const session = _sessionManager.getSession(sessionId);
+  const rawName = (session?.name?.trim() || sessionId);
+  const slug = rawName
+    .normalize('NFKD')
+    .replace(/[\\/:*?"<>|\x00-\x1f]+/g, '')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^[-.]+|[-.]+$/g, '')
+    .slice(0, 80) || 'session';
+  const d = new Date();
+  const stamp = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+  const filename = `orionomega-${slug}-${stamp}.json`;
+
+  res.writeHead(200, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Content-Disposition': `attachment; filename="${filename}"`,
+  });
   res.end(JSON.stringify({ sessionId, ...snapshot, exportedAt: new Date().toISOString() }));
 }
 

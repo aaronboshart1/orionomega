@@ -1,9 +1,10 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { ChevronDown, Plus, Pencil, Trash2, Check, X } from 'lucide-react';
+import { ChevronDown, Plus, Pencil, Trash2, Check, X, Download } from 'lucide-react';
 import { useConnectionStore } from '@/stores/connection';
 import { switchToSession } from '@/lib/gateway';
+import { exportSessionAsJson } from '@/lib/download';
 
 interface Session {
   id: string;
@@ -18,7 +19,14 @@ export function SessionSwitcher() {
   const [loading, setLoading] = useState(false);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
+  const [statusMsg, setStatusMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
   const sessionId = useConnectionStore((s) => s.sessionId);
+
+  useEffect(() => {
+    if (!statusMsg) return;
+    const t = setTimeout(() => setStatusMsg(null), 2500);
+    return () => clearTimeout(t);
+  }, [statusMsg]);
 
   const fetchSessions = useCallback(async () => {
     try {
@@ -86,6 +94,16 @@ export function SessionSwitcher() {
     } catch { /* ignore */ }
   }, [sessionId, sessions, fetchSessions, createSession]);
 
+  const exportSession = useCallback(async (id: string, name: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      const filename = await exportSessionAsJson(id, name);
+      setStatusMsg({ kind: 'ok', text: `Exported ${filename}` });
+    } catch (err) {
+      setStatusMsg({ kind: 'err', text: (err as Error).message || 'Export failed' });
+    }
+  }, []);
+
   const startRename = useCallback((id: string, name: string, e: React.MouseEvent) => {
     e.stopPropagation();
     setRenaming(id);
@@ -116,6 +134,19 @@ export function SessionSwitcher() {
         </span>
         <ChevronDown size={9} />
       </button>
+
+      {statusMsg && (
+        <div
+          role="status"
+          className={`pointer-events-none absolute left-0 top-full z-50 mt-1 whitespace-nowrap rounded-md border px-2 py-1 text-[11px] shadow-lg ${
+            statusMsg.kind === 'ok'
+              ? 'border-emerald-700/50 bg-emerald-950/90 text-emerald-200'
+              : 'border-red-700/50 bg-red-950/90 text-red-200'
+          }`}
+        >
+          {statusMsg.text}
+        </div>
+      )}
 
       {open && (
         <>
@@ -163,6 +194,13 @@ export function SessionSwitcher() {
                       {s.id === sessionId && (
                         <span className="text-[9px] text-zinc-600">active</span>
                       )}
+                      <button
+                        onClick={(e) => void exportSession(s.id, s.name, e)}
+                        className="hidden text-zinc-600 hover:text-zinc-300 group-hover:block"
+                        title="Export as JSON"
+                      >
+                        <Download size={10} />
+                      </button>
                       <button
                         onClick={(e) => startRename(s.id, s.name, e)}
                         className="hidden text-zinc-600 hover:text-zinc-300 group-hover:block"
