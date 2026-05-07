@@ -57,6 +57,8 @@ import { handleStartCodingSession, handleGetCodingSession, handleGetCodingSteps,
 import { setCodingEventStreamer, emitCodingSessionStarted, emitCodingWorkflowStarted, emitCodingStepStarted, emitCodingStepProgress, emitCodingStepCompleted, emitCodingStepFailed, emitCodingReviewStarted, emitCodingReviewCompleted, emitCodingCommitCompleted, emitCodingSessionCompleted, bindCodingSessionToGatewaySession, unbindCodingSession } from './coding-events.js';
 import { FeedService } from './feed/index.js';
 import { handleGetFeed, handleGetFeedMessage, handlePostFeedMessage, handleGetFeedCount } from './routes/feed.js';
+import { handleGitRoute } from './routes/git.js';
+import { getReposStore } from './repos-store.js';
 
 process.on('uncaughtException', (err) => {
   console.error('[gateway] Uncaught exception:', err);
@@ -279,6 +281,13 @@ async function initMainAgent(): Promise<void> {
     // remote resolver as the third fallback (after `repo:<url>` hint and
     // the `coding.repoDir` origin).
     ...(freshConfig.coding?.defaultRemote ? { codingDefaultRemote: freshConfig.coding.defaultRemote } : {}),
+    // Task #196: Git tab session selection — every code-mode message
+    // checks here first. The gateway's ReposStore is the single source of
+    // truth; reads are O(1) (in-memory map keyed by sessionId).
+    getSessionRepo: (sid) => {
+      const sel = getReposStore().getSessionRepo(sid);
+      return sel ? { remoteUrl: sel.remoteUrl, branch: sel.branch, localPath: sel.localPath } : null;
+    },
   };
 
   let currentTextId = randomBytes(8).toString('hex');
@@ -1619,6 +1628,23 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
       }
       if (method === 'DELETE') { handleDeleteSchedule(req, res, id, scheduler!, config); return; }
     }
+  }
+
+  // --- Git tab (Task #196): repo registry + per-session selection ---
+  if (pathname.startsWith('/api/git/')) {
+    handleGitRoute(req, res, pathname, method, { workspaceDir: readConfig().workspace?.path ?? process.cwd() })
+      .then((handled) => {
+        if (!handled) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Not found' }));
+        }
+      })
+      .catch((err) => {
+        log.error('Git route error', { error: err instanceof Error ? err.message : String(err) });
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Internal server error' }));
+      });
+    return;
   }
 
   // --- Coding sessions ---

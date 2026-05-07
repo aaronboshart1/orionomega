@@ -475,3 +475,174 @@ export async function getHeadCommit(dir: string): Promise<string | null> {
 export function repoNameFromRemoteUrl(repoUrl: string): string {
   return repoNameFromUrl(repoUrl);
 }
+
+// ── Session-scoped clone + worktree primitives (Task #196) ───────────────────
+//
+// These helpers back the Git tab's session-persistent clone model. Instead of
+// re-cloning into `<workspaceDir>/output/<runId>/<repo>` on every coding-mode
+// turn, the gateway picks a stable per-session clone path (e.g.
+// `<workspaceDir>/repos/<sessionId>/<repoName>`) and calls
+// `ensureSessionClone` to lazily clone or fast-forward on each turn.
+//
+// Parallel coding-agent isolation is achieved with `git worktree add`: a
+// short-lived branch per dispatch (or per node) checks out into its own
+// directory but shares the object DB with the session clone, so adds/fetches
+// happen once and merges back are cheap.
+
+/** Result of {@link ensureSessionClone}. */
+export interface EnsureSessionCloneResult {
+  /** Absolute path to the session clone. */
+  localPath: string;
+  /** True if the clone was created on this call (false → already existed). */
+  cloned: boolean;
+  /** True if a `git fetch` ran successfully on this call. */
+  fetched: boolean;
+  /** True if the working branch was fast-forwarded to its upstream. */
+  fastForwarded: boolean;
+  /** Current HEAD commit after the operation. */
+  headCommit: string | null;
+}
+
+/**
+ * Ensure the session clone exists at `localPath`. If the directory is
+ * missing or empty, clone `remoteUrl` into it on `branch`. If it already
+ * contains a `.git`, run `git fetch` and try a `--ff-only` pull on the
+ * configured branch so the session always starts on the freshest commit.
+ *
+ * Never destructive: a non-fast-forwardable working tree is left as-is and
+ * surfaced via `fastForwarded: false`. The caller can decide whether to
+ * proceed (e.g. allocate a worktree off the stale branch) or surface the
+ * mismatch to the user.
+ */
+export async function ensureSessionClone(
+  remoteUrl: string,
+  localPath: string,
+  branch = 'main',
+): Promise<EnsureSessionCloneResult> {
+  const abs = resolvePath(localPath);
+  const gitDir = join(abs, '.git');
+  let cloned = false;
+  let fetched = false;
+  let fastForwarded = false;
+
+  if (!existsSync(gitDir)) {
+    // Fresh clone. Reuse cloneRepo so the auth/branch flag handling stays
+    // in one place. cloneRepo expects (workspaceDir, opts.targetDir).
+    const parent = abs.replace(/\/[^/]+\/?$/, '') || '/';
+    if (!existsSync(parent)) mkdirSync(parent, { recursive: true });
+    log.info('ensureSessionClone: cloning', { remoteUrl, localPath: abs, branch });
+    await cloneRepo(remoteUrl, parent, { targetDir: abs, branch });
+    cloned = true;
+  } else {
+    // Verify the existing clone points at the same remote — otherwise we'd
+    // silently fetch a different repo's history into the user's session dir.
+    const existingRemote = await getRemoteUrl(abs);
+    if (existingRemote && existingRemote !== remoteUrl) {
+      throw new Error(
+        `Session clone at ${abs} has remote "${existingRemote}" but the selection asks for "${remoteUrl}". ` +
+        `Delete the directory or pick a different local path before re-selecting.`,
+      );
+    }
+    log.info('ensureSessionClone: refreshing existing clone', { localPath: abs, branch });
+    const fetchResult = await runGit('fetch --prune origin', abs);
+    fetched = fetchResult.success;
+    if (!fetchResult.success) {
+      log.warn('ensureSessionClone: fetch failed (continuing with local state)', {
+        stderr: fetchResult.stderr.slice(0, 200),
+      });
+    }
+
+    // Best-effort fast-forward of the requested branch from origin.
+    const checkout = await runGit(`checkout ${branch}`, abs);
+    if (checkout.success) {
+      const ff = await runGit(`merge --ff-only origin/${branch}`, abs);
+      fastForwarded = ff.success;
+    }
+  }
+
+  const headCommit = await getHeadCommit(abs);
+  return { localPath: abs, cloned, fetched, fastForwarded, headCommit };
+}
+
+/** Result of {@link addWorktree}. */
+export interface AddWorktreeResult {
+  /** Absolute path to the new worktree. */
+  worktreePath: string;
+  /** Branch the worktree is checked out to. */
+  branch: string;
+}
+
+/**
+ * Add a `git worktree` at `worktreePath`, checked out to `branch`.
+ *
+ * If `branch` does not exist yet, it is created from `baseBranch` (default
+ * `'main'`). The new worktree shares the session clone's object DB, so
+ * checkouts are near-instant and disk usage stays bounded.
+ */
+export async function addWorktree(
+  sessionClonePath: string,
+  worktreePath: string,
+  branch: string,
+  baseBranch = 'main',
+): Promise<AddWorktreeResult> {
+  const abs = resolvePath(worktreePath);
+  // Idempotency: if the worktree dir already exists with a checkout, return it.
+  if (existsSync(join(abs, '.git'))) {
+    log.info('addWorktree: worktree already exists, reusing', { worktreePath: abs, branch });
+    return { worktreePath: abs, branch };
+  }
+
+  // Check whether the branch already exists locally.
+  const branchExists = await runGit(`rev-parse --verify --quiet refs/heads/${branch}`, sessionClonePath);
+  const args = branchExists.success
+    ? `worktree add "${abs}" ${branch}`
+    : `worktree add -b ${branch} "${abs}" ${baseBranch}`;
+
+  const result = await runGit(args, sessionClonePath);
+  if (!result.success) {
+    throw new Error(`git worktree add failed: ${result.stderr || result.stdout}`);
+  }
+  log.info('addWorktree: created', { worktreePath: abs, branch, baseBranch });
+  return { worktreePath: abs, branch };
+}
+
+/**
+ * Remove a previously-allocated worktree. Best-effort: failures are logged
+ * but not thrown, since orphan worktrees can be cleaned up later via
+ * `git worktree prune`.
+ */
+export async function removeWorktree(
+  sessionClonePath: string,
+  worktreePath: string,
+): Promise<void> {
+  const abs = resolvePath(worktreePath);
+  const result = await runGit(`worktree remove --force "${abs}"`, sessionClonePath);
+  if (!result.success) {
+    log.warn('removeWorktree: failed (non-fatal — run `git worktree prune` later)', {
+      worktreePath: abs,
+      stderr: result.stderr.slice(0, 200),
+    });
+  }
+}
+
+/**
+ * Merge `sourceBranch` into the currently-checked-out branch of
+ * `sessionClonePath`. Used by the dispatch consolidation step to fold the
+ * worktree's branch back into the session branch before push.
+ *
+ * Uses `--no-ff` so the merge commit retains the dispatch boundary in
+ * history, which makes `git log` more useful when reviewing what each turn
+ * actually changed.
+ */
+export async function mergeBranchInto(
+  sessionClonePath: string,
+  sourceBranch: string,
+  message: string,
+): Promise<GitResult> {
+  const safeMsg = message.replace(/"/g, '\\"');
+  const result = await runGit(`merge --no-ff -m "${safeMsg}" ${sourceBranch}`, sessionClonePath);
+  if (!result.success) {
+    throw new Error(`git merge failed: ${result.stderr || result.stdout}`);
+  }
+  return result;
+}

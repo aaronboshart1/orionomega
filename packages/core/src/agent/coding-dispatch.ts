@@ -39,6 +39,7 @@ import {
   cloneRepo as defaultCloneRepo,
   getHeadCommit as defaultGetHeadCommit,
   repoNameFromRemoteUrl,
+  ensureSessionClone as defaultEnsureSessionClone,
 } from '../orchestration/coding/repo-manager.js';
 import {
   loadSpecReferences as defaultLoadSpecReferences,
@@ -48,6 +49,30 @@ import {
 import { createLogger } from '../logging/logger.js';
 
 const log = createLogger('coding-dispatch');
+
+/**
+ * Task #196: Identifies a session-scoped persistent clone selected via the
+ * Git tab. When `prepareCodingDispatch` receives one of these, it skips
+ * the per-run `git clone` and instead calls `ensureSessionClone` against
+ * `localPath` (lazy clone-or-fast-forward) so:
+ *
+ *   - Multi-turn coding sessions reuse one working tree instead of
+ *     re-cloning into a fresh `<output>/<runId>/<repo>` directory on every
+ *     message.
+ *   - The clone never lands inside the gateway's process tree (which used
+ *     to break `git remote get-url origin` resolution on subsequent runs).
+ *   - The Git tab's selection is the single source of truth for what repo
+ *     a session operates against, removing the need for a `repo:<url>`
+ *     hint on every code-mode message.
+ */
+export interface SessionRepoSelection {
+  /** Full clone URL (HTTPS or SSH). */
+  remoteUrl: string;
+  /** Branch to operate on. */
+  branch: string;
+  /** Absolute path to the persistent session clone on disk. */
+  localPath: string;
+}
 
 /**
  * Inputs to {@link prepareCodingDispatch}. Every callable dependency is
@@ -97,6 +122,15 @@ export interface PrepareCodingDispatchInput {
    * `input.workspaceDir`.
    */
   specSearchRoots?: string[];
+  /**
+   * Task #196: Session-scoped persistent clone. When provided, the
+   * dispatch skips the per-run clone and reuses `localPath` after a
+   * fetch + fast-forward. Takes priority over the resolver — the
+   * `remote.*` hints become unused (but harmless) for this dispatch.
+   */
+  sessionRepo?: SessionRepoSelection;
+  /** Injected to bypass the real `ensureSessionClone` in unit tests. */
+  ensureSessionClone?: typeof defaultEnsureSessionClone;
 }
 
 /** Output of {@link prepareCodingDispatch}. */
@@ -144,34 +178,53 @@ export async function prepareCodingDispatch(
   const mkdir = input.mkdir ?? ((dir: string) => mkdirSync(dir, { recursive: true }));
   const resolveRemote = input.resolveRemote ?? resolveCodingRemote;
   const loadSpecs = input.loadSpecReferences ?? defaultLoadSpecReferences;
+  const ensureSessionCloneFn = input.ensureSessionClone ?? defaultEnsureSessionClone;
 
-  // 1. Resolve remote — surfaces RemoteResolutionError verbatim. The
-  // bridge catches this and turns it into a user-facing message instead of
-  // silently dropping the run into the gateway's process cwd.
-  const remoteUrl = await resolveRemote(input.remote);
-
-  // 2. Mint a fresh runId so follow-ups are fresh runs.
+  // Mint a fresh runId so follow-ups are fresh runs (artifact dirs stay isolated).
   const runId = input.runId ?? randomBytes(8).toString('hex');
 
-  // 3. Compute the per-run output dir. Mirrors the GraphExecutor convention
-  // (`<workspaceDir>/output/<workflowId>`) so artifacts and the checkout
-  // live under the same logical run namespace.
-  const runDir = resolvePath(input.workspaceDir, 'output', runId);
-  mkdir(runDir);
+  let remoteUrl: string;
+  let branch: string;
+  let checkoutPath: string;
+  let runDir: string;
+  let headCommit: string | null;
 
-  // 4. Clone — `cloneRepo` returns the absolute path of the checkout
-  // (same convention as `<runDir>/<repoName>`). We could synthesise the
-  // path ourselves, but trusting `cloneRepo`'s return value avoids
-  // drifting from its naming logic if it ever changes.
-  const checkoutPath = await cloneRepo(remoteUrl, runDir, {
-    branch: input.branch ?? DEFAULT_BRANCH,
-    shallow: true,
-  });
-
-  // 5. Capture HEAD so the agent gets exact provenance in the prompt.
-  const headCommit = await getHeadCommit(checkoutPath);
-
-  const branch = input.branch ?? DEFAULT_BRANCH;
+  if (input.sessionRepo) {
+    // Task #196: Session-scoped path. Reuse the persistent clone and skip
+    // the per-run `git clone`. ensureSessionClone is idempotent — it
+    // either creates the clone (first turn) or fetches + fast-forwards
+    // (subsequent turns), so the agent always starts on a fresh head.
+    branch = input.sessionRepo.branch || DEFAULT_BRANCH;
+    remoteUrl = input.sessionRepo.remoteUrl;
+    log.info('prepareCodingDispatch: using session-scoped clone', {
+      remoteUrl,
+      branch,
+      localPath: input.sessionRepo.localPath,
+      runId,
+    });
+    const ensured = await ensureSessionCloneFn(remoteUrl, input.sessionRepo.localPath, branch);
+    checkoutPath = ensured.localPath;
+    headCommit = ensured.headCommit;
+    // Per-run output dir is still allocated for artifact collection — the
+    // executor writes node outputs into <workspaceDir>/output/<runId> and
+    // we keep that contract regardless of where the checkout lives.
+    runDir = resolvePath(input.workspaceDir, 'output', runId);
+    mkdir(runDir);
+  } else {
+    // Legacy path (no Git tab selection): resolve remote → fresh per-run clone.
+    // Surfaces RemoteResolutionError verbatim. The bridge catches this and
+    // turns it into a user-facing message instead of silently dropping the
+    // run into the gateway's process cwd.
+    remoteUrl = await resolveRemote(input.remote);
+    runDir = resolvePath(input.workspaceDir, 'output', runId);
+    mkdir(runDir);
+    checkoutPath = await cloneRepo(remoteUrl, runDir, {
+      branch: input.branch ?? DEFAULT_BRANCH,
+      shallow: true,
+    });
+    headCommit = await getHeadCommit(checkoutPath);
+    branch = input.branch ?? DEFAULT_BRANCH;
+  }
 
   // Task #174: pre-load any `*.md` / `*.txt` / `*.spec` references in the
   // user task. The loader is best-effort — unresolved references are

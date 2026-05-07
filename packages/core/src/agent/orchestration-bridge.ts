@@ -11,7 +11,7 @@ import { Planner } from '../orchestration/planner.js';
 // Coding mode uses the standard Planner → Executor pipeline with a coding-specific task preamble.
 import { GraphExecutor } from '../orchestration/executor.js';
 import type { ExecutorConfig } from '../orchestration/executor.js';
-import { prepareCodingDispatch } from './coding-dispatch.js';
+import { prepareCodingDispatch, type SessionRepoSelection } from './coding-dispatch.js';
 import { parseCodingRequest, RemoteResolutionError } from '../orchestration/coding/coding-orchestrator.js';
 import type { StagedAttachment } from './attachment-staging.js';
 import { renderStagedAttachmentsBlock } from './attachment-staging.js';
@@ -349,7 +349,7 @@ export class OrchestrationBridge {
   async dispatchCodingWorkflow(
     task: string,
     pushHistory: (entry: { role: string; content: string }) => void,
-    opts: { stagedAttachments?: StagedAttachment[] } = {},
+    opts: { stagedAttachments?: StagedAttachment[]; sessionRepo?: SessionRepoSelection } = {},
   ): Promise<void> {
     // Per Task #172: every code-mode call is its own run.
     //   1. Resolve the remote URL up-front (fail fast on unresolvable).
@@ -371,6 +371,12 @@ export class OrchestrationBridge {
         userTask: task,
         workspaceDir: this.config.workspaceDir,
         ...(branch ? { branch } : {}),
+        // Task #196: when the Git tab has selected a repo for this
+        // session, prefer the session-scoped persistent clone — skips the
+        // per-run `git clone` AND the resolver, so the historical
+        // "Could not resolve a git remote" failure mode disappears for
+        // any session whose user has clicked a repo in the UI.
+        ...(opts.sessionRepo ? { sessionRepo: opts.sessionRepo } : {}),
         remote: {
           ...(repoHint !== undefined ? { repoHint } : {}),
           ...(this.config.codingRepoDir !== undefined ? { sourceRepoDir: this.config.codingRepoDir } : {}),

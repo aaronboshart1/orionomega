@@ -125,6 +125,20 @@ export interface MainAgentConfig {
   codingDefaultRemote?: string;
   /** Dedicated directory for storing run artifacts. Defaults to ~/.orionomega/runs. */
   runsDir?: string;
+  /**
+   * Task #196: Resolver for the Git-tab-selected repo bound to a given
+   * session id. Called synchronously on each code-mode message; when it
+   * returns a value, `dispatchCodingWorkflow` reuses the session's
+   * persistent clone instead of cloning fresh per turn. Plumbed by the
+   * gateway from {@link import('../../../gateway/src/repos-store.js').ReposStore}.
+   * Omitting this is fine — the legacy `repo:<url>` / `codingRepoDir` /
+   * `codingDefaultRemote` resolver path is still honoured.
+   */
+  getSessionRepo?: (sessionId: string) => {
+    remoteUrl: string;
+    branch: string;
+    localPath: string;
+  } | null | undefined;
 }
 
 // ── Callbacks ──────────────────────────────────────────────────────────────
@@ -1086,10 +1100,15 @@ export class MainAgent {
       if (agentMode === 'code') {
         log.verbose('Route: CODE (coding mode — DAG workflow)');
         this.emitStep('route', 'Routing request', 'done', 'Coding mode');
+        // Task #196: forward the Git-tab session selection (if any) so the
+        // bridge can skip the per-run clone + resolver and reuse the
+        // persistent session clone. Read each call so a Git-tab Add /
+        // Select between turns takes effect immediately on the next message.
+        const sessionRepo = this.config.getSessionRepo?.(sid) ?? undefined;
         await this.orchestration.dispatchCodingWorkflow(
           userContent,
           (e) => this.pushHistory(sid, e as HistoryEntry),
-          stagedOpts,
+          { ...stagedOpts, ...(sessionRepo ? { sessionRepo } : {}) },
         );
         return;
       }

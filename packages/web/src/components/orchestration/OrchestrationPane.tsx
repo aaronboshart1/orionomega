@@ -9,7 +9,7 @@ import { WorkflowSummary } from './WorkflowSummary';
 import { MemoryFeed } from './MemoryFeed';
 import { LogsPane } from './LogsPane';
 import { useSchedulesStore } from '@/stores/schedules';
-import { X, Play, Pause, Square, FileText, Wifi, WifiOff, ScrollText, CalendarClock } from 'lucide-react';
+import { X, Play, Pause, Square, FileText, Wifi, WifiOff, ScrollText, CalendarClock, GitBranch } from 'lucide-react';
 import { useGateway } from '@/lib/gateway';
 import { useFileViewerStore } from '@/stores/file-viewer';
 import { useConnectionStore } from '@/stores/connection';
@@ -54,6 +54,18 @@ const SchedulesPane = dynamic(
     loading: () => (
       <div className="flex h-full items-center justify-center text-xs text-zinc-600">
         Loading Tasker…
+      </div>
+    ),
+  },
+);
+
+const GitPane = dynamic(
+  () => import('./GitPane').then((m) => m.GitPane),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex h-full items-center justify-center text-xs text-zinc-600">
+        Loading Git…
       </div>
     ),
   },
@@ -140,6 +152,21 @@ export function OrchestrationPane() {
           {liveSchedules > 0 && (
             <span className="h-1.5 w-1.5 rounded-full bg-cyan-400 animate-pulse" title={`${liveSchedules} running now`} />
           )}
+        </button>
+
+        <button
+          role="tab"
+          aria-selected={activeOrchTab === 'git'}
+          onClick={() => setActiveOrchTab('git')}
+          className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium transition-colors rounded-md ${
+            activeOrchTab === 'git'
+              ? 'bg-zinc-800 text-orange-400 ring-1 ring-zinc-600'
+              : 'text-zinc-500 hover:bg-zinc-800/50 hover:text-zinc-300'
+          }`}
+          title="Git: select a repository for this session"
+        >
+          <GitBranch size={12} />
+          Git
         </button>
 
         <button
@@ -312,6 +339,10 @@ export function OrchestrationPane() {
       ) : activeOrchTab === 'schedules' ? (
         <div className="flex-1 min-h-0 overflow-hidden">
           <SchedulesPane />
+        </div>
+      ) : activeOrchTab === 'git' ? (
+        <div className="flex-1 min-h-0 overflow-hidden">
+          <GitPane />
         </div>
       ) : workflowIds.length === 0 ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center px-6">

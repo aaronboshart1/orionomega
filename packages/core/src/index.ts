@@ -182,6 +182,18 @@ export type {
 export { setCodingOrchestatorEmitters } from './orchestration/index.js';
 export type { CodingEventEmitters } from './orchestration/index.js';
 
+// Coding repo manager (session-scoped clone + worktree primitives — Task #196)
+export {
+  ensureSessionClone,
+  addWorktree,
+  removeWorktree,
+  mergeBranchInto,
+} from './orchestration/coding/index.js';
+export type {
+  EnsureSessionCloneResult,
+  AddWorktreeResult,
+} from './orchestration/coding/index.js';
+
 // Build info — commit baked into dist/ at build time + stale-build detection
 export { BUILD_INFO, getBuildInfo, getStaleBuildStatus } from './build-info.js';
 export type { BuildInfo, StaleBuildStatus } from './build-info.js';

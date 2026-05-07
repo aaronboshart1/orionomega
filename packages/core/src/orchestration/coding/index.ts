@@ -84,6 +84,19 @@ export type {
   CodingEventEmitters,
 } from './coding-orchestrator.js';
 
+// ── Repo Manager (session-scoped clone + worktree primitives) ────────────────
+export {
+  ensureSessionClone,
+  addWorktree,
+  removeWorktree,
+  mergeBranchInto,
+  repoNameFromRemoteUrl,
+} from './repo-manager.js';
+export type {
+  EnsureSessionCloneResult,
+  AddWorktreeResult,
+} from './repo-manager.js';
+
 // ── Templates ─────────────────────────────────────────────────────────────────
 export {
   loadCodingTemplate,
