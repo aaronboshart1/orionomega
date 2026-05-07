@@ -20,6 +20,12 @@ import type { DiscoveredModel } from '../../models/model-discovery.js';
 import { CodingBudgetAllocator } from './coding-budget.js';
 import { CodingModelResolver } from './coding-models.js';
 import { loadCodingTemplate } from './templates/index.js';
+import {
+  expandFanOut,
+  analyzeFanOutComplexity,
+  type FanOutComplexityReport,
+} from './fanout-expansion.js';
+import type { FanOutDecision } from './coding-types.js';
 import { createLogger } from '../../logging/logger.js';
 
 const log = createLogger('coding-planner');
@@ -246,6 +252,118 @@ export class CodingPlanner {
       modelAssignments,
       fanOutPending: this.hasFanOutPlaceholder(nodes),
       nodes,
+    };
+  }
+
+  /**
+   * Task #174 — Materialize the fan-out placeholder using the
+   * architect's {@link FanOutDecision}.
+   *
+   * This is the production wire-up of `expandFanOut` +
+   * `analyzeFanOutComplexity`: the orchestrator calls it after
+   * receiving the architect's decision, before dispatching workers.
+   *
+   * Returns a fresh {@link CodingPlannerOutput} with the
+   * `impl-placeholder` replaced by N concrete `impl-chunk-<id>` nodes
+   * (carrying inter-phase `dependsOn` edges) and `fanOutPending`
+   * cleared. The companion `complexity` report logs per-chunk
+   * complexity and signals when a one-shot architect re-plan should
+   * be requested before dispatching (the `requiresReplan` flag, capped
+   * at one pass via `alreadyReplanned`).
+   *
+   * Behaviour notes:
+   *   - When `fanOutPending` is already false (no placeholder), the
+   *     output is returned unchanged with `complexity` still computed
+   *     so the dispatch log line is always present.
+   *   - The expanded nodes get fresh per-chunk model assignments
+   *     inherited from the placeholder (so model resolution stays
+   *     consistent), refreshed via `buildModelAssignments`.
+   */
+  materializeFanOut(
+    output: CodingPlannerOutput,
+    decision: FanOutDecision,
+    options: { alreadyReplanned?: boolean } = {},
+  ): CodingPlannerOutput & { complexity: FanOutComplexityReport } {
+    const complexity = analyzeFanOutComplexity(decision, options);
+
+    if (!output.fanOutPending) {
+      return { ...output, complexity };
+    }
+
+    const expanded = expandFanOut({ template: output.nodes, decision });
+    const modelAssignments = this.buildModelAssignments(expanded);
+
+    log.info(
+      `CodingPlanner.materializeFanOut: chunks=${decision.chunks.length} ` +
+        `nodes(before)=${output.nodes.length} nodes(after)=${expanded.length} ` +
+        `requiresReplan=${complexity.requiresReplan}`,
+    );
+
+    return {
+      ...output,
+      nodes: expanded,
+      modelAssignments,
+      fanOutPending: false,
+      complexity,
+    };
+  }
+
+  /**
+   * Task #174 — Capped one-shot re-plan dispatch path.
+   *
+   * Wraps {@link materializeFanOut} with the re-plan control flow the
+   * acceptance criteria require: when the architect's first
+   * {@link FanOutDecision} contains a `high`-complexity chunk, this
+   * helper re-invokes `requestArchitectDecision` exactly once with the
+   * generated `replanInstruction`, then re-materializes with
+   * `alreadyReplanned: true` so a second high tag is dispatched as-is
+   * (no recursion). The returned object reports the final expanded
+   * plan, both decisions, and whether a re-plan happened.
+   *
+   * `requestArchitectDecision(prevDecision, replanInstruction)` is the
+   * production callback that runs the architect step. The first call
+   * is invoked with `(null, null)`; the second (only when re-planning)
+   * is invoked with the prior decision and the replan instruction so
+   * the architect has the full context for subdivision. Async or
+   * sync callbacks are both supported.
+   */
+  async materializeFanOutWithReplan(
+    output: CodingPlannerOutput,
+    requestArchitectDecision: (
+      prev: FanOutDecision | null,
+      replanInstruction: string | null,
+    ) => Promise<FanOutDecision> | FanOutDecision,
+  ): Promise<{
+    plan: CodingPlannerOutput & { complexity: FanOutComplexityReport };
+    initialDecision: FanOutDecision;
+    finalDecision: FanOutDecision;
+    replanned: boolean;
+  }> {
+    const initialDecision = await requestArchitectDecision(null, null);
+    const first = this.materializeFanOut(output, initialDecision);
+    if (!first.complexity.requiresReplan) {
+      return {
+        plan: first,
+        initialDecision,
+        finalDecision: initialDecision,
+        replanned: false,
+      };
+    }
+
+    log.info(
+      `materializeFanOutWithReplan: re-planning due to high-complexity chunks: ` +
+        `${first.complexity.highComplexityIds.join(', ')}`,
+    );
+    const replannedDecision = await requestArchitectDecision(
+      initialDecision,
+      first.complexity.replanInstruction,
+    );
+    const second = this.materializeFanOut(output, replannedDecision, { alreadyReplanned: true });
+    return {
+      plan: second,
+      initialDecision,
+      finalDecision: replannedDecision,
+      replanned: true,
     };
   }
 

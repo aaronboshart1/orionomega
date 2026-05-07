@@ -149,6 +149,14 @@ export interface FanOutDecision {
     task: string;
     /** Estimated complexity of this chunk. */
     estimatedComplexity: 'low' | 'medium' | 'high';
+    /**
+     * Task #174: Optional list of chunk IDs this chunk depends on. When
+     * present, the executor serializes the chunk after its predecessors;
+     * absent / empty keeps the historical all-parallel behaviour.
+     * Used to honour explicit "Phase N depends on Phase M" language in
+     * multi-phase specs that the planner pre-loaded.
+     */
+    dependsOn?: string[];
   }>;
   /** Effective parallelism, capped by worker pool maxConcurrency. */
   maxParallelism: number;

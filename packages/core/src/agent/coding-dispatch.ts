@@ -40,6 +40,14 @@ import {
   getHeadCommit as defaultGetHeadCommit,
   repoNameFromRemoteUrl,
 } from '../orchestration/coding/repo-manager.js';
+import {
+  loadSpecReferences as defaultLoadSpecReferences,
+  renderSpecPreambleBlock,
+  type SpecReference,
+} from './spec-loader.js';
+import { createLogger } from '../logging/logger.js';
+
+const log = createLogger('coding-dispatch');
 
 /**
  * Inputs to {@link prepareCodingDispatch}. Every callable dependency is
@@ -77,6 +85,18 @@ export interface PrepareCodingDispatchInput {
    * {@link resolveCodingRemote}; tests inject a stub.
    */
   resolveRemote?: (ctx: RemoteResolutionContext) => Promise<string>;
+  /**
+   * Task #174: spec-reference loader. Defaults to the real
+   * {@link defaultLoadSpecReferences}; tests inject a stub so they can
+   * exercise the multi-phase fan-out preamble without touching disk.
+   */
+  loadSpecReferences?: typeof defaultLoadSpecReferences;
+  /**
+   * Optional workspace root used as a secondary sandbox for spec
+   * lookups (in addition to the per-run checkout). Defaults to
+   * `input.workspaceDir`.
+   */
+  specSearchRoots?: string[];
 }
 
 /** Output of {@link prepareCodingDispatch}. */
@@ -95,6 +115,13 @@ export interface PreparedCodingDispatch {
   headCommit: string | null;
   /** Coding-mode planner preamble, ready to feed to the planner. */
   codingTaskPreamble: string;
+  /**
+   * Task #174: Spec references that were pre-loaded and inlined into the
+   * preamble. Empty when the user task did not reference any spec files
+   * (or none could be resolved). Exposed so the bridge / tests can log
+   * how many phases were detected per spec.
+   */
+  specs: SpecReference[];
 }
 
 /**
@@ -116,6 +143,7 @@ export async function prepareCodingDispatch(
   const getHeadCommit = input.getHeadCommit ?? defaultGetHeadCommit;
   const mkdir = input.mkdir ?? ((dir: string) => mkdirSync(dir, { recursive: true }));
   const resolveRemote = input.resolveRemote ?? resolveCodingRemote;
+  const loadSpecs = input.loadSpecReferences ?? defaultLoadSpecReferences;
 
   // 1. Resolve remote — surfaces RemoteResolutionError verbatim. The
   // bridge catches this and turns it into a user-facing message instead of
@@ -144,12 +172,45 @@ export async function prepareCodingDispatch(
   const headCommit = await getHeadCommit(checkoutPath);
 
   const branch = input.branch ?? DEFAULT_BRANCH;
+
+  // Task #174: pre-load any `*.md` / `*.txt` / `*.spec` references in the
+  // user task. The loader is best-effort — unresolved references are
+  // dropped silently, so the historical no-spec preamble is still the
+  // floor behaviour. When at least one spec carries ≥3 phase markers,
+  // `renderSpecPreambleBlock` injects the multi-phase fan-out rule.
+  const specSearchRoots = input.specSearchRoots ?? [checkoutPath, input.workspaceDir];
+  let specs: SpecReference[] = [];
+  try {
+    specs = loadSpecs({ task: input.userTask, roots: specSearchRoots });
+  } catch (err) {
+    log.warn('Spec preloading failed (non-fatal)', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    specs = [];
+  }
+  const multiPhaseCount = specs.reduce(
+    (acc, s) => acc + (s.phases.length >= 3 ? 1 : 0),
+    0,
+  );
+  if (specs.length > 0) {
+    log.info('Pre-loaded spec references for planner preamble', {
+      count: specs.length,
+      multiPhaseCount,
+      perSpec: specs.map((s) => ({
+        ref: s.reference,
+        phases: s.phases.length,
+        complexities: s.phases.map((p) => p.estimatedComplexity),
+      })),
+    });
+  }
+
   const codingTaskPreamble = buildCodingTaskPreamble({
     userTask: input.userTask,
     remoteUrl,
     branch,
     checkoutPath,
     headCommit,
+    specs,
   });
 
   return {
@@ -160,6 +221,7 @@ export async function prepareCodingDispatch(
     checkoutPath,
     headCommit,
     codingTaskPreamble,
+    specs,
   };
 }
 
@@ -173,6 +235,14 @@ export interface BuildCodingTaskPreambleInput {
   branch: string;
   checkoutPath: string;
   headCommit: string | null;
+  /**
+   * Task #174: Pre-loaded spec references. When at least one carries
+   * ≥3 phase markers, a "Multi-phase fan-out (CRITICAL)" instruction
+   * block is appended that mandates one CODING_AGENT per phase, honours
+   * per-phase `dependsOn`, and asks the planner to subdivide any phase
+   * tagged `estimatedComplexity: high`.
+   */
+  specs?: SpecReference[];
 }
 
 /**
@@ -191,6 +261,9 @@ export interface BuildCodingTaskPreambleInput {
 export function buildCodingTaskPreamble(input: BuildCodingTaskPreambleInput): string {
   const { userTask, remoteUrl, branch, checkoutPath, headCommit } = input;
   const head = headCommit ?? 'unknown';
+  const specs = input.specs ?? [];
+  const specBlock = renderSpecPreambleBlock(specs);
+  const specSection = specBlock ? `\n\n${specBlock}\n` : '';
   return `## CODING MODE — Structured Software Engineering Workflow
 
 You are planning a **coding workflow**. The user wants code changes made to a repository.
@@ -241,5 +314,5 @@ The repository has already been cloned into a fresh per-run output folder for yo
 - Maximise parallelism for independent implementation sub-tasks.
 
 ### User's Task
-${userTask}`;
+${userTask}${specSection}`;
 }

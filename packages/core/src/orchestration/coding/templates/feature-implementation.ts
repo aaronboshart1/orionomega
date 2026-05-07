@@ -148,9 +148,23 @@ ${task}${priorDecisionsBlock}
    independently checkable after implementation.
 3. Design a clear implementation approach.
 4. Identify which files need to be created or modified.
-5. Divide the work into 2–4 independent "chunks" that can be implemented in parallel.
-   - Each chunk should own a non-overlapping set of files.
-   - Minimize shared files (move shared utilities to a separate chunk if possible).
+5. Divide the work into independent "chunks" that can be implemented in parallel.
+   - Default sizing: 2–4 chunks for small/medium tasks, each owning a non-overlapping
+     set of files. Minimize shared files.
+   - **Multi-phase spec override (Task #174):** if the user task references a
+     specification document (\`*.md\` / \`*.txt\` / \`*.spec\`) that contains **3 or
+     more** \`## Phase N\` / \`### Phase N\` / \`## Step N\` / numbered top-level
+     headings, you MUST emit **one chunk per phase** instead of the default 2–4 —
+     even if that means 6, 8, or more chunks. The pre-loaded spec contents are
+     attached to the planner preamble, so you can read the phases directly.
+   - Detect explicit dependency language inside the spec ("depends on Phase N",
+     "after Phase N", "requires Phase N") and encode it via the optional
+     \`dependsOn\` array on each chunk (list other chunk \`id\`s). Default to no
+     \`dependsOn\` (parallel) when the spec doesn't state a dependency.
+   - **Complexity safety net:** if a chunk would honestly be tagged
+     \`estimatedComplexity: high\` and its underlying phase still spans many
+     files, subdivide it into 2–4 sibling chunks (sharing the same
+     \`dependsOn\`) BEFORE emitting the JSON. Cap subdivision at one pass.
 6. **Map every requirement to one or more chunks** via the chunk's \`coveredBy\`
    list (use chunk \`id\` values). A requirement that no chunk covers is a
    planning bug — fix the design or add a chunk before emitting the JSON.
@@ -177,7 +191,8 @@ ${task}${priorDecisionsBlock}
         "fileCluster": ["path/to/file.ts"],
         "sharedFiles": [],
         "task": "Specific instructions for this implementer...",
-        "estimatedComplexity": "low|medium|high"
+        "estimatedComplexity": "low|medium|high",
+        "dependsOn": []
       }
     ],
     "maxParallelism": 3

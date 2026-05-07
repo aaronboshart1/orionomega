@@ -621,11 +621,52 @@ export class CodingOrchestrator {
         });
         capturedPlanOutput = planOutput;
 
+        // Task #174 — Production wire-up of expandFanOut +
+        // analyzeFanOutComplexity. The linear orchestrator runs the
+        // implementer as a single Claude Agent SDK call (not a real
+        // multi-worker DAG) so the natural FanOutDecision is a
+        // single-chunk decision wrapping the implementation step. This
+        // is enough to (a) replace the dead `impl-placeholder` node
+        // with a concrete `impl-chunk-implementation` node so the
+        // captured plan no longer carries an unfulfilled placeholder
+        // and (b) emit the per-chunk complexity dispatch log line. DAG
+        // callers that DO have a multi-chunk architect decision call
+        // `planner.materializeFanOut` directly with that decision.
+        if (planOutput.fanOutPending) {
+          // Linear-mode "architect" callback: returns a single-chunk
+          // decision wrapping the implementation step. The
+          // capped-one-shot re-plan loop is wired here so that DAG-mode
+          // callers (which pass a real architect callback) get the
+          // same control flow for free; in linear mode the high-tag
+          // branch is unreachable but the call site is identical.
+          const linearArchitect = (
+            _prev: import('./coding-types.js').FanOutDecision | null,
+            _replanInstruction: string | null,
+          ): import('./coding-types.js').FanOutDecision => ({
+            chunks: [
+              {
+                id: 'implementation',
+                label: 'Implementation (linear)',
+                fileCluster: [],
+                sharedFiles: [],
+                task: taskDescription,
+                estimatedComplexity: 'medium' as const,
+              },
+            ],
+            maxParallelism: 1,
+          });
+          const result = await planner.materializeFanOutWithReplan(planOutput, linearArchitect);
+          capturedPlanOutput = result.plan;
+          if (result.replanned) {
+            log.info('Coding orchestrator: architect re-plan triggered (high-complexity chunks)');
+          }
+        }
+
         implementationPlan = [
-          `Template: ${planOutput.template}`,
-          `Nodes: ${planOutput.nodes.length}`,
-          `Budget: $${planOutput.budgetAllocation.estimated.toFixed(2)}`,
-          `Fan-out pending: ${planOutput.fanOutPending}`,
+          `Template: ${capturedPlanOutput.template}`,
+          `Nodes: ${capturedPlanOutput.nodes.length}`,
+          `Budget: $${capturedPlanOutput.budgetAllocation.estimated.toFixed(2)}`,
+          `Fan-out pending: ${capturedPlanOutput.fanOutPending}`,
         ].join(', ');
 
         progress?.onStepProgress('plan', 'Plan ready', 70);
