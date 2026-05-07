@@ -492,7 +492,13 @@ export class OrchestrationBridge {
     // either outcome.
     const baseClonePath = prepared.checkoutPath;
     const baseBranch = prepared.branch;
-    const useWorktrees = !!opts.sessionRepo;
+    // Per-CODING_AGENT-node worktree fan-out is opt-in. The core Git tab +
+    // session-scoped clone path is the default; worktree consolidation is
+    // a tech preview that requires manual integration testing of the
+    // commit/validate/merge/push ordering for the user's planner output.
+    // Enable with `ORIONOMEGA_ENABLE_WORKTREE_FANOUT=1`.
+    const useWorktrees =
+      !!opts.sessionRepo && process.env.ORIONOMEGA_ENABLE_WORKTREE_FANOUT === '1';
     const onPlanReady = useWorktrees
       ? async (plan: PlannerOutput) => {
           const codingNodes = [...plan.graph.nodes.values()].filter((n) => n.type === 'CODING_AGENT');
