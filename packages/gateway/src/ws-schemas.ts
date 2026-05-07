@@ -4,13 +4,20 @@ const VALID_REPLY_ROLES = ['user', 'assistant', 'system'] as const;
 
 const MAX_CONTENT_LENGTH = 100_000;
 const MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024;
+// base64 encoding of a 10 MB binary plus the `data:<mime>;base64,` DataURL
+// prefix is ~13.4 MB. Round up to 14 MB so a malformed client can't OOM the
+// gateway with an unbounded `data` field.
+const MAX_ATTACHMENT_DATA_LENGTH = 14 * 1024 * 1024;
+// Cap text-attachment content at the same byte budget as the file size so
+// `textContent` alone can't blow past the 10 MB attachment ceiling.
+const MAX_ATTACHMENT_TEXT_LENGTH = MAX_ATTACHMENT_SIZE;
 
 const attachmentSchema = z.object({
   name: z.string().max(255),
   size: z.number().int().min(0).max(MAX_ATTACHMENT_SIZE),
   type: z.string().max(255),
-  data: z.string().optional(),
-  textContent: z.string().optional(),
+  data: z.string().max(MAX_ATTACHMENT_DATA_LENGTH).optional(),
+  textContent: z.string().max(MAX_ATTACHMENT_TEXT_LENGTH).optional(),
 });
 
 const chatMessageSchema = z.object({

@@ -14,7 +14,7 @@
 import { spawn } from 'node:child_process';
 import { existsSync, unlinkSync } from 'node:fs';
 import { AnthropicClient } from '../anthropic/client.js';
-import type { AnthropicMessage } from '../anthropic/client.js';
+import type { AnthropicMessage, ContentBlock } from '../anthropic/client.js';
 import { buildSystemPrompt, buildRunDirBlock, type PromptContext } from './prompt-builder.js';
 import { createLogger } from '../logging/logger.js';
 import { SkillLoader, readSkillConfig, writeSkillConfig } from '@orionomega/skills-sdk';
@@ -222,7 +222,7 @@ export interface MemoryEvent {
 
 interface HistoryEntry {
   role: 'user' | 'assistant';
-  content: string;
+  content: string | ContentBlock[];
 }
 
 // ── MainAgent ──────────────────────────────────────────────────────────────
@@ -831,20 +831,92 @@ export class MainAgent {
       ? `[Replying to ${replyContext.role} message${replyDagId ? ` (workflow: ${replyDagId})` : ''}: "${replyContext.content.slice(0, 200)}"]\n\n${trimmed}`
       : trimmed;
 
+    // Strip a `data:<mime>;base64,` prefix from a DataURL payload, returning
+    // just the raw base64. Returns null when the input doesn't look like a
+    // base64 payload at all.
+    const stripBase64Prefix = (raw: string): string | null => {
+      const m = /^data:[^;,]+;base64,(.+)$/i.exec(raw);
+      if (m) return m[1] ?? null;
+      // Bare base64 (no DataURL wrapper) — accept as-is if non-empty.
+      return raw.length > 0 ? raw : null;
+    };
+
+    // Anthropic image source media types (PNG/JPEG/GIF/WEBP) — anything else
+    // we surface as a `document` block (PDFs, Office files, etc.).
+    const isImageMediaType = (mt: string): boolean =>
+      /^image\/(png|jpe?g|gif|webp)$/i.test(mt);
+
+    const mediaBlocks: ContentBlock[] = [];
+
     if (attachments && attachments.length > 0) {
-      const attachmentDescriptions = attachments.map((att) => {
+      const textDescriptions: string[] = [];
+
+      for (const att of attachments) {
+        // Inline text/code attachments stay in the text stream so the model
+        // sees them next to the user prompt.
         if (att.textContent) {
-          return `\n\n--- Attached file: ${att.name} (${att.type}, ${att.size} bytes) ---\n${att.textContent}\n--- End of ${att.name} ---`;
+          textDescriptions.push(
+            `\n\n--- Attached file: ${att.name} (${att.type}, ${att.size} bytes) ---\n${att.textContent}\n--- End of ${att.name} ---`,
+          );
+          continue;
         }
-        if (att.data && att.type.startsWith('image/')) {
-          return `\n\n[Attached image: ${att.name} (${att.type}, ${att.size} bytes) — image data provided as base64]`;
+
+        // Binary attachment: must carry base64 `data` from the web client.
+        // A missing `data` field for a non-text attachment is a wire-protocol
+        // bug — fail loudly rather than silently dropping the file.
+        if (!att.data) {
+          const errMsg = `Attachment "${att.name}" (${att.type}) has no inline content — file dropped. This is a client/protocol bug.`;
+          log.warn('Attachment missing data and textContent', {
+            name: att.name,
+            type: att.type,
+            size: att.size,
+          });
+          this.callbacks.onText(`⚠️ ${errMsg}`, false, true);
+          continue;
         }
-        return `\n\n[Attached file: ${att.name} (${att.type}, ${att.size} bytes)]`;
-      });
-      userContent += attachmentDescriptions.join('');
+
+        const b64 = stripBase64Prefix(att.data);
+        if (!b64) {
+          const errMsg = `Attachment "${att.name}" has unreadable base64 data — file dropped.`;
+          log.warn('Attachment data not base64-decodable', { name: att.name, type: att.type });
+          this.callbacks.onText(`⚠️ ${errMsg}`, false, true);
+          continue;
+        }
+
+        if (att.type.startsWith('image/') && isImageMediaType(att.type)) {
+          mediaBlocks.push({
+            type: 'image',
+            source: { type: 'base64', media_type: att.type, data: b64 },
+          });
+          textDescriptions.push(
+            `\n\n[Attached image: ${att.name} (${att.type}, ${att.size} bytes)]`,
+          );
+        } else {
+          // PDFs and other binary documents — Anthropic's `document` block
+          // accepts application/pdf today; non-PDF binaries are still passed
+          // through with their declared media type so the API surfaces a
+          // clear error rather than us silently swallowing the payload.
+          mediaBlocks.push({
+            type: 'document',
+            source: { type: 'base64', media_type: att.type || 'application/octet-stream', data: b64 },
+          });
+          textDescriptions.push(
+            `\n\n[Attached document: ${att.name} (${att.type}, ${att.size} bytes)]`,
+          );
+        }
+      }
+
+      userContent += textDescriptions.join('');
     }
 
-    this.pushHistory(sid, { role: 'user', content: userContent });
+    // Build the history entry. When binary attachments are present we push
+    // a multimodal content-block array so image / PDF data survives all the
+    // way to the Anthropic call. Plain text turns keep using a string so we
+    // don't churn existing call sites that compare on string content.
+    const historyContent: string | ContentBlock[] = mediaBlocks.length > 0
+      ? [{ type: 'text', text: userContent }, ...mediaBlocks]
+      : userContent;
+    this.pushHistory(sid, { role: 'user', content: historyContent });
 
     if (trimmed.startsWith('/')) {
       log.verbose('Route: slash command (pre-detach)', { command: trimmed.slice(0, 80) });

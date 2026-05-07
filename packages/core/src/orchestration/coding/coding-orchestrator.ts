@@ -277,28 +277,6 @@ export function normalizeRepoHint(raw: string | undefined): string | undefined {
 }
 
 /**
- * Parse the optional repo and branch hints from a coding task description.
- * Returns `repoUrl: undefined` when no hint is present — the caller is
- * then responsible for resolving the remote via {@link resolveCodingRemote}.
- *
- * Recognized repo hint forms (all case-insensitive):
- *   - `repo:<value>` / `repoUrl:<value>` (original strict form)
- *   - `repo=<value>`
- *   - `repo is <value>` / `the repo is <value>` / `repo: is <value>` —
- *     conversational forms that fall out of natural follow-up messages
- *     like "the repo is aaronboshart1/orionomega".
- *   - `use repo <value>` / `using repo <value>`
- *   - `clone <value>` / `clone from <value>`
- *
- * Values may be full URLs, scp-like SSH refs, or bare GitHub `owner/repo`
- * slugs — see {@link normalizeRepoHint}.
- *
- * The previous `file://./` fallback was intentionally removed: pointing
- * the agent at the gateway's process cwd silently dropped runs into the
- * install tree (which is never a real source repo) instead of failing
- * fast with a clear message.
- */
-/**
  * Quick syntactic test: does this raw token *look like* a repo reference
  * (URL, scp-like SSH, or `owner/repo` slug) once trailing punctuation is
  * stripped? Used by {@link parseCodingRequest} to reject false positives

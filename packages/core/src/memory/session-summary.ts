@@ -8,8 +8,9 @@
  */
 
 import { HindsightClient } from '@orionomega/hindsight';
-import { AnthropicClient } from '../anthropic/client.js';
+import { AnthropicClient, type ContentBlock } from '../anthropic/client.js';
 import { createLogger } from '../logging/logger.js';
+import { contentToText } from '../utils/content.js';
 
 const log = createLogger('session-summary');
 
@@ -54,7 +55,7 @@ Be concise and factual. No preamble.`;
  * and are most useful for the summary.
  */
 function buildBoundedTranscript(
-  messages: { role: string; content: string }[],
+  messages: { role: string; content: string | ContentBlock[] }[],
   maxChars: number,
 ): { text: string; truncated: boolean; keptCount: number } {
   const rendered: string[] = [];
@@ -63,7 +64,7 @@ function buildBoundedTranscript(
 
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i]!;
-    const line = `[${m.role}]: ${m.content}`;
+    const line = `[${m.role}]: ${contentToText(m.content)}`;
     // Account for the "\n\n" separator we will join with.
     const cost = line.length + (rendered.length > 0 ? 2 : 0);
     if (total + cost > maxChars) break;
@@ -174,7 +175,7 @@ export class SessionSummarizer {
    * @param projectBank - Optional project bank for additional retention.
    */
   async summarize(
-    messages: { role: string; content: string }[],
+    messages: { role: string; content: string | ContentBlock[] }[],
     projectBank?: string,
     sessionId?: string,
   ): Promise<void> {

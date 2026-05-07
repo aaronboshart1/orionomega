@@ -5,8 +5,9 @@
  */
 
 import { HindsightClient, deduplicateByContent } from '@orionomega/hindsight';
-import { AnthropicClient } from '../anthropic/client.js';
+import { AnthropicClient, type ContentBlock } from '../anthropic/client.js';
 import { createLogger } from '../logging/logger.js';
+import { contentToText } from '../utils/content.js';
 
 const log = createLogger('compaction-flush');
 
@@ -67,7 +68,7 @@ export class CompactionFlush {
    * @returns The number of items retained (0 if extraction fails).
    */
   async flush(
-    messages: { role: string; content: string }[],
+    messages: { role: string; content: string | ContentBlock[] }[],
     bankId: string,
     sessionId?: string,
   ): Promise<FlushResult> {
@@ -80,7 +81,7 @@ export class CompactionFlush {
       // Truncate to ~60K chars (~15K tokens) to prevent oversized API requests.
       const MAX_CONVERSATION_CHARS = 60_000;
       let conversationText = messages
-        .map((m) => `[${m.role}]: ${m.content}`)
+        .map((m) => `[${m.role}]: ${contentToText(m.content)}`)
         .join('\n\n');
 
       if (conversationText.length > MAX_CONVERSATION_CHARS) {

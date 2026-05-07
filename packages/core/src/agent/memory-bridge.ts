@@ -385,7 +385,7 @@ export class MemoryBridge {
   /**
    * Flush conversation context to Hindsight before compaction.
    */
-  async flush(history: Array<{ role: string; content: string }>, sessionId?: string): Promise<void> {
+  async flush(history: Array<{ role: string; content: string | import('../anthropic/client.js').ContentBlock[] }>, sessionId?: string): Promise<void> {
     if (!this.compactionFlush) return;
 
     const bankId = this.activeProjectBank ?? this.config.hindsight?.defaultBank ?? 'core';
@@ -407,7 +407,7 @@ export class MemoryBridge {
    *   recall remains cross-session.
    */
   async summarize(
-    history: Array<{ role: string; content: string }>,
+    history: Array<{ role: string; content: string | import('../anthropic/client.js').ContentBlock[] }>,
     sessionId?: string,
   ): Promise<void> {
     if (!this.sessionSummarizer) return;

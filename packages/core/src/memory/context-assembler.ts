@@ -21,13 +21,22 @@ import { classifyQuery, getRecallStrategy } from './query-classifier.js';
 import type { QueryType, RecallStrategy } from './query-classifier.js';
 import { DynamicSummaryGenerator } from './dynamic-summary.js';
 import { isMemoryExpired } from './retention-engine.js';
+import type { ContentBlock } from '../anthropic/client.js';
+import { contentToText } from '../utils/content.js';
 
 const log = createLogger('context-assembler');
 
 /** A single conversation message. */
 export interface ConversationMessage {
   role: 'user' | 'assistant' | 'system';
-  content: string;
+  /**
+   * Either a plain text transcript or an Anthropic multimodal content-block
+   * array (text + image + document blocks for attachments). The hot window,
+   * persistence layer, and retention pipeline all preserve non-string
+   * content; helpers in `utils/content.ts` flatten it to text where needed
+   * (token estimates, transcripts, log lines).
+   */
+  content: string | ContentBlock[];
   timestamp?: string;
 }
 
@@ -233,7 +242,7 @@ export class ContextAssembler {
    */
   async assemble(currentQuery: string): Promise<AssembledContext> {
     const hotTokens = this.hotWindow.reduce(
-      (sum, m) => sum + estimateTokens(m.content), 0,
+      (sum, m) => sum + estimateTokens(contentToText(m.content)), 0,
     );
 
     const availableForRecall = Math.max(
@@ -350,7 +359,7 @@ export class ContextAssembler {
   /**
    * Get all messages as a simple history array (backward compat).
    */
-  getHistory(): { role: string; content: string }[] {
+  getHistory(): { role: string; content: string | ContentBlock[] }[] {
     return this.hotWindow.map((m) => ({ role: m.role, content: m.content }));
   }
 
@@ -403,7 +412,8 @@ export class ContextAssembler {
   private async retainMessage(msg: ConversationMessage): Promise<void> {
     if (!this.hs || !this.conversationBank) return;
 
-    const formattedContent = `[${msg.role}] ${msg.content}`;
+    const textContent = contentToText(msg.content);
+    const formattedContent = `[${msg.role}] ${textContent}`;
 
     const isDup = await this.hs.isDuplicateContent(
       this.conversationBank,
@@ -414,9 +424,9 @@ export class ContextAssembler {
       log.debug('Skipped duplicate message retention', {
         bank: this.conversationBank,
         role: msg.role,
-        contentLength: msg.content.length,
+        contentLength: textContent.length,
       });
-      this.onMemoryEvent?.('dedup', `Skipped duplicate ${msg.role} message (${msg.content.length} chars)`, this.conversationBank, { role: msg.role, chars: msg.content.length });
+      this.onMemoryEvent?.('dedup', `Skipped duplicate ${msg.role} message (${textContent.length} chars)`, this.conversationBank, { role: msg.role, chars: textContent.length });
       return;
     }
 
@@ -432,9 +442,9 @@ export class ContextAssembler {
       },
     ]);
 
-    this.onMemoryEvent?.('retain', `Retained ${msg.role} message (${msg.content.length} chars)`, this.conversationBank, {
+    this.onMemoryEvent?.('retain', `Retained ${msg.role} message (${textContent.length} chars)`, this.conversationBank, {
       role: msg.role,
-      chars: msg.content.length,
+      chars: textContent.length,
       ...(this.sessionId ? { sessionId: this.sessionId } : {}),
     });
   }
@@ -474,9 +484,10 @@ export class ContextAssembler {
 
     if (!lastAssistant) return rawQuery;
 
-    const snippet = lastAssistant.content.length > MAX_CONTEXT_CHARS
-      ? '…' + lastAssistant.content.slice(-MAX_CONTEXT_CHARS)
-      : lastAssistant.content;
+    const lastText = contentToText(lastAssistant.content);
+    const snippet = lastText.length > MAX_CONTEXT_CHARS
+      ? '…' + lastText.slice(-MAX_CONTEXT_CHARS)
+      : lastText;
 
     return `${rawQuery}\n\n[Recent assistant context]: ${snippet}`;
   }
@@ -764,14 +775,17 @@ export class ContextAssembler {
       const raw = readFileSync(this.persistPath, 'utf-8');
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) {
-        // Validate and take only the last hotWindowSize messages
+        // Validate and take only the last hotWindowSize messages.
+        // Content may be a plain string OR an Anthropic content-block array
+        // (text + image + document) when the message carried attachments.
         this.hotWindow = parsed
-          .filter((m: unknown) =>
-            typeof m === 'object' && m !== null &&
-            'role' in m && 'content' in m &&
-            typeof (m as Record<string, unknown>).role === 'string' &&
-            typeof (m as Record<string, unknown>).content === 'string'
-          )
+          .filter((m: unknown) => {
+            if (typeof m !== 'object' || m === null) return false;
+            const rec = m as Record<string, unknown>;
+            if (!('role' in rec) || typeof rec.role !== 'string') return false;
+            if (!('content' in rec)) return false;
+            return typeof rec.content === 'string' || Array.isArray(rec.content);
+          })
           .slice(-this.hotWindowSize) as ConversationMessage[];
         this.totalMessageCount = this.hotWindow.length;
         log.info('Hot window restored from disk', {

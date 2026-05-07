@@ -13,9 +13,16 @@ export interface AnthropicMessage {
   content: string | ContentBlock[];
 }
 
+/** Source for image/document content blocks (base64-encoded payloads). */
+export interface ContentBlockSource {
+  type: 'base64';
+  media_type: string;
+  data: string;
+}
+
 /** A content block within a message. */
 export interface ContentBlock {
-  type: 'text' | 'tool_use' | 'tool_result' | 'thinking';
+  type: 'text' | 'tool_use' | 'tool_result' | 'thinking' | 'image' | 'document';
   text?: string;
   id?: string;
   name?: string;
@@ -23,6 +30,8 @@ export interface ContentBlock {
   tool_use_id?: string;
   content?: string;
   thinking?: string;
+  /** Present on `image` and `document` blocks (base64 source). */
+  source?: ContentBlockSource;
 }
 
 /** Tool definition for the Anthropic API. */
