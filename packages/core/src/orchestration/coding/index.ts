@@ -92,6 +92,7 @@ export {
   mergeBranchInto,
   repoNameFromRemoteUrl,
 } from './repo-manager.js';
+export { getLastCommit } from './repo-manager.js';
 export type {
   EnsureSessionCloneResult,
   AddWorktreeResult,

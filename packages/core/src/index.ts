@@ -188,11 +188,14 @@ export {
   addWorktree,
   removeWorktree,
   mergeBranchInto,
+  getLastCommit,
 } from './orchestration/coding/index.js';
+export { getRepoStatus } from './orchestration/coding/repo-manager.js';
 export type {
   EnsureSessionCloneResult,
   AddWorktreeResult,
 } from './orchestration/coding/index.js';
+export type { RepoStatus } from './orchestration/coding/repo-manager.js';
 
 // Build info — commit baked into dist/ at build time + stale-build detection
 export { BUILD_INFO, getBuildInfo, getStaleBuildStatus } from './build-info.js';

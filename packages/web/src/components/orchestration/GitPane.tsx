@@ -36,6 +36,18 @@ interface SelectedRepo {
   selectedAt: string;
 }
 
+interface RepoStatus {
+  branch: string;
+  remoteUrl: string | null;
+  isClean: boolean;
+  stagedFiles: string[];
+  modifiedFiles: string[];
+  untrackedFiles: string[];
+  commitsAhead: number;
+  commitsBehind: number;
+  lastCommit?: { sha: string; shortSha: string; subject: string; author: string; date: string } | null;
+}
+
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     ...init,
@@ -56,6 +68,7 @@ export function GitPane() {
 
   const [repos, setRepos] = useState<KnownRepo[]>([]);
   const [selection, setSelection] = useState<SelectedRepo | null>(null);
+  const [status, setStatus] = useState<RepoStatus | null>(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -72,8 +85,9 @@ export function GitPane() {
       const list = await api<{ repos: KnownRepo[] }>('/api/git/repos');
       setRepos(list.repos);
       if (sessionId) {
-        const sel = await api<{ selection: SelectedRepo | null }>(`/api/git/sessions/${encodeURIComponent(sessionId)}/repo`);
+        const sel = await api<{ selection: SelectedRepo | null; status: RepoStatus | null }>(`/api/git/sessions/${encodeURIComponent(sessionId)}/repo`);
         setSelection(sel.selection);
+        setStatus(sel.status ?? null);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load');
@@ -130,6 +144,7 @@ export function GitPane() {
     try {
       await api(`/api/git/sessions/${encodeURIComponent(sessionId)}/repo`, { method: 'DELETE' });
       setSelection(null);
+      setStatus(null);
       setInfo('Selection cleared.');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to clear');
@@ -144,7 +159,7 @@ export function GitPane() {
     setError(null);
     setInfo(null);
     try {
-      const r = await api<{ result: { cloned: boolean; fetched: boolean; fastForwarded: boolean; headCommit: string | null } }>(
+      const r = await api<{ result: { cloned: boolean; fetched: boolean; fastForwarded: boolean; headCommit: string | null }; status: RepoStatus | null }>(
         `/api/git/sessions/${encodeURIComponent(sessionId)}/repo/sync`,
         { method: 'POST' },
       );
@@ -154,6 +169,7 @@ export function GitPane() {
         r.result.fetched ? 'fetched' : null,
         r.result.fastForwarded ? 'fast-forwarded' : null,
       ].filter(Boolean);
+      setStatus(r.status ?? null);
       setInfo(`Synced (${parts.join(', ') || 'no changes'}). HEAD ${head}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Sync failed');
@@ -205,11 +221,31 @@ export function GitPane() {
               <div className="min-w-0 flex-1">
                 <div className="truncate text-sm font-medium text-orange-300">{selection.remoteUrl}</div>
                 <div className="mt-0.5 flex items-center gap-2 text-xs text-zinc-500">
-                  <span>branch: <span className="text-zinc-300">{selection.branch}</span></span>
+                  <span>branch: <span className="text-zinc-300">{status?.branch || selection.branch}</span></span>
                   <span className="text-zinc-700">•</span>
                   <Folder size={10} />
                   <span className="truncate" title={selection.localPath}>{selection.localPath}</span>
                 </div>
+                {status && (
+                  <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px]">
+                    <span className={status.commitsAhead > 0 ? 'text-emerald-400' : 'text-zinc-600'}>
+                      ↑ {status.commitsAhead} ahead
+                    </span>
+                    <span className={status.commitsBehind > 0 ? 'text-amber-400' : 'text-zinc-600'}>
+                      ↓ {status.commitsBehind} behind
+                    </span>
+                    <span className={!status.isClean ? 'text-orange-400' : 'text-emerald-500'}>
+                      {!status.isClean ? '● dirty' : '✓ clean'}
+                    </span>
+                  </div>
+                )}
+                {status?.lastCommit && (
+                  <div className="mt-1 truncate text-[10px] text-zinc-600" title={`${status.lastCommit.sha} — ${status.lastCommit.author} @ ${status.lastCommit.date}`}>
+                    <span className="font-mono text-zinc-500">{status.lastCommit.shortSha}</span>{' '}
+                    <span className="text-zinc-400">{status.lastCommit.subject}</span>
+                    {status.lastCommit.author && <span className="text-zinc-600"> · {status.lastCommit.author}</span>}
+                  </div>
+                )}
               </div>
               <div className="flex shrink-0 gap-1">
                 <button

@@ -13,6 +13,7 @@ import { GraphExecutor } from '../orchestration/executor.js';
 import type { ExecutorConfig } from '../orchestration/executor.js';
 import { prepareCodingDispatch, type SessionRepoSelection } from './coding-dispatch.js';
 import { parseCodingRequest, RemoteResolutionError } from '../orchestration/coding/coding-orchestrator.js';
+import { addWorktree, removeWorktree, mergeBranchInto } from '../orchestration/coding/repo-manager.js';
 import type { StagedAttachment } from './attachment-staging.js';
 import { renderStagedAttachmentsBlock } from './attachment-staging.js';
 import { EventBus } from '../orchestration/event-bus.js';
@@ -65,7 +66,17 @@ export interface OrchestrationConfig {
  * Kept extremely narrow (only the fields code mode needs to override) so
  * future overrides are added intentionally rather than by accident.
  */
-type ExecutorOverrides = Pick<ExecutorConfig, 'codingRepoDir' | 'stagedAttachments'>;
+type ExecutorOverrides = Pick<ExecutorConfig, 'codingRepoDir' | 'stagedAttachments'> & {
+  /**
+   * Optional cleanup hook invoked AFTER `executor.execute()` returns
+   * (regardless of success / failure) and BEFORE `cleanupWorkflow`.
+   * Used by Task #196 to merge per-CODING_AGENT-node worktree branches
+   * back into the session clone's base branch on success and to prune
+   * the worktrees on either outcome. Errors thrown here are caught and
+   * surfaced to the user but do not re-throw.
+   */
+  postExecute?: (success: boolean) => Promise<void>;
+};
 
 /** An active, running workflow. */
 interface ActiveWorkflow {
@@ -228,6 +239,14 @@ export class OrchestrationBridge {
        * worker is told the absolute paths.
        */
       stagedAttachments?: StagedAttachment[];
+      /**
+       * Hook invoked AFTER planning, BEFORE dispatch. Receives the
+       * generated plan so callers can mutate node configs in-place
+       * (e.g. Task #196 worktree allocation per CODING_AGENT node) and
+       * optionally return a `postExecute` callback that runs after the
+       * executor finishes (used to merge worktree branches back).
+       */
+      onPlanReady?: (plan: PlannerOutput) => Promise<{ postExecute?: (success: boolean) => Promise<void> } | void>;
     } = {},
   ): Promise<void> {
     // Prepend the staged-attachments block to the task so the planner's
@@ -247,6 +266,7 @@ export class OrchestrationBridge {
       ...(opts.requireConfirmation !== undefined ? { requireConfirmation: opts.requireConfirmation } : {}),
       ...(mergedOverrides ? { executorOverrides: mergedOverrides } : {}),
       ...(opts.workflowId ? { workflowId: opts.workflowId } : {}),
+      ...(opts.onPlanReady ? { onPlanReady: opts.onPlanReady } : {}),
     });
   }
 
@@ -257,6 +277,7 @@ export class OrchestrationBridge {
       requireConfirmation?: boolean;
       executorOverrides?: ExecutorOverrides;
       workflowId?: string;
+      onPlanReady?: (plan: PlannerOutput) => Promise<{ postExecute?: (success: boolean) => Promise<void> } | void>;
     } = {},
   ): Promise<void> {
     this.emitStep('memory', 'Recalling memory', 'active');
@@ -283,6 +304,26 @@ export class OrchestrationBridge {
         plan.graph.id = opts.workflowId;
       }
 
+      // Task #196: give the caller a chance to mutate plan nodes
+      // (e.g. allocate per-CODING_AGENT-node git worktrees and pin each
+      // node's cwd). Any returned `postExecute` is folded into the
+      // executor overrides so executePlan() can run it in finally.
+      let postExecuteFromPlan: ((success: boolean) => Promise<void>) | undefined;
+      if (opts.onPlanReady) {
+        try {
+          const hookResult = await opts.onPlanReady(plan);
+          if (hookResult && hookResult.postExecute) postExecuteFromPlan = hookResult.postExecute;
+        } catch (hookErr) {
+          const hmsg = hookErr instanceof Error ? hookErr.message : String(hookErr);
+          log.error('onPlanReady hook failed — aborting dispatch', { error: hmsg });
+          this.callbacks.onText(`Failed to prepare workflow: ${hmsg}`, false, true);
+          return;
+        }
+      }
+      const effectiveOverrides: ExecutorOverrides | undefined = postExecuteFromPlan
+        ? { ...(opts.executorOverrides ?? {}), postExecute: postExecuteFromPlan }
+        : opts.executorOverrides;
+
       if (opts.requireConfirmation) {
         // Store for confirmation and emit confirm event. Carry the
         // per-dispatch executor overrides through the confirmation
@@ -293,7 +334,7 @@ export class OrchestrationBridge {
           plan,
           task,
           pushHistory,
-          ...(opts.executorOverrides ? { executorOverrides: opts.executorOverrides } : {}),
+          ...(effectiveOverrides ? { executorOverrides: effectiveOverrides } : {}),
         });
 
         const confirmInfo: DAGConfirmInfo = {
@@ -315,7 +356,7 @@ export class OrchestrationBridge {
         return;
       }
 
-      await this.dispatchAsync(plan, pushHistory, opts.executorOverrides);
+      await this.dispatchAsync(plan, pushHistory, effectiveOverrides);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       log.error('dispatchFullDAG error', { error: msg });
@@ -394,7 +435,13 @@ export class OrchestrationBridge {
         error: msg,
         kind: err instanceof RemoteResolutionError ? 'remote-resolution' : 'clone-or-other',
       });
-      this.callbacks.onText(`Code mode setup failed: ${msg}`, false, true);
+      // Task #196: when no session repo is selected AND the legacy
+      // resolver chain failed, point the user at the Git tab — that's
+      // the lowest-friction fix for the common case.
+      const userMsg = err instanceof RemoteResolutionError && !opts.sessionRepo
+        ? `Code mode setup failed: ${msg}\n\nTip: open the Git tab in the orchestration pane and select a repository for this session — the next code-mode message will use it automatically without any \`repo:<url>\` hint.`
+        : `Code mode setup failed: ${msg}`;
+      this.callbacks.onText(userMsg, false, true);
       pushHistory({ role: 'assistant', content: `[Code mode setup failed] ${msg}` });
       return;
     }
@@ -425,10 +472,91 @@ export class OrchestrationBridge {
     //     SAME folder as the pre-clone parent dir
     //     (`<workspaceDir>/output/<runId>` containing the `<repoName>`
     //     checkout). One folder per run, single inspection point.
+    // Task #196: per-CODING_AGENT-node worktree allocation. Only
+    // engaged when ≥2 CODING_AGENT nodes exist in the plan AND the
+    // dispatch is using a session repo (the per-run-clone legacy path
+    // doesn't benefit — that clone already lives in `output/<runId>`).
+    // Each parallel implementer gets its own worktree off the same
+    // base commit, on a fresh `wt-<runId>-<nodeId>` branch. After
+    // execution succeeds, branches are merged back to the base branch
+    // sequentially in topological order. Worktrees are pruned on
+    // either outcome.
+    const baseClonePath = prepared.checkoutPath;
+    const baseBranch = prepared.branch;
+    const useWorktrees = !!opts.sessionRepo;
+    const onPlanReady = useWorktrees
+      ? async (plan: PlannerOutput) => {
+          const codingNodes = [...plan.graph.nodes.values()].filter((n) => n.type === 'CODING_AGENT');
+          if (codingNodes.length < 2) return; // single-agent — no benefit, skip
+          const allocations: { nodeId: string; worktreePath: string; branch: string }[] = [];
+          const worktreesRoot = `${baseClonePath}/.worktrees`;
+          for (const node of codingNodes) {
+            const safeNodeId = node.id.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 32);
+            const wtBranch = `wt-${prepared.runId}-${safeNodeId}`;
+            const wtPath = `${worktreesRoot}/${safeNodeId}`;
+            try {
+              await addWorktree(baseClonePath, wtPath, wtBranch, baseBranch);
+            } catch (e) {
+              const em = e instanceof Error ? e.message : String(e);
+              log.warn('worktree allocation failed — falling back to shared clone', { nodeId: node.id, error: em });
+              continue; // this node will use the base clone (codingRepoDir override)
+            }
+            // Pin the node's cwd. The executor's existing fallback chain
+            // (`node.codingAgent?.cwd ?? config.codingRepoDir ?? …`)
+            // means setting cwd here wins over the override.
+            if (node.codingAgent) {
+              node.codingAgent.cwd = wtPath;
+            }
+            allocations.push({ nodeId: node.id, worktreePath: wtPath, branch: wtBranch });
+          }
+          if (!allocations.length) return;
+          log.info('Allocated per-node worktrees', { count: allocations.length, runId: prepared.runId });
+          this.callbacks.onText(
+            `Allocated ${allocations.length} parallel worktree${allocations.length === 1 ? '' : 's'} off ${baseBranch} for isolation.`,
+            false, true,
+          );
+          return {
+            postExecute: async (success: boolean) => {
+              if (success) {
+                // Merge each worker branch back into the base branch.
+                // Sequential to keep history clean and conflicts isolated.
+                // mergeBranchInto throws on conflict; we catch and surface
+                // verbatim so the user can resolve in the session clone.
+                for (const alloc of allocations) {
+                  try {
+                    await mergeBranchInto(
+                      baseClonePath,
+                      alloc.branch,
+                      `Merge worktree ${alloc.nodeId} (${alloc.branch})`,
+                    );
+                  } catch (mErr) {
+                    const em = mErr instanceof Error ? mErr.message : String(mErr);
+                    log.error('Worktree merge failed', { branch: alloc.branch, error: em });
+                    this.callbacks.onText(
+                      `Worktree branch ${alloc.branch} did not merge cleanly into ${baseBranch}: ${em}`,
+                      false, true,
+                    );
+                  }
+                }
+              }
+              // Always prune the worktrees so the next dispatch starts clean.
+              for (const alloc of allocations) {
+                try {
+                  await removeWorktree(baseClonePath, alloc.worktreePath);
+                } catch (rmErr) {
+                  log.warn('Failed to remove worktree', { path: alloc.worktreePath, error: rmErr instanceof Error ? rmErr.message : String(rmErr) });
+                }
+              }
+            },
+          };
+        }
+      : undefined;
+
     await this.dispatchFullDAG(prepared.codingTaskPreamble, pushHistory, {
       executorOverrides: { codingRepoDir: prepared.checkoutPath },
       workflowId: prepared.runId,
       ...(opts.stagedAttachments?.length ? { stagedAttachments: opts.stagedAttachments } : {}),
+      ...(onPlanReady ? { onPlanReady } : {}),
     });
   }
 
@@ -890,14 +1018,29 @@ ${userTask}`;
     this.callbacks.onText('Workflow started. I\'ll keep you posted on progress.', false, true, workflowId);
     pushHistory({ role: 'assistant', content: '[Workflow execution started]' });
 
+    let executeSucceeded = false;
     try {
       const result = await executor.execute(startLayer);
+      executeSucceeded = result.status === 'complete';
       await this.onExecutionComplete(result, workflowId, pushHistory);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       log.error('Execution error', { error: msg });
       this.callbacks.onText(`Workflow failed: ${msg}`, false, true);
     } finally {
+      // Task #196: per-CODING_AGENT-node worktree merge-back &
+      // teardown. Fired once per dispatch, regardless of outcome. Errors
+      // here surface verbatim but never re-throw, so a stuck worktree
+      // can't block normal cleanup.
+      if (executorOverrides?.postExecute) {
+        try {
+          await executorOverrides.postExecute(executeSucceeded);
+        } catch (postErr) {
+          const pmsg = postErr instanceof Error ? postErr.message : String(postErr);
+          log.error('postExecute hook failed', { error: pmsg, workflowId });
+          this.callbacks.onText(`Worktree cleanup failed: ${pmsg}`, false, true);
+        }
+      }
       this.cleanupWorkflow(workflowId);
     }
   }

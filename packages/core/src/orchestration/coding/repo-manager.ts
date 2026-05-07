@@ -71,6 +71,14 @@ export interface RepoStatus {
   stagedFiles: string[];
   /** Modified but unstaged files. */
   modifiedFiles: string[];
+  /** Latest commit metadata, populated by {@link getRepoStatus}. */
+  lastCommit?: {
+    sha: string;
+    shortSha: string;
+    subject: string;
+    author: string;
+    date: string;
+  } | null;
   /** Untracked files. */
   untrackedFiles: string[];
   /** Number of commits ahead of upstream. */
@@ -390,6 +398,8 @@ export async function getRepoStatus(repoDir: string): Promise<RepoStatus> {
     commitsBehind = parseInt(parts[1] ?? '0', 10) || 0;
   }
 
+  const lastCommit = await getLastCommit(repoDir);
+
   return {
     branch,
     remoteUrl,
@@ -399,6 +409,7 @@ export async function getRepoStatus(repoDir: string): Promise<RepoStatus> {
     untrackedFiles,
     commitsAhead,
     commitsBehind,
+    lastCommit,
   };
 }
 
@@ -562,6 +573,33 @@ export async function ensureSessionClone(
 
   const headCommit = await getHeadCommit(abs);
   return { localPath: abs, cloned, fetched, fastForwarded, headCommit };
+}
+
+/**
+ * Read the latest commit metadata of a session clone for display in the
+ * Git tab. Returns `null` if the repo has no commits or git fails.
+ */
+export async function getLastCommit(localPath: string): Promise<{
+  sha: string;
+  shortSha: string;
+  subject: string;
+  author: string;
+  date: string;
+} | null> {
+  const abs = resolvePath(localPath);
+  if (!existsSync(join(abs, '.git'))) return null;
+  // %x1f is unit-separator — safe delimiter inside a commit subject.
+  const logRes = await runGit('log -1 --pretty=format:%H%x1f%s%x1f%an%x1f%aI', abs);
+  if (!logRes.success || !logRes.stdout) return null;
+  const [sha, subject, author, date] = logRes.stdout.split('\x1f');
+  if (!sha) return null;
+  return {
+    sha,
+    shortSha: sha.slice(0, 8),
+    subject: subject ?? '',
+    author: author ?? '',
+    date: date ?? '',
+  };
 }
 
 /** Result of {@link addWorktree}. */

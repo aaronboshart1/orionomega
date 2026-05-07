@@ -20,7 +20,8 @@
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { resolve as resolvePath } from 'node:path';
-import { ensureSessionClone } from '@orionomega/core';
+import { ensureSessionClone, getRepoStatus } from '@orionomega/core';
+import type { RepoStatus } from '@orionomega/core';
 import { getReposStore, type KnownRepo, type SelectedRepo } from '../repos-store.js';
 import { createLogger } from '@orionomega/core';
 
@@ -150,7 +151,13 @@ export async function handleGitRoute(
     const sid = sessionRepoMatch[1]!;
     if (!SESSION_ID_RE.test(sid)) { sendErr(res, 400, 'Invalid session id'); return true; }
     if (method === 'GET') {
-      sendJson(res, 200, { selection: store.getSessionRepo(sid) });
+      const sel = store.getSessionRepo(sid);
+      let status: RepoStatus | null = null;
+      if (sel) {
+        try { status = await getRepoStatus(sel.localPath); }
+        catch (err) { log.warn('Repo status read failed', { sid, error: err instanceof Error ? err.message : String(err) }); }
+      }
+      sendJson(res, 200, { selection: sel, status });
       return true;
     }
     if (method === 'PUT') {
@@ -193,7 +200,10 @@ export async function handleGitRoute(
     if (!sel) { sendErr(res, 404, 'No repo selected for this session'); return true; }
     try {
       const result = await ensureSessionClone(sel.remoteUrl, sel.localPath, sel.branch);
-      sendJson(res, 200, { result });
+      let status: RepoStatus | null = null;
+      try { status = await getRepoStatus(sel.localPath); }
+      catch (err) { log.warn('Repo status read failed', { sid, error: err instanceof Error ? err.message : String(err) }); }
+      sendJson(res, 200, { result, status });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       log.error('Session repo sync failed', { sid, error: msg });
