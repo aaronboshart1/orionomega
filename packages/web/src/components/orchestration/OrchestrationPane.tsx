@@ -53,7 +53,7 @@ const SchedulesPane = dynamic(
     ssr: false,
     loading: () => (
       <div className="flex h-full items-center justify-center text-xs text-zinc-600">
-        Loading schedules…
+        Loading Tasker…
       </div>
     ),
   },
@@ -128,10 +128,10 @@ export function OrchestrationPane() {
               ? 'bg-zinc-800 text-emerald-400 ring-1 ring-zinc-600'
               : 'text-zinc-500 hover:bg-zinc-800/50 hover:text-zinc-300'
           }`}
-          title="Scheduled tasks"
+          title="Tasker"
         >
           <CalendarClock size={12} />
-          Schedules
+          Tasker
           {scheduleCount > 0 && (
             <span className="text-xs bg-emerald-500/20 text-emerald-400 rounded-full px-1.5 py-0.5 font-mono">
               {scheduleCount}

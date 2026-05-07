@@ -254,7 +254,7 @@ export function SchedulesPane() {
       const list = await fetchSchedules();
       setSchedules(list);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load schedules');
+      setError(err instanceof Error ? err.message : 'Failed to load tasks');
     } finally {
       setLoading(false);
     }
@@ -376,14 +376,14 @@ export function SchedulesPane() {
       setEditing(null);
       setSelectedId(task.id);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save schedule');
+      setError(err instanceof Error ? err.message : 'Failed to save task');
     } finally {
       setSubmitting(false);
     }
   }, [editing, upsertSchedule]);
 
   const handleDelete = useCallback(async (id: string) => {
-    if (!confirm('Delete this schedule? Execution history will be preserved.')) return;
+    if (!confirm('Delete this task? Execution history will be preserved.')) return;
     try {
       await deleteSchedule(id);
       removeSchedule(id);
@@ -439,7 +439,7 @@ export function SchedulesPane() {
   }, [bulkSelected, schedules, upsertSchedule]);
 
   const handleBulkDelete = useCallback(async () => {
-    if (!confirm(`Delete ${bulkSelected.size} schedule(s)? Execution history will be preserved.`)) return;
+    if (!confirm(`Delete ${bulkSelected.size} task(s)? Execution history will be preserved.`)) return;
     for (const id of bulkSelected) {
       try { await deleteSchedule(id); removeSchedule(id); } catch { /* continue */ }
     }
@@ -495,7 +495,7 @@ export function SchedulesPane() {
       <div className="flex w-[340px] shrink-0 flex-col border-r border-zinc-800">
         <div className="flex items-center gap-2 border-b border-zinc-800 px-3 py-1.5 bg-zinc-900/40">
           <CalendarClock size={12} className="text-zinc-500" />
-          <span className="text-xs text-zinc-300 font-medium">Schedules</span>
+          <span className="text-xs text-zinc-300 font-medium">Tasker</span>
           <span className="text-[10px] text-zinc-600">{schedules.length}</span>
           <div className="ml-auto flex items-center gap-1">
             <button
@@ -503,8 +503,8 @@ export function SchedulesPane() {
               onClick={() => void reload()}
               disabled={loading}
               className="rounded p-1 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-40"
-              title="Refresh schedules"
-              aria-label="Refresh schedules"
+              title="Refresh Tasker"
+              aria-label="Refresh Tasker"
             >
               <RefreshCw size={11} className={loading ? 'animate-spin' : ''} />
             </button>
@@ -512,7 +512,7 @@ export function SchedulesPane() {
               type="button"
               onClick={handleNew}
               className="flex items-center gap-1 rounded bg-emerald-500/15 px-2 py-1 text-[10px] font-medium text-emerald-300 ring-1 ring-emerald-500/30 hover:bg-emerald-500/25"
-              title="New schedule (n)"
+              title="New task (n)"
             >
               <Plus size={10} />
               New
@@ -583,10 +583,10 @@ export function SchedulesPane() {
             />
           ) : filtered.length === 0 ? (
             <div className="px-3 py-6 text-center text-xs text-zinc-600">
-              No schedules match the current filter.
+              No tasks match the current filter.
             </div>
           ) : (
-            <ul role="listbox" aria-label="Schedules">
+            <ul role="listbox" aria-label="Tasker">
               {filtered.map((s) => (
                 <ScheduleRow
                   key={s.id}
@@ -653,7 +653,7 @@ export function SchedulesPane() {
           />
         ) : (
           <div className="flex flex-1 items-center justify-center text-xs text-zinc-600">
-            Select a schedule to view details, or press <kbd className="mx-1 rounded bg-zinc-800 px-1.5 py-0.5 font-mono text-[10px]">N</kbd> to create one.
+            Select a task to view details, or press <kbd className="mx-1 rounded bg-zinc-800 px-1.5 py-0.5 font-mono text-[10px]">N</kbd> to create one.
           </div>
         )}
       </div>
@@ -922,8 +922,8 @@ function ScheduleDetail({
           <button
             onClick={onDelete}
             className="rounded p-1.5 text-zinc-500 hover:bg-red-500/20 hover:text-red-300"
-            title="Delete schedule"
-            aria-label="Delete schedule"
+            title="Delete task"
+            aria-label="Delete task"
           >
             <Trash2 size={11} />
           </button>
@@ -931,7 +931,7 @@ function ScheduleDetail({
       </div>
 
       {/* Sub-section tabs (Overview / Run History / Settings) */}
-      <div role="tablist" aria-label="Schedule details" className="flex items-center gap-1 border-b border-zinc-800 bg-zinc-900/20 px-3 py-1">
+      <div role="tablist" aria-label="Task details" className="flex items-center gap-1 border-b border-zinc-800 bg-zinc-900/20 px-3 py-1">
         {(['overview', 'history', 'settings'] as const).map((t) => (
           <button
             key={t}
@@ -1123,8 +1123,8 @@ function RunHistoryTimeline({
                           type="button"
                           onClick={() => deepLinkToSession(schedule.sessionId)}
                           className="mt-1.5 inline-flex items-center gap-1 rounded bg-zinc-800 px-2 py-1 text-[10px] text-zinc-300 hover:bg-zinc-700"
-                          title="Open this schedule's session in chat"
-                          aria-label="Open this schedule's session in chat"
+                          title="Open this task's session in chat"
+                          aria-label="Open this task's session in chat"
                         >
                           Open session
                           <ChevronRight size={10} />
@@ -1306,7 +1306,7 @@ function CadenceBuilder({ value, onChange }: { value: string; onChange: (cron: s
         <Repeat size={11} className="text-zinc-500" aria-hidden="true" />
         <span className="text-[10px] font-semibold uppercase tracking-widest text-zinc-500">Cadence</span>
       </div>
-      <div role="radiogroup" aria-label="Schedule frequency" className="mb-3 flex flex-wrap items-center gap-1">
+      <div role="radiogroup" aria-label="Task frequency" className="mb-3 flex flex-wrap items-center gap-1">
         {KINDS.map(({ k, label }) => {
           const active = cadence.kind === k;
           return (
@@ -1774,7 +1774,7 @@ function ScheduleFormFields({
                 className="w-fit rounded border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-xs text-zinc-200"
               />
               <span className="text-[10px] text-zinc-500">
-                Leave empty for a recurring schedule. When set, the cron expression is ignored on the first fire.
+                Leave empty for a recurring task. When set, the cron expression is ignored on the first fire.
               </span>
             </label>
           )}
@@ -1926,7 +1926,7 @@ function ScheduleEditor({
     <div className="flex h-full min-h-0 flex-col overflow-y-auto">
       <div className="flex items-center gap-2 border-b border-zinc-800 px-4 py-2 bg-zinc-900/30">
         <h3 className="text-xs font-semibold text-zinc-200">
-          {form.id ? 'Edit schedule' : 'New schedule'}
+          {form.id ? 'Edit task' : 'New task'}
         </h3>
         <div className="ml-auto flex items-center gap-1">
           <button
@@ -1958,9 +1958,9 @@ function EmptyState({ onTemplate }: { onTemplate: (t: { name: string; descriptio
   return (
     <div className="flex flex-col items-center gap-3 px-3 py-6 text-center">
       <CalendarClock size={28} className="text-zinc-700" />
-      <div className="text-xs text-zinc-400">No scheduled tasks yet</div>
+      <div className="text-xs text-zinc-400">No tasks yet</div>
       <div className="max-w-[280px] text-[10px] text-zinc-600">
-        Run prompts on a cron schedule. Tasks fire through the agent exactly like chat messages. Start from a template:
+        Run prompts on a cron cadence. Tasks fire through the agent exactly like chat messages. Start from a template:
       </div>
       <div className="flex w-full flex-col gap-1.5">
         {TEMPLATES.map((t) => (
