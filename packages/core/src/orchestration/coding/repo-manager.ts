@@ -85,6 +85,12 @@ export interface RepoStatus {
   commitsAhead: number;
   /** Number of commits behind upstream. */
   commitsBehind: number;
+  /**
+   * Diagnostics: per-call git stderr for any sub-command that failed.
+   * Empty when every probe succeeded. Surfaced to the UI so users aren't
+   * left guessing why the branch / HEAD show as "unknown".
+   */
+  diagnostics?: { branchErr?: string; headErr?: string; remoteErr?: string; statusErr?: string };
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
@@ -410,6 +416,11 @@ export async function getRepoStatus(repoDir: string): Promise<RepoStatus> {
   const branch = branchResult.success ? branchResult.stdout : 'unknown';
   const remoteUrl = remoteResult.success ? remoteResult.stdout : null;
 
+  const diagnostics: NonNullable<RepoStatus['diagnostics']> = {};
+  if (!branchResult.success) diagnostics.branchErr = branchResult.stderr || `exit ${branchResult.exitCode}`;
+  if (!statusResult.success) diagnostics.statusErr = statusResult.stderr || `exit ${statusResult.exitCode}`;
+  if (!remoteResult.success) diagnostics.remoteErr = remoteResult.stderr || `exit ${remoteResult.exitCode}`;
+
   const stagedFiles: string[] = [];
   const modifiedFiles: string[] = [];
   const untrackedFiles: string[] = [];
@@ -434,6 +445,12 @@ export async function getRepoStatus(repoDir: string): Promise<RepoStatus> {
   }
 
   const lastCommit = await getLastCommit(repoDir);
+  // getLastCommit failure is also a useful HEAD-side signal.
+  if (!lastCommit && branchResult.success) {
+    // Branch resolved but HEAD didn't — explicitly probe to capture stderr.
+    const headProbe = await runGit('rev-parse HEAD', repoDir);
+    if (!headProbe.success) diagnostics.headErr = headProbe.stderr || `exit ${headProbe.exitCode}`;
+  }
 
   return {
     branch,
@@ -445,6 +462,7 @@ export async function getRepoStatus(repoDir: string): Promise<RepoStatus> {
     commitsAhead,
     commitsBehind,
     lastCommit,
+    diagnostics: Object.keys(diagnostics).length > 0 ? diagnostics : undefined,
   };
 }
 

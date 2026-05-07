@@ -46,6 +46,7 @@ interface RepoStatus {
   commitsAhead: number;
   commitsBehind: number;
   lastCommit?: { sha: string; shortSha: string; subject: string; author: string; date: string } | null;
+  diagnostics?: { branchErr?: string; headErr?: string; remoteErr?: string; statusErr?: string };
 }
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
@@ -261,6 +262,15 @@ export function GitPane() {
                     <span className="font-mono text-zinc-500">{status.lastCommit.shortSha}</span>{' '}
                     <span className="text-zinc-400">{status.lastCommit.subject}</span>
                     {status.lastCommit.author && <span className="text-zinc-600"> · {status.lastCommit.author}</span>}
+                  </div>
+                )}
+                {status?.diagnostics && (
+                  <div className="mt-1.5 rounded border border-amber-900/50 bg-amber-950/30 p-1.5 text-[10px] text-amber-300">
+                    <div className="font-semibold">Git probe failures:</div>
+                    {status.diagnostics.branchErr && <div className="mt-0.5 break-words"><span className="text-amber-500">branch:</span> {status.diagnostics.branchErr}</div>}
+                    {status.diagnostics.headErr && <div className="mt-0.5 break-words"><span className="text-amber-500">HEAD:</span> {status.diagnostics.headErr}</div>}
+                    {status.diagnostics.remoteErr && <div className="mt-0.5 break-words"><span className="text-amber-500">remote:</span> {status.diagnostics.remoteErr}</div>}
+                    {status.diagnostics.statusErr && <div className="mt-0.5 break-words"><span className="text-amber-500">status:</span> {status.diagnostics.statusErr}</div>}
                   </div>
                 )}
               </div>
