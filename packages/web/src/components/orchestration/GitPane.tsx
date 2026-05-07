@@ -129,6 +129,17 @@ export function GitPane() {
         body: JSON.stringify(body),
       });
       setSelection(r.selection);
+      // Clear stale status from the previous selection; refetch fresh status
+      // for the new clone (may be null until the first sync/dispatch).
+      setStatus(null);
+      try {
+        const fresh = await api<{ selection: SelectedRepo | null; status: RepoStatus | null }>(
+          `/api/git/sessions/${encodeURIComponent(sessionId)}/repo`,
+        );
+        setStatus(fresh.status ?? null);
+      } catch {
+        // Best-effort refresh; absence of status just means no clone yet.
+      }
       setInfo('Selected for this session. Next code-mode message will use this repo.');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to select repo');
