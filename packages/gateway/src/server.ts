@@ -52,6 +52,7 @@ import {
 } from './routes/schedules.js';
 import { rateLimitRest, startRateLimitCleanup, stopRateLimitCleanup } from './rate-limit.js';
 import { setSecurityHeaders } from './security-headers.js';
+import { bindWithRetry, resolveBindRetryBudgetMs, formatAllBindsFailedMessage } from './bind-retry.js';
 import { handleStartCodingSession, handleGetCodingSession, handleGetCodingSteps, handleCancelCodingSession } from './routes/coding.js';
 import { setCodingEventStreamer, emitCodingSessionStarted, emitCodingWorkflowStarted, emitCodingStepStarted, emitCodingStepProgress, emitCodingStepCompleted, emitCodingStepFailed, emitCodingReviewStarted, emitCodingReviewCompleted, emitCodingCommitCompleted, emitCodingSessionCompleted, bindCodingSessionToGatewaySession, unbindCodingSession } from './coding-events.js';
 import { FeedService } from './feed/index.js';
@@ -1132,10 +1133,6 @@ async function initMainAgent(): Promise<void> {
   }
 }
 
-initMainAgent().catch((err) => {
-  log.error('Unhandled error during MainAgent init', { error: err instanceof Error ? err.message : String(err) });
-});
-
 // ---------------------------------------------------------------------------
 // Periodic Hindsight Health Check
 // ---------------------------------------------------------------------------
@@ -1155,30 +1152,54 @@ async function checkHindsightHealth(): Promise<boolean> {
   }
 }
 
-/** Poll hindsight health every 15 seconds and broadcast changes. */
-const hindsightHealthTimer = setInterval(async () => {
-  const connected = await checkHindsightHealth();
-  // Only broadcast on state change (or first check)
-  if (connected !== lastHindsightConnected) {
+/**
+ * Hindsight health poll timer. Created when heavy startup runs (after the
+ * first bind succeeds) so failed-bind retry cycles do not churn it.
+ */
+let hindsightHealthTimer: ReturnType<typeof setInterval> | null = null;
+
+/**
+ * Heavy-subsystem bootstrap. Runs exactly once, after the first HTTP
+ * listener reports `listening`. Until that happens we keep the gateway in
+ * a quiescent state so EADDRINUSE retry cycles don't repeatedly construct
+ * a MainAgent / scheduler / Hindsight client / skill registry that we'd
+ * just throw away on the next restart.
+ */
+let heavyStartupRan = false;
+function startHeavySubsystems(): void {
+  if (heavyStartupRan) return;
+  heavyStartupRan = true;
+
+  logBootBanner();
+
+  initMainAgent().catch((err) => {
+    log.error('Unhandled error during MainAgent init', { error: err instanceof Error ? err.message : String(err) });
+  });
+
+  // Poll hindsight health every 15 seconds and broadcast changes.
+  hindsightHealthTimer = setInterval(async () => {
+    const connected = await checkHindsightHealth();
+    if (connected !== lastHindsightConnected) {
+      lastHindsightConnected = connected;
+      wsHandler.broadcast({
+        id: randomBytes(8).toString('hex'),
+        type: 'hindsight_status',
+        hindsightStatus: { connected, busy: false },
+      });
+    }
+  }, 15_000);
+
+  // Run an initial check immediately.
+  (async () => {
+    const connected = await checkHindsightHealth();
     lastHindsightConnected = connected;
     wsHandler.broadcast({
       id: randomBytes(8).toString('hex'),
       type: 'hindsight_status',
       hindsightStatus: { connected, busy: false },
     });
-  }
-}, 15_000);
-
-// Run an initial check immediately
-(async () => {
-  const connected = await checkHindsightHealth();
-  lastHindsightConnected = connected;
-  wsHandler.broadcast({
-    id: randomBytes(8).toString('hex'),
-    type: 'hindsight_status',
-    hindsightStatus: { connected, busy: false },
-  });
-})();
+  })();
+}
 
 // ---------------------------------------------------------------------------
 // CORS Helpers — patterns pre-compiled at startup to prevent ReDoS
@@ -1803,89 +1824,152 @@ const restartDelay = parseInt(process.env.ORIONOMEGA_RESTART_DELAY ?? '0', 10);
 delete process.env.ORIONOMEGA_RESTART_DELAY;
 
 let activeListeners = 0;
-let failedListeners = 0;
 
 /**
- * C2: Module-scoped registry of pending bind-retry timers so the shutdown
- * sequence can clear them. Without this, an EADDRINUSE retry could fire
- * mid-shutdown and call `srv.listen(...)` *after* the server was supposed
- * to be torn down — that is what produced the "all bind addresses failed"
- * fatal crashes (78 of them in the audit) immediately after a SIGTERM.
+ * One AbortController per bind address. Aborted on shutdown so any in-flight
+ * bind-retry backoff wakes immediately and the loop exits without trying to
+ * re-listen on a port we're about to release. Replaces the legacy
+ * `pendingBindRetryTimers` registry.
  */
-const pendingBindRetryTimers = new Set<ReturnType<typeof setTimeout>>();
+const bindAbortControllers: AbortController[] = [];
 
 /** Set to true on shutdown so retry handlers stop scheduling new attempts. */
 let shuttingDown = false;
 
-function setupServerForAddress(address: string): import('node:http').Server {
+/**
+ * Total per-address retry budget. Long enough (default 60s, override via
+ * `ORIONOMEGA_BIND_RETRY_MS`) to outlast a graceful shutdown of a previous
+ * gateway without crashing the new one.
+ */
+const BIND_RETRY_BUDGET_MS = resolveBindRetryBudgetMs();
+
+/**
+ * Heavy-subsystem bootstrap (MainAgent, scheduler, hindsight health timer,
+ * skill discovery, banner logs) is gated behind the first successful bind so
+ * EADDRINUSE retry cycles don't churn it. PID file + rate-limit cleanup are
+ * also deferred — they shouldn't run if we're going to exit non-zero.
+ */
+function onFirstListenSuccess(address: string): void {
+  log.info(`Listening on ${address}:${config.port}`);
+  if (activeListeners === 0) {
+    // Defer one tick so any synchronous post-bind setup completes first.
+    queueMicrotask(() => {
+      try {
+        startRateLimitCleanup();
+      } catch (err) {
+        log.warn('Failed to start rate-limit cleanup', { error: err instanceof Error ? err.message : String(err) });
+      }
+      // Write PID file (was previously inside startListening).
+      try {
+        const pidDir = joinPath(homedir(), '.orionomega');
+        mkdirSync(pidDir, { recursive: true });
+        writeFileSync(joinPath(pidDir, 'gateway.pid'), String(process.pid), 'utf-8');
+      } catch (err) {
+        log.warn('Failed to write gateway PID file', { error: err instanceof Error ? err.message : String(err) });
+      }
+      startHeavySubsystems();
+    });
+  }
+  activeListeners++;
+}
+
+interface AddressBindOutcome {
+  address: string;
+  ok: boolean;
+  reason?: 'shutdown' | 'giveup' | 'fatal';
+  attempts: number;
+  elapsedMs: number;
+  lastErrCode?: string;
+  lastErrMessage?: string;
+}
+
+/**
+ * Bind a single address with bounded EADDRINUSE retry + exponential
+ * backoff. Returns the structured outcome so the caller can build a
+ * consolidated error line that includes attempts / elapsed / errno per
+ * failed address.
+ */
+async function bindAddress(address: string): Promise<AddressBindOutcome> {
   const srv = createServer(handleRequest);
   servers.push(srv);
+  wsHandler.attach(srv);
 
-  let listenAttempts = 0;
-  let retryTimer: ReturnType<typeof setTimeout> | null = null;
-  const MAX_LISTEN_ATTEMPTS = 10;
+  const abort = new AbortController();
+  bindAbortControllers.push(abort);
 
-  srv.on('error', (err: NodeJS.ErrnoException) => {
-    if (shuttingDown) return; // C2: drop late errors during shutdown
-    if (err.code === 'EADDRINUSE') {
-      listenAttempts++;
-      if (listenAttempts >= MAX_LISTEN_ATTEMPTS) {
-        log.error(`Failed to bind to ${address}:${config.port} after ${MAX_LISTEN_ATTEMPTS} attempts — skipping`);
-        failedListeners++;
-        checkAllBindsFailed();
-        return;
-      }
-      log.warn(`Port ${config.port} on ${address} in use — retrying in 2 s… (attempt ${listenAttempts}/${MAX_LISTEN_ATTEMPTS})`);
-      if (!retryTimer) {
-        retryTimer = setTimeout(() => {
-          pendingBindRetryTimers.delete(retryTimer!);
-          retryTimer = null;
-          if (shuttingDown) return; // race: shutdown started while we slept
-          srv.listen(config.port, address);
-        }, 2000);
-        pendingBindRetryTimers.add(retryTimer);
-      }
-    } else {
-      log.error(`Server error on ${address}`, { error: err.message, code: err.code });
-      failedListeners++;
-      checkAllBindsFailed();
-    }
+  const result = await bindWithRetry(srv, {
+    port: config.port,
+    address,
+    totalBudgetMs: BIND_RETRY_BUDGET_MS,
+    signal: abort.signal,
+    onRetry: ({ attempt, delayMs, elapsedMs }) => {
+      log.warn(
+        `Port ${config.port} on ${address} in use — retrying in ${Math.round(delayMs / 100) / 10}s ` +
+          `(attempt ${attempt}, elapsed ${Math.round(elapsedMs / 1000)}s, budget ${Math.round(BIND_RETRY_BUDGET_MS / 1000)}s)`,
+      );
+    },
   });
 
-  wsHandler.attach(srv);
-  return srv;
-}
-
-function checkAllBindsFailed(): void {
-  if (activeListeners === 0 && failedListeners >= bindAddresses.length) {
-    log.error(`All bind addresses failed — exiting`);
-    process.exit(1);
+  if (result.ok) {
+    onFirstListenSuccess(address);
+    return { address, ok: true, attempts: result.attempts, elapsedMs: result.elapsedMs };
   }
+  if (result.reason === 'shutdown') {
+    log.info(`Bind aborted on ${address}:${config.port} due to shutdown`);
+  }
+  return {
+    address,
+    ok: false,
+    reason: result.reason,
+    attempts: result.attempts,
+    elapsedMs: result.elapsedMs,
+    lastErrCode: result.lastErr?.code,
+    lastErrMessage: result.lastErr?.message,
+  };
 }
 
-for (const address of bindAddresses) {
-  setupServerForAddress(address);
-}
-
-const server = servers[0];
-
-function startListening(): void {
+const startListening = async (): Promise<void> => {
   log.info(`OrionOmega Gateway v0.1.0`);
   log.info(`Bind addresses: ${bindAddresses.join(', ')}`);
   log.info(`Auth mode: ${config.auth.mode}`);
   log.info(`CORS origins: ${config.cors.origins.join(', ')}`);
   log.info(`Hindsight: ${hindsightUrl}`);
+  log.info(`Bind retry budget: ${Math.round(BIND_RETRY_BUDGET_MS / 1000)}s (override via ORIONOMEGA_BIND_RETRY_MS)`);
 
+  // Run all binds in parallel so a slow address doesn't delay a fast one.
+  const outcomes = await Promise.all(bindAddresses.map(bindAddress));
+
+  // If we were aborted mid-bind by SIGTERM, the shutdown handler is already
+  // running and will exit the process; do nothing here.
+  if (shuttingDown) return;
+
+  if (outcomes.every((o) => !o.ok)) {
+    // Consolidated fatal error: single line, then exit. No interleaved
+    // "skipping" + "All bind addresses failed" pair anymore.
+    log.error(formatAllBindsFailedMessage({ port: config.port, budgetMs: BIND_RETRY_BUDGET_MS, outcomes }));
+    process.exit(1);
+  }
+  // At least one bind succeeded → onFirstListenSuccess already kicked off
+  // heavy startup. Log any addresses that still failed (mixed outcome).
+  outcomes.forEach((o) => {
+    if (!o.ok) {
+      log.warn(
+        `Address ${o.address}:${config.port} did not bind (${o.lastErrCode ?? 'UNKNOWN'} after ` +
+          `${o.attempts} attempt(s), ${Math.round(o.elapsedMs / 100) / 10}s) — continuing on remaining addresses`,
+      );
+    }
+  });
+};
+
+/**
+ * Boot banner + provenance / floors logging. Deferred until first listen so
+ * EADDRINUSE retry cycles don't double-log the banner across restarts and so
+ * we never log it for a gateway that's about to exit non-zero.
+ */
+function logBootBanner(): void {
   // ── Build provenance + orchestration floors ────────────────────────────
   // These two log lines exist to make stale-build incidents trivially
-  // diagnosable from the gateway log alone. If a user reports "Worker timed
-  // out after 120s" we want them to be able to grep this log and see
-  //   (a) the commit dist/ was actually compiled from, and
-  //   (b) the AGENT/CODING_AGENT timeout floors the runtime is enforcing,
-  // so support can immediately tell whether the fix from task #103 is live
-  // or whether the user is still on a stale build.
-  // Anchor `.git` discovery on this module's directory rather than
-  // process.cwd(), which is unreliable under service supervisors.
+  // diagnosable from the gateway log alone.
   const serverModuleDir = dirname(fileURLToPath(import.meta.url));
   let gatewayStale: StaleBuildStatus | null = null;
   let coreStale: StaleBuildStatus | null = null;
@@ -1896,11 +1980,6 @@ function startListening(): void {
     log.warn('Failed to compute stale-build status', { error: err instanceof Error ? err.message : String(err) });
   }
   const sourceShortCommit = gatewayStale?.sourceShortCommit ?? coreStale?.sourceShortCommit ?? null;
-  // Floors mirror the runtime clamp in executor.ts (Math.max(configured,
-  // floor)). We log post-clamp values so the line on disk matches what the
-  // runtime will actually enforce — otherwise an operator who sees
-  // workerTimeout=300 in the log might think a Worker died after 300s when
-  // in reality the floor pushed it to 600s.
   const AGENT_FLOOR = 600;
   const CODING_AGENT_FLOOR = 1800;
   const TOOL_FLOOR = 60;
@@ -1913,8 +1992,6 @@ function startListening(): void {
   } catch { /* fall through with defaults */ }
   const effWorkerTimeout = Math.max(configuredWorker, AGENT_FLOOR);
   const effCodingAgentTimeout = Math.max(configuredCodingAgent, CODING_AGENT_FLOOR);
-  // Single structured boot line carrying everything support runbooks need to
-  // diagnose stale-build / timeout incidents from logs alone.
   log.info('Boot provenance & orchestration', {
     build: {
       gateway: `${GATEWAY_BUILD_INFO.shortCommit}${GATEWAY_BUILD_INFO.dirty ? '-dirty' : ''}`,
@@ -1938,38 +2015,21 @@ function startListening(): void {
     if (coreStale?.isStale) log.warn(`STALE BUILD DETECTED (core) — ${coreStale.reason}`);
     log.warn('Run `orionomega update --clean` to wipe dist/ and rebuild from the current source.');
   }
-
-  startRateLimitCleanup();
-
-  // Write our PID to ~/.orionomega/gateway.pid so `orionomega gateway
-  // restart` (which reads this file to find & SIGTERM the running
-  // gateway) works regardless of how this process was launched —
-  // including the documented `pnpm --filter @orionomega/gateway start`
-  // path that doesn't go through the CLI's `startDev`. Without this,
-  // the UI Restart button would spawn a second gateway that fails to
-  // bind because the first never gets killed.
-  try {
-    const pidDir = joinPath(homedir(), '.orionomega');
-    mkdirSync(pidDir, { recursive: true });
-    writeFileSync(joinPath(pidDir, 'gateway.pid'), String(process.pid), 'utf-8');
-  } catch (err) {
-    log.warn('Failed to write gateway PID file', { error: err instanceof Error ? err.message : String(err) });
-  }
-
-  for (let i = 0; i < bindAddresses.length; i++) {
-    const address = bindAddresses[i];
-    servers[i].listen(config.port, address, () => {
-      activeListeners++;
-      log.info(`Listening on ${address}:${config.port}`);
-    });
-  }
 }
 
 if (restartDelay > 0) {
   log.info(`Restart delay: waiting ${restartDelay}ms for old process to release port...`);
-  setTimeout(startListening, restartDelay);
+  setTimeout(() => {
+    startListening().catch((err) => {
+      log.error('Listen orchestration failed', { error: err instanceof Error ? err.message : String(err) });
+      process.exit(1);
+    });
+  }, restartDelay);
 } else {
-  startListening();
+  startListening().catch((err) => {
+    log.error('Listen orchestration failed', { error: err instanceof Error ? err.message : String(err) });
+    process.exit(1);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -2021,11 +2081,12 @@ async function shutdown(signal: string): Promise<void> {
     } catch { /* best-effort */ }
 
     // C2: Stop accepting new work IMMEDIATELY.
-    // Clear any pending bind-retry timers so they cannot fire mid-shutdown
-    // and try to re-listen on the port we're about to release.
-    for (const t of pendingBindRetryTimers) clearTimeout(t);
-    pendingBindRetryTimers.clear();
-    clearInterval(hindsightHealthTimer);
+    // Abort any in-flight bind-retry backoffs so they cannot fire
+    // mid-shutdown and try to re-listen on the port we're about to release.
+    for (const ac of bindAbortControllers) {
+      try { ac.abort(); } catch { /* best-effort */ }
+    }
+    if (hindsightHealthTimer) clearInterval(hindsightHealthTimer);
     stopRateLimitCleanup();
     scheduler?.stop();
     eventStreamer.destroy();
@@ -2127,4 +2188,4 @@ async function shutdown(signal: string): Promise<void> {
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
 
-export { server, servers, sessionManager, stateStore, activityService, commandHandler, eventStreamer, wsHandler };
+export { servers, sessionManager, stateStore, activityService, commandHandler, eventStreamer, wsHandler };
