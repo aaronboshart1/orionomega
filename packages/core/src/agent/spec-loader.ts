@@ -73,8 +73,12 @@ export function extractSpecReferences(task: string): string[] {
   const out: string[] = [];
   const seen = new Set<string>();
   // (?<![\w/]) avoids matching inside an unrelated longer token; the
-  // tail (?![\w]) keeps us from grabbing a longer extension.
-  const pat = /(?<![\w])([\w./-]+\.(?:md|txt|spec))(?![\w])/gi;
+  // tail (?![\w]) keeps us from grabbing a longer extension. The
+  // optional leading `/` lets us capture absolute POSIX paths like
+  // `/home/kali/foo.md` — without it `resolvePath(root, ref)` would
+  // treat the captured `home/kali/foo.md` as relative and double-prefix
+  // the workspace root, silently dropping the spec.
+  const pat = /(?<![\w/])(\/?[\w./-]+\.(?:md|txt|spec))(?![\w])/gi;
   for (const m of task.matchAll(pat)) {
     const ref = m[1];
     if (/^https?:/i.test(ref)) continue;
