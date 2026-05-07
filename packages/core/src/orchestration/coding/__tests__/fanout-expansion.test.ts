@@ -26,6 +26,7 @@ import { describe, it, expect } from 'vitest';
 import {
   expandFanOut,
   analyzeFanOutComplexity,
+  subdivideHighComplexityChunks,
   chunkNodeId,
   FANOUT_PLACEHOLDER_ID,
 } from '../fanout-expansion.js';
@@ -205,5 +206,112 @@ describe('analyzeFanOutComplexity (Task #174 safety net)', () => {
     expect(r.highComplexityIds).toEqual(['big']);
     expect(r.requiresReplan).toBe(false);
     expect(r.replanInstruction).toBeNull();
+  });
+});
+
+describe('subdivideHighComplexityChunks (Task #178 deterministic safety net)', () => {
+  it('splits a single high-complexity chunk into 2–4 medium siblings carrying the same dependsOn', () => {
+    const decision: FanOutDecision = {
+      chunks: [
+        {
+          id: 'big', label: 'BIG',
+          fileCluster: ['a.ts', 'b.ts', 'c.ts'],
+          sharedFiles: ['shared.ts'],
+          task: 'do everything',
+          estimatedComplexity: 'high',
+          dependsOn: ['preflight'],
+        },
+      ],
+      maxParallelism: 1,
+    };
+    const { decision: out, report } = subdivideHighComplexityChunks(decision);
+    expect(out.chunks.find((c) => c.id === 'big')).toBeUndefined();
+    expect(out.chunks.length).toBeGreaterThanOrEqual(2);
+    expect(out.chunks.length).toBeLessThanOrEqual(4);
+    expect(report.splits).toHaveLength(1);
+    expect(report.splits[0]!.originalId).toBe('big');
+    expect(report.splits[0]!.subIds).toEqual(out.chunks.map((c) => c.id));
+
+    for (const c of out.chunks) {
+      expect(c.estimatedComplexity).toBe('medium');
+      expect(c.dependsOn).toEqual(['preflight']);
+      expect(c.sharedFiles).toEqual(['shared.ts']);
+      expect(c.task).toMatch(/Sub-task \d+\/\d+ of phase "big"/);
+    }
+    const allOwned = out.chunks.flatMap((c) => c.fileCluster);
+    expect(new Set(allOwned)).toEqual(new Set(['a.ts', 'b.ts', 'c.ts']));
+    expect(out.maxParallelism).toBeGreaterThanOrEqual(out.chunks.length);
+  });
+
+  it('redirects sibling chunks that depended on the split chunk to fan-in to all sub-chunks', () => {
+    const decision: FanOutDecision = {
+      chunks: [
+        { id: 'big', label: 'BIG', fileCluster: ['a.ts', 'b.ts'], sharedFiles: [], task: 'big', estimatedComplexity: 'high' },
+        { id: 'after', label: 'After', fileCluster: ['c.ts'], sharedFiles: [], task: 'after', estimatedComplexity: 'low', dependsOn: ['big'] },
+      ],
+      maxParallelism: 2,
+    };
+    const { decision: out } = subdivideHighComplexityChunks(decision);
+    const after = out.chunks.find((c) => c.id === 'after')!;
+    const subs = out.chunks.filter((c) => c.id.startsWith('big-part')).map((c) => c.id);
+    expect(subs.length).toBeGreaterThanOrEqual(2);
+    expect(after.dependsOn).not.toContain('big');
+    for (const s of subs) expect(after.dependsOn).toContain(s);
+  });
+
+  it('is a no-op when no chunk is high', () => {
+    const decision: FanOutDecision = {
+      chunks: [
+        { id: 'a', label: 'A', fileCluster: ['a.ts'], sharedFiles: [], task: '...', estimatedComplexity: 'low' },
+        { id: 'b', label: 'B', fileCluster: ['b.ts'], sharedFiles: [], task: '...', estimatedComplexity: 'medium' },
+      ],
+      maxParallelism: 2,
+    };
+    const { decision: out, report } = subdivideHighComplexityChunks(decision);
+    expect(out).toBe(decision);
+    expect(report.splits).toEqual([]);
+  });
+
+  it('is a no-op when alreadyReplanned (cap-at-one-pass invariant)', () => {
+    const decision: FanOutDecision = {
+      chunks: [
+        { id: 'big', label: 'BIG', fileCluster: ['a.ts'], sharedFiles: [], task: '...', estimatedComplexity: 'high' },
+      ],
+      maxParallelism: 1,
+    };
+    const { decision: out, report } = subdivideHighComplexityChunks(decision, { alreadyReplanned: true });
+    expect(out).toBe(decision);
+    expect(report.splits).toEqual([]);
+  });
+
+  it('produces minSubchunks siblings when fileCluster is empty', () => {
+    const decision: FanOutDecision = {
+      chunks: [
+        { id: 'big', label: 'BIG', fileCluster: [], sharedFiles: [], task: 'do big', estimatedComplexity: 'high' },
+      ],
+      maxParallelism: 1,
+    };
+    const { decision: out } = subdivideHighComplexityChunks(decision);
+    expect(out.chunks).toHaveLength(2);
+    for (const c of out.chunks) expect(c.fileCluster).toEqual([]);
+  });
+
+  it('caps subdivision at maxSubchunks=4 even with many files', () => {
+    const decision: FanOutDecision = {
+      chunks: [
+        {
+          id: 'big', label: 'BIG',
+          fileCluster: ['a.ts', 'b.ts', 'c.ts', 'd.ts', 'e.ts', 'f.ts', 'g.ts'],
+          sharedFiles: [],
+          task: '...',
+          estimatedComplexity: 'high',
+        },
+      ],
+      maxParallelism: 1,
+    };
+    const { decision: out } = subdivideHighComplexityChunks(decision);
+    expect(out.chunks).toHaveLength(4);
+    const allOwned = out.chunks.flatMap((c) => c.fileCluster);
+    expect(allOwned).toHaveLength(7);
   });
 });

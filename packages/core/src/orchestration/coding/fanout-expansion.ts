@@ -207,6 +207,169 @@ export interface FanOutComplexityReport {
   replanInstruction: string | null;
 }
 
+// ── Deterministic in-code subdivision (Task #178) ────────────────────────────
+
+/** Result of {@link subdivideHighComplexityChunks}. */
+export interface SubdivisionReport {
+  /**
+   * Per original-chunk-id → list of sub-chunk ids that replaced it.
+   * Entries are present only for chunks that were actually subdivided.
+   * Empty when no chunks were oversized (or when subdivision was capped).
+   */
+  splits: Array<{ originalId: string; subIds: string[] }>;
+}
+
+/** Inputs to {@link subdivideHighComplexityChunks}. */
+export interface SubdivideOptions {
+  /**
+   * Cap the safety net at one pass: when true, the function is a no-op
+   * (returns the input decision and an empty report). Mirrors the same
+   * `alreadyReplanned` flag used by {@link analyzeFanOutComplexity} so
+   * callers can use the same gating signal.
+   */
+  alreadyReplanned?: boolean;
+  /** Minimum number of siblings produced per high chunk. Default: 2. */
+  minSubchunks?: number;
+  /** Maximum number of siblings produced per high chunk. Default: 4. */
+  maxSubchunks?: number;
+}
+
+/**
+ * Task #178 — deterministic subdivision of `estimatedComplexity: 'high'`
+ * chunks before dispatch.
+ *
+ * The Task #174 safety net asks the planner LLM to subdivide oversized
+ * phases via a re-plan turn. That contract is soft — if the model
+ * ignores it, the run still ends up with a giant implementer node. This
+ * function enforces subdivision in code: every `high`-tagged chunk is
+ * split into N (`min..max`, default 2..4) sibling chunks that:
+ *
+ *   - Inherit the original chunk's `dependsOn` (so phase ordering is
+ *     preserved — siblings run in parallel after the same predecessors).
+ *   - Partition the original `fileCluster` as evenly as possible. When
+ *     the cluster is empty, every sibling shares an empty `owned` set
+ *     (the implementer figures it out from the task text); when the
+ *     cluster has fewer files than `minSubchunks`, N falls to the file
+ *     count (still ≥ `minSubchunks=2`, hard floor).
+ *   - Carry the original `sharedFiles` list verbatim — sub-tasks of the
+ *     same phase still need to read the shared files.
+ *   - Get a derived `task` description that names the parent and the
+ *     sub-task's owned files so the implementer prompt is unambiguous.
+ *   - Are tagged `estimatedComplexity: 'medium'` so the safety net does
+ *     not loop on the next dispatch (defense-in-depth alongside the
+ *     `alreadyReplanned` cap).
+ *
+ * Any other chunk whose `dependsOn` referenced the split chunk's id is
+ * rewritten to fan-in to every sibling, mirroring the fan-in semantics
+ * `expandFanOut` applies to placeholder successor nodes.
+ *
+ * The function is **pure** — it returns a fresh `FanOutDecision` and
+ * never mutates the input.
+ */
+export function subdivideHighComplexityChunks(
+  decision: FanOutDecision,
+  options: SubdivideOptions = {},
+): { decision: FanOutDecision; report: SubdivisionReport } {
+  if (options.alreadyReplanned) {
+    return { decision, report: { splits: [] } };
+  }
+  const minSubchunks = Math.max(2, options.minSubchunks ?? 2);
+  const maxSubchunks = Math.max(minSubchunks, options.maxSubchunks ?? 4);
+
+  const highChunks = decision.chunks.filter((c) => c.estimatedComplexity === 'high');
+  if (highChunks.length === 0) {
+    return { decision, report: { splits: [] } };
+  }
+
+  const splits: SubdivisionReport['splits'] = [];
+  const replacementMap = new Map<string, string[]>();
+  const newChunks: FanOutDecision['chunks'] = [];
+
+  for (const chunk of decision.chunks) {
+    if (chunk.estimatedComplexity !== 'high') {
+      newChunks.push(chunk);
+      continue;
+    }
+
+    // Decide N: clamp file count into [minSubchunks, maxSubchunks];
+    // an empty cluster still produces `minSubchunks` siblings so that a
+    // high-tagged chunk without explicit files (e.g. "scaffold the
+    // module") still gets parallelism.
+    const fileCount = chunk.fileCluster.length;
+    const n = fileCount === 0
+      ? minSubchunks
+      : Math.min(maxSubchunks, Math.max(minSubchunks, fileCount));
+
+    const partitions = partitionEvenly(chunk.fileCluster, n);
+    const subIds: string[] = [];
+
+    for (let i = 0; i < n; i++) {
+      const subId = `${chunk.id}-part${i + 1}`;
+      subIds.push(subId);
+      const owned = partitions[i] ?? [];
+      const fileBlurb = owned.length > 0
+        ? `Files owned by this sub-task: ${owned.join(', ')}.`
+        : 'No specific files pre-assigned to this sub-task — coordinate via the parent chunk\'s description.';
+      const subTask =
+        `Sub-task ${i + 1}/${n} of phase "${chunk.id}" (auto-subdivided ` +
+        `from a high-complexity chunk by the orchestrator).\n\n` +
+        `Parent task:\n${chunk.task}\n\n${fileBlurb}`;
+      newChunks.push({
+        id: subId,
+        label: `${chunk.label} (part ${i + 1}/${n})`,
+        fileCluster: owned,
+        sharedFiles: chunk.sharedFiles.slice(),
+        task: subTask,
+        estimatedComplexity: 'medium',
+        ...(chunk.dependsOn ? { dependsOn: chunk.dependsOn.slice() } : {}),
+      });
+    }
+
+    splits.push({ originalId: chunk.id, subIds });
+    replacementMap.set(chunk.id, subIds);
+  }
+
+  // Rewrite any remaining chunk's dependsOn references that pointed at
+  // a now-split chunk so they fan-in to every sibling.
+  const finalChunks: FanOutDecision['chunks'] = newChunks.map((c) => {
+    if (!c.dependsOn || c.dependsOn.length === 0) return c;
+    let changed = false;
+    const remapped: string[] = [];
+    for (const dep of c.dependsOn) {
+      const subs = replacementMap.get(dep);
+      if (subs) {
+        changed = true;
+        for (const s of subs) remapped.push(s);
+      } else {
+        remapped.push(dep);
+      }
+    }
+    if (!changed) return c;
+    return { ...c, dependsOn: Array.from(new Set(remapped)) };
+  });
+
+  log.info('subdivideHighComplexityChunks: split oversized chunks', {
+    originalCount: decision.chunks.length,
+    finalCount: finalChunks.length,
+    splits,
+  });
+
+  const subdividedDecision: FanOutDecision = {
+    chunks: finalChunks,
+    maxParallelism: Math.max(decision.maxParallelism, finalChunks.length),
+  };
+  return { decision: subdividedDecision, report: { splits } };
+}
+
+/** Split `items` into `n` near-equal-length partitions. Empty arrays are filled in. */
+function partitionEvenly<T>(items: T[], n: number): T[][] {
+  const out: T[][] = Array.from({ length: n }, () => []);
+  for (let i = 0; i < items.length; i++) {
+    out[i % n]!.push(items[i]!);
+  }
+  return out;
+}
+
 /**
  * Inspect a {@link FanOutDecision} for oversized chunks, log each
  * chunk's complexity at dispatch (single structured log line — easy to

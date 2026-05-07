@@ -23,7 +23,9 @@ import { loadCodingTemplate } from './templates/index.js';
 import {
   expandFanOut,
   analyzeFanOutComplexity,
+  subdivideHighComplexityChunks,
   type FanOutComplexityReport,
+  type SubdivisionReport,
 } from './fanout-expansion.js';
 import type { FanOutDecision } from './coding-types.js';
 import { createLogger } from '../../logging/logger.js';
@@ -283,18 +285,37 @@ export class CodingPlanner {
     output: CodingPlannerOutput,
     decision: FanOutDecision,
     options: { alreadyReplanned?: boolean } = {},
-  ): CodingPlannerOutput & { complexity: FanOutComplexityReport } {
-    const complexity = analyzeFanOutComplexity(decision, options);
+  ): CodingPlannerOutput & {
+    complexity: FanOutComplexityReport;
+    subdivision: SubdivisionReport;
+    effectiveDecision: FanOutDecision;
+  } {
+    // Task #178 — deterministic in-code subdivision of `high`-complexity
+    // chunks runs BEFORE the placeholder is expanded into worker nodes.
+    // The cap is the same `alreadyReplanned` flag the caller would use
+    // to short-circuit the LLM re-plan, so a single dispatch can never
+    // recurse into another subdivision pass.
+    const { decision: effectiveDecision, report: subdivision } =
+      subdivideHighComplexityChunks(decision, options);
+
+    // Complexity analysis runs against the POST-subdivision decision so
+    // the dispatch log line and `requiresReplan` flag reflect what the
+    // executor will actually see. (After deterministic subdivision the
+    // `high` chunks are gone, so `requiresReplan` is naturally false —
+    // exactly what we want: no LLM re-plan needed.)
+    const complexity = analyzeFanOutComplexity(effectiveDecision, options);
 
     if (!output.fanOutPending) {
-      return { ...output, complexity };
+      return { ...output, complexity, subdivision, effectiveDecision };
     }
 
-    const expanded = expandFanOut({ template: output.nodes, decision });
+    const expanded = expandFanOut({ template: output.nodes, decision: effectiveDecision });
     const modelAssignments = this.buildModelAssignments(expanded);
 
     log.info(
-      `CodingPlanner.materializeFanOut: chunks=${decision.chunks.length} ` +
+      `CodingPlanner.materializeFanOut: chunks(in)=${decision.chunks.length} ` +
+        `chunks(post-subdivide)=${effectiveDecision.chunks.length} ` +
+        `splits=${subdivision.splits.length} ` +
         `nodes(before)=${output.nodes.length} nodes(after)=${expanded.length} ` +
         `requiresReplan=${complexity.requiresReplan}`,
     );
@@ -305,17 +326,30 @@ export class CodingPlanner {
       modelAssignments,
       fanOutPending: false,
       complexity,
+      subdivision,
+      effectiveDecision,
     };
   }
 
   /**
    * Task #174 — Capped one-shot re-plan dispatch path.
    *
-   * Wraps {@link materializeFanOut} with the re-plan control flow the
-   * acceptance criteria require: when the architect's first
-   * {@link FanOutDecision} contains a `high`-complexity chunk, this
-   * helper re-invokes `requestArchitectDecision` exactly once with the
-   * generated `replanInstruction`, then re-materializes with
+   * Wraps {@link materializeFanOut} with the LLM re-plan control flow.
+   *
+   * Task #178 update: deterministic in-code subdivision now runs inside
+   * `materializeFanOut` BEFORE complexity analysis, which removes the
+   * `high` tag from oversized chunks proactively. As a result, the
+   * `requiresReplan` branch of this helper is dormant in normal flow —
+   * the architect callback is invoked exactly once and `replanned`
+   * comes back `false` for the common case. The replan branch only
+   * fires when the deterministic safety net itself was bypassed (e.g.
+   * a future caller passes `{ alreadyReplanned: true }` into
+   * `materializeFanOut` upstream); the wrapper is preserved for
+   * back-compat and as a defense-in-depth fallback.
+   *
+   * Behavior when the replan branch IS triggered: re-invokes
+   * `requestArchitectDecision` exactly once with the generated
+   * `replanInstruction`, then re-materializes with
    * `alreadyReplanned: true` so a second high tag is dispatched as-is
    * (no recursion). The returned object reports the final expanded
    * plan, both decisions, and whether a re-plan happened.

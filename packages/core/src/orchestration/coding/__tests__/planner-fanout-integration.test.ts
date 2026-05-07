@@ -163,7 +163,7 @@ describe('CodingPlanner.materializeFanOut (Task #174 production wire-up)', () =>
     expect(expanded.complexity.requiresReplan).toBe(false);
   });
 
-  it('runs the capped one-shot re-plan loop end-to-end via materializeFanOutWithReplan', async () => {
+  it('materializeFanOutWithReplan is now a no-op replan path because deterministic subdivision handles high chunks (Task #178)', async () => {
     const planner = new CodingPlanner({
       codingModeConfig: stubConfig(),
       fallbackModel: 'claude-sonnet-4',
@@ -173,36 +173,21 @@ describe('CodingPlanner.materializeFanOut (Task #174 production wire-up)', () =>
     const firstDecision: FanOutDecision = {
       chunks: [
         { id: 'a', label: 'A', fileCluster: [], sharedFiles: [], task: '...', estimatedComplexity: 'low' },
-        { id: 'big', label: 'BIG', fileCluster: [], sharedFiles: [], task: '...', estimatedComplexity: 'high' },
+        { id: 'big', label: 'BIG', fileCluster: ['x.ts', 'y.ts', 'z.ts'], sharedFiles: [], task: '...', estimatedComplexity: 'high' },
       ],
       maxParallelism: 2,
     };
-    const subdivided: FanOutDecision = {
-      chunks: [
-        { id: 'a', label: 'A', fileCluster: [], sharedFiles: [], task: '...', estimatedComplexity: 'low' },
-        { id: 'big-1', label: 'BIG part 1', fileCluster: [], sharedFiles: [], task: '...', estimatedComplexity: 'medium' },
-        { id: 'big-2', label: 'BIG part 2', fileCluster: [], sharedFiles: [], task: '...', estimatedComplexity: 'medium' },
-      ],
-      maxParallelism: 3,
-    };
 
-    const callback = vi.fn(async (
-      _prev: FanOutDecision | null,
-      replanInstruction: string | null,
-    ): Promise<FanOutDecision> => {
-      if (replanInstruction == null) return firstDecision;
-      expect(replanInstruction).toMatch(/Subdivide/);
-      return subdivided;
-    });
-
+    const callback = vi.fn(async () => firstDecision);
     const result = await planner.materializeFanOutWithReplan(plan, callback);
-    expect(callback).toHaveBeenCalledTimes(2);
-    expect(result.replanned).toBe(true);
-    expect(result.finalDecision).toBe(subdivided);
-    expect(result.plan.complexity.requiresReplan).toBe(false); // capped — alreadyReplanned
-    expect(result.plan.nodes.find((n) => n.id === 'impl-chunk-big-1')).toBeDefined();
-    expect(result.plan.nodes.find((n) => n.id === 'impl-chunk-big-2')).toBeDefined();
+    // Task #178: deterministic subdivision now removes the `high` tag
+    // before complexity analysis, so the LLM re-plan path is never
+    // triggered and the callback is invoked exactly once.
+    expect(callback).toHaveBeenCalledTimes(1);
+    expect(result.replanned).toBe(false);
+    // The split sub-chunks landed in the dispatched DAG.
     expect(result.plan.nodes.find((n) => n.id === 'impl-chunk-big')).toBeUndefined();
+    expect(result.plan.nodes.filter((n) => n.id.startsWith('impl-chunk-big-part')).length).toBeGreaterThanOrEqual(2);
   });
 
   it('does not invoke the callback twice when no chunk is high', async () => {
@@ -217,7 +202,7 @@ describe('CodingPlanner.materializeFanOut (Task #174 production wire-up)', () =>
     expect(result.replanned).toBe(false);
   });
 
-  it('caps the re-plan at one pass even if the architect returns another high chunk', async () => {
+  it('deterministic subdivision is capped at one pass via alreadyReplanned (Task #178)', () => {
     const planner = new CodingPlanner({
       codingModeConfig: stubConfig(),
       fallbackModel: 'claude-sonnet-4',
@@ -225,20 +210,19 @@ describe('CodingPlanner.materializeFanOut (Task #174 production wire-up)', () =>
     const plan = planner.plan('Implement feature per spec.md', 'feature-implementation', stubProfile());
     const stillHigh: FanOutDecision = {
       chunks: [
-        { id: 'big', label: 'BIG', fileCluster: [], sharedFiles: [], task: '...', estimatedComplexity: 'high' },
+        { id: 'big', label: 'BIG', fileCluster: ['p.ts', 'q.ts'], sharedFiles: [], task: '...', estimatedComplexity: 'high' },
       ],
       maxParallelism: 1,
     };
-    const callback = vi.fn(async () => stillHigh);
-    const result = await planner.materializeFanOutWithReplan(plan, callback);
-    expect(callback).toHaveBeenCalledTimes(2); // initial + one re-plan
-    expect(result.replanned).toBe(true);
-    // Even though the second decision still has a high chunk, the
-    // helper does NOT loop a third time — alreadyReplanned blocks it.
-    expect(result.plan.complexity.requiresReplan).toBe(false);
+    // alreadyReplanned skips deterministic subdivision so the high
+    // chunk passes through verbatim (the cap-at-one-pass invariant).
+    const capped = planner.materializeFanOut(plan, stillHigh, { alreadyReplanned: true });
+    expect(capped.subdivision.splits).toEqual([]);
+    expect(capped.nodes.find((n) => n.id === 'impl-chunk-big')).toBeDefined();
+    expect(capped.complexity.requiresReplan).toBe(false);
   });
 
-  it('flags requiresReplan when the architect emits a high-complexity chunk', () => {
+  it('deterministically subdivides a single high-complexity chunk into 2–4 sibling DAG nodes (Task #178)', () => {
     const planner = new CodingPlanner({
       codingModeConfig: stubConfig(),
       fallbackModel: 'claude-sonnet-4',
@@ -246,19 +230,96 @@ describe('CodingPlanner.materializeFanOut (Task #174 production wire-up)', () =>
     const plan = planner.plan('Implement feature per spec.md', 'feature-implementation', stubProfile());
     const decision: FanOutDecision = {
       chunks: [
-        { id: 'a', label: 'A', fileCluster: [], sharedFiles: [], task: '...', estimatedComplexity: 'low' },
-        { id: 'big', label: 'BIG', fileCluster: [], sharedFiles: [], task: '...', estimatedComplexity: 'high' },
+        {
+          id: 'big',
+          label: 'BIG',
+          fileCluster: ['src/x.ts', 'src/y.ts', 'src/z.ts'],
+          sharedFiles: ['src/shared.ts'],
+          task: 'do everything',
+          estimatedComplexity: 'high',
+        },
+      ],
+      maxParallelism: 1,
+    };
+    const expanded = planner.materializeFanOut(plan, decision);
+
+    // Acceptance criterion: the original `big` chunk is gone, replaced
+    // by 2–4 smaller siblings in the dispatched DAG.
+    expect(expanded.nodes.find((n) => n.id === 'impl-chunk-big')).toBeUndefined();
+    const siblings = expanded.nodes.filter((n) => n.id.startsWith('impl-chunk-big-part'));
+    expect(siblings.length).toBeGreaterThanOrEqual(2);
+    expect(siblings.length).toBeLessThanOrEqual(4);
+
+    // Subdivision report records the split.
+    expect(expanded.subdivision.splits).toEqual([
+      { originalId: 'big', subIds: siblings.map((n) => n.id.replace(/^impl-chunk-/, '')) },
+    ]);
+
+    // Complexity analysis runs against the post-subdivision decision —
+    // no high chunks remain, so no re-plan is requested.
+    expect(expanded.complexity.highComplexityIds).toEqual([]);
+    expect(expanded.complexity.requiresReplan).toBe(false);
+
+    // Each sibling has its share of the file cluster and inherited the
+    // shared files. The union of owned files across siblings equals
+    // the original `fileCluster`.
+    const allOwned = siblings.flatMap((n) => n.codingConfig?.fileScope?.owned ?? []);
+    expect(new Set(allOwned)).toEqual(new Set(['src/x.ts', 'src/y.ts', 'src/z.ts']));
+    for (const sibling of siblings) {
+      expect(sibling.codingConfig?.fileScope?.readable).toEqual(['src/shared.ts']);
+      expect(sibling.codingAgent?.task).toMatch(/Sub-task \d+\/\d+ of phase "big"/);
+    }
+
+    // Successor stitcher node fans-in to all sibling chunks (and not
+    // to the original `big` id).
+    const stitcher = expanded.nodes.find((n) => n.id === 'integration-stitch')!;
+    expect(stitcher.dependsOn).not.toContain('impl-chunk-big');
+    for (const sibling of siblings) {
+      expect(stitcher.dependsOn).toContain(sibling.id);
+    }
+
+    // Each sibling has a per-node model assignment.
+    for (const sibling of siblings) {
+      expect(expanded.modelAssignments.get(sibling.id)).toBeDefined();
+    }
+  });
+
+  it('redirects downstream chunk dependsOn to fan-in across all siblings of a split chunk (Task #178)', () => {
+    const planner = new CodingPlanner({
+      codingModeConfig: stubConfig(),
+      fallbackModel: 'claude-sonnet-4',
+    });
+    const plan = planner.plan('Implement feature per spec.md', 'feature-implementation', stubProfile());
+    const decision: FanOutDecision = {
+      chunks: [
+        {
+          id: 'big', label: 'BIG',
+          fileCluster: ['src/a.ts', 'src/b.ts'],
+          sharedFiles: [],
+          task: 'do big',
+          estimatedComplexity: 'high',
+        },
+        {
+          id: 'follow-up', label: 'Follow-up',
+          fileCluster: ['src/c.ts'],
+          sharedFiles: [],
+          task: 'do follow-up',
+          estimatedComplexity: 'low',
+          dependsOn: ['big'],
+        },
       ],
       maxParallelism: 2,
     };
     const expanded = planner.materializeFanOut(plan, decision);
-    expect(expanded.complexity.requiresReplan).toBe(true);
-    expect(expanded.complexity.highComplexityIds).toEqual(['big']);
-    expect(expanded.complexity.replanInstruction).toMatch(/Subdivide/);
 
-    const replanned = planner.materializeFanOut(plan, decision, { alreadyReplanned: true });
-    expect(replanned.complexity.requiresReplan).toBe(false);
-    expect(replanned.complexity.replanInstruction).toBeNull();
+    const followUp = expanded.nodes.find((n) => n.id === 'impl-chunk-follow-up')!;
+    const siblings = expanded.nodes
+      .filter((n) => n.id.startsWith('impl-chunk-big-part'))
+      .map((n) => n.id);
+    for (const sibId of siblings) {
+      expect(followUp.dependsOn).toContain(sibId);
+    }
+    expect(followUp.dependsOn).not.toContain('impl-chunk-big');
   });
 
   it('refreshes per-chunk model assignments through buildModelAssignments', () => {
