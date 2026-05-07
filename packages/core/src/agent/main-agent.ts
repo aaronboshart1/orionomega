@@ -297,6 +297,20 @@ export class MainAgent {
   private foregroundRunId: string | null = null;
   private foregroundUserMessage: string = '';
   private isActiveConversation: boolean = false;
+  /**
+   * Per-session conversation output ID. The `conv-<id>` printed in the
+   * direct-mode "Output Directory (STRICT)" block and used to derive
+   * `runDir = <workspaceDir>/output/<convId>` is allocated once per
+   * session and reused across every turn of that session, so files
+   * written in turn N are still visible to turn N+1 under the same
+   * relative path. New sessions allocate a fresh ID; `/reset` (and
+   * `clearSessionState`) drop the entry so the next turn allocates a
+   * fresh dir. The per-turn `runId` is kept separate as a lifecycle
+   * handle (foreground/background bookkeeping, workflowSessions
+   * bindings, direct-${runId} workflow ids) so detach-to-background
+   * still works.
+   */
+  private readonly conversationOutputIds = new Map<string, string>();
   private readonly backgroundConversations = new Map<string, {
     id: string;
     abortController: AbortController;
@@ -416,6 +430,7 @@ export class MainAgent {
   clearSessionState(sessionId: string): void {
     this.contextBySession.delete(sessionId);
     this.totalsBySession.delete(sessionId);
+    this.conversationOutputIds.delete(sessionId);
     for (const [wfId, sid] of this.workflowSessions) {
       if (sid === sessionId) {
         this.workflowSessions.delete(wfId);
@@ -452,6 +467,30 @@ export class MainAgent {
       });
     }
     log.info('Cleared in-memory state for session', { sessionId });
+  }
+
+  /**
+   * Get (or lazily allocate) the per-session conversation output ID. The
+   * returned `conv-<id>` is stable across every turn of the same session
+   * until `clearSessionState(sid)` or `/reset` drops it. See the
+   * `conversationOutputIds` field doc for the lifecycle rationale.
+   */
+  private getOrAllocateConvOutputId(sessionId: string): string {
+    let id = this.conversationOutputIds.get(sessionId);
+    if (!id) {
+      id = `conv-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+      this.conversationOutputIds.set(sessionId, id);
+    }
+    return id;
+  }
+
+  /**
+   * Test/diagnostic accessor — returns the currently allocated
+   * conversation output ID for a session, or `undefined` if none has been
+   * allocated yet. Does NOT allocate.
+   */
+  peekConversationOutputId(sessionId: string): string | undefined {
+    return this.conversationOutputIds.get(sessionId);
   }
 
   /** Register a workflow → session mapping so async DAG callbacks route correctly. */
@@ -828,7 +867,15 @@ export class MainAgent {
       this.callbacks.onText(`[Background: previous conversation continues as ${detachedId.slice(0, 12)}]`, false, true);
     }
 
-    const runId = `conv-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    // `runId` is the per-turn lifecycle handle (foregroundRunId,
+    // backgroundConversations key, workflowSessions binding,
+    // direct-${runId} workflow id). The output directory / STRICT block
+    // shown to the model is keyed off the per-SESSION convOutputId
+    // instead, so files written in turn N stay reachable at the same
+    // relative path in turn N+1. See the `conversationOutputIds` field
+    // doc for the rationale.
+    const runId = `run-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    const convOutputId = this.getOrAllocateConvOutputId(sid);
     this.foregroundRunId = runId;
     this.foregroundUserMessage = userContent;
     this.activeAbort = new AbortController();
@@ -923,7 +970,7 @@ export class MainAgent {
 
       if (replyDagId && this.orchestration.isWorkflowActive(replyDagId)) {
         log.verbose('Route: reply scoped to active workflow', { dagId: replyDagId });
-        await this.respondConversationally(userContent, signal, runId);
+        await this.respondConversationally(userContent, signal, runId, convOutputId);
         return;
       }
 
@@ -932,7 +979,7 @@ export class MainAgent {
         log.verbose('Route: CHAT (direct mode — DAG bypassed)');
         this.emitStep('route', 'Routing request', 'done', 'Direct mode');
         this.callbacks.onThinking('Thinking…', true, false);
-        await this.respondConversationally(userContent, signal, runId);
+        await this.respondConversationally(userContent, signal, runId, convOutputId);
         return;
       }
 
@@ -963,7 +1010,7 @@ export class MainAgent {
         log.verbose('Route: CHAT fast-path');
         this.emitStep('route', 'Routing request', 'done', 'Chat fast-path');
         this.callbacks.onThinking('Thinking…', true, false);
-        await this.respondConversationally(userContent, signal, runId);
+        await this.respondConversationally(userContent, signal, runId, convOutputId);
         return;
       }
 
@@ -990,7 +1037,7 @@ export class MainAgent {
 
       switch (intent) {
         case 'CHAT':
-          await this.respondConversationally(userContent, signal, runId);
+          await this.respondConversationally(userContent, signal, runId, convOutputId);
           break;
         case 'ORCHESTRATE':
         default:
@@ -1215,7 +1262,10 @@ export class MainAgent {
         this.orchestration.stopAll();
         // Wipe only the calling session's hot window + totals — other sessions
         // remain untouched. Hindsight memories are NOT cleared (cross-session
-        // knowledge survives /reset).
+        // knowledge survives /reset). Also drop the per-session
+        // conversation output ID so the next turn allocates a fresh
+        // `conv-<id>` dir (matches /reset's "fresh conversation" intent).
+        this.conversationOutputIds.delete(sid);
         this.getContext(sid).clear();
         const totals = this.getTotals(sid);
         totals.inputTokens = 0;
@@ -1561,8 +1611,15 @@ export class MainAgent {
     this.callbacks.onThinkingStep?.(step);
   }
 
-  private async respondConversationally(userMessage: string, abortSignal?: AbortSignal, runId?: string): Promise<void> {
-    const effectiveRunId = runId || `conv-${Date.now().toString(36)}`;
+  private async respondConversationally(userMessage: string, abortSignal?: AbortSignal, runId?: string, convOutputId?: string): Promise<void> {
+    const effectiveRunId = runId || `run-${Date.now().toString(36)}`;
+    // Per-session conversation output ID. Falls back to a freshly
+    // allocated session entry (same `Date.now`/random scheme) when the
+    // caller didn't supply one, so direct callers (tests, scripted
+    // entrypoints) still get the stable-per-session contract for the
+    // session id implied by `currentSessionId`.
+    const effectiveConvOutputId = convOutputId
+      || this.getOrAllocateConvOutputId(this.currentSessionId);
     let wasDetached = this.backgroundConversations.has(effectiveRunId);
     if (!wasDetached) {
       this.isActiveConversation = true;
@@ -1710,13 +1767,16 @@ export class MainAgent {
       });
     }
 
-    // Per-turn run output directory. Mirrors the orchestration executor's
-    // `${workspaceDir}/output/${runId}` pattern so direct-mode artifacts land
-    // in the canonical run output folder. The runDir block in the system
-    // prompt and the relative-path resolution + install-dir guard in
-    // `executeMainTool` both pivot off this path.
+    // Per-CONVERSATION run output directory (stable across every turn of
+    // the same session). Mirrors the orchestration executor's
+    // `${workspaceDir}/output/<id>` layout, but uses the per-session
+    // `effectiveConvOutputId` rather than the per-turn `effectiveRunId`
+    // so files written in turn N are still visible to turn N+1 at the
+    // same relative path. The runDir block in the system prompt and the
+    // relative-path resolution + install-dir guard in `executeMainTool`
+    // both pivot off this path.
     const runDir = this.config.workspaceDir
-      ? `${this.config.workspaceDir}/output/${effectiveRunId}`
+      ? `${this.config.workspaceDir}/output/${effectiveConvOutputId}`
       : undefined;
     if (runDir) {
       try {
