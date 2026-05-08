@@ -1,21 +1,24 @@
 'use client';
 
-import dynamic from 'next/dynamic';
 import { useOrchestrationStore } from '@/stores/orchestration';
-import { ErrorBoundary } from '@/components/ErrorBoundary';
-import { ActivityFeed } from './ActivityFeed';
-import { MacroExpansionPanel } from './MacroExpansionPanel';
-import { PlanningIndicator } from './PlanningIndicator';
-import { WorkerDetail } from './WorkerDetail';
-import { WorkflowSummary } from './WorkflowSummary';
-import { MemoryFeed } from './MemoryFeed';
-import { LogsPane } from './LogsPane';
 import { useSchedulesStore } from '@/stores/schedules';
-import { X, Play, Pause, Square, FileText, Wifi, WifiOff, ScrollText, CalendarClock, GitBranch } from 'lucide-react';
+import {
+  X,
+  Play,
+  Pause,
+  Square,
+  FileText,
+  Wifi,
+  WifiOff,
+  ScrollText,
+  CalendarClock,
+  GitBranch,
+  ExternalLink,
+} from 'lucide-react';
 import { useGateway } from '@/lib/gateway';
 import { useFileViewerStore } from '@/stores/file-viewer';
 import { useConnectionStore } from '@/stores/connection';
-import { FileViewer } from './FileViewer';
+import { OrchPaneBody, type OrchTabKind } from './OrchPaneBody';
 import type { InlineDAGStatus } from '@/stores/orchestration';
 
 const statusColors: Record<string, string> = {
@@ -37,44 +40,49 @@ function getWorkflowStatus(
   return dagStatus || graphStatus || 'pending';
 }
 
-const DAGVisualization = dynamic(
-  () => import('./DAGVisualization').then((m) => m.DAGVisualization),
-  {
-    ssr: false,
-    loading: () => (
-      <div className="flex h-full items-center justify-center text-xs text-zinc-600">
-        Loading graph…
-      </div>
-    ),
-  },
-);
+/** URL the pop-out icon opens in a new browser tab. */
+function popoutUrl(kind: OrchTabKind, workflowId?: string): string {
+  if (kind === 'workflow' && workflowId) return `/orch/workflow/${encodeURIComponent(workflowId)}`;
+  return `/orch/${kind}`;
+}
 
-const SchedulesPane = dynamic(
-  () => import('./SchedulesPane').then((m) => m.SchedulesPane),
-  {
-    ssr: false,
-    loading: () => (
-      <div className="flex h-full items-center justify-center text-xs text-zinc-600">
-        Loading Tasker…
-      </div>
-    ),
-  },
-);
-
-const GitPane = dynamic(
-  () => import('./GitPane').then((m) => m.GitPane),
-  {
-    ssr: false,
-    loading: () => (
-      <div className="flex h-full items-center justify-center text-xs text-zinc-600">
-        Loading Git…
-      </div>
-    ),
-  },
-);
+/**
+ * Small "open in new tab" icon button rendered inside each tab header.
+ * Stops propagation so clicking it does NOT activate or close the tab.
+ */
+function PopoutButton({
+  kind,
+  workflowId,
+  label,
+}: {
+  kind: OrchTabKind;
+  workflowId?: string;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        if (typeof window !== 'undefined') {
+          window.open(popoutUrl(kind, workflowId), '_blank', 'noopener');
+        }
+      }}
+      onKeyDown={(e) => {
+        // Don't let Enter/Space bubble up and toggle the parent tab.
+        if (e.key === 'Enter' || e.key === ' ') e.stopPropagation();
+      }}
+      aria-label={`Open ${label} in new tab`}
+      title={`Open ${label} in new tab`}
+      className="ml-1 -mr-0.5 inline-flex shrink-0 items-center justify-center rounded p-0.5 text-zinc-500 opacity-70 transition hover:bg-zinc-700 hover:text-zinc-200 hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-500"
+    >
+      <ExternalLink size={10} />
+    </button>
+  );
+}
 
 export function OrchestrationPane() {
-  const selectedWorker = useOrchestrationStore((s) => s.selectedWorker);
   const activeOrchTab = useOrchestrationStore((s) => s.activeOrchTab);
   const setActiveOrchTab = useOrchestrationStore((s) => s.setActiveOrchTab);
   const memoryCount = useOrchestrationStore((s) => s.memoryEvents.length);
@@ -83,7 +91,6 @@ export function OrchestrationPane() {
   const activeWorkflowId = useOrchestrationStore((s) => s.activeWorkflowId);
   const setActiveWorkflowId = useOrchestrationStore((s) => s.setActiveWorkflowId);
   const removeWorkflow = useOrchestrationStore((s) => s.removeWorkflow);
-  const activitySectionCollapsed = useOrchestrationStore((s) => s.activitySectionCollapsed);
   const { sendWorkflowCommand } = useGateway();
   const fileCount = useFileViewerStore((s) => s.openFiles.length);
   const scheduleCount = useSchedulesStore((s) => s.schedules.length);
@@ -92,7 +99,12 @@ export function OrchestrationPane() {
   const hindsightConnected = useConnectionStore((s) => s.hindsightConnected);
 
   const workflowIds = Object.keys(workflows);
-  const activeIsDirect = !!(activeWorkflowId && inlineDAGs[activeWorkflowId]?.isDirect);
+
+  const activateTab = (tab: OrchTabKind) => setActiveOrchTab(tab);
+  const activateWorkflow = (wfId: string) => {
+    setActiveWorkflowId(wfId);
+    setActiveOrchTab('workflow');
+  };
 
   return (
     <div className="flex h-full flex-col bg-[var(--background)]">
@@ -115,29 +127,44 @@ export function OrchestrationPane() {
 
         <div className="h-4 w-px bg-zinc-800 mr-1" />
 
-        <button
+        <div
           role="tab"
+          tabIndex={0}
           aria-selected={activeOrchTab === 'memory'}
-          onClick={() => setActiveOrchTab('memory')}
-          className={`px-3 py-1.5 text-xs font-medium transition-colors relative rounded-md ${
+          onClick={() => activateTab('memory')}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              activateTab('memory');
+            }
+          }}
+          className={`flex cursor-pointer items-center gap-1 px-3 py-1.5 text-xs font-medium transition-colors rounded-md ${
             activeOrchTab === 'memory'
               ? 'bg-zinc-800 text-violet-400 ring-1 ring-zinc-600'
               : 'text-zinc-500 hover:bg-zinc-800/50 hover:text-zinc-300'
           }`}
         >
-          Memory
+          <span>Memory</span>
           {memoryCount > 0 && (
-            <span className="ml-1.5 text-xs bg-violet-500/20 text-violet-400 rounded-full px-1.5 py-0.5 font-mono">
+            <span className="text-xs bg-violet-500/20 text-violet-400 rounded-full px-1.5 py-0.5 font-mono">
               {memoryCount}
             </span>
           )}
-        </button>
+          <PopoutButton kind="memory" label="Memory" />
+        </div>
 
-        <button
+        <div
           role="tab"
+          tabIndex={0}
           aria-selected={activeOrchTab === 'schedules'}
-          onClick={() => setActiveOrchTab('schedules')}
-          className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium transition-colors rounded-md ${
+          onClick={() => activateTab('schedules')}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              activateTab('schedules');
+            }
+          }}
+          className={`flex cursor-pointer items-center gap-1.5 px-3 py-1.5 text-xs font-medium transition-colors rounded-md ${
             activeOrchTab === 'schedules'
               ? 'bg-zinc-800 text-emerald-400 ring-1 ring-zinc-600'
               : 'text-zinc-500 hover:bg-zinc-800/50 hover:text-zinc-300'
@@ -145,7 +172,7 @@ export function OrchestrationPane() {
           title="Tasker"
         >
           <CalendarClock size={12} />
-          Tasker
+          <span>Tasker</span>
           {scheduleCount > 0 && (
             <span className="text-xs bg-emerald-500/20 text-emerald-400 rounded-full px-1.5 py-0.5 font-mono">
               {scheduleCount}
@@ -154,13 +181,21 @@ export function OrchestrationPane() {
           {liveSchedules > 0 && (
             <span className="h-1.5 w-1.5 rounded-full bg-cyan-400 animate-pulse" title={`${liveSchedules} running now`} />
           )}
-        </button>
+          <PopoutButton kind="schedules" label="Tasker" />
+        </div>
 
-        <button
+        <div
           role="tab"
+          tabIndex={0}
           aria-selected={activeOrchTab === 'git'}
-          onClick={() => setActiveOrchTab('git')}
-          className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium transition-colors rounded-md ${
+          onClick={() => activateTab('git')}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              activateTab('git');
+            }
+          }}
+          className={`flex cursor-pointer items-center gap-1.5 px-3 py-1.5 text-xs font-medium transition-colors rounded-md ${
             activeOrchTab === 'git'
               ? 'bg-zinc-800 text-orange-400 ring-1 ring-zinc-600'
               : 'text-zinc-500 hover:bg-zinc-800/50 hover:text-zinc-300'
@@ -168,14 +203,22 @@ export function OrchestrationPane() {
           title="Git: select a repository for this session"
         >
           <GitBranch size={12} />
-          Git
-        </button>
+          <span>Git</span>
+          <PopoutButton kind="git" label="Git" />
+        </div>
 
-        <button
+        <div
           role="tab"
+          tabIndex={0}
           aria-selected={activeOrchTab === 'logs'}
-          onClick={() => setActiveOrchTab('logs')}
-          className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium transition-colors rounded-md ${
+          onClick={() => activateTab('logs')}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              activateTab('logs');
+            }
+          }}
+          className={`flex cursor-pointer items-center gap-1.5 px-3 py-1.5 text-xs font-medium transition-colors rounded-md ${
             activeOrchTab === 'logs'
               ? 'bg-zinc-800 text-amber-400 ring-1 ring-zinc-600'
               : 'text-zinc-500 hover:bg-zinc-800/50 hover:text-zinc-300'
@@ -183,26 +226,35 @@ export function OrchestrationPane() {
           title="System / gateway logs"
         >
           <ScrollText size={12} />
-          Logs
-        </button>
+          <span>Logs</span>
+          <PopoutButton kind="logs" label="Logs" />
+        </div>
 
         {fileCount > 0 && (
-          <button
+          <div
             role="tab"
+            tabIndex={0}
             aria-selected={activeOrchTab === 'files'}
-            onClick={() => setActiveOrchTab('files')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium transition-colors rounded-md ${
+            onClick={() => activateTab('files')}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                activateTab('files');
+              }
+            }}
+            className={`flex cursor-pointer items-center gap-1.5 px-3 py-1.5 text-xs font-medium transition-colors rounded-md ${
               activeOrchTab === 'files'
                 ? 'bg-zinc-800 text-blue-400 ring-1 ring-zinc-600'
                 : 'text-zinc-500 hover:bg-zinc-800/50 hover:text-zinc-300'
             }`}
           >
             <FileText size={12} />
-            Files
+            <span>Files</span>
             <span className="text-xs bg-blue-500/20 text-blue-400 rounded-full px-1.5 py-0.5 font-mono">
               {fileCount}
             </span>
-          </button>
+            <PopoutButton kind="files" label="Files" />
+          </div>
         )}
 
         {workflowIds.map((wfId) => {
@@ -231,14 +283,11 @@ export function OrchestrationPane() {
               role="tab"
               tabIndex={0}
               aria-selected={isActive}
-              onClick={() => {
-                setActiveWorkflowId(wfId);
-                setActiveOrchTab('workflow');
-              }}
+              onClick={() => activateWorkflow(wfId)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' || e.key === ' ') {
-                  setActiveWorkflowId(wfId);
-                  setActiveOrchTab('workflow');
+                  e.preventDefault();
+                  activateWorkflow(wfId);
                 }
               }}
               className={`group flex cursor-pointer items-center gap-2 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
@@ -306,6 +355,7 @@ export function OrchestrationPane() {
                   </button>
                 )}
               </div>
+              <PopoutButton kind="workflow" workflowId={wfId} label={label} />
               {isTerminal && (
                 <button
                   type="button"
@@ -324,29 +374,7 @@ export function OrchestrationPane() {
         })}
       </div>
 
-      {activeOrchTab === 'files' ? (
-        <div className="flex-1 min-h-0 overflow-hidden">
-          <FileViewer />
-        </div>
-      ) : activeOrchTab === 'memory' ? (
-        <div className="flex-1 min-h-0 overflow-hidden">
-          <MemoryFeed />
-        </div>
-      ) : activeOrchTab === 'logs' ? (
-        // Lazy-mount: the LogsPane only opens its SSE / fetches when this tab
-        // is active, so unmounting on tab-switch tears the stream down.
-        <div className="flex-1 min-h-0 overflow-hidden">
-          <LogsPane />
-        </div>
-      ) : activeOrchTab === 'schedules' ? (
-        <div className="flex-1 min-h-0 overflow-hidden">
-          <SchedulesPane />
-        </div>
-      ) : activeOrchTab === 'git' ? (
-        <div className="flex-1 min-h-0 overflow-hidden">
-          <GitPane />
-        </div>
-      ) : workflowIds.length === 0 ? (
+      {activeOrchTab === 'workflow' && workflowIds.length === 0 ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center px-6">
           <div className="text-sm text-zinc-400">No workflows yet</div>
           <div className="max-w-xs text-xs text-zinc-600">
@@ -354,34 +382,7 @@ export function OrchestrationPane() {
           </div>
         </div>
       ) : (
-        <>
-          {!activeIsDirect && (
-            <div className="flex-[4] min-h-0 border-b border-zinc-800 relative overflow-hidden">
-              <div className="flex items-center px-3 py-1.5 border-b border-zinc-800/60 bg-zinc-900/30">
-                <span className="text-[10px] font-semibold uppercase tracking-widest text-zinc-500">Graph</span>
-              </div>
-              <ErrorBoundary>
-                <DAGVisualization />
-              </ErrorBoundary>
-            </div>
-          )}
-
-          {!activeIsDirect && <PlanningIndicator />}
-          {!activeIsDirect && <MacroExpansionPanel />}
-
-          <div
-            className={`border-b border-zinc-800 overflow-hidden transition-[flex] duration-300 ease-in-out ${activitySectionCollapsed ? 'flex-none' : (activeIsDirect ? 'flex-[8] min-h-0' : 'flex-[4] min-h-0')}`}
-          >
-            {selectedWorker ? <WorkerDetail /> : <ActivityFeed />}
-          </div>
-
-          <div className="flex-[2] min-h-0">
-            <div className="flex items-center px-3 py-1.5 border-b border-zinc-800/60 bg-zinc-900/30">
-              <span className="text-[10px] font-semibold uppercase tracking-widest text-zinc-500">Summary</span>
-            </div>
-            <WorkflowSummary />
-          </div>
-        </>
+        <OrchPaneBody kind={activeOrchTab as OrchTabKind} />
       )}
     </div>
   );
