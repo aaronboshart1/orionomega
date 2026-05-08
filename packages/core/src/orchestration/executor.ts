@@ -1268,17 +1268,23 @@ export class GraphExecutor {
     const maxTotalNodes = this.config.macroMaxTotalNodes ?? 200;
 
     log.info(`Expanding ${macroIds.length} MACRO_NODE(s) in layer ${layerIdx + 1}`);
+    this.emitOrchestrator(
+      'status',
+      `Sub-planning ${macroIds.length} phase(s) for layer ${layerIdx + 1}`,
+      { layer: layerIdx, macroIds },
+    );
 
-    for (const macroId of macroIds) {
+    // Task #199: track the most recent macro event payload so that
+    // post-splice validation failures (which happen outside the loop and
+    // after the macro node has been deleted from the graph) can still
+    // surface a terminal `macro_expansion_failed` event tied to the
+    // last expansion in the batch.
+    let lastEventBase: { macroNodeId: string; specRef: string; phaseId: string; phaseTitle: string; index: number; total: number } | undefined;
+
+    for (let i = 0; i < macroIds.length; i++) {
+      const macroId = macroIds[i];
       const macroNode = this.graph.nodes.get(macroId);
       if (!macroNode || macroNode.type !== 'MACRO_NODE') continue;
-
-      this.macroExpansions += 1;
-      if (this.macroExpansions > maxExpansions) {
-        throw new Error(
-          `Macro expansion cap exceeded (>${maxExpansions}) — refusing to expand more`,
-        );
-      }
 
       // Task #197: build the telemetry record up-front so failure paths
       // can surface specRef/phaseId in ExecutionResult.errors and
@@ -1290,13 +1296,34 @@ export class GraphExecutor {
         phaseId: macroCfg?.phaseId ?? '<unknown>',
         phaseTitle: macroCfg?.phaseTitle ?? '<unknown>',
       };
+      // Task #199: per-expansion progress payload reused across the
+      // start / complete / failed events so the UI can group them by
+      // macroNodeId and show ordering inside the current batch.
+      const macroEventBase = {
+        ...recordBase,
+        index: i + 1,
+        total: macroIds.length,
+      };
+      lastEventBase = macroEventBase;
       const recordFailure = (msg: string): void => {
         this.macroExpansionRecords.push({ ...recordBase, subNodeCount: 0, error: msg });
         this.errors.push({
           worker: `macro:${recordBase.specRef}::${recordBase.phaseId}`,
           message: msg,
         });
+        this.emitMacroEvent('macro_expansion_failed', { ...macroEventBase, error: msg });
       };
+
+      this.macroExpansions += 1;
+      if (this.macroExpansions > maxExpansions) {
+        // Task #199: emit a typed failure event before throwing so the
+        // UI's MacroExpansionPanel can render the cap-hit inline.
+        const msg = `Macro expansion cap exceeded (>${maxExpansions}) for MACRO_NODE '${macroId}' (${recordBase.specRef}::${recordBase.phaseId}) — refusing to expand more`;
+        recordFailure(msg);
+        throw new Error(msg);
+      }
+
+      this.emitMacroEvent('macro_expansion_started', macroEventBase);
 
       let subNodes: WorkflowNode[];
       let usage: { inputTokens: number; outputTokens: number } | undefined;
@@ -1396,6 +1423,10 @@ export class GraphExecutor {
         `Macro '${macroId}' expanded into ${subNodes.length} sub-node(s)`,
         { macroId, subNodeIds: subNodes.map((n) => n.id) },
       );
+      this.emitMacroEvent('macro_expansion_complete', {
+        ...macroEventBase,
+        subNodeCount: subNodes.length,
+      });
     }
 
     // Strict post-splice validation. `topologicalSort` happily ignores
@@ -1412,7 +1443,15 @@ export class GraphExecutor {
     );
     if (validationErrors.length > 0) {
       const summary = validationErrors.map((e) => `[${e.nodeId}] ${e.message}`).join('; ');
-      throw new Error(`Macro splice produced an invalid graph: ${summary}`);
+      const msg = `Macro splice produced an invalid graph: ${summary}`;
+      // Task #199: surface post-splice validation failure as a typed
+      // macro event so the UI's MacroExpansionPanel can render it
+      // inline. Attribute it to the most recent expansion in this batch
+      // (the splice that finished immediately before validation ran).
+      if (lastEventBase) {
+        this.emitMacroEvent('macro_expansion_failed', { ...lastEventBase, error: msg });
+      }
+      throw new Error(msg);
     }
 
     // Recompute layers — typed cast because `layers` is exposed as a
@@ -1750,6 +1789,35 @@ export class GraphExecutor {
       });
     }
     return this.pausePromise;
+  }
+
+  /**
+   * Task #199: emit a typed macro-expansion lifecycle event so the UI
+   * can render a live "Sub-planning…" panel while the executor splices
+   * per-phase sub-DAGs into the live graph. Uses the orchestrator
+   * channel like {@link emitOrchestrator} but carries a structured
+   * `macro` payload instead of a free-form `data` field.
+   */
+  private emitMacroEvent(
+    type: 'macro_expansion_started' | 'macro_expansion_complete' | 'macro_expansion_failed',
+    macro: NonNullable<WorkerEvent['macro']>,
+  ): void {
+    const message =
+      type === 'macro_expansion_started'
+        ? `Sub-planning phase ${macro.index}/${macro.total}: ${macro.phaseTitle}`
+        : type === 'macro_expansion_complete'
+          ? `Phase ${macro.phaseTitle} expanded into ${macro.subNodeCount ?? 0} sub-node(s)`
+          : `Phase ${macro.phaseTitle} sub-planning failed: ${macro.error ?? 'unknown error'}`;
+    this.eventBus.emit({
+      workflowId: this.graph.id,
+      workerId: 'orchestrator',
+      nodeId: macro.macroNodeId,
+      timestamp: new Date().toISOString(),
+      type,
+      message,
+      macro,
+      ...(type === 'macro_expansion_failed' && macro.error ? { error: macro.error } : {}),
+    });
   }
 
   /** Emits an event on the 'orchestrator' channel, tagged with this workflow's ID. */

@@ -16,7 +16,22 @@ export type WorkerEventType =
   | 'warning'
   | 'agent_start'
   | 'agent_complete'
-  | 'info';
+  | 'info'
+  | 'macro_expansion_started'
+  | 'macro_expansion_complete'
+  | 'macro_expansion_failed';
+
+/** Task #199: macro-expansion progress payload mirrored from `@orionomega/core`. */
+export interface MacroEventPayload {
+  macroNodeId: string;
+  specRef: string;
+  phaseId: string;
+  phaseTitle: string;
+  index: number;
+  total: number;
+  subNodeCount?: number;
+  error?: string;
+}
 
 export interface WorkerEvent {
   workerId: string;
@@ -38,6 +53,8 @@ export interface WorkerEvent {
   durationMs?: number;
   /** Token counts for agent events */
   tokenUsage?: { input: number; output: number; cacheRead?: number; cacheWrite?: number };
+  /** Task #199: macro-expansion progress payload (set on `macro_expansion_*` events). */
+  macro?: MacroEventPayload;
 }
 
 export interface GraphNode {

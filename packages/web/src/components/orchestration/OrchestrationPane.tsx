@@ -4,6 +4,7 @@ import dynamic from 'next/dynamic';
 import { useOrchestrationStore } from '@/stores/orchestration';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { ActivityFeed } from './ActivityFeed';
+import { MacroExpansionPanel } from './MacroExpansionPanel';
 import { WorkerDetail } from './WorkerDetail';
 import { WorkflowSummary } from './WorkflowSummary';
 import { MemoryFeed } from './MemoryFeed';
@@ -363,6 +364,8 @@ export function OrchestrationPane() {
               </ErrorBoundary>
             </div>
           )}
+
+          {!activeIsDirect && <MacroExpansionPanel />}
 
           <div
             className={`border-b border-zinc-800 overflow-hidden transition-[flex] duration-300 ease-in-out ${activitySectionCollapsed ? 'flex-none' : (activeIsDirect ? 'flex-[8] min-h-0' : 'flex-[4] min-h-0')}`}

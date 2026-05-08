@@ -581,6 +581,176 @@ describe('Macro-planning telemetry (Task #197 review follow-up)', () => {
     expect(badRec!.subNodeCount).toBe(0);
   });
 
+  it('emits macro_expansion_started/complete/failed events for the UI (Task #199)', async () => {
+    const macroNodes: WorkflowNode[] = [
+      {
+        id: 'macro-ok',
+        type: 'MACRO_NODE',
+        label: 'phase ok',
+        dependsOn: [],
+        macro: { specRef: 'SPEC.md', phaseId: 'phase-ok', phaseTitle: 'OK' },
+      },
+      {
+        id: 'macro-bad',
+        type: 'MACRO_NODE',
+        label: 'phase bad',
+        dependsOn: [],
+        macro: { specRef: 'SPEC.md', phaseId: 'phase-bad', phaseTitle: 'BAD' },
+      },
+    ];
+
+    const callback = async (n: WorkflowNode): Promise<WorkflowNode[]> => {
+      if (n.id === 'macro-bad') throw new Error('subplan exploded');
+      return [{
+        id: 'phase-ok__only',
+        type: 'AGENT',
+        label: 'ok-leaf',
+        dependsOn: [],
+        agent: { model: 'm', task: 't' },
+      }];
+    };
+
+    const graph = buildGraph(macroNodes, 'events');
+    const bus = new EventBus();
+    const seen: import('../types.js').WorkerEvent[] = [];
+    bus.subscribe('*', (e) => { seen.push(e); });
+
+    const checkpointDir = mkdtempSync(join(tmpdir(), 'mp-evt-'));
+    const executor = new GraphExecutor(graph, bus, {
+      workspaceDir: tmpdir(),
+      checkpointDir,
+      workerTimeout: 60,
+      maxRetries: 0,
+      checkpointInterval: 1,
+      macroExpansionCallback: callback,
+    });
+
+    await expect(
+      (executor as unknown as { expandMacroNodesInLayer(i: number): Promise<void> })
+        .expandMacroNodesInLayer(0),
+    ).rejects.toThrow(/subplan exploded/);
+
+    const macroEvents = seen.filter((e) => e.type.startsWith('macro_expansion_'));
+
+    // Iteration order across macros within a layer is not guaranteed, but
+    // every started event must have a matching complete-or-failed terminal,
+    // and the loop bails on the first failure — so the bad phase always
+    // produces a started+failed pair.
+    const startedFor = (id: string) =>
+      macroEvents.find((e) => e.type === 'macro_expansion_started' && e.macro?.phaseId === id);
+    const failedFor = (id: string) =>
+      macroEvents.find((e) => e.type === 'macro_expansion_failed' && e.macro?.phaseId === id);
+    const completeFor = (id: string) =>
+      macroEvents.find((e) => e.type === 'macro_expansion_complete' && e.macro?.phaseId === id);
+
+    expect(startedFor('phase-bad')).toBeDefined();
+    const failedEvt = failedFor('phase-bad');
+    expect(failedEvt).toBeDefined();
+    expect(failedEvt!.macro?.error).toMatch(/subplan exploded/);
+    expect(failedEvt!.macro?.total).toBe(2);
+    expect(failedEvt!.nodeId).toBe('macro-bad');
+
+    // If the OK phase ran before the bad one, it produced a complete event
+    // with a sub-node count of 1; if it ran after, it produced nothing.
+    const completeEvt = completeFor('phase-ok');
+    if (completeEvt) {
+      expect(completeEvt.macro?.subNodeCount).toBe(1);
+      expect(completeEvt.macro?.total).toBe(2);
+      expect(completeEvt.workflowId).toBe('events');
+      expect(completeEvt.nodeId).toBe('macro-ok');
+    }
+  });
+
+  it('emits macro_expansion_failed when the expansion cap is hit (Task #199)', async () => {
+    const node: WorkflowNode = {
+      id: 'macro-cap',
+      type: 'MACRO_NODE',
+      label: 'cap',
+      dependsOn: [],
+      macro: { specRef: 'SPEC.md', phaseId: 'phase-cap', phaseTitle: 'CAP' },
+    };
+    const graph = buildGraph([node], 'cap');
+    const bus = new EventBus();
+    const seen: import('../types.js').WorkerEvent[] = [];
+    bus.subscribe('*', (e) => { seen.push(e); });
+
+    const checkpointDir = mkdtempSync(join(tmpdir(), 'mp-cap-'));
+    const executor = new GraphExecutor(graph, bus, {
+      workspaceDir: tmpdir(),
+      checkpointDir,
+      workerTimeout: 60,
+      maxRetries: 0,
+      checkpointInterval: 1,
+      macroMaxExpansions: 0, // any expansion attempt trips the cap
+      macroExpansionCallback: async () => [],
+    });
+
+    await expect(
+      (executor as unknown as { expandMacroNodesInLayer(i: number): Promise<void> })
+        .expandMacroNodesInLayer(0),
+    ).rejects.toThrow(/cap exceeded/);
+
+    const failed = seen.find(
+      (e) => e.type === 'macro_expansion_failed' && e.macro?.phaseId === 'phase-cap',
+    );
+    expect(failed).toBeDefined();
+    expect(failed!.macro?.error).toMatch(/cap exceeded/);
+    expect(failed!.macro?.specRef).toBe('SPEC.md');
+    expect(failed!.macro?.index).toBe(1);
+  });
+
+  it('emits macro_expansion_failed on post-splice graph validation failure (Task #199)', async () => {
+    const macroNode: WorkflowNode = {
+      id: 'macro-bad-splice',
+      type: 'MACRO_NODE',
+      label: 'bad splice',
+      dependsOn: [],
+      macro: { specRef: 'SPEC.md', phaseId: 'phase-splice', phaseTitle: 'SPLICE' },
+    };
+    // Sub-DAG references a non-existent dep, which is structurally OK at
+    // splice time (entries pass the !subIds.has filter), but the
+    // post-splice `validateGraph` pass flags it as `Depends on unknown`.
+    const callback = async (): Promise<WorkflowNode[]> => [
+      {
+        id: 'phase-splice__a',
+        type: 'AGENT',
+        label: 'a',
+        dependsOn: ['ghost-node'],
+        agent: { model: 'm', task: 'a' },
+      },
+    ];
+
+    const graph = buildGraph([macroNode], 'splice');
+    const bus = new EventBus();
+    const seen: import('../types.js').WorkerEvent[] = [];
+    bus.subscribe('*', (e) => { seen.push(e); });
+
+    const checkpointDir = mkdtempSync(join(tmpdir(), 'mp-splice-'));
+    const executor = new GraphExecutor(graph, bus, {
+      workspaceDir: tmpdir(),
+      checkpointDir,
+      workerTimeout: 60,
+      maxRetries: 0,
+      checkpointInterval: 1,
+      macroExpansionCallback: callback,
+    });
+
+    await expect(
+      (executor as unknown as { expandMacroNodesInLayer(i: number): Promise<void> })
+        .expandMacroNodesInLayer(0),
+    ).rejects.toThrow(/invalid graph/);
+
+    const failed = seen.filter(
+      (e) => e.type === 'macro_expansion_failed' && e.macro?.phaseId === 'phase-splice',
+    );
+    // The single macro produced one terminal failure event referencing
+    // the validation summary.
+    expect(failed.length).toBeGreaterThanOrEqual(1);
+    const validationFail = failed.find((e) => /invalid graph/.test(e.macro?.error ?? ''));
+    expect(validationFail).toBeDefined();
+    expect(validationFail!.macro?.specRef).toBe('SPEC.md');
+  });
+
   it('writes a Macro Planning section into run-summary.md when expansions occurred', () => {
     const checkpointDir = mkdtempSync(join(tmpdir(), 'mp-summary-'));
     const graph = buildGraph([{

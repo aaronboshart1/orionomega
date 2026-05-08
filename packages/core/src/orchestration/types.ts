@@ -196,7 +196,10 @@ export interface WorkerEvent {
     | 'error'
     | 'done'
     | 'loop_iteration'
-    | 'replan';
+    | 'replan'
+    | 'macro_expansion_started'
+    | 'macro_expansion_complete'
+    | 'macro_expansion_failed';
   tool?: { name: string; action?: string; file?: string; summary: string; id?: string };
   thinking?: string;
   progress?: number;
@@ -208,6 +211,25 @@ export interface WorkerEvent {
     action: 'acquire' | 'release' | 'conflict' | 'timeout';
     files: string[];
     holder?: string;
+  };
+  /**
+   * Task #199: macro-expansion progress payload, set on the three
+   * `macro_expansion_*` event types so the orchestration UI can render
+   * a "Sub-planning…" panel while the executor is splicing per-phase
+   * sub-DAGs into the live graph.
+   */
+  macro?: {
+    macroNodeId: string;
+    specRef: string;
+    phaseId: string;
+    phaseTitle: string;
+    /** Index into the current expansion batch (1-based) and the batch size. */
+    index: number;
+    total: number;
+    /** Set on `macro_expansion_complete` — number of sub-nodes spliced in. */
+    subNodeCount?: number;
+    /** Set on `macro_expansion_failed`. */
+    error?: string;
   };
 }
 

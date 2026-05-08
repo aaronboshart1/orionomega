@@ -20,6 +20,7 @@ import {
   Info,
   Filter,
   ArrowDown,
+  Layers,
 } from 'lucide-react';
 import { useOrchestrationStore, type WorkerEvent, type WorkerEventType } from '@/stores/orchestration';
 import { formatTime } from '@/utils/format';
@@ -40,6 +41,9 @@ const typeIcons: Record<string, React.ReactNode> = {
   agent_start: <Play size={12} aria-hidden className="text-blue-400" />,
   agent_complete: <Square size={12} aria-hidden className="text-green-400" />,
   info: <Info size={12} aria-hidden className="text-sky-400" />,
+  macro_expansion_started: <Layers size={12} aria-hidden className="text-fuchsia-400" />,
+  macro_expansion_complete: <Layers size={12} aria-hidden className="text-emerald-400" />,
+  macro_expansion_failed: <Layers size={12} aria-hidden className="text-red-400" />,
 };
 
 // Left-border accent color per event type (CSS color value)
@@ -59,6 +63,9 @@ const typeBorderColors: Partial<Record<string, string>> = {
   agent_complete:'#22c55e',
   info:          '#0ea5e9',
   status:        '#3b82f6',
+  macro_expansion_started:  '#d946ef',
+  macro_expansion_complete: '#10b981',
+  macro_expansion_failed:   '#ef4444',
 };
 
 const typeLabels: Record<WorkerEventType, string> = {
@@ -77,6 +84,9 @@ const typeLabels: Record<WorkerEventType, string> = {
   agent_start: 'Agent Start',
   agent_complete: 'Agent Done',
   info: 'Info',
+  macro_expansion_started: 'Sub-plan Start',
+  macro_expansion_complete: 'Sub-plan Done',
+  macro_expansion_failed: 'Sub-plan Failed',
 };
 
 const defaultIcon = <BarChart3 size={12} aria-hidden className="text-zinc-400" />;
@@ -204,6 +214,36 @@ function EventContent({ event }: { event: WorkerEvent }) {
         </span>
       );
 
+    case 'macro_expansion_started':
+      return event.macro ? (
+        <span className="text-fuchsia-400">
+          Sub-planning <span className="font-semibold">{event.macro.phaseTitle}</span>
+          <span className="ml-1 text-zinc-500">({event.macro.index}/{event.macro.total})</span>
+          <span className="ml-1 text-zinc-600 text-[10px]">{event.macro.specRef}::{event.macro.phaseId}</span>
+        </span>
+      ) : <span className="text-fuchsia-400">{event.message}</span>;
+
+    case 'macro_expansion_complete':
+      return event.macro ? (
+        <span className="text-emerald-400">
+          <span className="font-semibold">{event.macro.phaseTitle}</span> expanded
+          <span className="ml-1 text-zinc-400">+{event.macro.subNodeCount ?? 0} sub-node(s)</span>
+        </span>
+      ) : <span className="text-emerald-400">{event.message}</span>;
+
+    case 'macro_expansion_failed':
+      return (
+        <span className="text-red-400">
+          {event.macro && (
+            <>
+              <span className="font-semibold">{event.macro.phaseTitle}</span>
+              <span className="text-zinc-500"> ({event.macro.specRef}::{event.macro.phaseId}): </span>
+            </>
+          )}
+          <span>{event.macro?.error || event.error || event.message || 'Sub-planning failed'}</span>
+        </span>
+      );
+
     default:
       return <span className="text-zinc-400">{event.message || event.type}</span>;
   }
@@ -251,6 +291,7 @@ const ALL_EVENT_TYPES: WorkerEventType[] = [
   'thinking', 'tool_call', 'tool_result', 'finding', 'status',
   'error', 'done', 'loop_iteration', 'replan', 'fileLock',
   'planning', 'warning', 'agent_start', 'agent_complete', 'info',
+  'macro_expansion_started', 'macro_expansion_complete', 'macro_expansion_failed',
 ];
 
 function FilterBar({
