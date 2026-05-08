@@ -961,7 +961,7 @@ ${upstreamPhaseSummary}
                 id: { type: 'string' },
                 type: {
                   type: 'string',
-                  enum: ['AGENT', 'TOOL', 'ROUTER', 'JOIN', 'CODING_AGENT', 'LOOP'],
+                  enum: ['AGENT', 'CODING_AGENT', 'TOOL', 'JOIN'],
                 },
                 label: { type: 'string' },
                 dependsOn: { type: 'array', items: { type: 'string' } },
@@ -1037,6 +1037,19 @@ ${upstreamPhaseSummary}
       if (rawType === 'MACRO_NODE') {
         throw new Error(
           `subPlan for '${macroNode.id}' returned a nested MACRO_NODE — recursion is forbidden`,
+        );
+      }
+      // Task #197 (review follow-up): restrict sub-plan node types to
+      // the set whose configs we materialize below. ROUTER/LOOP would
+      // need router/loop config marshalling that we deliberately omit
+      // in sub-plans to keep the per-phase prompt tight; refuse here
+      // rather than letting the executor encounter a misconfigured
+      // node at run-time.
+      const SUBPLAN_ALLOWED_TYPES = new Set(['AGENT', 'CODING_AGENT', 'TOOL', 'JOIN']);
+      if (!SUBPLAN_ALLOWED_TYPES.has(rawType)) {
+        throw new Error(
+          `subPlan for '${macroNode.id}' returned unsupported node type '${rawType}' — ` +
+            `allowed: ${[...SUBPLAN_ALLOWED_TYPES].join(', ')}`,
         );
       }
       const rawDeps = Array.isArray(n.dependsOn) ? (n.dependsOn as string[]).map(String) : [];
