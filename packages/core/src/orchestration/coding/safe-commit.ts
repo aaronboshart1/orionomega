@@ -73,12 +73,14 @@ export const MAX_COMMITTABLE_BYTES = 95 * 1024 * 1024;
 export const DEFAULT_GITIGNORE_ENTRIES: readonly string[] = Object.freeze([
   // Dependencies
   'node_modules/',
-  // Environment files (secrets)
-  '.env',
-  '.env.local',
-  '.env.*.local',
-  '.env.development',
-  '.env.production',
+  // Environment files (secrets) — broad `.env*` glob, with the two
+  // conventional placeholder filenames negated so they remain
+  // checkable. Round-5 review: this is the spec-required template,
+  // versus enumerating individual `.env.local` / `.env.production`
+  // names that miss novel suffixes (`.env.staging`, `.env.docker`...)
+  '.env*',
+  '!.env.example',
+  '!.env.sample',
   // Build artefacts
   '.next/',
   'dist/',
@@ -382,6 +384,156 @@ export function prepareSafeCommit(repoDir: string): PrepareSafeCommitResult {
     throw new CommitSafetyError(unsafe);
   }
   return { gitignore, refused: [] };
+}
+
+/**
+ * Round-5 review: deterministic post-execution preflight that walks
+ * the commits the agent introduced (`baseHeadCommit..HEAD`) and
+ * applies the same deny-list as the runtime hooks — INDEPENDENTLY of
+ * the agent. The hooks can in theory be bypassed (`git push
+ * --no-verify`, an `IPC::Open2` failure swallowed under load, a
+ * disabled hook in a downstream worktree...); this scan is the
+ * executor's last line of defence and runs in plain TypeScript so
+ * its behaviour is testable without spawning Perl.
+ *
+ * Algorithm:
+ *  1. `git rev-list --reverse <base>..HEAD` → ordered commit list.
+ *     If `base` is null (unborn branch at dispatch time) we fall
+ *     back to walking every reachable commit, matching the pre-push
+ *     hook's new-branch behaviour (`remote_sha = 0*40`).
+ *  2. For each commit, `git ls-tree -r -l -z` → `(mode, type, sha,
+ *     size, path)` rows. We dedup blobs by `sha` so a file that
+ *     appears unchanged in 100 commits is checked once.
+ *  3. Apply the same deny-list the hooks use (oversize, secret
+ *     filenames, build-artefact dirs, control bytes in path) and
+ *     attach the *first* commit each blob was seen in (we walk
+ *     newest → oldest after dedup).
+ *
+ * Pure shell-out via `spawnSync` — no FS writes, safe to run from
+ * the executor's hot path.
+ */
+export interface FindUnsafeCommittedFilesOptions {
+  /** Override the 95 MB ceiling (used in tests). */
+  maxBytes?: number;
+  /**
+   * Hard cap on commits walked. Protects against accidentally
+   * scanning a full clone history when `baseHeadCommit` is null on a
+   * very large repo. Default 5,000 — well above what any single
+   * coding-mode dispatch will produce.
+   */
+  maxCommits?: number;
+}
+
+export interface FindUnsafeCommittedFilesResult {
+  /** Refused files, deduped by blob SHA, newest commit wins. */
+  refused: import('../types.js').RefusedCommittedFile[];
+  /** Reason a scan could not run (when `null` the scan ran cleanly). */
+  skippedReason: string | null;
+}
+
+function isControlBytePath(relPath: string): boolean {
+  for (let i = 0; i < relPath.length; i++) {
+    const code = relPath.charCodeAt(i);
+    if (code >= 0x01 && code <= 0x1f) return true;
+  }
+  return false;
+}
+
+export function findUnsafeCommittedFiles(
+  checkoutPath: string,
+  baseHeadCommit: string | null,
+  opts: FindUnsafeCommittedFilesOptions = {},
+): FindUnsafeCommittedFilesResult {
+  const maxBytes = opts.maxBytes ?? MAX_COMMITTABLE_BYTES;
+  const maxCommits = opts.maxCommits ?? 5000;
+
+  if (!existsSync(join(checkoutPath, '.git'))) {
+    return { refused: [], skippedReason: 'no .git directory at checkout path' };
+  }
+
+  // Lazy require to keep the helper usable from environments where
+  // `child_process` isn't on the import allow-list (unit-test mocks).
+  const { spawnSync } = require('node:child_process') as typeof import('node:child_process');
+
+  // Step 1: get commit list. `--reverse` so the FIRST time we see a
+  // blob is the OLDEST commit it appears in — but we want NEWEST,
+  // so we DON'T pass --reverse and walk the default newest-first
+  // order. (Naming is confusing; we deliberately keep newest-first.)
+  let revListArgs: string[];
+  if (baseHeadCommit && baseHeadCommit.length > 0) {
+    revListArgs = ['rev-list', `${baseHeadCommit}..HEAD`];
+  } else {
+    // Unborn-branch / brand-new-clone case: walk all reachable
+    // history. The pre-push hook does the same when the remote sha
+    // is 40 zeros.
+    revListArgs = ['rev-list', '--all'];
+  }
+  const revList = spawnSync('git', ['-C', checkoutPath, ...revListArgs], {
+    encoding: 'utf-8',
+    maxBuffer: 32 * 1024 * 1024,
+  });
+  if (revList.status !== 0) {
+    return {
+      refused: [],
+      skippedReason: `git rev-list failed: ${(revList.stderr || '').trim() || `exit ${revList.status}`}`,
+    };
+  }
+  const commits = revList.stdout
+    .split('\n')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
+    .slice(0, maxCommits);
+
+  if (commits.length === 0) {
+    return { refused: [], skippedReason: null };
+  }
+
+  const seenBlobs = new Set<string>();
+  const refused: import('../types.js').RefusedCommittedFile[] = [];
+
+  for (const commit of commits) {
+    const ls = spawnSync(
+      'git',
+      ['-C', checkoutPath, 'ls-tree', '-r', '-l', '-z', commit],
+      { encoding: 'buffer', maxBuffer: 64 * 1024 * 1024 },
+    );
+    if (ls.status !== 0) continue;
+    // -z output: NUL-terminated `<mode> <type> <sha> <size>\t<path>`
+    // entries. We split on NUL, then parse each row by hand because
+    // the path may contain spaces / tabs (NUL is the only safe
+    // delimiter).
+    const text = ls.stdout.toString('utf-8');
+    const rows = text.split('\0').filter((r) => r.length > 0);
+    for (const row of rows) {
+      const tabIdx = row.indexOf('\t');
+      if (tabIdx === -1) continue;
+      const meta = row.slice(0, tabIdx).split(/\s+/);
+      const path = row.slice(tabIdx + 1);
+      if (meta.length < 4) continue;
+      const [, type, sha, sizeStr] = meta;
+      if (type !== 'blob') continue;
+      if (seenBlobs.has(sha)) continue;
+      seenBlobs.add(sha);
+      const bytes = sizeStr === '-' ? 0 : Number.parseInt(sizeStr, 10);
+      // Deny-list — same order as the Perl hooks.
+      let reason: import('../types.js').RefusedCommittedFile['reason'] | null = null;
+      if (isControlBytePath(path)) reason = 'control-bytes';
+      else if (isSecretPath(path)) reason = 'secret';
+      else if (isBuildArtefactPath(path)) reason = 'build-artefact';
+      else if (Number.isFinite(bytes) && bytes > maxBytes) reason = 'oversize';
+      if (reason !== null) {
+        refused.push({
+          path,
+          reason,
+          bytes: Number.isFinite(bytes) ? bytes : 0,
+          commit,
+          blobSha: sha,
+        });
+      }
+    }
+  }
+
+  return { refused, skippedReason: null };
 }
 
 /**

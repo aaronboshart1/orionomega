@@ -36,6 +36,7 @@ import {
   installSafeCommitHooks,
   CommitSafetyError,
   formatCommitSafetyMessage,
+  findUnsafeCommittedFiles,
 } from '../safe-commit.js';
 
 let repoDir: string;
@@ -75,7 +76,11 @@ describe('ensureSafeGitignore', () => {
     expect(result.added).not.toContain('dist/');
     expect(result.added).not.toContain('*.log');
     // Entries the user didn't list must show up.
-    expect(result.added).toContain('.env');
+    // Round-5 review: defaults are now `.env*` + the two negations,
+    // not enumerated `.env.local` / `.env.production` filenames.
+    expect(result.added).toContain('.env*');
+    expect(result.added).toContain('!.env.example');
+    expect(result.added).toContain('!.env.sample');
     expect(result.added).toContain('.next/');
     expect(result.added).toContain('coverage/');
 
@@ -552,6 +557,104 @@ describe('installSafeCommitHooks', () => {
       const r = runPreCommitHookAfterStaging();
       expect(r.status).toBe(1);
       expect(r.stderr).toMatch(/secret \/ key material/);
+    });
+  });
+
+  // Round-5 review: deterministic post-execution preflight that the
+  // executor invokes regardless of whether the agent ran our hooks.
+  // Hooks can be bypassed (`--no-verify`); this scan is the
+  // executor-side enforcement and runs in plain TypeScript so its
+  // behaviour is testable here without forking Perl.
+  describe('findUnsafeCommittedFiles (executor-side preflight)', () => {
+    const { execFileSync } = require('node:child_process');
+    function initRepo(): void {
+      execFileSync('git', ['-C', repoDir, 'init', '-q', '-b', 'main']);
+      execFileSync('git', ['-C', repoDir, 'config', 'user.email', 't@e.x']);
+      execFileSync('git', ['-C', repoDir, 'config', 'user.name', 'T']);
+      execFileSync('git', ['-C', repoDir, 'config', 'commit.gpgsign', 'false']);
+    }
+    function commitAll(msg: string): string {
+      execFileSync('git', ['-C', repoDir, 'add', '-A', '-f'], { stdio: 'pipe' });
+      execFileSync('git', ['-C', repoDir, 'commit', '-q', '--no-verify', '--allow-empty', '-m', msg], { stdio: 'pipe' });
+      return execFileSync('git', ['-C', repoDir, 'rev-parse', 'HEAD'], { encoding: 'utf-8' }).trim();
+    }
+
+    it('returns clean when nothing was committed after baseHeadCommit', () => {
+      initRepo();
+      writeFileSync(join(repoDir, 'README.md'), '# hi\n', 'utf-8');
+      const base = commitAll('baseline');
+      
+      const r = findUnsafeCommittedFiles(repoDir, base);
+      expect(r.skippedReason).toBeNull();
+      expect(r.refused).toEqual([]);
+    });
+
+    it('refuses a .env added in a commit AFTER baseHeadCommit (agent bypassed --no-verify)', () => {
+      initRepo();
+      writeFileSync(join(repoDir, 'README.md'), '# hi\n', 'utf-8');
+      const base = commitAll('baseline');
+      writeFileSync(join(repoDir, '.env'), 'SECRET=oops\n', 'utf-8');
+      const offending = commitAll('agent leaked .env via --no-verify');
+
+      
+      const r = findUnsafeCommittedFiles(repoDir, base);
+      expect(r.skippedReason).toBeNull();
+      expect(r.refused).toHaveLength(1);
+      expect(r.refused[0].path).toBe('.env');
+      expect(r.refused[0].reason).toBe('secret');
+      expect(r.refused[0].commit).toBe(offending);
+      expect(r.refused[0].blobSha).toMatch(/^[0-9a-f]{40}$/);
+    });
+
+    it('catches a removed-before-HEAD blob (rev-list-range walks every commit)', () => {
+      initRepo();
+      writeFileSync(join(repoDir, 'README.md'), '# hi\n', 'utf-8');
+      const base = commitAll('baseline');
+      // Commit 1: introduce a build artefact.
+      mkdirSync(join(repoDir, 'node_modules', 'pkg'), { recursive: true });
+      writeFileSync(join(repoDir, 'node_modules', 'pkg', 'index.js'), 'x', 'utf-8');
+      const bad = commitAll('add bad blob');
+      // Commit 2: remove it again.
+      execFileSync('git', ['-C', repoDir, 'rm', '-rf', 'node_modules'], { stdio: 'pipe' });
+      commitAll('remove bad blob (HEAD looks clean)');
+
+      
+      const r = findUnsafeCommittedFiles(repoDir, base);
+      expect(r.skippedReason).toBeNull();
+      const offendingPaths = r.refused.map((x: { path: string }) => x.path);
+      expect(offendingPaths).toContain('node_modules/pkg/index.js');
+      const hit = r.refused.find((x: { path: string }) => x.path === 'node_modules/pkg/index.js');
+      expect(hit.reason).toBe('build-artefact');
+      expect(hit.commit).toBe(bad);
+    });
+
+    it('honours the .env.example / .env.sample negation (does not refuse placeholders)', () => {
+      initRepo();
+      writeFileSync(join(repoDir, 'README.md'), '# hi\n', 'utf-8');
+      const base = commitAll('baseline');
+      writeFileSync(join(repoDir, '.env.example'), 'KEY=changeme\n', 'utf-8');
+      writeFileSync(join(repoDir, '.env.sample'), 'KEY=changeme\n', 'utf-8');
+      commitAll('add legitimate placeholders');
+      
+      const r = findUnsafeCommittedFiles(repoDir, base);
+      expect(r.refused).toEqual([]);
+    });
+
+    it('skips cleanly (skippedReason) when checkout has no .git directory', () => {
+      
+      const r = findUnsafeCommittedFiles(repoDir, null);
+      expect(r.skippedReason).toMatch(/no \.git/);
+      expect(r.refused).toEqual([]);
+    });
+
+    it('falls back to walking all reachable history when baseHeadCommit is null (unborn branch case)', () => {
+      initRepo();
+      writeFileSync(join(repoDir, '.env'), 'SECRET=oops\n', 'utf-8');
+      commitAll('first-ever commit on a fresh repo');
+      
+      const r = findUnsafeCommittedFiles(repoDir, null);
+      expect(r.skippedReason).toBeNull();
+      expect(r.refused.map((x: { path: string }) => x.path)).toContain('.env');
     });
   });
 });

@@ -360,6 +360,92 @@ export class GraphExecutor {
   }
 
   /**
+   * Round-5 review: post-execution preflight. Walks the commits the
+   * agent introduced under `commitSafety.checkoutPath` (from
+   * `baseHeadCommit..HEAD`) and refuses the run if any blob trips
+   * the deny-list — INDEPENDENTLY of the runtime hooks. This is the
+   * executor-side enforcement the architect asked for: hooks are
+   * bypassable (`--no-verify`); this scan is not.
+   *
+   * Side-effects:
+   *  - Mutates `this.commitSafety` in place (preflightStatus,
+   *    preflightReason, refusedFiles).
+   *  - When refused files are found, pushes an entry into
+   *    `this.errors` so the run reports `status: 'error'` and the
+   *    user sees "what was excluded and why" in the standard
+   *    error block.
+   *
+   * No-op when `commitSafety` was never set (non-coding-mode runs).
+   * Wrapped in a try/catch so a misbehaving `git` binary never
+   * crashes a run that succeeded on its merits.
+   */
+  private runCommitSafetyPreflight(): void {
+    if (!this.commitSafety) return;
+    try {
+      const { findUnsafeCommittedFiles } =
+        require('./coding/safe-commit.js') as typeof import('./coding/safe-commit.js');
+      const { refused, skippedReason } = findUnsafeCommittedFiles(
+        this.commitSafety.checkoutPath,
+        this.commitSafety.baseHeadCommit,
+      );
+      if (skippedReason !== null) {
+        this.commitSafety = {
+          ...this.commitSafety,
+          preflightStatus: 'skipped',
+          preflightReason: skippedReason,
+          refusedFiles: [],
+        };
+        return;
+      }
+      if (refused.length === 0) {
+        this.commitSafety = {
+          ...this.commitSafety,
+          preflightStatus: 'clean',
+          preflightReason: undefined,
+          refusedFiles: [],
+        };
+        return;
+      }
+      // Refused: escalate the run to error and surface a top-level
+      // error message. The executor's error-collection plumbing
+      // takes care of stamping status='error' downstream.
+      this.commitSafety = {
+        ...this.commitSafety,
+        preflightStatus: 'refused',
+        preflightReason: undefined,
+        refusedFiles: refused,
+      };
+      const sample = refused
+        .slice(0, 5)
+        .map((r) => `${r.path} (${r.reason}, ${r.bytes} B, in ${r.commit.slice(0, 7)})`)
+        .join('; ');
+      const more = refused.length > 5 ? ` (+${refused.length - 5} more — see Commit Safety section)` : '';
+      this.errors.push({
+        worker: 'commit-safety-preflight',
+        message:
+          `Refusing run: post-execution preflight found ${refused.length} ` +
+          `committed file(s) on ${this.commitSafety.baseHeadCommit ? 'commits the agent added' : 'all reachable history'} ` +
+          `that trip the safe-commit deny-list (oversize / secret / build-artefact / control-bytes): ${sample}${more}.`,
+        resolution:
+          'Remove the offending blobs (e.g. `git filter-repo --invert-paths`), ' +
+          'add the appropriate `.gitignore` patterns, then re-dispatch.',
+      });
+      log.error('Commit safety preflight refused the run (Task #209)', {
+        checkoutPath: this.commitSafety.checkoutPath,
+        baseHeadCommit: this.commitSafety.baseHeadCommit,
+        refusedCount: refused.length,
+      });
+    } catch (err) {
+      this.commitSafety = {
+        ...this.commitSafety,
+        preflightStatus: 'skipped',
+        preflightReason: `preflight crashed: ${err instanceof Error ? err.message : String(err)}`,
+        refusedFiles: [],
+      };
+    }
+  }
+
+  /**
    * Resolves the base directory for this workflow run's artifacts.
    * Uses the dedicated runsDir if configured, otherwise falls back to
    * the legacy {workspaceDir}/output/{workflowId} path.
@@ -552,6 +638,13 @@ export class GraphExecutor {
           { completedLayers: this.completedLayers },
         );
       }
+
+      // Round-5 review: deterministic post-execution preflight. Run
+      // BEFORE we settle the terminal status so refused files can
+      // escalate a 'complete' run to 'error' — the agent must not
+      // be able to claim success after pushing a `.env` or a 200 MB
+      // binary, even via `git push --no-verify`.
+      this.runCommitSafetyPreflight();
 
       const hasErrors = this.errors.length > 0;
       this.status = hasErrors ? 'error' : 'complete';
@@ -2142,6 +2235,45 @@ export class GraphExecutor {
           '`.turbo/`, `coverage/`), files >95 MB, or paths with control bytes. ' +
           'See `docs/architecture-notes.md` for the deny-list rationale._',
         );
+        mdParts.push('');
+
+        // Round-5 review: deterministic post-execution preflight.
+        // ALWAYS render the result so users can confirm the scan ran
+        // — even on clean runs, the absence of this block would make
+        // it impossible to tell "scan was clean" from "scan was never
+        // wired up".
+        mdParts.push(`- **Post-execution preflight:** \`${cs.preflightStatus}\``);
+        if (cs.preflightStatus === 'skipped' && cs.preflightReason) {
+          mdParts.push(`  - reason: ${cs.preflightReason}`);
+        }
+        if (cs.baseHeadCommit) {
+          mdParts.push(`  - walked: \`${cs.baseHeadCommit.slice(0, 12)}..HEAD\``);
+        } else {
+          mdParts.push('  - walked: all reachable history (unborn branch at dispatch time)');
+        }
+        if (cs.refusedFiles.length > 0) {
+          mdParts.push('');
+          mdParts.push(
+            `**Refused ${cs.refusedFiles.length} committed file${cs.refusedFiles.length === 1 ? '' : 's'}** ` +
+            '(deduped by blob SHA, newest commit wins):',
+          );
+          mdParts.push('');
+          mdParts.push('| # | Path | Reason | Bytes | Commit | Blob |');
+          mdParts.push('|---|------|--------|-------|--------|------|');
+          cs.refusedFiles.forEach((f, i) => {
+            const safePath = f.path.replace(/\|/g, '\\|');
+            mdParts.push(
+              `| ${i + 1} | \`${safePath}\` | ${f.reason} | ${f.bytes.toLocaleString()} | \`${f.commit.slice(0, 7)}\` | \`${f.blobSha.slice(0, 7)}\` |`,
+            );
+          });
+          mdParts.push('');
+          mdParts.push(
+            '_The run was forced to `error` status because these blobs would either ' +
+            'leak secrets, push build artefacts, exceed GitHub\'s 100 MB ceiling, or ' +
+            'carry filenames with control bytes. Hooks are bypassable; this scan is ' +
+            'the executor-side enforcement that runs regardless of `--no-verify`._',
+          );
+        }
         mdParts.push('');
       }
 

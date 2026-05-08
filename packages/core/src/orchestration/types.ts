@@ -388,6 +388,54 @@ export interface CommitSafetyReport {
   preCommitHookPath: string;
   /** Path to the installed `.git/hooks/pre-push`. */
   prePushHookPath: string;
+  /**
+   * HEAD commit captured at dispatch start. The post-execution
+   * preflight walks `baseHeadCommit..HEAD` to enumerate every blob
+   * the agent introduced, independently of whether the agent ran our
+   * hooks (or bypassed them with `--no-verify`). `null` when the
+   * checkout had no HEAD at dispatch time (fresh `git init`,
+   * unborn-branch case).
+   */
+  baseHeadCommit: string | null;
+  /**
+   * Round-5 review: the deterministic post-execution preflight result.
+   *  - 'clean'   : preflight ran and found no refused files.
+   *  - 'refused' : preflight ran and found ≥1 refused files; the run
+   *                is forced to error status.
+   *  - 'skipped' : preflight could not run (no `.git`, no headCommit,
+   *                or the `git` invocation itself failed). The run is
+   *                allowed to continue and `preflightReason` carries
+   *                the explanation surfaced into the run-summary.
+   */
+  preflightStatus: 'clean' | 'refused' | 'skipped';
+  /** Human-readable reason when `preflightStatus === 'skipped'`. */
+  preflightReason?: string;
+  /**
+   * Files added by commits in `baseHeadCommit..HEAD` that match the
+   * deny-list. Empty when `preflightStatus !== 'refused'`. Surfaced
+   * in the run-summary table so the user sees exactly what blocked
+   * the run, even when the agent tried to bypass hooks.
+   */
+  refusedFiles: readonly RefusedCommittedFile[];
+}
+
+/**
+ * One offending file the post-execution preflight detected in the
+ * commits the agent introduced. `commit` is the SHA1 the blob was
+ * first seen in (we walk newest → oldest and dedup by blob SHA, so
+ * the user can `git show <commit>` to find the change).
+ */
+export interface RefusedCommittedFile {
+  /** Repo-relative POSIX path. */
+  path: string;
+  /** Why the deny-list rejected this blob. */
+  reason: 'oversize' | 'secret' | 'build-artefact' | 'control-bytes';
+  /** Blob size in bytes (always populated). */
+  bytes: number;
+  /** Commit SHA the blob first appears in (newest commit wins). */
+  commit: string;
+  /** Blob SHA1 (useful for `git cat-file -p <sha>`). */
+  blobSha: string;
 }
 
 /**

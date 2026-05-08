@@ -281,6 +281,18 @@ export async function prepareCodingDispatch(
     hooksInstalled: hookResult.installed,
     preCommitHookPath: hookResult.preCommitHookPath,
     prePushHookPath: hookResult.prePushHookPath,
+    // Round-5 review: capture the dispatch-time HEAD so the executor's
+    // post-execution preflight knows exactly which commits the agent
+    // introduced. `headCommit` is null for unborn branches; the
+    // preflight handles that by walking all reachable history.
+    baseHeadCommit: headCommit,
+    // Initialised to 'skipped'; the executor's preflight overwrites
+    // both fields after the workflow finishes. Initial-value choice
+    // means a never-run preflight is honestly reported as such in
+    // run-summary.md rather than implying "clean".
+    preflightStatus: 'skipped',
+    preflightReason: 'preflight not yet run (set by executor)',
+    refusedFiles: [],
   };
   log.info('Safe-commit guards installed (Task #209)', {
     checkoutPath,
