@@ -154,23 +154,54 @@ export class Planner {
     try {
       log.info(`Planning task with model ${model}: "${task.slice(0, 80)}..."`);
 
-      // Force the planner LLM to start its response with `{` so the reply is
-      // constrained to a JSON object. Without this, large CODING MODE
-      // preambles (multi-thousand-line spec files inlined) frequently lead
-      // the LLM to return prose describing a DAG instead of emitting one,
-      // which cascades into `fallbackPlan` and a single AGENT worker that
-      // "acts out" the planner's role. The Anthropic response only contains
-      // text emitted AFTER the prefill, so we prepend `{` before parsing.
+      // Try to force the planner LLM to start its reply with `{` so the
+      // response is constrained to a JSON object. Without this, large
+      // CODING MODE preambles (multi-thousand-line spec files inlined)
+      // frequently lead the LLM to return prose describing a DAG instead
+      // of emitting one — which cascades into `fallbackPlan` and a single
+      // AGENT worker that "acts out" the planner's role.
+      //
+      // Some Anthropic models (notably claude-opus-4-6) return HTTP 400
+      // with `"This model does not support assistant message prefill. The
+      // conversation must end with a user message."` when given an
+      // assistant prefill. We try prefill first, and on that specific 400
+      // we retry once without prefill. The user message also carries an
+      // explicit "Begin your reply with `{`" instruction at the end as a
+      // belt-and-braces nudge for models without prefill support.
+      //
       // Note: Claude 4+ models reject the deprecated `temperature` field —
       // intentionally not set.
       const JSON_PREFILL = '{';
-      const response = await client.createMessage({
-        model,
-        messages: [{ role: 'user', content: task }],
-        system: systemPrompt,
-        maxTokens: 16384,
-        assistantPrefill: JSON_PREFILL,
-      });
+      const PREFILL_REJECTED_MARKER = 'does not support assistant message prefill';
+      const userTurn = `${task}\n\nBegin your reply with \`{\` — return the JSON object only.`;
+
+      let prefillUsed = true;
+      let response;
+      try {
+        response = await client.createMessage({
+          model,
+          messages: [{ role: 'user', content: userTurn }],
+          system: systemPrompt,
+          maxTokens: 16384,
+          assistantPrefill: JSON_PREFILL,
+        });
+      } catch (prefillErr) {
+        const errMsg = prefillErr instanceof Error ? prefillErr.message : String(prefillErr);
+        if (errMsg.includes(PREFILL_REJECTED_MARKER)) {
+          log.warn(
+            `Planner model ${model} rejected assistant prefill — retrying without prefill`,
+          );
+          prefillUsed = false;
+          response = await client.createMessage({
+            model,
+            messages: [{ role: 'user', content: userTurn }],
+            system: systemPrompt,
+            maxTokens: 16384,
+          });
+        } else {
+          throw prefillErr;
+        }
+      }
 
       // Extract text content from response
       const rawResponseText = response.content
@@ -183,8 +214,11 @@ export class Planner {
         return this.fallbackPlan(task, 'Empty LLM response');
       }
 
-      // Reconstruct the full JSON by prepending the prefill we forced.
-      const responseText = JSON_PREFILL + rawResponseText;
+      // When prefill was used, the API response only contains text emitted
+      // AFTER the prefill — prepend `{` to reconstruct the full JSON. When
+      // prefill was rejected, `extractJson` already handles fenced/raw JSON
+      // and the leading-brace search.
+      const responseText = prefillUsed ? JSON_PREFILL + rawResponseText : rawResponseText;
 
       // Parse the JSON from the response
       const parsed = this.extractJson(responseText);
