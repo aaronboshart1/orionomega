@@ -814,7 +814,8 @@ Do NOT attempt to plan or execute the coding work yourself. Do NOT clone, write 
     macroNode: WorkflowNode,
     repoPreamble: string,
     phaseBody: string,
-  ): Promise<WorkflowNode[]> {
+    upstreamPhaseSummary?: string,
+  ): Promise<import('./types.js').MacroExpansionResult> {
     const cfg = macroNode.macro;
     if (!cfg) {
       throw new Error(`subPlan called on node '${macroNode.id}' with no macro config`);
@@ -879,7 +880,17 @@ ${repoPreamble.slice(0, 4000)}
 
 ### Phase body — verbatim (resolved by the executor from the preloaded spec)
 ${phaseBody}
+${upstreamPhaseSummary && upstreamPhaseSummary.trim().length > 0 ? `
+### Upstream phases (already planned in earlier MACRO_NODEs)
+The phases below have already been expanded into their own sub-DAGs by
+the parent run. Their leaf nodes will complete before any node in your
+sub-DAG starts (the executor wires the dependency edges automatically).
+Use this context only to AVOID re-doing work the upstream phases
+already covered — do NOT add explicit \`dependsOn\` entries pointing at
+upstream-phase nodes (the executor handles inter-phase wiring).
 
+${upstreamPhaseSummary}
+` : ''}
 ### Sub-planning rules
 - Emit a small focused DAG that implements THIS phase only. Typically
   1–6 nodes. Do NOT plan for other phases — they have their own
@@ -1048,7 +1059,13 @@ ${phaseBody}
       outputTokens: response.usage.output_tokens,
       inputTokens: response.usage.input_tokens,
     });
-    return subNodes;
+    return {
+      nodes: subNodes,
+      usage: {
+        inputTokens: response.usage.input_tokens,
+        outputTokens: response.usage.output_tokens,
+      },
+    };
   }
 
   /**

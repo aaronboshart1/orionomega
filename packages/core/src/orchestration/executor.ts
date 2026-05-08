@@ -260,7 +260,7 @@ export interface ExecutorConfig {
    * When unset, MACRO_NODE encounters fail fast — the planner should
    * not have emitted them.
    */
-  macroExpansionCallback?: (node: WorkflowNode) => Promise<WorkflowNode[]>;
+  macroExpansionCallback?: (node: WorkflowNode) => Promise<WorkflowNode[] | import('./types.js').MacroExpansionResult>;
   /**
    * Task #197: Hard cap on total nodes in the live graph after splicing.
    * Defaults to 200. Hit this and the executor fails the run with a
@@ -1299,8 +1299,18 @@ export class GraphExecutor {
       };
 
       let subNodes: WorkflowNode[];
+      let usage: { inputTokens: number; outputTokens: number } | undefined;
       try {
-        subNodes = await this.config.macroExpansionCallback(macroNode);
+        const raw = await this.config.macroExpansionCallback(macroNode);
+        // Back-compat: callbacks may return either WorkflowNode[] or
+        // {nodes, usage?}. Normalize to the richer form here so per-pass
+        // token usage flows into the run-summary when available.
+        if (Array.isArray(raw)) {
+          subNodes = raw;
+        } else {
+          subNodes = raw.nodes;
+          usage = raw.usage;
+        }
       } catch (err) {
         const raw = err instanceof Error ? err.message : String(err);
         const wrapped = `MACRO_NODE '${macroId}' (${recordBase.specRef}::${recordBase.phaseId}) expansion failed: ${raw}`;
@@ -1371,7 +1381,11 @@ export class GraphExecutor {
         this.graph.nodes.set(sn.id, sn);
       }
 
-      this.macroExpansionRecords.push({ ...recordBase, subNodeCount: subNodes.length });
+      this.macroExpansionRecords.push({
+        ...recordBase,
+        subNodeCount: subNodes.length,
+        ...(usage ? { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens } : {}),
+      });
 
       log.info(
         `MACRO_NODE '${macroId}' spliced: +${subNodes.length} nodes ` +
@@ -2000,11 +2014,19 @@ export class GraphExecutor {
         mdParts.push(`- **Expansions succeeded:** ${mp.expansionsSucceeded}`);
         mdParts.push(`- **Sub-nodes added:** ${mp.subNodesAdded}`);
         mdParts.push('');
-        mdParts.push('| Macro Node | Spec / Phase | Title | Sub-Nodes | Status |');
-        mdParts.push('|------------|--------------|-------|-----------|--------|');
+        const totalIn = mp.expansions.reduce((acc, r) => acc + (r.inputTokens ?? 0), 0);
+        const totalOut = mp.expansions.reduce((acc, r) => acc + (r.outputTokens ?? 0), 0);
+        if (totalIn > 0 || totalOut > 0) {
+          mdParts.push(`- **Sub-planner tokens (sum):** ${totalIn.toLocaleString()} in / ${totalOut.toLocaleString()} out`);
+          mdParts.push('');
+        }
+        mdParts.push('| Macro Node | Spec / Phase | Title | Sub-Nodes | Input Tokens | Output Tokens | Status |');
+        mdParts.push('|------------|--------------|-------|-----------|--------------|---------------|--------|');
         for (const r of mp.expansions) {
           const status = r.error ? `error: ${r.error.replace(/\|/g, '\\|')}` : 'ok';
-          mdParts.push(`| ${r.macroNodeId} | ${r.specRef}::${r.phaseId} | ${r.phaseTitle} | ${r.subNodeCount} | ${status} |`);
+          const inTok = r.inputTokens != null ? r.inputTokens.toLocaleString() : '—';
+          const outTok = r.outputTokens != null ? r.outputTokens.toLocaleString() : '—';
+          mdParts.push(`| ${r.macroNodeId} | ${r.specRef}::${r.phaseId} | ${r.phaseTitle} | ${r.subNodeCount} | ${inTok} | ${outTok} | ${status} |`);
         }
         mdParts.push('');
       }

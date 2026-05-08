@@ -303,8 +303,26 @@ export interface MacroExpansionRecord {
   phaseTitle: string;
   /** Number of sub-nodes the sub-planner returned (0 on failure). */
   subNodeCount: number;
+  /**
+   * Per-pass sub-planner token usage when the callback reports it (the
+   * bridge-wired callback always does; ad-hoc test callbacks may not).
+   * Surfaced into run-summary so operators can tune phase sizes.
+   */
+  inputTokens?: number;
+  outputTokens?: number;
   /** Populated on failure. */
   error?: string;
+}
+
+/**
+ * Task #197: richer macro-expansion callback return shape so the
+ * executor can record per-pass token usage. The simple
+ * `WorkflowNode[]` return remains supported as the back-compat path
+ * for ad-hoc / test callbacks that don't have token info.
+ */
+export interface MacroExpansionResult {
+  nodes: WorkflowNode[];
+  usage?: { inputTokens: number; outputTokens: number };
 }
 
 // ── Checkpointing ───────────────────────────────────────────────────────────

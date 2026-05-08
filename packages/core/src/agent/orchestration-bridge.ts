@@ -1063,10 +1063,24 @@ ${userTask}`;
                     `(known keys: ${[...bodies.keys()].slice(0, 8).join(', ')})`,
                 );
               }
+              // Compact upstream-phase summary built from the macro's
+              // own `phaseDependsOn` declarations + the trusted bodies
+              // map. We pass titles only (not bodies) so the sub-planner
+              // sees enough context to avoid duplicating upstream work
+              // without bloating the sub-plan prompt.
+              const upstreamIds = cfg.phaseDependsOn ?? [];
+              const upstreamSummary = upstreamIds
+                .map((pid) => {
+                  const upKey = `${cfg.specRef}::${pid}`;
+                  const upPhase = bodies.get(upKey);
+                  return upPhase ? `- \`${pid}\`: ${upPhase.title}` : `- \`${pid}\` (title unavailable)`;
+                })
+                .join('\n');
               return this.planner.subPlan(
                 node,
                 executorOverrides.codingPreamble!,
                 phase.body,
+                upstreamSummary || undefined,
               );
             },
           }

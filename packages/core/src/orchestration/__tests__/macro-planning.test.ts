@@ -431,30 +431,47 @@ describe('Bridge wiring — sub-planner invoked once per macro node with resolve
       ['OTHER.md::other-1', { title: 'O1', body: 'body for OTHER phase 1' }],
     ]);
 
-    // Mock subPlan that records every invocation and returns a trivial
-    // 1-node sub-DAG.
+    // Mock subPlan that records every invocation and returns the rich
+    // {nodes, usage} shape (mirrors `Planner.subPlan` post-Task #197).
     const subPlanMock = vi.fn(
-      async (node: WorkflowNode, _preamble: string, body: string): Promise<WorkflowNode[]> => [
-        {
-          id: `${node.macro!.phaseId}__only`,
-          type: 'AGENT',
-          label: `${body.length}c`,
-          dependsOn: [],
-          agent: { model: 'm', task: body },
-        },
-      ],
+      async (
+        node: WorkflowNode,
+        _preamble: string,
+        body: string,
+        _upstream?: string,
+      ): Promise<{ nodes: WorkflowNode[]; usage: { inputTokens: number; outputTokens: number } }> => ({
+        nodes: [
+          {
+            id: `${node.macro!.phaseId}__only`,
+            type: 'AGENT',
+            label: `${body.length}c`,
+            dependsOn: [],
+            agent: { model: 'm', task: body },
+          },
+        ],
+        usage: { inputTokens: 1000, outputTokens: 200 },
+      }),
     );
 
     // Reconstruct the bridge's closure. This is the exact shape wired
     // in `OrchestrationBridge.executePlan` for coding dispatches.
     const codingPreamble = '<repo block>';
-    const macroExpansionCallback = (node: WorkflowNode): Promise<WorkflowNode[]> => {
+    const macroExpansionCallback = (
+      node: WorkflowNode,
+    ): Promise<{ nodes: WorkflowNode[]; usage: { inputTokens: number; outputTokens: number } }> => {
       const cfg = node.macro;
       if (!cfg) throw new Error(`MACRO_NODE '${node.id}' missing macro config`);
       const key = `${cfg.specRef}::${cfg.phaseId}`;
       const phase = phaseBodies.get(key);
       if (!phase) throw new Error(`No body for '${key}'`);
-      return subPlanMock(node, codingPreamble, phase.body);
+      // Bridge-style upstream summary built from phaseDependsOn.
+      const upstream = (cfg.phaseDependsOn ?? [])
+        .map((pid) => {
+          const p = phaseBodies.get(`${cfg.specRef}::${pid}`);
+          return p ? `- \`${pid}\`: ${p.title}` : `- \`${pid}\` (title unavailable)`;
+        })
+        .join('\n');
+      return subPlanMock(node, codingPreamble, phase.body, upstream || undefined);
     };
 
     const graph = buildGraph(macroNodes, 'bridge-wiring');
