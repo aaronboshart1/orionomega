@@ -133,18 +133,29 @@ export function GitPane() {
         body: JSON.stringify(body),
       });
       setSelection(r.selection);
-      // Clear stale status from the previous selection; refetch fresh status
-      // for the new clone (may be null until the first sync/dispatch).
       setStatus(null);
+      // Automatically sync (clone/fetch) on first selection.
       try {
-        const fresh = await api<{ selection: SelectedRepo | null; status: RepoStatus | null }>(
-          `/api/git/sessions/${encodeURIComponent(sessionId)}/repo`,
-        );
-        setStatus(fresh.status ?? null);
+        const syncResult = await api<{
+          result: { cloned: boolean; fetched: boolean; fastForwarded: boolean; headCommit: string | null };
+          status: RepoStatus | null;
+          statusError?: string | null;
+        }>(`/api/git/sessions/${encodeURIComponent(sessionId)}/repo/sync`, { method: 'POST' });
+        setStatus(syncResult.status ?? null);
+        if (syncResult.statusError) {
+          setError(`Could not read repo status: ${syncResult.statusError}`);
+        }
+        const head = syncResult.result.headCommit ? syncResult.result.headCommit.slice(0, 8) : 'unknown';
+        const parts = [
+          syncResult.result.cloned ? 'cloned' : null,
+          syncResult.result.fetched ? 'fetched' : null,
+          syncResult.result.fastForwarded ? 'fast-forwarded' : null,
+        ].filter(Boolean);
+        setInfo(`Repository selected and synced (${parts.join(', ') || 'no changes'}). HEAD ${head}`);
       } catch {
-        // Best-effort refresh; absence of status just means no clone yet.
+        // Sync failed; repo is still selected, user can retry manually.
+        setInfo('Selected for this session. Next code-mode message will use this repo.');
       }
-      setInfo('Selected for this session. Next code-mode message will use this repo.');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to select repo');
     } finally {
