@@ -469,10 +469,26 @@ export class Planner {
         }),
       );
 
+      // Task #197 (review follow-up): explicit post-plan macro-node
+      // count guard. The input-layer `assertMacroPlanFeasible` cap
+      // (40 phases) bounds what we *ask* the planner to handle, but a
+      // misbehaving planner could still emit more MACRO_NODEs than
+      // that. Catch it here with the same actionable "split the spec"
+      // message before we hand off to the executor + sub-planner.
+      const macroNodeCount = nodes.filter((n) => n.type === 'MACRO_NODE').length;
+      const MACRO_PLAN_MAX_NODES = 40;
+      if (macroNodeCount > MACRO_PLAN_MAX_NODES) {
+        throw new Error(
+          `Planner emitted ${macroNodeCount} MACRO_NODEs (cap ${MACRO_PLAN_MAX_NODES}) — split the spec. ` +
+            `Break the spec into multiple smaller files and dispatch them in separate runs.`,
+        );
+      }
+
       const graph = buildGraph(nodes, summary.slice(0, 80));
 
       log.info(
-        `Plan generated: ${nodes.length} nodes, ${graph.layers.length} layers`,
+        `Plan generated: ${nodes.length} nodes, ${graph.layers.length} layers` +
+          (macroNodeCount > 0 ? ` (${macroNodeCount} MACRO_NODE)` : ''),
       );
 
       return {
