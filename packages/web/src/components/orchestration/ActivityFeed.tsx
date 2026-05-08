@@ -21,6 +21,7 @@ import {
   Filter,
   ArrowDown,
   Layers,
+  Loader2,
 } from 'lucide-react';
 import { useOrchestrationStore, type WorkerEvent, type WorkerEventType } from '@/stores/orchestration';
 import { formatTime } from '@/utils/format';
@@ -44,6 +45,9 @@ const typeIcons: Record<string, React.ReactNode> = {
   macro_expansion_started: <Layers size={12} aria-hidden className="text-fuchsia-400" />,
   macro_expansion_complete: <Layers size={12} aria-hidden className="text-emerald-400" />,
   macro_expansion_failed: <Layers size={12} aria-hidden className="text-red-400" />,
+  planner_started: <Loader2 size={12} aria-hidden className="text-indigo-400 animate-spin" />,
+  planner_complete: <Map size={12} aria-hidden className="text-emerald-400" />,
+  planner_failed: <XCircle size={12} aria-hidden className="text-red-400" />,
 };
 
 // Left-border accent color per event type (CSS color value)
@@ -66,6 +70,9 @@ const typeBorderColors: Partial<Record<string, string>> = {
   macro_expansion_started:  '#d946ef',
   macro_expansion_complete: '#10b981',
   macro_expansion_failed:   '#ef4444',
+  planner_started:          '#6366f1',
+  planner_complete:         '#10b981',
+  planner_failed:           '#ef4444',
 };
 
 const typeLabels: Record<WorkerEventType, string> = {
@@ -87,6 +94,9 @@ const typeLabels: Record<WorkerEventType, string> = {
   macro_expansion_started: 'Sub-plan Start',
   macro_expansion_complete: 'Sub-plan Done',
   macro_expansion_failed: 'Sub-plan Failed',
+  planner_started: 'Plan Start',
+  planner_complete: 'Plan Done',
+  planner_failed: 'Plan Failed',
 };
 
 const defaultIcon = <BarChart3 size={12} aria-hidden className="text-zinc-400" />;
@@ -244,6 +254,32 @@ function EventContent({ event }: { event: WorkerEvent }) {
         </span>
       );
 
+    case 'planner_started':
+      return event.planner ? (
+        <span className="text-indigo-400">
+          Planning with <span className="font-semibold">{event.planner.model}</span>
+          <span className="ml-1 text-zinc-500">
+            ({event.planner.promptChars.toLocaleString()} chars)
+          </span>
+        </span>
+      ) : <span className="text-indigo-400">{event.message || 'Planning…'}</span>;
+
+    case 'planner_complete':
+      return event.planner ? (
+        <span className="text-emerald-400">
+          Plan ready
+          <span className="ml-1 text-zinc-400">— {event.planner.nodeCount ?? 0} node(s)</span>
+          <span className="ml-1 text-zinc-600 text-[10px]">{event.planner.model}</span>
+        </span>
+      ) : <span className="text-emerald-400">{event.message || 'Plan ready'}</span>;
+
+    case 'planner_failed':
+      return (
+        <span className="text-red-400">
+          {event.planner?.error || event.error || event.message || 'Planning failed'}
+        </span>
+      );
+
     default:
       return <span className="text-zinc-400">{event.message || event.type}</span>;
   }
@@ -292,6 +328,7 @@ const ALL_EVENT_TYPES: WorkerEventType[] = [
   'error', 'done', 'loop_iteration', 'replan', 'fileLock',
   'planning', 'warning', 'agent_start', 'agent_complete', 'info',
   'macro_expansion_started', 'macro_expansion_complete', 'macro_expansion_failed',
+  'planner_started', 'planner_complete', 'planner_failed',
 ];
 
 function FilterBar({

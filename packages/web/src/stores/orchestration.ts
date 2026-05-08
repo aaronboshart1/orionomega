@@ -19,7 +19,10 @@ export type WorkerEventType =
   | 'info'
   | 'macro_expansion_started'
   | 'macro_expansion_complete'
-  | 'macro_expansion_failed';
+  | 'macro_expansion_failed'
+  | 'planner_started'
+  | 'planner_complete'
+  | 'planner_failed';
 
 /** Task #199: macro-expansion progress payload mirrored from `@orionomega/core`. */
 export interface MacroEventPayload {
@@ -62,6 +65,14 @@ export interface WorkerEvent {
   tokenUsage?: { input: number; output: number; cacheRead?: number; cacheWrite?: number };
   /** Task #199: macro-expansion progress payload (set on `macro_expansion_*` events). */
   macro?: MacroEventPayload;
+  /** Task #200: planner lifecycle payload (set on `planner_*` events). */
+  planner?: {
+    model: string;
+    promptChars: number;
+    nodeCount?: number;
+    fellBack?: boolean;
+    error?: string;
+  };
 }
 
 export interface GraphNode {

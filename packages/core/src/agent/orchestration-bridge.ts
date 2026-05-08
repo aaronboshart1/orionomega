@@ -203,6 +203,24 @@ export class OrchestrationBridge {
   /** Whether there are any guarded DAG confirmations awaiting approval. */
   get hasPendingConfirmations(): boolean { return this.pendingConfirmations.size > 0; }
 
+  /**
+   * Task #200: build a planner-event emitter scoped to the given
+   * workflowId. The planner calls this for `planner_started` /
+   * `planner_complete` / `planner_failed`; we tag each event with the
+   * workflowId and forward it through the standard `callbacks.onEvent`
+   * pipeline so the web UI can render a live "Planning…" indicator
+   * before the executor exists.
+   */
+  private makePlannerEmit(workflowId: string): (event: WorkerEvent) => void {
+    return (event: WorkerEvent) => {
+      try {
+        this.callbacks.onEvent({ ...event, workflowId });
+      } catch (err) {
+        log.warn(`planner emit relay failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    };
+  }
+
   // ── Thinking step helper ─────────────────────────────────────────
 
   private _stepTimers = new Map<string, number>();
@@ -297,6 +315,15 @@ export class OrchestrationBridge {
       onPlanReady?: (plan: PlannerOutput) => Promise<{ postExecute?: (success: boolean) => Promise<void> } | void>;
     } = {},
   ): Promise<void> {
+    // Task #200: mint the workflowId BEFORE planning so we can scope
+    // the new `planner_*` lifecycle events to the same workflow they
+    // belong to. Code-mode dispatches already supply `opts.workflowId`
+    // (so the per-run checkout dir matches the executor's runId);
+    // other callers get a fresh random id that we then stamp onto
+    // `plan.graph.id` once the planner returns.
+    const workflowId = opts.workflowId ?? randomBytes(8).toString('hex');
+    const plannerEmit = this.makePlannerEmit(workflowId);
+
     this.emitStep('memory', 'Recalling memory', 'active');
     this.callbacks.onThinking('Planning…', true, false);
 
@@ -308,18 +335,15 @@ export class OrchestrationBridge {
       const plan = await this.planner.plan(task, {
         ...(memories.length ? { memories } : {}),
         ...(this.availableSkills.length ? { availableSkills: this.availableSkills } : {}),
-      }, preRecalledContext);
+      }, preRecalledContext, plannerEmit);
       const nodeCount = plan.graph?.nodes ? (plan.graph.nodes instanceof Map ? plan.graph.nodes.size : Object.keys(plan.graph.nodes).length) : 0;
       this.emitStep('planning', 'Generating plan', 'done', `${nodeCount} node${nodeCount !== 1 ? 's' : ''} in DAG`);
       this.callbacks.onThinking('', true, true);
 
-      // Override the planner's random graph.id with the caller's
-      // pre-minted workflowId (used by code mode — see opts docs).
-      // Safe because `Graph` is a plain mutable object literal and
-      // nothing has consumed `plan.graph.id` yet at this point.
-      if (opts.workflowId) {
-        plan.graph.id = opts.workflowId;
-      }
+      // Stamp the pre-minted workflowId onto the plan so the executor
+      // and any downstream consumer (run-artifact dir, checkpoint
+      // store) see the SAME id we used for the planner_* events above.
+      plan.graph.id = workflowId;
 
       // Task #196: give the caller a chance to mutate plan nodes
       // (e.g. allocate per-CODING_AGENT-node git worktrees and pin each
@@ -811,6 +835,11 @@ ${userTask}`;
     task: string,
     pushHistory: (entry: { role: string; content: string }) => void,
   ): Promise<void> {
+    // Task #200: mint workflowId up-front so planner_* events are
+    // scoped to the same id we'll later use for `plan.graph.id`.
+    const workflowId = randomBytes(8).toString('hex');
+    const plannerEmit = this.makePlannerEmit(workflowId);
+
     this.emitStep('memory', 'Recalling memory', 'active');
     this.callbacks.onThinking('Analysing your request and building an execution plan…', true, false);
 
@@ -822,7 +851,8 @@ ${userTask}`;
       const plan = await this.planner.plan(task, {
         ...(memories.length ? { memories } : {}),
         ...(this.availableSkills.length ? { availableSkills: this.availableSkills } : {}),
-      }, preRecalledContext);
+      }, preRecalledContext, plannerEmit);
+      plan.graph.id = workflowId;
 
       const nodeCount = plan.graph?.nodes ? (plan.graph.nodes instanceof Map ? plan.graph.nodes.size : Object.keys(plan.graph.nodes).length) : 0;
       this.emitStep('planning', 'Generating plan', 'done', `${nodeCount} node${nodeCount !== 1 ? 's' : ''} in DAG`);
@@ -852,6 +882,11 @@ ${userTask}`;
     task: string,
     pushHistory: (entry: { role: string; content: string }) => void,
   ): Promise<void> {
+    // Task #200: mint workflowId up-front so planner_* events scope
+    // to the same id used later for `plan.graph.id` / executor.
+    const workflowId = randomBytes(8).toString('hex');
+    const plannerEmit = this.makePlannerEmit(workflowId);
+
     this.emitStep('memory', 'Recalling memory', 'active');
     this.callbacks.onThinking('Planning and executing immediately…', true, false);
 
@@ -863,7 +898,8 @@ ${userTask}`;
       const plan = await this.planner.plan(task, {
         ...(memories.length ? { memories } : {}),
         ...(this.availableSkills.length ? { availableSkills: this.availableSkills } : {}),
-      }, preRecalledContext);
+      }, preRecalledContext, plannerEmit);
+      plan.graph.id = workflowId;
       const nodeCount = plan.graph?.nodes ? (plan.graph.nodes instanceof Map ? plan.graph.nodes.size : Object.keys(plan.graph.nodes).length) : 0;
       this.emitStep('planning', 'Generating plan', 'done', `${nodeCount} node${nodeCount !== 1 ? 's' : ''} in DAG`);
       this.callbacks.onThinking('', true, true);

@@ -199,7 +199,10 @@ export interface WorkerEvent {
     | 'replan'
     | 'macro_expansion_started'
     | 'macro_expansion_complete'
-    | 'macro_expansion_failed';
+    | 'macro_expansion_failed'
+    | 'planner_started'
+    | 'planner_complete'
+    | 'planner_failed';
   tool?: { name: string; action?: string; file?: string; summary: string; id?: string };
   thinking?: string;
   progress?: number;
@@ -237,6 +240,23 @@ export interface WorkerEvent {
      */
     subNodeIds?: string[];
     /** Set on `macro_expansion_failed`. */
+    error?: string;
+  };
+  /**
+   * Task #200: top-level planner lifecycle payload, set on the three
+   * `planner_*` event types so the orchestration UI can render a
+   * "Planning…" indicator while `Planner.plan` is in flight.
+   */
+  planner?: {
+    /** Model id used for this planner pass. */
+    model: string;
+    /** Approximate combined prompt size (system + task) in chars. */
+    promptChars: number;
+    /** Set on `planner_complete` — number of nodes the planner returned. */
+    nodeCount?: number;
+    /** Set on `planner_complete` — true when the planner fell back to a single-node plan. */
+    fellBack?: boolean;
+    /** Set on `planner_failed`. */
     error?: string;
   };
 }

@@ -141,12 +141,18 @@ describe('OrchestrationBridge.dispatchFullDAG: workflowId override', () => {
     expect(replayedOverrides).toEqual({ codingRepoDir: CHECKOUT });
   });
 
-  it('leaves the planner id untouched when no workflowId override is supplied', async () => {
+  it('mints a workflowId up-front and overrides the planner-supplied id even with no caller override (Task #200)', async () => {
+    // Task #200 mints the workflowId BEFORE planning so the new
+    // `planner_*` lifecycle events can be scoped to the same id the
+    // executor will later use. As a side effect, the planner's own
+    // random `graph.id` is always discarded — the bridge stamps the
+    // pre-minted id onto `plan.graph.id` regardless of whether the
+    // caller supplied `opts.workflowId`.
     const onDAGConfirm = vi.fn();
     const bridge = new OrchestrationBridge(
       { workspaceDir: '/tmp/ws', checkpointDir: '/tmp/cp', workerTimeout: 60, maxRetries: 0 },
       {
-        onText: vi.fn(), onThinking: vi.fn(), onPlan: vi.fn(), onDAGConfirm,
+        onText: vi.fn(), onThinking: vi.fn(), onPlan: vi.fn(), onDAGConfirm, onEvent: vi.fn(),
       } as unknown as ConstructorParameters<typeof OrchestrationBridge>[1],
       { recallForPlanning: async () => [] } as unknown as ConstructorParameters<typeof OrchestrationBridge>[2],
       [],
@@ -160,6 +166,56 @@ describe('OrchestrationBridge.dispatchFullDAG: workflowId override', () => {
     await bridge.dispatchFullDAG('test task', () => {}, { requireConfirmation: true });
 
     expect(onDAGConfirm).toHaveBeenCalledTimes(1);
-    expect((onDAGConfirm.mock.calls[0][0] as { workflowId: string }).workflowId).toBe(PLANNER_ID);
+    const seenId = (onDAGConfirm.mock.calls[0][0] as { workflowId: string }).workflowId;
+    expect(seenId).not.toBe(PLANNER_ID);
+    expect(seenId).toMatch(/^[0-9a-f]{16}$/);
+  });
+
+  it('emits planner_started/complete events scoped to the pre-minted workflowId (Task #200)', async () => {
+    const onEvent = vi.fn();
+    const bridge = new OrchestrationBridge(
+      { workspaceDir: '/tmp/ws', checkpointDir: '/tmp/cp', workerTimeout: 60, maxRetries: 0 },
+      {
+        onText: vi.fn(), onThinking: vi.fn(), onPlan: vi.fn(), onDAGConfirm: vi.fn(), onEvent,
+      } as unknown as ConstructorParameters<typeof OrchestrationBridge>[1],
+      { recallForPlanning: async () => [] } as unknown as ConstructorParameters<typeof OrchestrationBridge>[2],
+      [],
+      'claude-sonnet-4-20250514',
+    );
+
+    // Stub planner to invoke its emit callback the same way the real
+    // planner does — proves the bridge wires it correctly and tags
+    // each event with the pre-minted workflowId.
+    type EmitFn = (e: { type: string; workerId: string; nodeId: string; timestamp: string; planner?: unknown }) => void;
+    (bridge as unknown as { planner: { plan: (t: string, ctx: unknown, pre: unknown, emit?: EmitFn) => Promise<PlannerOutput> } }).planner = {
+      plan: vi.fn(async (_t, _ctx, _pre, emit) => {
+        emit?.({
+          type: 'planner_started', workerId: 'planner', nodeId: 'planner',
+          timestamp: new Date().toISOString(),
+          planner: { model: 'fake-model', promptChars: 1234 },
+        });
+        emit?.({
+          type: 'planner_complete', workerId: 'planner', nodeId: 'planner',
+          timestamp: new Date().toISOString(),
+          planner: { model: 'fake-model', promptChars: 1234, nodeCount: 0 },
+        });
+        return fakePlan('planner-random');
+      }),
+    };
+
+    await bridge.dispatchFullDAG('hello', () => {}, {
+      requireConfirmation: true,
+      workflowId: 'mint-Z',
+    });
+
+    const types = onEvent.mock.calls.map((c) => (c[0] as { type: string }).type);
+    expect(types).toContain('planner_started');
+    expect(types).toContain('planner_complete');
+    for (const call of onEvent.mock.calls) {
+      const evt = call[0] as { type: string; workflowId?: string };
+      if (evt.type.startsWith('planner_')) {
+        expect(evt.workflowId).toBe('mint-Z');
+      }
+    }
   });
 });

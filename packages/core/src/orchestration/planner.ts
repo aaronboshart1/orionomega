@@ -6,7 +6,7 @@
  * into a WorkflowGraph, and falls back to a single-node plan on failure.
  */
 
-import type { PlannerOutput, WorkflowNode } from './types.js';
+import type { PlannerOutput, WorkflowNode, WorkerEvent } from './types.js';
 import { buildGraph } from './graph.js';
 import { AnthropicClient } from '../anthropic/client.js';
 import { readConfig } from '../config/loader.js';
@@ -57,6 +57,14 @@ export class Planner {
       workspaceFiles?: string[];
     },
     preRecalledContext?: string,
+    /**
+     * Task #200: optional planner-lifecycle emitter. The orchestration
+     * bridge passes a callback that wraps each event with the
+     * pre-minted workflowId and forwards it through the standard
+     * `callbacks.onEvent` pipeline so the web UI can render a live
+     * "Planning…" indicator while this method is in flight.
+     */
+    emit?: (event: WorkerEvent) => void,
   ): Promise<PlannerOutput> {
     const appConfig = readConfig();
     const apiKey = appConfig.models.apiKey;
@@ -64,6 +72,11 @@ export class Planner {
 
     if (!apiKey) {
       log.warn('No API key configured — falling back to single-node plan');
+      this.emitPlannerEvent(emit, 'planner_failed', {
+        model,
+        promptChars: task.length,
+        error: 'No API key configured',
+      });
       return this.fallbackPlan(task, 'No API key configured');
     }
 
@@ -149,6 +162,11 @@ export class Planner {
       discoveredModels,
       mainModel: appConfig.models.default,
       infraContext,
+    });
+
+    this.emitPlannerEvent(emit, 'planner_started', {
+      model,
+      promptChars: systemPrompt.length + task.length,
     });
 
     try {
@@ -282,6 +300,11 @@ export class Planner {
           stopReason: response.stop_reason,
           contentTypes: response.content.map((b) => b.type),
         });
+        this.emitPlannerEvent(emit, 'planner_failed', {
+          model,
+          promptChars: systemPrompt.length + task.length,
+          error: 'Planner returned no parseable plan',
+        });
         return this.fallbackPlan(
           task,
           'The planner could not structure this task into a multi-step plan. Running as a single task instead.',
@@ -302,6 +325,11 @@ export class Planner {
           outputTokens: response.usage.output_tokens,
         });
         if (partialNodeCount === 0) {
+          this.emitPlannerEvent(emit, 'planner_failed', {
+            model,
+            promptChars: systemPrompt.length + task.length,
+            error: 'Planner ran out of output tokens before producing any nodes',
+          });
           return this.fallbackPlan(
             task,
             'The planner ran out of output tokens before producing any nodes. The request is too large for a single planning pass — split the spec into smaller phases (e.g. one module per request) or simplify the prompt.',
@@ -319,6 +347,11 @@ export class Planner {
       const rawNodes = parsed.nodes;
       if (!Array.isArray(rawNodes) || rawNodes.length === 0) {
         log.warn('Planner returned no nodes', { reasoning });
+        this.emitPlannerEvent(emit, 'planner_failed', {
+          model,
+          promptChars: systemPrompt.length + task.length,
+          error: 'Planner returned no nodes',
+        });
         return this.fallbackPlan(task, 'Running as a single task.');
       }
 
@@ -491,6 +524,12 @@ export class Planner {
           (macroNodeCount > 0 ? ` (${macroNodeCount} MACRO_NODE)` : ''),
       );
 
+      this.emitPlannerEvent(emit, 'planner_complete', {
+        model,
+        promptChars: systemPrompt.length + task.length,
+        nodeCount: nodes.length,
+      });
+
       return {
         graph,
         reasoning,
@@ -505,10 +544,54 @@ export class Planner {
       // user sees the actionable "split the spec" message immediately.
       if (msg.includes('MACRO_NODEs (cap')) {
         log.error(`Planner failed (macro overflow, no fallback): ${msg}`);
+        this.emitPlannerEvent(emit, 'planner_failed', {
+          model,
+          promptChars: systemPrompt.length + task.length,
+          error: msg,
+        });
         throw err;
       }
       log.error(`Planner failed: ${msg}`);
+      this.emitPlannerEvent(emit, 'planner_failed', {
+        model,
+        promptChars: systemPrompt.length + task.length,
+        error: msg,
+      });
       return this.fallbackPlan(task, `Planner error: ${msg}`);
+    }
+  }
+
+  /**
+   * Task #200: emit a typed planner-lifecycle event through the
+   * caller-supplied callback. Mirrors `emitMacroEvent` on the executor
+   * but lives here because the planner runs before any executor exists.
+   * Workflow scoping is the caller's responsibility (the bridge wraps
+   * each event with the pre-minted workflowId before forwarding).
+   */
+  private emitPlannerEvent(
+    emit: ((event: WorkerEvent) => void) | undefined,
+    type: 'planner_started' | 'planner_complete' | 'planner_failed',
+    planner: NonNullable<WorkerEvent['planner']>,
+  ): void {
+    if (!emit) return;
+    const message =
+      type === 'planner_started'
+        ? `Planning with ${planner.model} (${planner.promptChars.toLocaleString()} chars)`
+        : type === 'planner_complete'
+          ? `Plan ready: ${planner.nodeCount ?? 0} node(s)`
+          : `Planning failed: ${planner.error ?? 'unknown error'}`;
+    try {
+      emit({
+        workerId: 'planner',
+        nodeId: 'planner',
+        timestamp: new Date().toISOString(),
+        type,
+        message,
+        planner,
+        ...(type === 'planner_failed' && planner.error ? { error: planner.error } : {}),
+      });
+    } catch (e) {
+      log.warn(`Planner event emit failed: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 

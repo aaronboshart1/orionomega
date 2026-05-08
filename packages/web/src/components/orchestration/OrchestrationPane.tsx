@@ -5,6 +5,7 @@ import { useOrchestrationStore } from '@/stores/orchestration';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { ActivityFeed } from './ActivityFeed';
 import { MacroExpansionPanel } from './MacroExpansionPanel';
+import { PlanningIndicator } from './PlanningIndicator';
 import { WorkerDetail } from './WorkerDetail';
 import { WorkflowSummary } from './WorkflowSummary';
 import { MemoryFeed } from './MemoryFeed';
@@ -365,6 +366,7 @@ export function OrchestrationPane() {
             </div>
           )}
 
+          {!activeIsDirect && <PlanningIndicator />}
           {!activeIsDirect && <MacroExpansionPanel />}
 
           <div
