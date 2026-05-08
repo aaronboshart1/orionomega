@@ -17,7 +17,9 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { resolve as resolvePath } from 'node:path';
+import { resolve as resolvePath, join } from 'node:path';
+import { mkdtempSync, mkdirSync, existsSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import {
   prepareCodingDispatch,
   buildCodingTaskPreamble,
@@ -122,6 +124,85 @@ describe('prepareCodingDispatch', () => {
     expect(out.codingTaskPreamble).toMatch(/Branch: release-2\.0/);
   });
 
+  it('installs the safe-commit pre-push hook + .gitignore into the checkout (Task #209)', async () => {
+    // Use a real temp dir so the safe-commit installers have something
+    // to write into. The cloneRepo stub creates `<runDir>/repo/.git` so
+    // installSafeCommitHook recognises it as a real checkout.
+    const root = mkdtempSync(join(tmpdir(), 'coding-dispatch-test-'));
+    try {
+      const realClone = vi.fn(async (_url: string, runDir: string) => {
+        const target = join(runDir, 'repo');
+        mkdirSync(join(target, '.git'), { recursive: true });
+        return target;
+      });
+      const out = await prepareCodingDispatch({
+        userTask: 'do the thing',
+        workspaceDir: root,
+        runId: 'safe-commit-run',
+        remote: {},
+        cloneRepo: realClone,
+        getHeadCommit: async () => 'd'.repeat(40),
+        resolveRemote: async () => 'https://github.com/foo/bar.git',
+        mkdir: (dir: string) => mkdirSync(dir, { recursive: true }),
+      });
+
+      // The hook lives at .git/hooks/pre-push and must be executable
+      // — git silently skips non-executable hooks, which would silently
+      // disable the entire safety net.
+      const hookPath = join(out.checkoutPath, '.git', 'hooks', 'pre-push');
+      expect(existsSync(hookPath)).toBe(true);
+      expect(statSync(hookPath).mode & 0o100).toBeTruthy();
+      expect(readFileSync(hookPath, 'utf-8')).toMatch(/OrionOmega safe-commit hook/);
+
+      // The .gitignore must be seeded so the agent's first `git add -A`
+      // doesn't sweep up node_modules / .env / etc.
+      const ignorePath = join(out.checkoutPath, '.gitignore');
+      expect(existsSync(ignorePath)).toBe(true);
+      const ignoreBody = readFileSync(ignorePath, 'utf-8');
+      expect(ignoreBody).toContain('node_modules/');
+      expect(ignoreBody).toContain('.env');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('FAILS the dispatch when .git exists but the safe-commit hook cannot be installed (Task #209)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'coding-dispatch-fail-test-'));
+    try {
+      const failingClone = vi.fn(async (_url: string, runDir: string) => {
+        const target = join(runDir, 'repo');
+        // Create .git as a FILE (not a directory) so installSafeCommitHook's
+        // statSync(.git).isDirectory() check returns false → the install
+        // returns installed=false even though a `.git` entry exists.
+        // Wait — that's the no-op path. We want a case where .git is a real
+        // dir but the install fails. Easier: drop a non-dir file at
+        // .git/hooks/pre-push so writeFileSync would clobber it (which is
+        // fine), so instead make .git/hooks a regular FILE so the hook
+        // path can't be created under it.
+        mkdirSync(target, { recursive: true });
+        mkdirSync(join(target, '.git'), { recursive: true });
+        // .git/hooks as a file → mkdirSync(hooksDir) is no-op (exists),
+        // then writeFileSync(hookPath = .git/hooks/pre-push) fails ENOTDIR.
+        require('node:fs').writeFileSync(join(target, '.git', 'hooks'), 'not a dir', 'utf-8');
+        return target;
+      });
+      await expect(
+        prepareCodingDispatch({
+          userTask: 'do the thing',
+          workspaceDir: root,
+          runId: 'safe-commit-fail-run',
+          remote: {},
+          cloneRepo: failingClone,
+          getHeadCommit: async () => 'd'.repeat(40),
+          resolveRemote: async () => 'https://github.com/foo/bar.git',
+          mkdir: (dir: string) => mkdirSync(dir, { recursive: true }),
+        }),
+      ).rejects.toThrow(/Safe-commit hook install failed/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('bubbles up RemoteResolutionError without cloning', async () => {
     const cloneRepo = vi.fn(fakeClone);
     const resolveRemote = vi.fn(async () => {
@@ -187,6 +268,27 @@ describe('buildCodingTaskPreamble', () => {
     expect(text).toMatch(/non-zero status/);
     expect(text).toMatch(/verbatim/);
     expect(text).toMatch(/orchestrator will fail the entire run/);
+  });
+
+  it('describes the safe-commit procedure (Task #209): gitignore, oversize check, secret deny-list', () => {
+    const text = buildCodingTaskPreamble(base);
+    // Step (a): the .gitignore template entries the agent must ensure.
+    expect(text).toMatch(/Safe-commit procedure/);
+    expect(text).toContain('node_modules/');
+    expect(text).toContain('.env.local');
+    expect(text).toContain('.next/');
+    // Step (a) must explicitly preserve user-curated content.
+    expect(text).toMatch(/preserved verbatim/);
+    // Step (c): 95 MB ceiling, with the explicit GitHub rationale.
+    expect(text).toMatch(/95 MB/);
+    expect(text).toMatch(/100 MB/);
+    // Step (d): secret deny-list including .pem / .key files.
+    expect(text).toMatch(/\*\.pem/);
+    expect(text).toMatch(/\*\.key/);
+    // Step (d) must allow .env.example through (conventional placeholder).
+    expect(text).toMatch(/\.env\.example/);
+    // Step (f): the run-summary breadcrumb.
+    expect(text).toMatch(/Commit safety:/);
   });
 
   it('appends the user task verbatim under "User\'s Task"', () => {

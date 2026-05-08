@@ -28,8 +28,8 @@
  *   caller.
  */
 
-import { mkdirSync } from 'node:fs';
-import { resolve as resolvePath } from 'node:path';
+import { mkdirSync, existsSync } from 'node:fs';
+import { resolve as resolvePath, join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import {
   resolveCodingRemote,
@@ -49,6 +49,10 @@ import {
   assertMacroPlanFeasible,
   type SpecReference,
 } from './spec-loader.js';
+import {
+  ensureSafeGitignore,
+  installSafeCommitHook,
+} from '../orchestration/coding/safe-commit.js';
 import { createLogger } from '../logging/logger.js';
 
 const log = createLogger('coding-dispatch');
@@ -236,6 +240,37 @@ export async function prepareCodingDispatch(
     branch = input.branch ?? DEFAULT_BRANCH;
   }
 
+  // Task #209: install the safe-commit pre-push hook + seed a sane
+  // `.gitignore` BEFORE the agent runs. The hook is the deterministic
+  // enforcement gate — git itself invokes it on `git push`, so even if
+  // the agent ignores the preamble's safe-commit procedure, an unsafe
+  // push fails with a clear message and the executor's existing
+  // "push failure → run failure" rule surfaces it verbatim to the
+  // user. The gitignore step prevents the offending files from being
+  // staged in the first place when the agent does follow the preamble.
+  //
+  // Failure policy: if the checkout is a real git repo (`.git` exists)
+  // we MUST succeed — silently downgrading to "advisory only" was the
+  // exact gap the first review caught. If `.git` is missing entirely
+  // (non-clone sandbox / unit test mock) we accept the no-op because
+  // there's nothing to protect.
+  const ignoreResult = ensureSafeGitignore(checkoutPath);
+  const hookResult = installSafeCommitHook(checkoutPath);
+  if (existsSync(join(checkoutPath, '.git')) && !hookResult.installed) {
+    throw new Error(
+      `Safe-commit hook install failed for ${checkoutPath}: refusing to ` +
+        `dispatch a coding run that can't enforce the 95 MB / secrets / ` +
+        `build-artefact deny-list. Check filesystem permissions on ` +
+        `${hookResult.hookPath}.`,
+    );
+  }
+  log.info('Safe-commit guards installed (Task #209)', {
+    checkoutPath,
+    gitignoreCreated: ignoreResult.created,
+    gitignoreAdded: ignoreResult.added.length,
+    hookInstalled: hookResult.installed,
+  });
+
   // Task #174: pre-load any `*.md` / `*.txt` / `*.spec` references in the
   // user task. The loader is best-effort — unresolved references are
   // dropped silently, so the historical no-spec preamble is still the
@@ -390,7 +425,33 @@ The repository has already been cloned into a fresh per-run output folder for yo
    - Push to the remote repository: \`${remoteUrl}\` branch \`${branch}\`
    - If \`git push\` fails for ANY reason (auth, branch protection, rejected non-fast-forward, network error), the agent MUST exit with a non-zero status and surface the **verbatim** \`git push\` stderr — do NOT swallow the error and do NOT try to "fix" it by force-pushing or rewriting history. The orchestrator will fail the entire run with that error message so the user can fix the underlying problem (credentials, permissions, branch).
    - Working directory: \`${checkoutPath}\`
-   - Use \`git add -A && git commit -F <(cat <<'EOF'\\n…task description…\\nEOF) && git push origin ${branch}\` (or equivalent)
+
+   **Safe-commit procedure (MUST follow in order — Task #209):**
+
+   a. **Ensure .gitignore covers the basics.** If \`.gitignore\` is missing or doesn't list the entries below, create / append them so the next \`git add\` doesn't sweep up build artefacts or secrets. Existing user-curated content MUST be preserved verbatim — only append, never overwrite.
+      Required entries: \`node_modules/\`, \`.env\`, \`.env.local\`, \`.env.*.local\`, \`.env.development\`, \`.env.production\`, \`.next/\`, \`dist/\`, \`build/\`, \`.cache/\`, \`.turbo/\`, \`coverage/\`, \`*.log\`, \`.DS_Store\`, \`Thumbs.db\`, \`.idea/\`, \`.vscode/\`.
+
+   b. **Stage with the new .gitignore in effect.** Run \`git add -A\` AFTER step (a) so the freshly-ignored paths are excluded.
+
+   c. **Refuse oversize files.** Run a check that lists every staged file with its size and rejects the commit when any single file exceeds **95 MB** (GitHub's hard limit is 100 MB; we leave a margin). Suggested snippet:
+      \`\`\`bash
+      MAX=$((95*1024*1024))
+      git diff --cached --name-only -z | while IFS= read -r -d '' f; do
+        [ -f "$f" ] || continue
+        sz=$(stat -c%s "$f" 2>/dev/null || stat -f%z "$f")
+        if [ "$sz" -gt "$MAX" ]; then
+          echo "REFUSE: $f is $sz bytes (>95 MB GitHub limit)" >&2
+          exit 1
+        fi
+      done || exit 1
+      \`\`\`
+      If this fails, do NOT \`git rm\` blindly — surface the file name(s) and exit non-zero. The user can then either delete the file, add a \`.gitignore\` rule, or set up Git LFS.
+
+   d. **Refuse secrets and stray build artefacts.** Even if \`.gitignore\` would have excluded them, double-check: any staged file matching \`*.env\`, \`*.env.*\` (except \`*.env.example\` / \`*.env.sample\`), \`*.pem\`, \`*.key\`, \`*.p12\`, or under \`node_modules/\` / \`.next/\` / \`dist/\` / \`build/\` / \`.cache/\` / \`.turbo/\` / \`coverage/\` MUST cause the commit to abort with a clear message naming the file. Use \`git rm --cached <file>\` to unstage and either delete or properly ignore it before retrying.
+
+   e. **Commit and push.** Only after (a)–(d) pass: \`git commit -F <(cat <<'EOF'\\n…task description…\\nEOF) && git push origin ${branch}\`. Do **NOT** pass \`--no-verify\` to either command — a pre-push hook is installed in this checkout that re-runs the size + secrets + artefact checks as a deterministic safety net, and skipping it defeats the whole protection.
+
+   f. **Report what was adjusted.** In the node's final output, include a single line of the form \`Commit safety: added <N> .gitignore entries; refused <M> files\` so the run summary captures the adjustment. If neither happened, say \`Commit safety: no changes\`.
 
 ### Critical Rules for Coding Mode
 - ALL CODING_AGENT nodes MUST set \`cwd\` to \`${checkoutPath}\`. The orchestrator also enforces this at the executor level as a defense-in-depth, but you must still set it explicitly so the planner output is self-describing.
