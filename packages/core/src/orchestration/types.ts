@@ -271,6 +271,40 @@ export interface ExecutionResult {
   totalCostUsd?: number;
   /** Total tool calls across all workers. */
   toolCallCount?: number;
+  /**
+   * Task #197: hierarchical macro-planning telemetry. Populated only
+   * when the run included MACRO_NODE expansion; absent otherwise so
+   * existing summaries stay visually identical for the common path.
+   */
+  macroPlanning?: MacroPlanningStats;
+}
+
+/**
+ * Task #197: per-run macro-planning telemetry surfaced into
+ * `run-summary.json/md` for diagnosing very-large-spec dispatches.
+ */
+export interface MacroPlanningStats {
+  /** Number of MACRO_NODE expansions attempted (incl. failures). */
+  expansionsAttempted: number;
+  /** Number of MACRO_NODE expansions that succeeded (sub-DAG spliced). */
+  expansionsSucceeded: number;
+  /** Total sub-nodes added to the live graph across all expansions. */
+  subNodesAdded: number;
+  /** Per-expansion breakdown for inspection. */
+  expansions: MacroExpansionRecord[];
+}
+
+export interface MacroExpansionRecord {
+  /** The MACRO_NODE id that was expanded (or attempted). */
+  macroNodeId: string;
+  /** Spec reference + phase id, mirroring the bridge's lookup key. */
+  specRef: string;
+  phaseId: string;
+  phaseTitle: string;
+  /** Number of sub-nodes the sub-planner returned (0 on failure). */
+  subNodeCount: number;
+  /** Populated on failure. */
+  error?: string;
 }
 
 // ── Checkpointing ───────────────────────────────────────────────────────────

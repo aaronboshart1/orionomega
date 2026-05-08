@@ -498,6 +498,100 @@ describe('Bridge wiring — sub-planner invoked once per macro node with resolve
   });
 });
 
+describe('Macro-planning telemetry (Task #197 review follow-up)', () => {
+  it('records per-expansion stats and surfaces failures into ExecutionResult.errors', async () => {
+    const macroNodes: WorkflowNode[] = [
+      {
+        id: 'macro-ok',
+        type: 'MACRO_NODE',
+        label: 'phase ok',
+        dependsOn: [],
+        macro: { specRef: 'SPEC.md', phaseId: 'phase-ok', phaseTitle: 'OK' },
+      },
+      {
+        id: 'macro-bad',
+        type: 'MACRO_NODE',
+        label: 'phase bad',
+        dependsOn: [],
+        macro: { specRef: 'SPEC.md', phaseId: 'phase-bad', phaseTitle: 'BAD' },
+      },
+    ];
+
+    const callback = async (n: WorkflowNode): Promise<WorkflowNode[]> => {
+      if (n.id === 'macro-bad') throw new Error('subplan exploded');
+      return [{
+        id: 'phase-ok__only',
+        type: 'AGENT',
+        label: 'ok-leaf',
+        dependsOn: [],
+        agent: { model: 'm', task: 't' },
+      }];
+    };
+
+    const graph = buildGraph(macroNodes, 'telemetry');
+    const bus = new EventBus();
+    const checkpointDir = mkdtempSync(join(tmpdir(), 'mp-telem-'));
+    const executor = new GraphExecutor(graph, bus, {
+      workspaceDir: tmpdir(),
+      checkpointDir,
+      workerTimeout: 60,
+      maxRetries: 0,
+      checkpointInterval: 1,
+      macroExpansionCallback: callback,
+    });
+
+    await expect(
+      (executor as unknown as { expandMacroNodesInLayer(i: number): Promise<void> })
+        .expandMacroNodesInLayer(0),
+    ).rejects.toThrow(/expansion failed.*subplan exploded/);
+
+    // Failure was surfaced into ExecutionResult.errors with phase context
+    // (the worker key embeds specRef::phaseId so users can grep summaries).
+    const errors = (executor as unknown as { errors: { worker: string; message: string }[] }).errors;
+    const macroErr = errors.find((e) => e.worker === 'macro:SPEC.md::phase-bad');
+    expect(macroErr).toBeDefined();
+    expect(macroErr!.message).toMatch(/SPEC\.md::phase-bad/);
+
+    // Telemetry records the failed expansion (and any successful ones
+    // processed before it; iteration stops on first throw, so the
+    // assertion is order-agnostic about which other records are present).
+    const records = (executor as unknown as {
+      macroExpansionRecords: { macroNodeId: string; subNodeCount: number; error?: string }[];
+    }).macroExpansionRecords;
+    const badRec = records.find((r) => r.macroNodeId === 'macro-bad');
+    expect(badRec).toBeDefined();
+    expect(badRec!.error).toMatch(/subplan exploded/);
+    expect(badRec!.subNodeCount).toBe(0);
+  });
+
+  it('writes a Macro Planning section into run-summary.md when expansions occurred', () => {
+    const checkpointDir = mkdtempSync(join(tmpdir(), 'mp-summary-'));
+    const graph = buildGraph([{
+      id: 'noop', type: 'AGENT', label: 'noop', dependsOn: [],
+      agent: { model: 'm', task: 't' },
+    }], 'summary');
+    const executor = new GraphExecutor(graph, new EventBus(), {
+      workspaceDir: tmpdir(),
+      checkpointDir,
+      workerTimeout: 60,
+      maxRetries: 0,
+      checkpointInterval: 1,
+    });
+    // Inject a synthetic record and rebuild the result.
+    (executor as unknown as { macroExpansionRecords: unknown[] }).macroExpansionRecords = [
+      { macroNodeId: 'macro-1', specRef: 'SPEC.md', phaseId: 'p1', phaseTitle: 'P1', subNodeCount: 3 },
+      { macroNodeId: 'macro-2', specRef: 'SPEC.md', phaseId: 'p2', phaseTitle: 'P2', subNodeCount: 0, error: 'boom' },
+    ];
+    const result = (executor as unknown as {
+      buildResult(s: 'complete' | 'error' | 'stopped', t: number): import('../types.js').ExecutionResult;
+    }).buildResult('complete', Date.now());
+    expect(result.macroPlanning).toBeDefined();
+    expect(result.macroPlanning!.expansionsAttempted).toBe(2);
+    expect(result.macroPlanning!.expansionsSucceeded).toBe(1);
+    expect(result.macroPlanning!.subNodesAdded).toBe(3);
+  });
+});
+
 describe('Planner JSON parsing — MACRO_NODE pass-through', () => {
   it('parses MACRO_NODE entries with their macro config block', async () => {
     // We import the planner's parser indirectly by going through buildGraph;

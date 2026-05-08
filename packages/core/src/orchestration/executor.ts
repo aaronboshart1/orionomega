@@ -313,6 +313,11 @@ export class GraphExecutor {
 
   /** Task #197: count of MACRO_NODE expansions performed so far. */
   private macroExpansions = 0;
+  /**
+   * Task #197: per-expansion telemetry. Surfaced into `ExecutionResult.macroPlanning`
+   * by `buildResult` and into `run-summary.md` by `writeRunSummaryArtifacts`.
+   */
+  private macroExpansionRecords: import('./types.js').MacroExpansionRecord[] = [];
 
   // Control flags
   private pauseRequested = false;
@@ -1275,15 +1280,37 @@ export class GraphExecutor {
         );
       }
 
+      // Task #197: build the telemetry record up-front so failure paths
+      // can surface specRef/phaseId in ExecutionResult.errors and
+      // run-summary, not just inside thrown messages.
+      const macroCfg = macroNode.macro;
+      const recordBase = {
+        macroNodeId: macroId,
+        specRef: macroCfg?.specRef ?? '<unknown>',
+        phaseId: macroCfg?.phaseId ?? '<unknown>',
+        phaseTitle: macroCfg?.phaseTitle ?? '<unknown>',
+      };
+      const recordFailure = (msg: string): void => {
+        this.macroExpansionRecords.push({ ...recordBase, subNodeCount: 0, error: msg });
+        this.errors.push({
+          worker: `macro:${recordBase.specRef}::${recordBase.phaseId}`,
+          message: msg,
+        });
+      };
+
       let subNodes: WorkflowNode[];
       try {
         subNodes = await this.config.macroExpansionCallback(macroNode);
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        throw new Error(`MACRO_NODE '${macroId}' expansion failed: ${msg}`);
+        const raw = err instanceof Error ? err.message : String(err);
+        const wrapped = `MACRO_NODE '${macroId}' (${recordBase.specRef}::${recordBase.phaseId}) expansion failed: ${raw}`;
+        recordFailure(wrapped);
+        throw new Error(wrapped);
       }
       if (!Array.isArray(subNodes) || subNodes.length === 0) {
-        throw new Error(`MACRO_NODE '${macroId}' expansion returned no sub-nodes`);
+        const msg = `MACRO_NODE '${macroId}' (${recordBase.specRef}::${recordBase.phaseId}) expansion returned no sub-nodes`;
+        recordFailure(msg);
+        throw new Error(msg);
       }
 
       // Validate uniqueness against the live graph before splicing.
@@ -1343,6 +1370,8 @@ export class GraphExecutor {
       for (const sn of subNodes) {
         this.graph.nodes.set(sn.id, sn);
       }
+
+      this.macroExpansionRecords.push({ ...recordBase, subNodeCount: subNodes.length });
 
       log.info(
         `MACRO_NODE '${macroId}' spliced: +${subNodes.length} nodes ` +
@@ -1962,6 +1991,24 @@ export class GraphExecutor {
         mdParts.push('');
       }
 
+      // Task #197: hierarchical macro-planning telemetry.
+      if (result.macroPlanning) {
+        const mp = result.macroPlanning;
+        mdParts.push('## Macro Planning (Task #197)');
+        mdParts.push('');
+        mdParts.push(`- **Expansions attempted:** ${mp.expansionsAttempted}`);
+        mdParts.push(`- **Expansions succeeded:** ${mp.expansionsSucceeded}`);
+        mdParts.push(`- **Sub-nodes added:** ${mp.subNodesAdded}`);
+        mdParts.push('');
+        mdParts.push('| Macro Node | Spec / Phase | Title | Sub-Nodes | Status |');
+        mdParts.push('|------------|--------------|-------|-----------|--------|');
+        for (const r of mp.expansions) {
+          const status = r.error ? `error: ${r.error.replace(/\|/g, '\\|')}` : 'ok';
+          mdParts.push(`| ${r.macroNodeId} | ${r.specRef}::${r.phaseId} | ${r.phaseTitle} | ${r.subNodeCount} | ${status} |`);
+        }
+        mdParts.push('');
+      }
+
       const allNodeIds = new Set([
         ...Object.keys(result.nodeOutputs ?? {}),
         ...[...this.nodeResults.keys()],
@@ -2064,6 +2111,20 @@ export class GraphExecutor {
       modelUsage.push({ model, ...usage, costUsd: cost });
     }
 
+    // Task #197: emit macro-planning telemetry only when the run
+    // actually used hierarchical planning, so the common-path summary
+    // stays visually identical.
+    let macroPlanning: import('./types.js').MacroPlanningStats | undefined;
+    if (this.macroExpansionRecords.length > 0) {
+      const succeeded = this.macroExpansionRecords.filter((r) => !r.error);
+      macroPlanning = {
+        expansionsAttempted: this.macroExpansionRecords.length,
+        expansionsSucceeded: succeeded.length,
+        subNodesAdded: succeeded.reduce((acc, r) => acc + r.subNodeCount, 0),
+        expansions: this.macroExpansionRecords,
+      };
+    }
+
     return {
       workflowId: this.graph.id,
       status: terminalStatus,
@@ -2081,6 +2142,7 @@ export class GraphExecutor {
       modelUsage,
       totalCostUsd,
       toolCallCount: Array.from(this.nodeResults.values()).reduce((sum, r) => sum + r.toolCallCount, 0),
+      macroPlanning,
     };
   }
 
