@@ -1426,6 +1426,7 @@ export class GraphExecutor {
       this.emitMacroEvent('macro_expansion_complete', {
         ...macroEventBase,
         subNodeCount: subNodes.length,
+        subNodeIds: subNodes.map((n) => n.id),
       });
     }
 

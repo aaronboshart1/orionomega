@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useCallback, useMemo } from 'react';
 import { Layers, Loader2, CheckCircle2, XCircle } from 'lucide-react';
 import { useOrchestrationStore, type WorkerEvent } from '@/stores/orchestration';
 
@@ -14,6 +14,8 @@ type Phase = {
   total: number;
   status: 'running' | 'done' | 'failed';
   subNodeCount?: number;
+  /** Task #201: ids of spliced sub-nodes; populated on completion. */
+  subNodeIds?: string[];
   error?: string;
   startedAt?: string;
   endedAt?: string;
@@ -26,6 +28,42 @@ type Phase = {
  */
 export function MacroExpansionPanel() {
   const events = useOrchestrationStore((s) => s.events);
+  const graphState = useOrchestrationStore((s) => s.graphState);
+  const activeWorkflowId = useOrchestrationStore((s) => s.activeWorkflowId);
+  const inlineDAGs = useOrchestrationStore((s) => s.inlineDAGs);
+  const selectedWorker = useOrchestrationStore((s) => s.selectedWorker);
+  const selectWorker = useOrchestrationStore((s) => s.selectWorker);
+
+  /**
+   * Task #201: resolve a phase row to a node id that exists in the live
+   * DAG. Prefers the macro node itself (still present while the phase is
+   * running) and falls back to the first spliced sub-node once the macro
+   * has been removed from the graph by `expandMacroNodesInLayer`.
+   */
+  const resolveTargetNodeId = useCallback(
+    (p: Phase): string | null => {
+      const liveNodeIds = new Set<string>();
+      if (graphState) {
+        for (const id of Object.keys(graphState.nodes)) liveNodeIds.add(id);
+      }
+      const dag = activeWorkflowId ? inlineDAGs[activeWorkflowId] : null;
+      if (dag) {
+        for (const n of dag.nodes) liveNodeIds.add(n.id);
+      }
+      if (liveNodeIds.has(p.macroNodeId)) return p.macroNodeId;
+      if (p.subNodeIds && p.subNodeIds.length > 0) {
+        const firstLive = p.subNodeIds.find((id) => liveNodeIds.has(id));
+        if (firstLive) return firstLive;
+        // Graph state may not have arrived yet — still useful to select
+        // the id so it highlights once the next snapshot lands.
+        return p.subNodeIds[0];
+      }
+      // No expansion data yet — best-effort select the macro id so it
+      // matches if/when it appears.
+      return p.macroNodeId;
+    },
+    [graphState, activeWorkflowId, inlineDAGs],
+  );
 
   const phases = useMemo<Phase[]>(() => {
     const map = new Map<string, Phase>();
@@ -58,6 +96,7 @@ export function MacroExpansionPanel() {
           ...base,
           status: 'done',
           subNodeCount: m.subNodeCount,
+          subNodeIds: m.subNodeIds,
           endedAt: e.timestamp,
         });
       } else {
@@ -97,11 +136,33 @@ export function MacroExpansionPanel() {
         )}
       </div>
       <ul className="max-h-32 overflow-y-auto px-3 pb-1.5 text-xs">
-        {phases.map((p) => (
+        {phases.map((p) => {
+          const targetId = resolveTargetNodeId(p);
+          const isSelected =
+            !!targetId &&
+            (selectedWorker === targetId ||
+              selectedWorker === p.macroNodeId ||
+              (p.subNodeIds?.includes(selectedWorker ?? '') ?? false));
+          return (
           <li
             key={p.key}
-            className="flex items-start gap-1.5 py-0.5"
-            title={`${p.specRef}::${p.phaseId}`}
+            role="button"
+            tabIndex={0}
+            onClick={() => {
+              if (targetId) selectWorker(targetId);
+            }}
+            onKeyDown={(ev) => {
+              if (!targetId) return;
+              if (ev.key === 'Enter' || ev.key === ' ') {
+                ev.preventDefault();
+                selectWorker(targetId);
+              }
+            }}
+            className={`flex items-start gap-1.5 py-0.5 -mx-1 px-1 rounded cursor-pointer hover:bg-fuchsia-900/20 focus:outline-none focus-visible:ring-1 focus-visible:ring-fuchsia-400 ${
+              isSelected ? 'bg-fuchsia-900/30 ring-1 ring-fuchsia-500/60' : ''
+            }`}
+            title={`${p.specRef}::${p.phaseId}${targetId ? ` — click to focus ${targetId}` : ''}`}
+            aria-label={`Focus DAG node for phase ${p.phaseTitle}`}
           >
             <span className="shrink-0 mt-0.5">
               {p.status === 'running' && (
@@ -132,7 +193,8 @@ export function MacroExpansionPanel() {
               </span>
             )}
           </li>
-        ))}
+          );
+        })}
       </ul>
     </div>
   );

@@ -228,6 +228,14 @@ export interface WorkerEvent {
     total: number;
     /** Set on `macro_expansion_complete` — number of sub-nodes spliced in. */
     subNodeCount?: number;
+    /**
+     * Task #201: ids of the sub-nodes spliced in by this expansion, in
+     * the order returned by the sub-planner. Populated on
+     * `macro_expansion_complete` so the UI's MacroExpansionPanel can
+     * deep-link a row to the first spliced sub-node once the macro
+     * itself has been removed from the live graph.
+     */
+    subNodeIds?: string[];
     /** Set on `macro_expansion_failed`. */
     error?: string;
   };

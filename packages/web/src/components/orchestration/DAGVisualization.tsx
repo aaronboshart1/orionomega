@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useCallback, useEffect } from 'react';
+import { useMemo, useCallback, useEffect, useRef } from 'react';
 import {
   ReactFlow,
   Background,
@@ -8,6 +8,7 @@ import {
   MiniMap,
   type Node,
   type Edge,
+  type ReactFlowInstance,
   useNodesState,
   useEdgesState,
 } from '@xyflow/react';
@@ -103,6 +104,8 @@ export function DAGVisualization() {
   const activeWorkflowId = useOrchestrationStore((s) => s.activeWorkflowId);
   const inlineDAGs = useOrchestrationStore((s) => s.inlineDAGs);
   const selectWorker = useOrchestrationStore((s) => s.selectWorker);
+  const selectedWorker = useOrchestrationStore((s) => s.selectedWorker);
+  const rfInstanceRef = useRef<ReactFlowInstance | null>(null);
 
   const { rfNodes, rfEdges } = useMemo(() => {
     if (graphState) {
@@ -135,6 +138,53 @@ export function DAGVisualization() {
     [selectWorker],
   );
 
+  const onInit = useCallback((instance: ReactFlowInstance) => {
+    rfInstanceRef.current = instance;
+  }, []);
+
+  /**
+   * Task #201: when an external selection occurs (e.g. clicking a row
+   * in the Sub-planning panel), pan the viewport so the corresponding
+   * DAG node is visible. The WorkerNode component already renders a
+   * highlight ring when its id matches `selectedWorker`.
+   *
+   * Only re-runs on selection change (not on every nodes/edges update),
+   * so live graph churn during a run doesn't keep snapping the viewport
+   * back to the selected node. If the node isn't in the React Flow
+   * instance yet on first attempt (e.g. user clicked a sub-planning row
+   * before the new layer rendered), retry once on the next animation
+   * frame so the deep-link still works.
+   */
+  const lastCenteredRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!selectedWorker) {
+      lastCenteredRef.current = null;
+      return;
+    }
+    if (lastCenteredRef.current === selectedWorker) return;
+
+    const tryCenter = (): boolean => {
+      const inst = rfInstanceRef.current;
+      if (!inst) return false;
+      const node = inst.getNode(selectedWorker);
+      if (!node) return false;
+      const width = node.measured?.width ?? node.width ?? 160;
+      const height = node.measured?.height ?? node.height ?? 60;
+      const cx = node.position.x + width / 2;
+      const cy = node.position.y + height / 2;
+      const currentZoom = inst.getViewport().zoom;
+      inst.setCenter(cx, cy, { zoom: Math.max(currentZoom, 1), duration: 500 });
+      lastCenteredRef.current = selectedWorker;
+      return true;
+    };
+
+    if (tryCenter()) return;
+    const handle = requestAnimationFrame(() => {
+      tryCenter();
+    });
+    return () => cancelAnimationFrame(handle);
+  }, [selectedWorker]);
+
   if (rfNodes.length === 0) {
     return (
       <div className="flex h-full items-center justify-center text-xs text-zinc-600">
@@ -150,6 +200,7 @@ export function DAGVisualization() {
       onNodesChange={onNodesChange}
       onEdgesChange={onEdgesChange}
       onNodeClick={onNodeClick}
+      onInit={onInit}
       nodeTypes={nodeTypes}
       fitView
       proOptions={{ hideAttribution: true }}

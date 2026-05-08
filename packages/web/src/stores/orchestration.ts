@@ -30,6 +30,13 @@ export interface MacroEventPayload {
   index: number;
   total: number;
   subNodeCount?: number;
+  /**
+   * Task #201: ids of the sub-nodes spliced in by this expansion (set on
+   * `macro_expansion_complete`). Used by the MacroExpansionPanel to deep-link
+   * a row to the first spliced sub-node once the macro itself is gone from
+   * the live graph.
+   */
+  subNodeIds?: string[];
   error?: string;
 }
 
