@@ -154,26 +154,37 @@ export class Planner {
     try {
       log.info(`Planning task with model ${model}: "${task.slice(0, 80)}..."`);
 
-      // M1: Drop the deprecated `temperature` field — Claude 4+ models reject
-      // it with a 400 error, which previously dropped us into the single-node
-      // fallback plan on every orchestration.
+      // Force the planner LLM to start its response with `{` so the reply is
+      // constrained to a JSON object. Without this, large CODING MODE
+      // preambles (multi-thousand-line spec files inlined) frequently lead
+      // the LLM to return prose describing a DAG instead of emitting one,
+      // which cascades into `fallbackPlan` and a single AGENT worker that
+      // "acts out" the planner's role. The Anthropic response only contains
+      // text emitted AFTER the prefill, so we prepend `{` before parsing.
+      // Note: Claude 4+ models reject the deprecated `temperature` field —
+      // intentionally not set.
+      const JSON_PREFILL = '{';
       const response = await client.createMessage({
         model,
         messages: [{ role: 'user', content: task }],
         system: systemPrompt,
         maxTokens: 16384,
+        assistantPrefill: JSON_PREFILL,
       });
 
       // Extract text content from response
-      const responseText = response.content
+      const rawResponseText = response.content
         .filter((b) => b.type === 'text' && b.text)
         .map((b) => b.text!)
         .join('');
 
-      if (!responseText) {
+      if (!rawResponseText) {
         log.warn('Empty response from planner LLM');
         return this.fallbackPlan(task, 'Empty LLM response');
       }
+
+      // Reconstruct the full JSON by prepending the prefill we forced.
+      const responseText = JSON_PREFILL + rawResponseText;
 
       // Parse the JSON from the response
       const parsed = this.extractJson(responseText);
@@ -580,34 +591,69 @@ Respond ONLY with the JSON object. No markdown fences, no commentary.`;
   }
 
   /**
+   * Marker present in every CODING MODE planner preamble built by
+   * `buildCodingTaskPreamble` (packages/core/src/agent/coding-dispatch.ts).
+   * Used to detect a code-mode task in `fallbackPlan` so we can swap the
+   * worker's task for an explicit error message instead of re-feeding the
+   * planner instructions to a single AGENT (which would dutifully output
+   * prose describing a DAG instead of executing one).
+   */
+  private static readonly CODING_PREAMBLE_MARKER =
+    '## CODING MODE — Structured Software Engineering Workflow';
+
+  /**
    * Builds a single-node fallback plan when the LLM planner fails.
+   *
+   * For CODING MODE tasks, the verbatim preamble is NOT a sensible thing to
+   * pass to a single AGENT — the preamble tells the recipient to "plan a
+   * coding workflow", which produces prose describing a DAG rather than
+   * actual implementation. In that case we replace the task with a clear
+   * error message so the user sees what went wrong and can retry, rather
+   * than getting a confusing prose dump.
    */
   private fallbackPlan(task: string, reason: string): PlannerOutput {
     // Fallback uses the main agent model — always the configured default, never hardcoded
     const appConfig = readConfig();
     const fallbackModel = appConfig.models.default || this.config.model;
 
+    const isCodingMode = task.includes(Planner.CODING_PREAMBLE_MARKER);
+
+    const fallbackTask = isCodingMode
+      ? `The orchestration planner failed to generate a valid multi-node DAG for the user's coding request.
+
+Reason: ${reason}
+
+Respond to the user with a short, clear error message explaining that the planner could not structure this coding task into a workflow. Suggest they:
+- Retry the request (transient LLM hiccups happen and prefilled JSON output usually succeeds on retry).
+- If a referenced spec file is very large, split the request into smaller phases.
+- Simplify or shorten the request and try again.
+
+Do NOT attempt to plan or execute the coding work yourself. Do NOT clone, write code, run commands, or describe a DAG. Just surface the error in 2–4 sentences.`
+      : task;
+
+    const label = isCodingMode ? 'Coding planner failed' : 'Primary Worker';
+
     const node: WorkflowNode = {
       id: 'worker-1',
       type: 'AGENT',
-      label: 'Primary Worker',
+      label,
       agent: {
         model: fallbackModel,
-        task,
+        task: fallbackTask,
       },
       dependsOn: [],
       status: 'pending',
     };
 
-    const graph = buildGraph([node], task.slice(0, 80));
+    const graph = buildGraph([node], (isCodingMode ? 'Coding planner failed' : task).slice(0, 80));
 
-    log.debug(`Fallback plan reason: ${reason}`);
+    log.debug(`Fallback plan reason: ${reason}`, { isCodingMode });
     return {
       graph,
       reasoning: reason,
       estimatedCost: 0,
       estimatedTime: 0,
-      summary: task.slice(0, 120),
+      summary: (isCodingMode ? `Coding planner failed: ${reason}` : task).slice(0, 120),
     };
   }
 

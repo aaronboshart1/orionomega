@@ -57,6 +57,15 @@ export interface CreateMessageOptions {
   temperature?: number;
   stream?: boolean;
   thinking?: { type: 'enabled'; budget_tokens: number };
+  /**
+   * Optional assistant prefill. When set, an extra
+   * `{ role: 'assistant', content: <prefill> }` message is appended to the
+   * request, constraining the model's reply to begin with that text. The
+   * Anthropic response only contains what the model generated AFTER the
+   * prefill — callers must prepend the prefill themselves if they need the
+   * full string. Useful for forcing JSON-only output (set prefill to `'{'`).
+   */
+  assistantPrefill?: string;
 }
 
 /** Token usage statistics from the Anthropic API. */
@@ -280,9 +289,20 @@ export class AnthropicClient {
     options: CreateMessageOptions,
     stream: boolean,
   ): Record<string, unknown> {
+    // When an assistant prefill is supplied, append a final assistant
+    // message — Anthropic constrains the response to start with that text.
+    const messages = options.assistantPrefill
+      ? [
+          ...options.messages,
+          {
+            role: 'assistant' as const,
+            content: options.assistantPrefill,
+          },
+        ]
+      : options.messages;
     const body: Record<string, unknown> = {
       model: options.model,
-      messages: options.messages,
+      messages,
       max_tokens: options.maxTokens ?? 8192,
       stream,
     };
@@ -307,9 +327,9 @@ export class AnthropicClient {
       body.tools = tools;
     }
 
-    if (Array.isArray(options.messages) && options.messages.length >= 2) {
-      const msgs = options.messages.map((m, i) => {
-        if (i !== options.messages.length - 2) return m;
+    if (Array.isArray(messages) && messages.length >= 2) {
+      const msgs = messages.map((m, i) => {
+        if (i !== messages.length - 2) return m;
         if (typeof m.content === 'string') {
           return {
             ...m,
