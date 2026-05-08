@@ -1042,7 +1042,7 @@ ${userTask}`;
       // `dispatchCodingWorkflow` via `executorOverrides.macroPhaseBodies`)
       // and look up the body at expansion time. This keeps the planner's
       // top-level tool output tiny — the whole point of macro mode.
-      ...(executorOverrides?.codingPreamble
+      ...(executorOverrides?.codingPreamble && executorOverrides.macroPhaseBodies && executorOverrides.macroPhaseBodies.size > 0
         ? {
             macroExpansionCallback: (node: WorkflowNode) => {
               const cfg = node.macro;

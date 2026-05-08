@@ -500,6 +500,13 @@ export class Planner {
       };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      // Task #197 (review follow-up): macro-plan overflow must surface
+      // as a hard planner failure (not a fallback AGENT node) so the
+      // user sees the actionable "split the spec" message immediately.
+      if (msg.includes('MACRO_NODEs (cap')) {
+        log.error(`Planner failed (macro overflow, no fallback): ${msg}`);
+        throw err;
+      }
       log.error(`Planner failed: ${msg}`);
       return this.fallbackPlan(task, `Planner error: ${msg}`);
     }
