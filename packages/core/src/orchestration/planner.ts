@@ -827,6 +827,20 @@ Do NOT attempt to plan or execute the coding work yourself. Do NOT clone, write 
       );
     }
 
+    // Task #197 (review follow-up): pathological single-phase bodies
+    // can still blow the sub-planner's token budget even after macro
+    // gating. Refuse here with actionable guidance — split the phase
+    // — rather than discovering the failure as an opaque
+    // `stop_reason=max_tokens` after a network round-trip.
+    const SUBPLAN_MAX_PHASE_BODY_CHARS = 60_000;
+    if (phaseBody.length > SUBPLAN_MAX_PHASE_BODY_CHARS) {
+      throw new Error(
+        `Phase '${cfg.phaseId}' body is too large for sub-planning ` +
+          `(${phaseBody.length.toLocaleString()} chars, limit ${SUBPLAN_MAX_PHASE_BODY_CHARS.toLocaleString()}). ` +
+          `Split phase '${cfg.phaseTitle}' in '${cfg.specRef}' into smaller sub-phases.`,
+      );
+    }
+
     const appConfig = readConfig();
     const apiKey = appConfig.models.apiKey;
     const model = appConfig.models.planner || this.config.model;

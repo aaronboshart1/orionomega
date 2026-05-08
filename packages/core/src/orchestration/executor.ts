@@ -1326,17 +1326,17 @@ export class GraphExecutor {
       // Validate uniqueness against the live graph before splicing.
       for (const sn of subNodes) {
         if (this.graph.nodes.has(sn.id)) {
-          throw new Error(
-            `MACRO_NODE '${macroId}' expansion produced duplicate node id '${sn.id}'`,
-          );
+          const msg = `MACRO_NODE '${macroId}' (${recordBase.specRef}::${recordBase.phaseId}) expansion produced duplicate node id '${sn.id}'`;
+          recordFailure(msg);
+          throw new Error(msg);
         }
       }
 
       const projectedTotal = this.graph.nodes.size - 1 + subNodes.length;
       if (projectedTotal > maxTotalNodes) {
-        throw new Error(
-          `Splicing MACRO_NODE '${macroId}' would push graph to ${projectedTotal} nodes (cap ${maxTotalNodes})`,
-        );
+        const msg = `Splicing MACRO_NODE '${macroId}' (${recordBase.specRef}::${recordBase.phaseId}) would push graph to ${projectedTotal} nodes (cap ${maxTotalNodes})`;
+        recordFailure(msg);
+        throw new Error(msg);
       }
 
       // Compute sub-DAG entry nodes (no internal deps) and leaf nodes
@@ -1353,9 +1353,9 @@ export class GraphExecutor {
       );
       const leaves = subNodes.filter((sn) => !subDeps.has(sn.id));
       if (entries.length === 0 || leaves.length === 0) {
-        throw new Error(
-          `MACRO_NODE '${macroId}' sub-DAG is malformed (entries=${entries.length}, leaves=${leaves.length})`,
-        );
+        const msg = `MACRO_NODE '${macroId}' (${recordBase.specRef}::${recordBase.phaseId}) sub-DAG is malformed (entries=${entries.length}, leaves=${leaves.length})`;
+        recordFailure(msg);
+        throw new Error(msg);
       }
 
       // 1. Inbound rewire — entries inherit the macro's dependsOn.
