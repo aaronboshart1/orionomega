@@ -154,76 +154,113 @@ export class Planner {
     try {
       log.info(`Planning task with model ${model}: "${task.slice(0, 80)}..."`);
 
-      // Try to force the planner LLM to start its reply with `{` so the
-      // response is constrained to a JSON object. Without this, large
-      // CODING MODE preambles (multi-thousand-line spec files inlined)
-      // frequently lead the LLM to return prose describing a DAG instead
-      // of emitting one — which cascades into `fallbackPlan` and a single
-      // AGENT worker that "acts out" the planner's role.
+      // Force structured output via tool-use rather than free-form JSON.
       //
-      // Some Anthropic models (notably claude-opus-4-6) return HTTP 400
-      // with `"This model does not support assistant message prefill. The
-      // conversation must end with a user message."` when given an
-      // assistant prefill. We try prefill first, and on that specific 400
-      // we retry once without prefill. The user message also carries an
-      // explicit "Begin your reply with `{`" instruction at the end as a
-      // belt-and-braces nudge for models without prefill support.
+      // Free-form JSON output is unreliable at scale: large CODING MODE
+      // preambles (multi-thousand-line spec files inlined) regularly
+      // caused the model to either return markdown prose describing a DAG
+      // (cascading into fallbackPlan) or return near-empty output. An
+      // assistant-prefill of `{` mitigated some of that but is rejected
+      // outright by some models (e.g. claude-opus-4-6).
+      //
+      // Forcing the model to call a `submit_plan` tool with a strict
+      // input schema makes prose output structurally impossible — the API
+      // itself enforces that the response is a single tool_use block with
+      // arguments that match the schema. Works on every Claude 3+ model.
       //
       // Note: Claude 4+ models reject the deprecated `temperature` field —
       // intentionally not set.
-      const JSON_PREFILL = '{';
-      const PREFILL_REJECTED_MARKER = 'does not support assistant message prefill';
-      const userTurn = `${task}\n\nBegin your reply with \`{\` — return the JSON object only.`;
+      const submitPlanTool = {
+        name: 'submit_plan',
+        description:
+          'Submit the orchestration plan as structured data. You MUST call this tool exactly once. Do not produce any other output.',
+        input_schema: {
+          type: 'object',
+          additionalProperties: true,
+          required: ['reasoning', 'summary', 'nodes'],
+          properties: {
+            reasoning: {
+              type: 'string',
+              description: 'Brief explanation of the planning decisions.',
+            },
+            summary: {
+              type: 'string',
+              description: 'One-line summary of the overall workflow.',
+            },
+            estimatedCost: {
+              type: 'number',
+              description: 'Estimated total cost in USD.',
+            },
+            estimatedTime: {
+              type: 'number',
+              description: 'Estimated total runtime in seconds.',
+            },
+            nodes: {
+              type: 'array',
+              description:
+                'Workflow nodes. Every node requires id, type, label, dependsOn. Include only the relevant config key per type (agent / tool / router / codingAgent / loop).',
+              items: {
+                type: 'object',
+                additionalProperties: true,
+                required: ['id', 'type', 'label', 'dependsOn'],
+                properties: {
+                  id: { type: 'string' },
+                  type: {
+                    type: 'string',
+                    enum: ['AGENT', 'TOOL', 'ROUTER', 'JOIN', 'CODING_AGENT', 'LOOP'],
+                  },
+                  label: { type: 'string' },
+                  dependsOn: { type: 'array', items: { type: 'string' } },
+                  timeout: { type: 'number' },
+                  retries: { type: 'number' },
+                  tokenBudget: { type: 'number' },
+                  agent: { type: 'object', additionalProperties: true },
+                  codingAgent: { type: 'object', additionalProperties: true },
+                  tool: { type: 'object', additionalProperties: true },
+                  router: { type: 'object', additionalProperties: true },
+                  loop: { type: 'object', additionalProperties: true },
+                },
+              },
+            },
+          },
+        },
+      } as const;
 
-      let prefillUsed = true;
-      let response;
-      try {
-        response = await client.createMessage({
-          model,
-          messages: [{ role: 'user', content: userTurn }],
-          system: systemPrompt,
-          maxTokens: 16384,
-          assistantPrefill: JSON_PREFILL,
-        });
-      } catch (prefillErr) {
-        const errMsg = prefillErr instanceof Error ? prefillErr.message : String(prefillErr);
-        if (errMsg.includes(PREFILL_REJECTED_MARKER)) {
-          log.warn(
-            `Planner model ${model} rejected assistant prefill — retrying without prefill`,
-          );
-          prefillUsed = false;
-          response = await client.createMessage({
-            model,
-            messages: [{ role: 'user', content: userTurn }],
-            system: systemPrompt,
-            maxTokens: 16384,
-          });
-        } else {
-          throw prefillErr;
+      const response = await client.createMessage({
+        model,
+        messages: [{ role: 'user', content: task }],
+        system: systemPrompt,
+        maxTokens: 16384,
+        tools: [submitPlanTool],
+        toolChoice: { type: 'tool', name: 'submit_plan' },
+      });
+
+      // The forced tool_use response should contain exactly one tool_use
+      // block whose `input` IS the parsed plan object. Find it.
+      const toolUseBlock = response.content.find(
+        (b) => b.type === 'tool_use' && b.name === 'submit_plan',
+      );
+
+      let parsed: Record<string, unknown> | null = null;
+      if (toolUseBlock && toolUseBlock.input && typeof toolUseBlock.input === 'object') {
+        parsed = toolUseBlock.input as Record<string, unknown>;
+      } else {
+        // Defensive fallback: some adapters / older models may still emit
+        // text content. Try to recover JSON from text blocks.
+        const rawResponseText = response.content
+          .filter((b) => b.type === 'text' && b.text)
+          .map((b) => b.text!)
+          .join('');
+        if (rawResponseText) {
+          parsed = this.extractJson(rawResponseText);
         }
       }
 
-      // Extract text content from response
-      const rawResponseText = response.content
-        .filter((b) => b.type === 'text' && b.text)
-        .map((b) => b.text!)
-        .join('');
-
-      if (!rawResponseText) {
-        log.warn('Empty response from planner LLM');
-        return this.fallbackPlan(task, 'Empty LLM response');
-      }
-
-      // When prefill was used, the API response only contains text emitted
-      // AFTER the prefill — prepend `{` to reconstruct the full JSON. When
-      // prefill was rejected, `extractJson` already handles fenced/raw JSON
-      // and the leading-brace search.
-      const responseText = prefillUsed ? JSON_PREFILL + rawResponseText : rawResponseText;
-
-      // Parse the JSON from the response
-      const parsed = this.extractJson(responseText);
       if (!parsed) {
-        log.warn('Failed to parse JSON from planner response', { raw: responseText.slice(0, 500) });
+        log.warn('Planner returned no submit_plan tool_use and no parseable JSON', {
+          stopReason: response.stop_reason,
+          contentTypes: response.content.map((b) => b.type),
+        });
         return this.fallbackPlan(
           task,
           'The planner could not structure this task into a multi-step plan. Running as a single task instead.',

@@ -66,6 +66,17 @@ export interface CreateMessageOptions {
    * full string. Useful for forcing JSON-only output (set prefill to `'{'`).
    */
   assistantPrefill?: string;
+  /**
+   * Optional tool-choice constraint. Pass `{ type: 'tool', name: 'X' }` to
+   * force the model to call a specific tool, `{ type: 'any' }` to require
+   * some tool call, or `{ type: 'auto' }` (default if omitted) to let the
+   * model decide. Forced tool-use is the most reliable way to extract
+   * structured output from a model — it cannot return prose.
+   */
+  toolChoice?:
+    | { type: 'auto' }
+    | { type: 'any' }
+    | { type: 'tool'; name: string };
 }
 
 /** Token usage statistics from the Anthropic API. */
@@ -325,6 +336,10 @@ export class AnthropicClient {
         return t;
       });
       body.tools = tools;
+    }
+
+    if (options.toolChoice) {
+      body.tool_choice = options.toolChoice;
     }
 
     if (Array.isArray(messages) && messages.length >= 2) {
