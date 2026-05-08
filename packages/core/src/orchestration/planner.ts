@@ -170,35 +170,24 @@ export class Planner {
       //
       // Note: Claude 4+ models reject the deprecated `temperature` field —
       // intentionally not set.
+      // IMPORTANT: property order matters. Models emit JSON fields in
+      // schema order, and a truncated response (stop_reason=max_tokens)
+      // loses everything after the cutoff. We put `nodes` FIRST so the
+      // critical payload always lands inside the output budget; metadata
+      // and reasoning come after and may be truncated harmlessly.
       const submitPlanTool = {
         name: 'submit_plan',
         description:
-          'Submit the orchestration plan as structured data. You MUST call this tool exactly once. Do not produce any other output.',
+          'Submit the orchestration plan as structured data. You MUST call this tool exactly once and produce no other output. CRITICAL: emit the `nodes` array first and keep `reasoning` to two short sentences (under 60 words). The output token budget is finite — long prose in `reasoning` causes truncation that loses the plan.',
         input_schema: {
           type: 'object',
           additionalProperties: true,
-          required: ['reasoning', 'summary', 'nodes'],
+          required: ['nodes', 'summary'],
           properties: {
-            reasoning: {
-              type: 'string',
-              description: 'Brief explanation of the planning decisions.',
-            },
-            summary: {
-              type: 'string',
-              description: 'One-line summary of the overall workflow.',
-            },
-            estimatedCost: {
-              type: 'number',
-              description: 'Estimated total cost in USD.',
-            },
-            estimatedTime: {
-              type: 'number',
-              description: 'Estimated total runtime in seconds.',
-            },
             nodes: {
               type: 'array',
               description:
-                'Workflow nodes. Every node requires id, type, label, dependsOn. Include only the relevant config key per type (agent / tool / router / codingAgent / loop).',
+                'Workflow nodes. Emit this FIRST. Every node requires id, type, label, dependsOn. Include only the relevant config key per type (agent / tool / router / codingAgent / loop).',
               items: {
                 type: 'object',
                 additionalProperties: true,
@@ -221,6 +210,23 @@ export class Planner {
                   loop: { type: 'object', additionalProperties: true },
                 },
               },
+            },
+            summary: {
+              type: 'string',
+              description: 'One-line summary of the overall workflow (under 120 chars).',
+            },
+            estimatedCost: {
+              type: 'number',
+              description: 'Estimated total cost in USD.',
+            },
+            estimatedTime: {
+              type: 'number',
+              description: 'Estimated total runtime in seconds.',
+            },
+            reasoning: {
+              type: 'string',
+              description:
+                'Two short sentences (max ~60 words / 400 chars). Do not enumerate phases or restate the spec.',
             },
           },
         },
@@ -265,6 +271,27 @@ export class Planner {
           task,
           'The planner could not structure this task into a multi-step plan. Running as a single task instead.',
         );
+      }
+
+      // Detect output truncation. With forced tool-use, max_tokens means
+      // the model ran out of output budget mid-arguments — `nodes` may be
+      // missing or partial. Surface this distinctly so the user knows to
+      // simplify or split the request rather than treating it as a generic
+      // planner failure.
+      if (response.stop_reason === 'max_tokens') {
+        const partialNodeCount = Array.isArray(parsed.nodes)
+          ? (parsed.nodes as unknown[]).length
+          : 0;
+        log.warn('Planner output hit max_tokens — plan may be truncated', {
+          partialNodeCount,
+          outputTokens: response.usage.output_tokens,
+        });
+        if (partialNodeCount === 0) {
+          return this.fallbackPlan(
+            task,
+            'The planner ran out of output tokens before producing any nodes. The request is too large for a single planning pass — split the spec into smaller phases (e.g. one module per request) or simplify the prompt.',
+          );
+        }
       }
 
       // Extract plan metadata
