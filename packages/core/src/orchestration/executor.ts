@@ -319,6 +319,15 @@ export class GraphExecutor {
    */
   private macroExpansionRecords: import('./types.js').MacroExpansionRecord[] = [];
 
+  /**
+   * Task #209 (review round 4): commit-safety report attached by the
+   * orchestration bridge for code-mode dispatches. Surfaced into
+   * `ExecutionResult.commitSafety` and rendered in `run-summary.md`
+   * so users see exactly what was added to `.gitignore` and which
+   * hooks are protecting the checkout. Null for non-coding runs.
+   */
+  private commitSafety: import('./types.js').CommitSafetyReport | null = null;
+
   // Control flags
   private pauseRequested = false;
   private stopRequested = false;
@@ -337,6 +346,17 @@ export class GraphExecutor {
     this.startedAt = new Date().toISOString();
     this.state = existingState ?? new WorkflowState(graph.id, config.checkpointDir);
     this.checkpointMgr = new CheckpointManager(config.checkpointDir);
+  }
+
+  /**
+   * Task #209: attach the commit-safety report from
+   * `prepareCodingDispatch`. Called once by the orchestration bridge
+   * after construction; idempotent. Non-coding runs never call this
+   * and the field stays `null`, so `ExecutionResult.commitSafety` is
+   * absent and `run-summary.md` looks visually identical to before.
+   */
+  setCommitSafety(report: import('./types.js').CommitSafetyReport): void {
+    this.commitSafety = report;
   }
 
   /**
@@ -2092,6 +2112,39 @@ export class GraphExecutor {
         mdParts.push('');
       }
 
+      // Task #209 (review round 4): commit-safety telemetry. Renders
+      // exactly what `.gitignore` entries were added on the user's
+      // behalf and which hooks now protect the checkout — the
+      // structured "what was excluded and why" the reviewer asked for.
+      if (result.commitSafety) {
+        const cs = result.commitSafety;
+        mdParts.push('## Commit Safety (Task #209)');
+        mdParts.push('');
+        mdParts.push(`- **Checkout:** \`${cs.checkoutPath}\``);
+        mdParts.push(`- **Hooks installed:** ${cs.hooksInstalled ? 'yes' : 'no'}`);
+        if (cs.hooksInstalled) {
+          mdParts.push(`  - pre-commit: \`${cs.preCommitHookPath}\``);
+          mdParts.push(`  - pre-push:  \`${cs.prePushHookPath}\``);
+        }
+        mdParts.push(`- **\`.gitignore\` ${cs.gitignoreCreated ? 'created' : 'updated'}:** ${cs.gitignoreAdded.length} ${cs.gitignoreAdded.length === 1 ? 'entry' : 'entries'} ${cs.gitignoreAdded.length === 0 ? '(already covered every default)' : 'added'}`);
+        if (cs.gitignoreAdded.length > 0) {
+          mdParts.push('');
+          mdParts.push('  | # | Pattern |');
+          mdParts.push('  |---|---------|');
+          cs.gitignoreAdded.forEach((entry, i) => {
+            mdParts.push(`  | ${i + 1} | \`${entry.replace(/\|/g, '\\|')}\` |`);
+          });
+        }
+        mdParts.push('');
+        mdParts.push(
+          '_Hooks block commits/pushes that contain `.env*`, `*.{pem,key,p12,pfx}`, ' +
+          'build artefacts (`node_modules/`, `dist/`, `build/`, `.next/`, `.cache/`, ' +
+          '`.turbo/`, `coverage/`), files >95 MB, or paths with control bytes. ' +
+          'See `docs/architecture-notes.md` for the deny-list rationale._',
+        );
+        mdParts.push('');
+      }
+
       // Task #197: hierarchical macro-planning telemetry.
       if (result.macroPlanning) {
         const mp = result.macroPlanning;
@@ -2252,6 +2305,7 @@ export class GraphExecutor {
       totalCostUsd,
       toolCallCount: Array.from(this.nodeResults.values()).reduce((sum, r) => sum + r.toolCallCount, 0),
       macroPlanning,
+      ...(this.commitSafety ? { commitSafety: this.commitSafety } : {}),
     };
   }
 

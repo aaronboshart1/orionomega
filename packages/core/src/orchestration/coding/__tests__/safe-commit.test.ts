@@ -33,7 +33,7 @@ import {
   ensureSafeGitignore,
   findUnsafeFiles,
   prepareSafeCommit,
-  installSafeCommitHook,
+  installSafeCommitHooks,
   CommitSafetyError,
   formatCommitSafetyMessage,
 } from '../safe-commit.js';
@@ -227,29 +227,38 @@ describe('formatCommitSafetyMessage', () => {
   });
 });
 
-describe('installSafeCommitHook', () => {
-  it('writes an executable pre-push hook into .git/hooks/', () => {
+describe('installSafeCommitHooks', () => {
+  it('writes BOTH executable pre-commit and pre-push hooks into .git/hooks/', () => {
     mkdirSync(join(repoDir, '.git'), { recursive: true });
-    const result = installSafeCommitHook(repoDir);
+    const result = installSafeCommitHooks(repoDir);
     expect(result.installed).toBe(true);
-    expect(result.hookPath).toBe(join(repoDir, '.git', 'hooks', 'pre-push'));
-    expect(existsSync(result.hookPath)).toBe(true);
-    const stat = require('node:fs').statSync(result.hookPath);
-    // 0o111 = owner/group/other execute bits — at least owner+ must be set.
-    expect(stat.mode & 0o100).toBeTruthy();
+    expect(result.preCommitHookPath).toBe(join(repoDir, '.git', 'hooks', 'pre-commit'));
+    expect(result.prePushHookPath).toBe(join(repoDir, '.git', 'hooks', 'pre-push'));
+    expect(existsSync(result.preCommitHookPath)).toBe(true);
+    expect(existsSync(result.prePushHookPath)).toBe(true);
+    const fs = require('node:fs');
+    // Both hooks must be executable — git silently skips non-exec ones.
+    expect(fs.statSync(result.preCommitHookPath).mode & 0o100).toBeTruthy();
+    expect(fs.statSync(result.prePushHookPath).mode & 0o100).toBeTruthy();
   });
 
-  it('embeds the 95 MB ceiling, build-artefact deny-list, and secret patterns in the hook', () => {
+  it('embeds the 95 MB ceiling, build-artefact deny-list, and secret patterns in the pre-push hook', () => {
     mkdirSync(join(repoDir, '.git', 'hooks'), { recursive: true });
-    const { hookPath } = installSafeCommitHook(repoDir);
-    const body = readFileSync(hookPath, 'utf-8');
+    const { prePushHookPath } = installSafeCommitHooks(repoDir);
+    const body = readFileSync(prePushHookPath, 'utf-8');
     expect(body).toMatch(/^#!\/usr\/bin\/env perl/);
     expect(body).toContain('95 * 1024 * 1024');
-    // True NUL-record processing via `local $/ = "\0"`. No shell-level
-    // round-trip means filenames with embedded newlines/tabs survive
-    // intact through the classifier.
+    // True NUL-record processing via `local $/ = "\0"` for the inner
+    // ls-tree walk. No shell-level round-trip means filenames with
+    // embedded newlines/tabs survive intact through the classifier.
     expect(body).toContain('local $/ = "\\0"');
-    expect(body).toContain("'git', 'ls-tree', '-r', '-l', '-z', 'HEAD'");
+    // Pre-push walks every commit being pushed, NOT just HEAD.
+    expect(body).toContain("'git', 'rev-list'");
+    expect(body).toContain("'git', 'ls-tree', '-r', '-l', '-z'");
+    // Stdin is the source of pushed-ref ranges.
+    expect(body).toMatch(/while \(my \$line = <STDIN>\)/);
+    // HEAD-tree fallback for manual invocation / no-stdin tests.
+    expect(body).toMatch(/fallback_to_head/);
     // Control-char rejection range MUST cover TAB (0x09), LF (0x0A),
     // and CR (0x0D). The 0x01-0x1F range does so by construction.
     expect(body).toMatch(/\[\\x01-\\x1f\]/);
@@ -263,37 +272,115 @@ describe('installSafeCommitHook', () => {
     // Conventional placeholders must be allowed through.
     expect(body).toContain('.env.example');
     expect(body).toContain('.env.sample');
-    // The hook must signal failure with a clear, user-readable banner so
-    // the executor's "push failure → run failure" wiring carries it
-    // verbatim to the user.
     expect(body).toMatch(/refusing to push/);
     expect(body).toMatch(/exit 1/);
-    // Hostile-filename hardening: parse must use NUL-delimited ls-tree
-    // output so paths with embedded newlines/tabs can't smuggle past.
     expect(body).toMatch(/control characters/);
+    // History-purge guidance for pre-existing bad blobs.
+    expect(body).toMatch(/git filter-repo/);
   });
 
-  it('overwrites a stale hook on every install (idempotent re-installation)', () => {
+  it('embeds the same deny-list in the pre-commit hook, anchored on the staged index', () => {
     mkdirSync(join(repoDir, '.git', 'hooks'), { recursive: true });
-    const stale = join(repoDir, '.git', 'hooks', 'pre-push');
-    writeFileSync(stale, '#!/bin/sh\necho stale\n', 'utf-8');
-    const { installed } = installSafeCommitHook(repoDir);
+    const { preCommitHookPath } = installSafeCommitHooks(repoDir);
+    const body = readFileSync(preCommitHookPath, 'utf-8');
+    expect(body).toMatch(/^#!\/usr\/bin\/env perl/);
+    expect(body).toContain('95 * 1024 * 1024');
+    // Pre-commit reads the staged INDEX (not HEAD / not the working tree).
+    expect(body).toContain("'git', 'ls-files', '-s', '-z'");
+    // Batch-resolves blob sizes via cat-file in one IPC::Open2 pass
+    // so large indices don't fork-bomb.
+    expect(body).toContain('IPC::Open2');
+    expect(body).toContain('cat-file');
+    expect(body).toMatch(/\[\\x01-\\x1f\]/);
+    expect(body).toMatch(/node_modules\|/);
+    expect(body).toMatch(/pem\|key\|p12\|pfx/);
+    expect(body).toContain('.env.example');
+    expect(body).toMatch(/refusing this commit/);
+    expect(body).toMatch(/exit 1/);
+  });
+
+  it('overwrites stale hooks on every install (idempotent re-installation)', () => {
+    mkdirSync(join(repoDir, '.git', 'hooks'), { recursive: true });
+    const stalePush = join(repoDir, '.git', 'hooks', 'pre-push');
+    const staleCommit = join(repoDir, '.git', 'hooks', 'pre-commit');
+    writeFileSync(stalePush, '#!/bin/sh\necho stale push\n', 'utf-8');
+    writeFileSync(staleCommit, '#!/bin/sh\necho stale commit\n', 'utf-8');
+    const { installed } = installSafeCommitHooks(repoDir);
     expect(installed).toBe(true);
-    expect(readFileSync(stale, 'utf-8')).toMatch(/OrionOmega safe-commit hook/);
+    expect(readFileSync(stalePush, 'utf-8')).toMatch(/OrionOmega safe-commit hook/);
+    expect(readFileSync(staleCommit, 'utf-8')).toMatch(/OrionOmega safe-commit hook/);
   });
 
   it('is a no-op (installed=false) when .git is missing — no fabricated git dir', () => {
-    // No .git directory at all (e.g. a sandbox that wasn't cloned).
-    const result = installSafeCommitHook(repoDir);
+    const result = installSafeCommitHooks(repoDir);
     expect(result.installed).toBe(false);
     expect(existsSync(join(repoDir, '.git'))).toBe(false);
   });
 
+  // Round-5 review: failure-injection. The atomic install MUST leave
+  // no partial state behind. If the pre-push side of the install
+  // can't land (e.g. someone wedged a non-writable file at
+  // .git/hooks/pre-push), the installer is required to (a) report
+  // installed=false, (b) NOT leave a fresh OrionOmega pre-commit
+  // hook on disk where one wasn't before, and (c) NOT leave any
+  // .installing.* temp files behind.
+  it('is fully transactional: a mid-install failure leaves NO partial hooks behind', () => {
+    const fs = require('node:fs');
+    mkdirSync(join(repoDir, '.git', 'hooks'), { recursive: true });
+    // Pre-existing pre-push that cannot be overwritten by a rename:
+    // make it a directory. POSIX rename() refuses to clobber a
+    // directory with a file, so the second rename throws and the
+    // rollback path runs.
+    mkdirSync(join(repoDir, '.git', 'hooks', 'pre-push'), { recursive: true });
+    // Drop a sentinel inside so we can prove we didn't blow it away.
+    writeFileSync(join(repoDir, '.git', 'hooks', 'pre-push', 'sentinel'), 'untouched', 'utf-8');
+
+    const result = installSafeCommitHooks(repoDir);
+
+    // (a) The install must report failure.
+    expect(result.installed).toBe(false);
+    // (b) No fresh OrionOmega pre-commit on disk — there was none
+    // before and rollback put nothing there.
+    const preCommitFinal = join(repoDir, '.git', 'hooks', 'pre-commit');
+    expect(existsSync(preCommitFinal)).toBe(false);
+    // The sabotaged pre-push directory must still be intact (we
+    // never managed to rename over it, so it should be untouched).
+    expect(fs.statSync(join(repoDir, '.git', 'hooks', 'pre-push')).isDirectory()).toBe(true);
+    expect(readFileSync(join(repoDir, '.git', 'hooks', 'pre-push', 'sentinel'), 'utf-8')).toBe('untouched');
+    // (c) No leftover temp files. Scan the hooks dir for anything
+    // matching our `.installing.*` suffix.
+    const leftovers = fs
+      .readdirSync(join(repoDir, '.git', 'hooks'))
+      .filter((n: string) => n.includes('.installing.'));
+    expect(leftovers).toEqual([]);
+  });
+
+  it('rolls back to the prior pre-commit content when pre-push install fails mid-way', () => {
+    const fs = require('node:fs');
+    mkdirSync(join(repoDir, '.git', 'hooks'), { recursive: true });
+    // Pre-existing custom pre-commit hook the user already had.
+    const prior = '#!/bin/sh\n# user custom hook\nexit 0\n';
+    writeFileSync(join(repoDir, '.git', 'hooks', 'pre-commit'), prior, 'utf-8');
+    // Sabotage pre-push so the second rename fails after pre-commit
+    // has already been swapped into place — exactly the case the
+    // rollback path is for.
+    mkdirSync(join(repoDir, '.git', 'hooks', 'pre-push'), { recursive: true });
+
+    const result = installSafeCommitHooks(repoDir);
+    expect(result.installed).toBe(false);
+    // The user's prior pre-commit content must be restored byte-for-byte.
+    expect(readFileSync(join(repoDir, '.git', 'hooks', 'pre-commit'), 'utf-8')).toBe(prior);
+    const leftovers = fs
+      .readdirSync(join(repoDir, '.git', 'hooks'))
+      .filter((n: string) => n.includes('.installing.'));
+    expect(leftovers).toEqual([]);
+  });
+
   // Runtime integration: spin up a real git repo, drop offending files
-  // into HEAD, then invoke the installed hook directly via /bin/sh and
-  // assert the actual exit code + stderr message. This is the test the
-  // architect specifically asked for — string assertions on the hook
-  // body don't prove the awk script behaves the way we claim.
+  // into the index / commits, then invoke the installed hooks directly
+  // and assert exit code + stderr message. This is what the architect
+  // specifically asked for — body string assertions don't prove the
+  // hook behaves the way we claim under git.
   describe('runtime behaviour against a real git repo', () => {
     const { execFileSync, spawnSync } = require('node:child_process');
 
@@ -306,79 +393,163 @@ describe('installSafeCommitHook', () => {
     }
 
     function commitAll(msg: string): void {
-      // -f forces inclusion of paths matched by global excludesFile
-      // (e.g. /etc/.gitignore on Replit which lists .env / node_modules).
-      // We're testing the hook, not git's own ignore semantics, so we
-      // explicitly stage every file in the working tree regardless of
-      // any inherited ignore rules.
+      // -f forces inclusion despite global excludesFile (Replit's
+      // /etc/.gitignore lists .env / node_modules). --no-verify
+      // bypasses our own pre-commit hook in setup so we can
+      // intentionally seed bad commits and then test pre-push against
+      // them.
       execFileSync('git', ['-C', repoDir, 'add', '-A', '-f'], { stdio: 'pipe' });
-      execFileSync('git', ['-C', repoDir, 'commit', '-q', '--allow-empty', '-m', msg], { stdio: 'pipe' });
+      execFileSync('git', ['-C', repoDir, 'commit', '-q', '--no-verify', '--allow-empty', '-m', msg], { stdio: 'pipe' });
     }
 
-    function runHook(): { status: number | null; stderr: string; stdout: string } {
-      const { hookPath } = installSafeCommitHook(repoDir);
-      // Invoke the hook directly — git itself execs the file, honouring
-      // its shebang (`#!/usr/bin/env perl`). Calling /bin/sh on it would
-      // mis-interpret the perl source as shell.
-      const result = spawnSync(hookPath, [], { cwd: repoDir, encoding: 'utf-8' });
+    function runPrePushHook(): { status: number | null; stderr: string; stdout: string } {
+      const { prePushHookPath } = installSafeCommitHooks(repoDir);
+      // No stdin → falls back to walking HEAD tree (the audit mode).
+      const result = spawnSync(prePushHookPath, [], { cwd: repoDir, encoding: 'utf-8' });
       return { status: result.status, stderr: result.stderr ?? '', stdout: result.stdout ?? '' };
     }
 
-    it('passes (exit 0) on a clean repo with only safe files', () => {
+    function runPrePushHookWithRefs(stdin: string): { status: number | null; stderr: string; stdout: string } {
+      const { prePushHookPath } = installSafeCommitHooks(repoDir);
+      const result = spawnSync(prePushHookPath, [], { cwd: repoDir, encoding: 'utf-8', input: stdin });
+      return { status: result.status, stderr: result.stderr ?? '', stdout: result.stdout ?? '' };
+    }
+
+    function runPreCommitHookAfterStaging(): { status: number | null; stderr: string; stdout: string } {
+      const { preCommitHookPath } = installSafeCommitHooks(repoDir);
+      // -f forces past global excludesFile so we can stage things git
+      // would otherwise ignore.
+      execFileSync('git', ['-C', repoDir, 'add', '-A', '-f'], { stdio: 'pipe' });
+      const result = spawnSync(preCommitHookPath, [], { cwd: repoDir, encoding: 'utf-8' });
+      return { status: result.status, stderr: result.stderr ?? '', stdout: result.stdout ?? '' };
+    }
+
+    it('pre-push passes (exit 0) on a clean repo with only safe files (HEAD fallback)', () => {
       initRepo();
       writeFileSync(join(repoDir, 'README.md'), '# hi\n', 'utf-8');
       writeFileSync(join(repoDir, 'src.ts'), 'export const x = 1;\n', 'utf-8');
       commitAll('safe commit');
-      const r = runHook();
+      const r = runPrePushHook();
       expect(r.status).toBe(0);
       expect(r.stderr).toBe('');
     });
 
-    it('refuses (exit 1) when a .env file is committed', () => {
+    it('pre-push refuses (exit 1) when a .env file is committed (HEAD fallback)', () => {
       initRepo();
       writeFileSync(join(repoDir, '.env'), 'SECRET=topsecret\n', 'utf-8');
       commitAll('leak attempt');
-      const r = runHook();
+      const r = runPrePushHook();
       expect(r.status).toBe(1);
       expect(r.stderr).toMatch(/refusing to push/);
       expect(r.stderr).toMatch(/\.env \(secret \/ env file\)/);
     });
 
-    it('refuses when a node_modules path is committed but allows .env.example through', () => {
+    it('pre-push refuses node_modules but allows .env.example through (HEAD fallback)', () => {
       initRepo();
       mkdirSync(join(repoDir, 'node_modules', 'foo'), { recursive: true });
       writeFileSync(join(repoDir, 'node_modules', 'foo', 'index.js'), 'x', 'utf-8');
       writeFileSync(join(repoDir, '.env.example'), 'KEY=changeme\n', 'utf-8');
       commitAll('mixed');
-      const r = runHook();
+      const r = runPrePushHook();
       expect(r.status).toBe(1);
       expect(r.stderr).toMatch(/build artefact/);
-      // .env.example must NOT appear in the offender list.
       expect(r.stderr).not.toMatch(/\.env\.example/);
     });
 
-    it('refuses (exit 1) on filenames containing embedded newlines — the hostile-filename hardening claim', () => {
+    it('pre-push refuses (exit 1) on filenames with embedded newlines (hostile-filename hardening)', () => {
       initRepo();
-      // POSIX filesystems allow \n in filenames. Create one with a
-      // literal LF in the middle of the path to prove the NUL-record
-      // awk parse keeps the filename intact end-to-end.
-      // Single-segment filename with an embedded LF — no slash, so
-      // the FS write doesn't try to create a phantom directory.
       const hostile = `evil\nfile.txt`;
       writeFileSync(join(repoDir, hostile), 'x', 'utf-8');
       commitAll('hostile filename');
-      const r = runHook();
+      const r = runPrePushHook();
       expect(r.status).toBe(1);
-      // The exact rejection reason is "control characters" — the LF
-      // (0x0A) is in the 0x01–0x1F range.
       expect(r.stderr).toMatch(/control characters/);
     });
 
-    it('refuses (exit 1) on a .pem key file', () => {
+    it('pre-push refuses (exit 1) on a .pem key file (HEAD fallback)', () => {
       initRepo();
       writeFileSync(join(repoDir, 'cert.pem'), '-----BEGIN PRIVATE KEY-----\n', 'utf-8');
       commitAll('key');
-      const r = runHook();
+      const r = runPrePushHook();
+      expect(r.status).toBe(1);
+      expect(r.stderr).toMatch(/secret \/ key material/);
+    });
+
+    // Round-4 review: pre-push must walk EVERY commit being pushed,
+    // not just HEAD. Regression for the case "bad blob committed in
+    // commit B, then removed in commit C" — the HEAD tree is clean
+    // but the bad blob is still in the pushed history and would be
+    // refused by GitHub.
+    it('pre-push walks every commit in the pushed range (catches blobs removed before HEAD)', () => {
+      initRepo();
+      // Commit 1: clean baseline.
+      writeFileSync(join(repoDir, 'README.md'), '# hi\n', 'utf-8');
+      commitAll('baseline');
+      const baseline = execFileSync('git', ['-C', repoDir, 'rev-parse', 'HEAD'], { encoding: 'utf-8' }).trim();
+      // Commit 2: introduces a .env (the offender).
+      writeFileSync(join(repoDir, '.env'), 'SECRET=leak\n', 'utf-8');
+      commitAll('leak in middle commit');
+      // Commit 3: removes the offender, leaving HEAD clean.
+      execFileSync('git', ['-C', repoDir, 'rm', '-f', '.env'], { stdio: 'pipe' });
+      execFileSync('git', ['-C', repoDir, 'commit', '-q', '--no-verify', '-m', 'cleanup'], { stdio: 'pipe' });
+      const head = execFileSync('git', ['-C', repoDir, 'rev-parse', 'HEAD'], { encoding: 'utf-8' }).trim();
+
+      // HEAD tree alone is clean — the audit-mode fallback would NOT
+      // catch this, which is exactly the gap.
+      const audit = runPrePushHook();
+      expect(audit.status).toBe(0);
+
+      // But with stdin refs (simulating `git push origin main` against
+      // a remote that's at `baseline`), the hook walks baseline..head
+      // and MUST surface the offender.
+      const stdin = `refs/heads/main ${head} refs/heads/main ${baseline}\n`;
+      const r = runPrePushHookWithRefs(stdin);
+      expect(r.status).toBe(1);
+      expect(r.stderr).toMatch(/\.env \(secret \/ env file\)/);
+    });
+
+    it('pre-push handles a brand-new branch (remote_sha = 0{40}) by walking all reachable history', () => {
+      initRepo();
+      writeFileSync(join(repoDir, '.env'), 'SECRET=x\n', 'utf-8');
+      commitAll('new branch with secret');
+      const head = execFileSync('git', ['-C', repoDir, 'rev-parse', 'HEAD'], { encoding: 'utf-8' }).trim();
+      const stdin = `refs/heads/feature ${head} refs/heads/feature ${'0'.repeat(40)}\n`;
+      const r = runPrePushHookWithRefs(stdin);
+      expect(r.status).toBe(1);
+      expect(r.stderr).toMatch(/\.env \(secret \/ env file\)/);
+    });
+
+    it('pre-commit refuses (exit 1) when an unsafe file is staged', () => {
+      initRepo();
+      writeFileSync(join(repoDir, '.env'), 'SECRET=x\n', 'utf-8');
+      const r = runPreCommitHookAfterStaging();
+      expect(r.status).toBe(1);
+      expect(r.stderr).toMatch(/refusing this commit/);
+      expect(r.stderr).toMatch(/\.env \(secret \/ env file\)/);
+    });
+
+    it('pre-commit passes (exit 0) on a clean staged index', () => {
+      initRepo();
+      writeFileSync(join(repoDir, 'README.md'), '# hi\n', 'utf-8');
+      writeFileSync(join(repoDir, 'src.ts'), 'export const x = 1;\n', 'utf-8');
+      const r = runPreCommitHookAfterStaging();
+      expect(r.status).toBe(0);
+      expect(r.stderr).toBe('');
+    });
+
+    it('pre-commit catches build artefacts at staging time', () => {
+      initRepo();
+      mkdirSync(join(repoDir, 'node_modules', 'foo'), { recursive: true });
+      writeFileSync(join(repoDir, 'node_modules', 'foo', 'index.js'), 'x', 'utf-8');
+      const r = runPreCommitHookAfterStaging();
+      expect(r.status).toBe(1);
+      expect(r.stderr).toMatch(/build artefact/);
+    });
+
+    it('pre-commit catches a .pem key file in the staged index', () => {
+      initRepo();
+      writeFileSync(join(repoDir, 'cert.pem'), '-----BEGIN PRIVATE KEY-----\n', 'utf-8');
+      const r = runPreCommitHookAfterStaging();
       expect(r.status).toBe(1);
       expect(r.stderr).toMatch(/secret \/ key material/);
     });

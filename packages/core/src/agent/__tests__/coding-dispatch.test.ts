@@ -124,10 +124,10 @@ describe('prepareCodingDispatch', () => {
     expect(out.codingTaskPreamble).toMatch(/Branch: release-2\.0/);
   });
 
-  it('installs the safe-commit pre-push hook + .gitignore into the checkout (Task #209)', async () => {
+  it('installs the safe-commit pre-commit + pre-push hooks + .gitignore into the checkout (Task #209)', async () => {
     // Use a real temp dir so the safe-commit installers have something
     // to write into. The cloneRepo stub creates `<runDir>/repo/.git` so
-    // installSafeCommitHook recognises it as a real checkout.
+    // installSafeCommitHooks recognises it as a real checkout.
     const root = mkdtempSync(join(tmpdir(), 'coding-dispatch-test-'));
     try {
       const realClone = vi.fn(async (_url: string, runDir: string) => {
@@ -146,13 +146,17 @@ describe('prepareCodingDispatch', () => {
         mkdir: (dir: string) => mkdirSync(dir, { recursive: true }),
       });
 
-      // The hook lives at .git/hooks/pre-push and must be executable
-      // — git silently skips non-executable hooks, which would silently
-      // disable the entire safety net.
-      const hookPath = join(out.checkoutPath, '.git', 'hooks', 'pre-push');
-      expect(existsSync(hookPath)).toBe(true);
-      expect(statSync(hookPath).mode & 0o100).toBeTruthy();
-      expect(readFileSync(hookPath, 'utf-8')).toMatch(/OrionOmega safe-commit hook/);
+      // BOTH hooks must be installed and executable — git silently
+      // skips non-executable hooks, which would silently disable the
+      // safety net.
+      const preCommitHookPath = join(out.checkoutPath, '.git', 'hooks', 'pre-commit');
+      const prePushHookPath = join(out.checkoutPath, '.git', 'hooks', 'pre-push');
+      expect(existsSync(preCommitHookPath)).toBe(true);
+      expect(existsSync(prePushHookPath)).toBe(true);
+      expect(statSync(preCommitHookPath).mode & 0o100).toBeTruthy();
+      expect(statSync(prePushHookPath).mode & 0o100).toBeTruthy();
+      expect(readFileSync(preCommitHookPath, 'utf-8')).toMatch(/OrionOmega safe-commit hook/);
+      expect(readFileSync(prePushHookPath, 'utf-8')).toMatch(/OrionOmega safe-commit hook/);
 
       // The .gitignore must be seeded so the agent's first `git add -A`
       // doesn't sweep up node_modules / .env / etc.
@@ -161,28 +165,34 @@ describe('prepareCodingDispatch', () => {
       const ignoreBody = readFileSync(ignorePath, 'utf-8');
       expect(ignoreBody).toContain('node_modules/');
       expect(ignoreBody).toContain('.env');
+
+      // The structured CommitSafetyReport (round 4 review): all fields
+      // populated and consistent so the executor can render it
+      // verbatim into run-summary.md.
+      expect(out.commitSafety).toBeDefined();
+      expect(out.commitSafety.checkoutPath).toBe(out.checkoutPath);
+      expect(out.commitSafety.hooksInstalled).toBe(true);
+      expect(out.commitSafety.preCommitHookPath).toBe(preCommitHookPath);
+      expect(out.commitSafety.prePushHookPath).toBe(prePushHookPath);
+      expect(out.commitSafety.gitignoreCreated).toBe(true);
+      expect(out.commitSafety.gitignoreAdded.length).toBeGreaterThan(0);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });
 
-  it('FAILS the dispatch when .git exists but the safe-commit hook cannot be installed (Task #209)', async () => {
+  it('FAILS the dispatch when .git exists but the safe-commit hooks cannot be installed (Task #209)', async () => {
     const root = mkdtempSync(join(tmpdir(), 'coding-dispatch-fail-test-'));
     try {
       const failingClone = vi.fn(async (_url: string, runDir: string) => {
         const target = join(runDir, 'repo');
-        // Create .git as a FILE (not a directory) so installSafeCommitHook's
-        // statSync(.git).isDirectory() check returns false → the install
-        // returns installed=false even though a `.git` entry exists.
-        // Wait — that's the no-op path. We want a case where .git is a real
-        // dir but the install fails. Easier: drop a non-dir file at
-        // .git/hooks/pre-push so writeFileSync would clobber it (which is
-        // fine), so instead make .git/hooks a regular FILE so the hook
-        // path can't be created under it.
+        // .git/hooks as a regular FILE → mkdirSync(hooksDir) is a
+        // no-op (entry exists) but writeFileSync(<...>/hooks/pre-commit)
+        // fails ENOTDIR, which puts installSafeCommitHooks into the
+        // installed=false branch. The dispatch must hard-fail rather
+        // than silently downgrade.
         mkdirSync(target, { recursive: true });
         mkdirSync(join(target, '.git'), { recursive: true });
-        // .git/hooks as a file → mkdirSync(hooksDir) is no-op (exists),
-        // then writeFileSync(hookPath = .git/hooks/pre-push) fails ENOTDIR.
         require('node:fs').writeFileSync(join(target, '.git', 'hooks'), 'not a dir', 'utf-8');
         return target;
       });
@@ -197,7 +207,7 @@ describe('prepareCodingDispatch', () => {
           resolveRemote: async () => 'https://github.com/foo/bar.git',
           mkdir: (dir: string) => mkdirSync(dir, { recursive: true }),
         }),
-      ).rejects.toThrow(/Safe-commit hook install failed/);
+      ).rejects.toThrow(/Safe-commit hooks install failed/);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

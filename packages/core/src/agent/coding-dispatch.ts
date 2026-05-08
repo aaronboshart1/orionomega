@@ -51,8 +51,9 @@ import {
 } from './spec-loader.js';
 import {
   ensureSafeGitignore,
-  installSafeCommitHook,
+  installSafeCommitHooks,
 } from '../orchestration/coding/safe-commit.js';
+import type { CommitSafetyReport } from '../orchestration/types.js';
 import { createLogger } from '../logging/logger.js';
 
 const log = createLogger('coding-dispatch');
@@ -170,6 +171,15 @@ export interface PreparedCodingDispatch {
    * logging / diagnostics.
    */
   useMacroPlanning: boolean;
+  /**
+   * Task #209 (review round 4): structured safe-commit outcomes for
+   * the bridge to attach to the executor so they render in
+   * `run-summary.md`. Always populated for code-mode dispatches —
+   * even when no `.gitignore` entries were added (gitignoreAdded is
+   * just empty in that case), so the run-summary section is
+   * deterministic.
+   */
+  commitSafety: CommitSafetyReport;
 }
 
 /**
@@ -255,20 +265,28 @@ export async function prepareCodingDispatch(
   // (non-clone sandbox / unit test mock) we accept the no-op because
   // there's nothing to protect.
   const ignoreResult = ensureSafeGitignore(checkoutPath);
-  const hookResult = installSafeCommitHook(checkoutPath);
+  const hookResult = installSafeCommitHooks(checkoutPath);
   if (existsSync(join(checkoutPath, '.git')) && !hookResult.installed) {
     throw new Error(
-      `Safe-commit hook install failed for ${checkoutPath}: refusing to ` +
+      `Safe-commit hooks install failed for ${checkoutPath}: refusing to ` +
         `dispatch a coding run that can't enforce the 95 MB / secrets / ` +
         `build-artefact deny-list. Check filesystem permissions on ` +
-        `${hookResult.hookPath}.`,
+        `${hookResult.preCommitHookPath} and ${hookResult.prePushHookPath}.`,
     );
   }
+  const commitSafety: CommitSafetyReport = {
+    checkoutPath,
+    gitignoreAdded: ignoreResult.added,
+    gitignoreCreated: ignoreResult.created,
+    hooksInstalled: hookResult.installed,
+    preCommitHookPath: hookResult.preCommitHookPath,
+    prePushHookPath: hookResult.prePushHookPath,
+  };
   log.info('Safe-commit guards installed (Task #209)', {
     checkoutPath,
     gitignoreCreated: ignoreResult.created,
     gitignoreAdded: ignoreResult.added.length,
-    hookInstalled: hookResult.installed,
+    hooksInstalled: hookResult.installed,
   });
 
   // Task #174: pre-load any `*.md` / `*.txt` / `*.spec` references in the
@@ -335,6 +353,7 @@ export async function prepareCodingDispatch(
     codingTaskPreamble,
     specs,
     useMacroPlanning,
+    commitSafety,
   };
 }
 

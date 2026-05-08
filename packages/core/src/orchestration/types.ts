@@ -353,6 +353,41 @@ export interface ExecutionResult {
    * existing summaries stay visually identical for the common path.
    */
   macroPlanning?: MacroPlanningStats;
+  /**
+   * Task #209: safe-commit guard outcomes for code-mode runs.
+   * Populated only by the orchestration bridge when a coding dispatch
+   * actually installed the gitignore + hook safety net. Surfaced into
+   * `run-summary.md` so users can see *what was excluded and why*
+   * after the run completes (review feedback, round 4).
+   */
+  commitSafety?: CommitSafetyReport;
+}
+
+/**
+ * Task #209: safe-commit guard outcomes recorded once per coding-mode
+ * dispatch and surfaced in the run summary. The dispatch layer fills
+ * this out from `prepareCodingDispatch`'s return value; the executor
+ * just renders it.
+ */
+export interface CommitSafetyReport {
+  /** Absolute path to the checkout the guards were installed into. */
+  checkoutPath: string;
+  /**
+   * Entries that were missing from the user's `.gitignore` and have
+   * been appended by `ensureSafeGitignore`. Empty array when the file
+   * already covered every default. Surfaces the deterministic
+   * "what was added to keep your repo safe" report the reviewer
+   * called out.
+   */
+  gitignoreAdded: readonly string[];
+  /** True if `.gitignore` did not exist before this dispatch. */
+  gitignoreCreated: boolean;
+  /** True iff BOTH safe-commit hooks were installed + executable. */
+  hooksInstalled: boolean;
+  /** Path to the installed `.git/hooks/pre-commit`. */
+  preCommitHookPath: string;
+  /** Path to the installed `.git/hooks/pre-push`. */
+  prePushHookPath: string;
 }
 
 /**

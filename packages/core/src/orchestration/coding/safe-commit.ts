@@ -48,6 +48,8 @@ import {
   statSync,
   mkdirSync,
   chmodSync,
+  renameSync,
+  unlinkSync,
 } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 
@@ -383,38 +385,177 @@ export function prepareSafeCommit(repoDir: string): PrepareSafeCommitResult {
 }
 
 /**
- * Result of {@link installSafeCommitHook}.
+ * Result of {@link installSafeCommitHooks}.
+ *
+ * Two hooks are installed in tandem (Task #209, deterministic
+ * enforcement):
+ *
+ *  - `.git/hooks/pre-commit` — refuses to *create* a commit that
+ *    contains any unsafe staged file. This is the primary gate; if
+ *    the commit never happens, no bad blob enters local history and
+ *    nothing pathological can leak into the user's eventual push.
+ *  - `.git/hooks/pre-push` — defence-in-depth, walks **every commit
+ *    being pushed** (not just `HEAD`) and refuses if any blob in any
+ *    of those commits trips the deny-list. This catches the residual
+ *    case of pre-existing bad commits in the repo's history that
+ *    pre-date hook installation.
+ *
+ * Together they implement the "never get staged → never get pushed"
+ * contract the task asks for: pre-commit prevents *new* offenders,
+ * pre-push catches *historical* ones.
  */
-export interface InstallSafeCommitHookResult {
-  /** Absolute path to the installed hook (`.git/hooks/pre-push`). */
-  hookPath: string;
-  /** True if the hook was newly created or rewritten on this call. */
+export interface InstallSafeCommitHooksResult {
+  /** Absolute path to the installed `pre-commit` hook. */
+  preCommitHookPath: string;
+  /** Absolute path to the installed `pre-push` hook. */
+  prePushHookPath: string;
+  /**
+   * True iff BOTH hooks were successfully written + chmod'd. The
+   * dispatch layer turns `installed: false` (when `.git` exists) into
+   * a hard dispatch failure — silent fallback was the gap the first
+   * architect review caught, so we conservatively report success only
+   * when the full safety net is in place.
+   */
   installed: boolean;
 }
 
 /**
- * POSIX-shell pre-push hook body. Inlined as a constant so the
- * installer is a single `writeFileSync` call and the hook source
- * lives next to the policy it enforces.
+ * Pre-commit hook body. Reads the staged index via
+ * `git ls-files -s -z` (NUL-delimited, robust against pathological
+ * filenames) and refuses the commit on the first deny-list match.
  *
- * The hook walks `git ls-tree -r -l HEAD` (mode/type/sha/size/path
- * for every blob in the HEAD tree — i.e. the snapshot the agent is
- * trying to push), then rejects on:
+ * Why a hook (vs the dispatch preamble step alone)? The preamble is
+ * advisory text the agent might skip; a `pre-commit` hook is
+ * deterministic — git invokes it before recording the commit, and a
+ * non-zero exit aborts the commit. Even `git commit -n` (which
+ * bypasses the hook) is explicitly forbidden in the preamble
+ * alongside `git push --no-verify`.
+ */
+const PRE_COMMIT_HOOK_BODY = `#!/usr/bin/env perl
+# Auto-installed by OrionOmega coding mode (Task #209).
+# Refuses to record a commit whose staged index contains:
+#   - any blob > 95 MB
+#   - anything under node_modules/.next/dist/build/.cache/.turbo/coverage
+#   - any .env* (except .env.example / .env.sample)
+#   - any *.{pem,key,p12,pfx}
+#   - any path containing control bytes (0x01-0x1F)
+#
+# This is the PRIMARY gate — if the commit never happens, the bad
+# blob never enters local history, and the pre-push hook never has
+# to deal with it. Bypass requires \`git commit -n\` / --no-verify,
+# which the dispatch preamble explicitly forbids.
+
+use strict;
+use warnings;
+use IPC::Open2;
+
+my \$MAX = 95 * 1024 * 1024;
+my @bad;
+
+# git ls-files -s -z emits NUL-delimited records of the form:
+#   "<mode> SP <sha> SP <stage>\\t<path>\\0"
+# Capture (sha, path) for every staged entry.
+open(my \$lf, '-|', 'git', 'ls-files', '-s', '-z') or exit 0;
+local \$/ = "\\0";
+my @entries;
+while (my \$rec = <\$lf>) {
+  chomp \$rec;
+  next if \$rec eq '';
+  my (\$meta, \$path) = split /\\t/, \$rec, 2;
+  next unless defined \$path;
+  my @f = split /\\s+/, \$meta;
+  next unless @f >= 3;
+  push @entries, { sha => \$f[1], path => \$path };
+}
+close(\$lf);
+
+# Batch-resolve sizes in one cat-file pass — far faster than forking
+# git cat-file -s once per file when the index is large.
+# Declare the IPC handles + pid in the outer scope so the eval{} guard
+# can populate them and the read loop below can still see them under
+# strict mode. (Inline lexicals declared inside open2(...) do not
+# escape to the surrounding scope.)
+my %size;
+if (@entries) {
+  my \$cf_in;
+  my \$cf_out;
+  my \$pid = eval {
+    open2(\$cf_out, \$cf_in,
+      'git', 'cat-file', '--batch-check=%(objectname) %(objecttype) %(objectsize)');
+  };
+  # eval failure → git missing or open2 unavailable. Best-effort no-op
+  # rather than block the commit; the pre-push hook is still the
+  # belt-and-braces gate before code leaves the machine.
+  if (!defined \$pid) { exit 0 }
+  print \$cf_in "\$_->{sha}\\n" for @entries;
+  close(\$cf_in);
+  while (my \$line = <\$cf_out>) {
+    chomp \$line;
+    my (\$sha, \$type, \$sz) = split /\\s+/, \$line;
+    next unless defined \$type && \$type eq 'blob' && \$sz =~ /^\\d+\$/;
+    \$size{\$sha} = \$sz + 0;
+  }
+  close(\$cf_out);
+  waitpid(\$pid, 0);
+}
+
+for my \$e (@entries) {
+  my \$path = \$e->{path};
+  my \$sha  = \$e->{sha};
+  my \$sz   = \$size{\$sha};
+  next unless defined \$sz;
+
+  if (\$path =~ /[\\x01-\\x1f]/) {
+    push @bad, "<staged path with control characters; rename it>";
+    next;
+  }
+  if (\$sz > \$MAX) {
+    push @bad, "\$path (\$sz bytes, >95 MB GitHub-safe limit)";
+    next;
+  }
+  if (\$path =~ m{^(?:node_modules|\\.next|dist|build|\\.cache|\\.turbo|coverage)/}) {
+    push @bad, "\$path (build artefact)";
+    next;
+  }
+  (my \$base = \$path) =~ s{.*/}{};
+  next if \$base eq '.env.example' || \$base eq '.env.sample';
+  if (\$base eq '.env' || \$base =~ /^\\.env\\./) {
+    push @bad, "\$path (secret / env file)";
+    next;
+  }
+  if (\$base =~ /\\.(?:pem|key|p12|pfx)\$/) {
+    push @bad, "\$path (secret / key material)";
+    next;
+  }
+}
+
+if (@bad) {
+  print STDERR "OrionOmega safe-commit hook (Task #209) refusing this commit:\\n";
+  print STDERR "  - \$_\\n" for @bad;
+  print STDERR "\\nFix: \\\`git rm --cached <file>\\\` (or \\\`git restore --staged <file>\\\`)\\n";
+  print STDERR "and ensure the matching pattern is in .gitignore, then re-commit.\\n";
+  print STDERR "For files that legitimately belong in the repo but exceed 95 MB,\\n";
+  print STDERR "set up Git LFS first.\\n";
+  exit 1;
+}
+exit 0;
+`;
+
+/**
+ * Pre-push hook body. Walks **every commit being pushed** (per the
+ * git-pre-push contract: stdin lines of
+ * `<local_ref> <local_sha> <remote_ref> <remote_sha>`), then for each
+ * commit walks its tree via `git ls-tree -r -l -z <commit>` and
+ * applies the deny-list to every blob. Blobs are deduplicated by
+ * SHA across commits so re-pushing a deep history is cheap.
  *
- *   - Any single blob > 95 MB (GitHub's 100 MB hard limit minus
- *     a margin).
- *   - Anything under a known build-artefact directory.
- *   - Any `.env*` (except `.env.example` / `.env.sample`) or
- *     `*.{pem,key,p12,pfx}` file.
+ * This catches the residual case the pre-commit hook can't help with:
+ * a bad blob that landed in the repo's history *before* the safe-
+ * commit hooks were installed (e.g. the user's pre-existing repo).
  *
- * The hook is intentionally self-contained — no Node, no jq, no
- * `find`. It uses only POSIX `awk` + git plumbing so it runs on the
- * Replit container, on macOS, and on Linux CI without surprises.
- *
- * The error message is shaped so git's own `pre-push hook declined`
- * banner is followed by a clear, actionable list of offending files.
- * Our existing rule "if `git push` fails, fail the run with the
- * verbatim stderr" then surfaces this to the user untouched.
+ * Falls back to walking the `HEAD` tree when stdin is empty (manual
+ * invocation, integration tests, `git push` with no refs to push) so
+ * the hook is still useful as a one-shot audit tool.
  */
 const PRE_PUSH_HOOK_BODY = `#!/usr/bin/env perl
 # Auto-installed by OrionOmega coding mode (Task #209).
@@ -443,56 +584,102 @@ use warnings;
 my \$MAX = 95 * 1024 * 1024;
 my @bad;
 
-open(my \$fh, '-|', 'git', 'ls-tree', '-r', '-l', '-z', 'HEAD') or exit 0;
-local \$/ = "\\0";
-while (my \$rec = <\$fh>) {
-  chomp \$rec;             # strip trailing NUL
-  next if \$rec eq '';
+# Determine which commits are about to be pushed. Pre-push receives
+# zero or more lines on stdin:
+#   "<local_ref> <local_sha> <remote_ref> <remote_sha>\\n"
+# remote_sha == 0{40} means the remote has no such ref yet — push the
+# whole reachable history of local_sha. Otherwise push the range
+# remote_sha..local_sha (the new commits). local_sha == 0{40} means a
+# delete-only push — nothing new to inspect.
+my @ranges;
+while (my \$line = <STDIN>) {
+  chomp \$line;
+  my (\$lref, \$lsha, \$rref, \$rsha) = split /\\s+/, \$line;
+  next unless defined \$lsha;
+  next if \$lsha =~ /^0+\$/;            # pure delete — nothing to scan
+  if (!defined \$rsha || \$rsha =~ /^0+\$/) {
+    push @ranges, \$lsha;                # new ref — walk all reachable
+  } else {
+    push @ranges, "\$rsha..\$lsha";      # incremental
+  }
+}
 
-  # Format with -l -z: "<mode> <type> <sha> <size>\\t<path>"
-  my (\$meta, \$path) = split /\\t/, \$rec, 2;
-  next unless defined \$path;
-  my @f = split /\\s+/, \$meta;
-  next unless @f >= 4;
-  my \$size = \$f[3];
-  next unless \$size =~ /^\\d+\$/;
+# Manual invocation / no-stdin / integration tests: fall back to the
+# HEAD tree so the hook still provides a useful one-shot audit.
+my \$fallback_to_head = !@ranges;
+push @ranges, 'HEAD' if \$fallback_to_head;
 
+# Deduplicate blob SHAs across every (range, commit, tree) we walk so
+# a deep history with many commits referring to the same file isn't
+# re-classified hundreds of times.
+my %seen_blob;
+
+sub classify {
+  my (\$path, \$size) = @_;
   # Reject ANY control character in the path. 0x01–0x1F includes
   # TAB (0x09), LF (0x0A), VT, FF, CR (0x0D), so a filename like
   # "evil\\nnode_modules/x" is caught here against the intact NUL-
   # record path before any other classifier runs.
   if (\$path =~ /[\\x01-\\x1f]/) {
     push @bad, "<path with control characters; rename it>";
-    next;
+    return;
   }
-
   if (\$size > \$MAX) {
     push @bad, "\$path (\$size bytes, >95 MB GitHub-safe limit)";
-    next;
+    return;
   }
-
-  # Build artefacts — first path segment must be one of these dirs.
   if (\$path =~ m{^(?:node_modules|\\.next|dist|build|\\.cache|\\.turbo|coverage)/}) {
     push @bad, "\$path (build artefact)";
-    next;
+    return;
   }
-
-  # Basename for secret matching.
   (my \$base = \$path) =~ s{.*/}{};
-
-  # Allowed conventional placeholders.
-  next if \$base eq '.env.example' || \$base eq '.env.sample';
-
+  return if \$base eq '.env.example' || \$base eq '.env.sample';
   if (\$base eq '.env' || \$base =~ /^\\.env\\./) {
     push @bad, "\$path (secret / env file)";
-    next;
+    return;
   }
   if (\$base =~ /\\.(?:pem|key|p12|pfx)\$/) {
     push @bad, "\$path (secret / key material)";
-    next;
+    return;
   }
 }
-close(\$fh);
+
+sub walk_tree {
+  my (\$commitish) = @_;
+  open(my \$fh, '-|', 'git', 'ls-tree', '-r', '-l', '-z', \$commitish) or return;
+  local \$/ = "\\0";
+  while (my \$rec = <\$fh>) {
+    chomp \$rec;
+    next if \$rec eq '';
+    # Format with -l -z: "<mode> <type> <sha> <size>\\t<path>"
+    my (\$meta, \$path) = split /\\t/, \$rec, 2;
+    next unless defined \$path;
+    my @f = split /\\s+/, \$meta;
+    next unless @f >= 4;
+    my (\$mode, \$type, \$sha, \$size) = @f;
+    next unless \$type eq 'blob';
+    next unless \$size =~ /^\\d+\$/;
+    next if \$seen_blob{\$sha}++;
+    classify(\$path, \$size + 0);
+  }
+  close(\$fh);
+}
+
+for my \$range (@ranges) {
+  if (\$fallback_to_head) {
+    walk_tree(\$range);
+    next;
+  }
+  # Enumerate every commit in the range (newest-first ordering is
+  # fine — we dedupe by blob SHA anyway).
+  open(my \$rl, '-|', 'git', 'rev-list', \$range) or next;
+  while (my \$commit = <\$rl>) {
+    chomp \$commit;
+    next unless \$commit =~ /^[0-9a-f]{4,}\$/;
+    walk_tree(\$commit);
+  }
+  close(\$rl);
+}
 
 if (@bad) {
   print STDERR "OrionOmega safe-commit hook (Task #209) refusing to push:\\n";
@@ -500,51 +687,143 @@ if (@bad) {
   print STDERR "\\nFix: remove the file(s) from the working tree, add the matching\\n";
   print STDERR "pattern to .gitignore, then \\\`git rm --cached <file>\\\` and re-commit.\\n";
   print STDERR "For files that legitimately belong in the repo but exceed 95 MB,\\n";
-  print STDERR "set up Git LFS first.\\n";
+  print STDERR "set up Git LFS first. To purge a bad blob from history use\\n";
+  print STDERR "\\\`git filter-repo\\\` (or BFG) before re-pushing.\\n";
   exit 1;
 }
 exit 0;
 `;
 
 /**
- * Install the safe-commit pre-push hook into a checkout's
- * `.git/hooks/pre-push`. Idempotent: the hook is overwritten on every
- * call so a stale version from a previous OrionOmega release can't
- * leave a checkout under-protected.
+ * Install BOTH safe-commit hooks (pre-commit + pre-push) into a
+ * checkout's `.git/hooks/`. Idempotent: each hook is overwritten on
+ * every call so a stale version from a previous OrionOmega release
+ * can't leave a checkout under-protected.
  *
  * No-op (returns `installed: false`) when `repoDir/.git` doesn't
  * exist — we never want to fabricate a `.git` directory just to drop
  * a hook into it. Bare repos (`.git` is a file pointing elsewhere)
  * are also skipped because the hook would have to live next to the
  * actual git dir, not next to the working tree.
+ *
+ * `installed: true` is returned only when BOTH hooks were written
+ * AND made executable. The dispatch layer turns `installed: false`
+ * (when `.git` exists) into a hard dispatch failure — silent
+ * fallback was the gap the first architect review caught, so the
+ * conservative "all-or-nothing" reporting is intentional.
  */
-export function installSafeCommitHook(repoDir: string): InstallSafeCommitHookResult {
+export function installSafeCommitHooks(repoDir: string): InstallSafeCommitHooksResult {
   const gitDir = join(repoDir, '.git');
+  const hooksDir = join(gitDir, 'hooks');
+  const preCommitHookPath = join(hooksDir, 'pre-commit');
+  const prePushHookPath = join(hooksDir, 'pre-push');
+
   // Only proceed when `.git` is a real directory (rules out bare-repo
   // files and missing-clone cases).
   let isDir = false;
   try { isDir = statSync(gitDir).isDirectory(); } catch { isDir = false; }
   if (!isDir) {
-    return { hookPath: join(gitDir, 'hooks', 'pre-push'), installed: false };
+    return { preCommitHookPath, prePushHookPath, installed: false };
   }
 
-  const hooksDir = join(gitDir, 'hooks');
-  const hookPath = join(hooksDir, 'pre-push');
-  // Catch the FS work as a unit so the caller gets a single, clear
-  // signal: hookPath + installed:false. The dispatch layer turns
-  // installed=false (when .git exists) into a hard dispatch failure,
-  // which is the deterministic-enforcement contract.
+  // Truly atomic install (round-5 review): write both hooks + chmod
+  // them under temp names FIRST, snapshot any pre-existing targets,
+  // then rename into place. If anything fails — including chmod on
+  // POSIX, where a non-executable hook is a silent disable — we
+  // restore prior state and report installed=false. The caller turns
+  // installed=false (with .git present) into a hard dispatch failure,
+  // so we MUST never leave a half-installed state behind.
+  const isPosix = process.platform !== 'win32';
+  // Per-call random suffix avoids collisions if two installs ever race
+  // on the same checkout (shouldn't happen, but cheap insurance).
+  const suffix = `${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 10)}`;
+  const preCommitTmp = `${preCommitHookPath}.installing.${suffix}`;
+  const prePushTmp = `${prePushHookPath}.installing.${suffix}`;
+
+  // In-memory snapshot of any pre-existing pre-commit hook so we can
+  // restore it if the second rename fails after the first succeeded.
+  // (We don't need a snapshot for pre-push: pre-push is renamed last,
+  // so if it fails the original pre-push file is still untouched —
+  // POSIX rename() either fully succeeds or leaves the target alone.)
+  let preCommitPrev: Buffer | null = null;
+
+  // Track which side-effects we've successfully performed so the
+  // catch block knows what to undo. `tmpsCreated[i]=true` means the
+  // temp file exists; `installedFinal[i]=true` means it's already in
+  // its final location.
+  let preCommitTmpCreated = false;
+  let prePushTmpCreated = false;
+  let preCommitInstalledFinal = false;
+
   try {
     if (!existsSync(hooksDir)) {
       mkdirSync(hooksDir, { recursive: true });
     }
-    writeFileSync(hookPath, PRE_PUSH_HOOK_BODY, 'utf-8');
-    // 0o755 — readable + executable by everyone, writable by owner.
-    // Git silently skips hooks that aren't executable, so this is the
-    // single most important line in the installer.
-    try { chmodSync(hookPath, 0o755); } catch { /* Windows etc. — best effort */ }
-    return { hookPath, installed: true };
+
+    // Snapshot the pre-existing pre-commit target (if any) BEFORE we
+    // touch anything. Used by the rollback path if the pre-push rename
+    // fails after we've already swapped pre-commit into place.
+    if (existsSync(preCommitHookPath)) {
+      try { preCommitPrev = readFileSync(preCommitHookPath); } catch { preCommitPrev = null; }
+    }
+
+    // Phase 1: write + chmod both temp files. Either succeeds for both
+    // or we throw and the catch unwinds.
+    writeFileSync(preCommitTmp, PRE_COMMIT_HOOK_BODY, 'utf-8');
+    preCommitTmpCreated = true;
+    writeFileSync(prePushTmp, PRE_PUSH_HOOK_BODY, 'utf-8');
+    prePushTmpCreated = true;
+
+    // chmod failures on POSIX are FATAL — git silently skips
+    // non-executable hooks, which would silently disable the entire
+    // safety net. On Windows the FS doesn't have a meaningful execute
+    // bit so chmod is best-effort there.
+    try {
+      chmodSync(preCommitTmp, 0o755);
+    } catch (err) {
+      if (isPosix) throw err;
+    }
+    try {
+      chmodSync(prePushTmp, 0o755);
+    } catch (err) {
+      if (isPosix) throw err;
+    }
+
+    // Phase 2: rename into place. POSIX rename is atomic within a
+    // filesystem, so each rename either fully succeeds or leaves the
+    // target untouched. We can't make TWO renames jointly atomic, so
+    // if the second one fails we manually restore the first from our
+    // in-memory snapshot.
+    renameSync(preCommitTmp, preCommitHookPath);
+    preCommitTmpCreated = false;
+    preCommitInstalledFinal = true;
+
+    renameSync(prePushTmp, prePushHookPath);
+    prePushTmpCreated = false;
+
+    return { preCommitHookPath, prePushHookPath, installed: true };
   } catch {
-    return { hookPath, installed: false };
+    // Roll back every side-effect we managed to perform, in reverse
+    // order. Best-effort — if rollback itself fails we report
+    // installed=false and the caller (prepareCodingDispatch) will
+    // surface that as a hard dispatch failure.
+    if (preCommitInstalledFinal) {
+      // pre-commit was renamed into place but pre-push failed → restore
+      // pre-commit to its prior content (or remove if there wasn't one).
+      try {
+        if (preCommitPrev !== null) {
+          writeFileSync(preCommitHookPath, preCommitPrev);
+        } else {
+          unlinkSync(preCommitHookPath);
+        }
+      } catch { /* best effort */ }
+    }
+    if (preCommitTmpCreated) {
+      try { unlinkSync(preCommitTmp); } catch { /* best effort */ }
+    }
+    if (prePushTmpCreated) {
+      try { unlinkSync(prePushTmp); } catch { /* best effort */ }
+    }
+    return { preCommitHookPath, prePushHookPath, installed: false };
   }
 }

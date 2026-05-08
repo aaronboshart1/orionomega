@@ -282,6 +282,14 @@ export class OrchestrationBridge {
        * executor finishes (used to merge worktree branches back).
        */
       onPlanReady?: (plan: PlannerOutput) => Promise<{ postExecute?: (success: boolean) => Promise<void> } | void>;
+      /**
+       * Task #209 (review round 4): structured commit-safety report
+       * from {@link prepareCodingDispatch}. Threaded through to the
+       * executor via `setCommitSafety` so it surfaces in
+       * `run-summary.md`. Code-mode dispatches always pass it;
+       * orchestrate/direct dispatches leave it undefined.
+       */
+      commitSafety?: import('../orchestration/types.js').CommitSafetyReport;
     } = {},
   ): Promise<void> {
     // Prepend the staged-attachments block to the task so the planner's
@@ -302,6 +310,7 @@ export class OrchestrationBridge {
       ...(mergedOverrides ? { executorOverrides: mergedOverrides } : {}),
       ...(opts.workflowId ? { workflowId: opts.workflowId } : {}),
       ...(opts.onPlanReady ? { onPlanReady: opts.onPlanReady } : {}),
+      ...(opts.commitSafety ? { commitSafety: opts.commitSafety } : {}),
     });
   }
 
@@ -313,6 +322,7 @@ export class OrchestrationBridge {
       executorOverrides?: ExecutorOverrides;
       workflowId?: string;
       onPlanReady?: (plan: PlannerOutput) => Promise<{ postExecute?: (success: boolean) => Promise<void> } | void>;
+      commitSafety?: import('../orchestration/types.js').CommitSafetyReport;
     } = {},
   ): Promise<void> {
     // Task #200: mint the workflowId BEFORE planning so we can scope
@@ -397,7 +407,7 @@ export class OrchestrationBridge {
         return;
       }
 
-      await this.dispatchAsync(plan, pushHistory, effectiveOverrides);
+      await this.dispatchAsync(plan, pushHistory, effectiveOverrides, opts.commitSafety);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       log.error('dispatchFullDAG error', { error: msg });
@@ -686,6 +696,7 @@ export class OrchestrationBridge {
         ...(macroPhaseBodies.size > 0 ? { macroPhaseBodies } : {}),
       },
       workflowId: prepared.runId,
+      commitSafety: prepared.commitSafety,
       ...(opts.stagedAttachments?.length ? { stagedAttachments: opts.stagedAttachments } : {}),
       ...(onPlanReady ? { onPlanReady } : {}),
     });
@@ -760,6 +771,7 @@ ${userTask}`;
     plan: PlannerOutput,
     pushHistory: (entry: { role: string; content: string }) => void,
     executorOverrides?: ExecutorOverrides,
+    commitSafety?: import('../orchestration/types.js').CommitSafetyReport,
   ): Promise<string> {
     const workflowId = plan.graph.id;
 
@@ -777,7 +789,7 @@ ${userTask}`;
     pushHistory({ role: 'assistant', content: `[Dispatched] ${plan.summary}` });
 
     // Fire-and-forget: execute in the background
-    void this.executeBackground(plan, pushHistory, executorOverrides).catch((err) => {
+    void this.executeBackground(plan, pushHistory, executorOverrides, commitSafety).catch((err) => {
       const msg = err instanceof Error ? err.message : String(err);
       log.error('Background execution failed', { error: msg, workflowId });
       this.callbacks.onText(`Workflow failed: ${msg}`, false, true);
@@ -794,8 +806,9 @@ ${userTask}`;
     plan: PlannerOutput,
     pushHistory: (entry: { role: string; content: string }) => void,
     executorOverrides?: ExecutorOverrides,
+    commitSafety?: import('../orchestration/types.js').CommitSafetyReport,
   ): Promise<void> {
-    await this.executePlan(plan, pushHistory, undefined, undefined, executorOverrides);
+    await this.executePlan(plan, pushHistory, undefined, undefined, executorOverrides, commitSafety);
   }
 
   // ── Confirmation resolution ───────────────────────────────────────
@@ -1041,6 +1054,7 @@ ${userTask}`;
     startLayer?: number,
     restoredState?: WorkflowState,
     executorOverrides?: ExecutorOverrides,
+    commitSafety?: import('../orchestration/types.js').CommitSafetyReport,
   ): Promise<void> {
     const workflowId = plan.graph.id;
     const workflowName = plan.graph.name;
@@ -1181,6 +1195,12 @@ ${userTask}`;
     };
 
     const executor = new GraphExecutor(plan.graph, this.eventBus, executorConfig, restoredState);
+    // Task #209 (review round 4): hand the commit-safety report to the
+    // executor so it lands in ExecutionResult + run-summary.md. Only
+    // populated for code-mode dispatches; orchestrate/direct skip this.
+    if (commitSafety) {
+      executor.setCommitSafety(commitSafety);
+    }
 
     // Subscribe to '*' and filter to only this workflow's events
     const eventUnsub = this.eventBus.subscribe('*', (event) => {
