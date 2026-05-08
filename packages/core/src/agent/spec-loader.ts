@@ -356,6 +356,50 @@ const DEFAULT_MACRO_THRESHOLDS: Required<MacroPlanningThresholds> = {
   singlePhaseCharThreshold: 12_000,
 };
 
+/**
+ * Task #197: Hard upper bound on the number of phases the macro planner
+ * can be asked to handle in a single run. Above this limit the spec is
+ * too large for hierarchical planning to remain reliable (the macro
+ * plan output itself starts approaching token limits, and the executor
+ * would spend a long time inside the splice loop), so we fail fast at
+ * the input layer with an actionable message rather than letting the
+ * run melt down mid-execution.
+ *
+ * The default mirrors `ExecutorConfig.macroMaxExpansions` (40) — the
+ * executor cap is the last line of defence; this gate refuses obviously
+ * over-sized inputs before any tokens are spent.
+ */
+export const MACRO_PLAN_MAX_PHASES = 40;
+
+/**
+ * Task #197: Assert that a set of resolved specs is feasible for
+ * hierarchical macro planning. Throws an explicit, actionable error
+ * when the combined phase count exceeds {@link MACRO_PLAN_MAX_PHASES}.
+ *
+ * Called from `prepareCodingDispatch` immediately after macro mode is
+ * selected, so the user sees the rejection at message-submit time
+ * (before the planner is even invoked) rather than after a partially
+ * executed run.
+ */
+export function assertMacroPlanFeasible(
+  specs: SpecReference[],
+  maxPhases: number = MACRO_PLAN_MAX_PHASES,
+): void {
+  const totalPhases = specs.reduce((acc, s) => acc + s.phases.length, 0);
+  if (totalPhases > maxPhases) {
+    const breakdown = specs
+      .filter((s) => s.phases.length > 0)
+      .map((s) => `${s.reference} (${s.phases.length} phases)`)
+      .join(', ');
+    throw new Error(
+      `Input too large for hierarchical planning — split the spec. ` +
+        `Combined phase count is ${totalPhases}, limit is ${maxPhases}. ` +
+        `Specs: ${breakdown}. Break the spec into multiple smaller files ` +
+        `and dispatch them in separate runs.`,
+    );
+  }
+}
+
 export function shouldUseMacroPlanning(
   specs: SpecReference[],
   thresholds: MacroPlanningThresholds = {},

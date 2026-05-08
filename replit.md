@@ -62,7 +62,9 @@ Environment variables:
 - `packages/core/src/orchestration/coding/repo-manager.ts` — clone, fetch+ff, worktree primitives, `getRepoStatus`.
 - `packages/core/src/agent/coding-dispatch.ts` — per-run preparation for code-mode dispatches.
 - `packages/core/src/agent/spec-loader.ts` — reference extraction & multi-phase spec parsing for the planner preamble.
-- `packages/core/src/agent/orchestration-bridge.ts` — DAG dispatch glue between MainAgent and the planner/executor.
+- `packages/core/src/agent/orchestration-bridge.ts` — DAG dispatch glue between MainAgent and the planner/executor; wires the macro-expansion callback for code-mode dispatches (Task #197).
+- `packages/core/src/orchestration/planner.ts` — `Planner.plan` (top-level / macro plan) and `Planner.subPlan` (per-phase expansion, Task #197) sharing one model-discovery + coercion pipeline.
+- `packages/core/src/orchestration/executor.ts` — `GraphExecutor.expandMacroNodesInLayer` splices per-phase sub-DAGs into the live graph (Task #197).
 
 ## Product
 
@@ -83,6 +85,7 @@ OrionOmega is an AI agent orchestration platform with a web dashboard, WebSocket
 - **Gateway port-bind retry**: see [`docs/architecture-notes.md`](docs/architecture-notes.md#gateway-port-bind-retry-task-183) — `ORIONOMEGA_BIND_RETRY_MS` controls the budget.
 - **Spec paths in code-mode prompts**: the spec-loader regex captures both relative and absolute POSIX paths; absolute paths must live under the workspace root or per-run checkout to pass the sandbox guard.
 - **Git tab vs `repo:<url>` hint**: when a session has a Git-tab selection, that's the source of truth and the legacy resolver chain is bypassed. Without a selection, the resolver chain (`repo:<url>` → `coding.repoDir` origin → `coding.defaultRemote` → cwd origin → error) still runs.
+- **Hierarchical macro planning (Task #197)**: code-mode dispatches with very large multi-phase specs auto-switch to macro planning at 80KB combined / 8 phases / 12KB single-phase thresholds. Above 40 total phases the dispatch is refused at input time with a "split the spec" error — see `docs/architecture-notes.md` for the splice algorithm and bridge wiring.
 
 ## Pointers
 

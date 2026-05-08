@@ -833,6 +833,41 @@ Do NOT attempt to plan or execute the coding work yourself. Do NOT clone, write 
       throw new Error('subPlan: no API key configured');
     }
 
+    // Task #197: reuse the same model-discovery + coercion pipeline as
+    // `plan()` so sub-DAG node model ids are validated/coerced
+    // identically. Without this the sub-planner could hallucinate a
+    // bogus model (e.g. "claude-opus-4-7") and the spawned Claude Code
+    // process would exit immediately with code 1.
+    let discoveredModels: DiscoveredModel[] = [];
+    try {
+      discoveredModels = await discoverModels(apiKey);
+    } catch {
+      log.warn('subPlan: model discovery failed — sub-planner will use configured defaults');
+    }
+    const defaultWorkerModel = discoveredModels.length > 0
+      ? (pickModelByTier(discoveredModels, 'sonnet')?.id ?? appConfig.models.default)
+      : appConfig.models.default;
+    const coerceModel = (raw: unknown): string => {
+      const id = raw == null ? '' : String(raw).trim();
+      if (!id) return defaultWorkerModel;
+      if (discoveredModels.length === 0) return id;
+      if (discoveredModels.some((m) => m.id === id)) return id;
+      const lower = id.toLowerCase();
+      const inferredTier: 'opus' | 'sonnet' | 'haiku' | null =
+        lower.includes('opus') ? 'opus'
+        : lower.includes('sonnet') ? 'sonnet'
+        : lower.includes('haiku') ? 'haiku'
+        : null;
+      const replacement = inferredTier
+        ? (pickModelByTier(discoveredModels, inferredTier)?.id ?? defaultWorkerModel)
+        : defaultWorkerModel;
+      log.warn(
+        `Sub-planner picked unknown model "${id}" — substituting "${replacement}"` +
+        (inferredTier ? ` (inferred ${inferredTier} tier)` : ' (default worker model)'),
+      );
+      return replacement;
+    };
+
     const subTask = `## Sub-plan for spec phase \`${cfg.phaseId}\`: ${cfg.phaseTitle}
 
 This is a hierarchical macro-planning sub-pass (Task #197). The user's
@@ -980,7 +1015,9 @@ ${phaseBody}
         retries: n.retries != null ? Number(n.retries) : undefined,
         agent: n.agent
           ? {
-              model: String((n.agent as Record<string, unknown>).model ?? this.config.model),
+              model: coerceModel(
+                (n.agent as Record<string, unknown>).model ?? defaultWorkerModel,
+              ),
               task: String((n.agent as Record<string, unknown>).task ?? ''),
             }
           : undefined,
@@ -989,7 +1026,7 @@ ${phaseBody}
               const ca = n.codingAgent as Record<string, unknown>;
               return {
                 task: String(ca.task ?? ''),
-                model: ca.model ? String(ca.model) : undefined,
+                model: ca.model ? coerceModel(ca.model) : undefined,
                 cwd: ca.cwd ? String(ca.cwd) : undefined,
                 allowedTools: Array.isArray(ca.allowedTools)
                   ? (ca.allowedTools as string[])

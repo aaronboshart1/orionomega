@@ -46,6 +46,7 @@ import {
   renderSpecPreambleBlock,
   renderSpecMacroPreambleBlock,
   shouldUseMacroPlanning,
+  assertMacroPlanFeasible,
   type SpecReference,
 } from './spec-loader.js';
 import { createLogger } from '../logging/logger.js';
@@ -268,6 +269,10 @@ export async function prepareCodingDispatch(
 
   const useMacroPlanning = shouldUseMacroPlanning(specs);
   if (useMacroPlanning) {
+    // Task #197: refuse obviously over-sized inputs at the input layer
+    // with an actionable error before any planner tokens are spent.
+    // Mid-execution caps in the executor are the last line of defence.
+    assertMacroPlanFeasible(specs);
     log.info('Hierarchical macro planning enabled (Task #197)', {
       specCount: specs.length,
       multiPhaseCount,

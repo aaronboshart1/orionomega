@@ -2,6 +2,38 @@
 
 This file holds the in-depth architecture-decision and task-history notes that used to live in `replit.md`. The README keeps only Run/Stack/Where-things-live/Gotchas; everything else lives here.
 
+## Hierarchical macro planning for very large coding specs (Task #197)
+
+**Motivation.** Single-pass coding-mode planning fails with `stop_reason=max_tokens` on very large multi-phase specs (the canonical case is the Cannabis MSO Legal Operations Platform: ~150KB combined / 17 phases). The planner's tool output simply cannot fit one CODING_AGENT per phase plus all per-phase context inside Anthropic's max output budget.
+
+**Fix.** Two-level planning. The macro planner emits one `MACRO_NODE` placeholder per spec phase; the executor invokes a per-phase sub-planner at run-time and splices the resulting sub-DAG into the live graph.
+
+**Auto-gating** (`packages/core/src/agent/spec-loader.ts`):
+- `shouldUseMacroPlanning(specs)` flips to macro mode at any of: combined contents ≥ 80KB / total phases ≥ 8 / any single phase body ≥ 12KB.
+- `assertMacroPlanFeasible(specs)` runs immediately afterwards in `coding-dispatch.ts` and throws an actionable "Input too large for hierarchical planning — split the spec" error when total phases exceed `MACRO_PLAN_MAX_PHASES` (40). This is the input-layer rejection — `ExecutorConfig.macroMaxExpansions` (40) and `macroMaxTotalNodes` (200) are mid-execution last-resort caps.
+
+**Macro plan output is small by construction.** The `MACRO_NODE` schema is `additionalProperties: false` with only `{specRef, phaseId, phaseTitle, phaseDependsOn}` — the model **cannot** echo phase bodies back into its tool output even if instructed to. The renderer (`renderSpecMacroPreambleBlock`) lists each phase by id/title/complexity/dependsOn but never inlines the body.
+
+**Sub-planning** (`Planner.subPlan` in `packages/core/src/orchestration/planner.ts`):
+- Accepts `(macroNode, repoPreamble, phaseBody)` — the body is resolved at expansion time from the trusted preloaded `SpecReference` list, NOT from planner output.
+- Reuses `plan()`'s `discoverModels` + `coerceModel` pipeline so sub-DAG node model ids are validated/coerced identically (prevents "claude-opus-4-7" hallucinations from crashing Claude Code processes).
+- Refuses external dependencies, duplicate sub-DAG ids, and nested `MACRO_NODE` (anti-recursion).
+- Prefixes every sub-node id with `<phaseId>__` so splices remain unique across phases.
+
+**Splice algorithm** (`GraphExecutor.expandMacroNodesInLayer` in `packages/core/src/orchestration/executor.ts`):
+1. For each `MACRO_NODE` in the current layer: invoke `macroExpansionCallback`, take entries (sub-nodes whose deps don't intersect the sub-DAG's ids) and leaves (sub-nodes nobody inside the sub-DAG depends on); reject if either set is empty.
+2. Inbound rewire: entries inherit the macro node's `dependsOn`. Outbound rewire: every live consumer that depended on the macro node now fans-in across all leaves (Set-deduped).
+3. Run `validateGraph` (cycles / unknown / self-deps) on the spliced result and throw before recomputing layers — `topologicalSort` would otherwise silently turn dangling-dep nodes into runnable entries.
+4. Recompute layers via `topologicalSort` and refresh entry/exit nodes.
+
+**Bridge wiring** (`OrchestrationBridge.dispatchCodingWorkflow` and `executePlan`):
+- Builds a `Map<\`${specRef}::${phaseId}\`, {title, body}>` from `prepared.specs` and threads it via `ExecutorOverrides.macroPhaseBodies`.
+- The macro-expansion callback closure looks the body up at run-time, fails fast if missing, and forwards to `planner.subPlan(node, codingPreamble, body)`. Non-coding dispatches leave the callback unset so any stray `MACRO_NODE` fails immediately with a clear error (defense-in-depth — `executeNodeByType`'s `MACRO_NODE` case also throws).
+
+**Tests:** `packages/core/src/orchestration/__tests__/macro-planning.test.ts` covers thresholds, the input-layer size gate, the macro renderer contract (no `phaseBody`), splice semantics, hard caps, external-dep rejection, duplicate-id rejection, post-splice graph validation, the missing-callback failure mode, and an integration-style bridge-wiring test that proves `subPlan` is invoked once per macro node with the right resolved body. All 166 core tests pass.
+
+
+
 ## Chat-attachment staging for DAG workers (Task #192)
 
 `MainAgent.handleMessage` now writes every uploaded attachment to disk at `<workspaceDir>/output/<convOutputId>/_attachments/<sanitised-name>` BEFORE any dispatch route runs (helper: `packages/core/src/agent/attachment-staging.ts`, exports `stageAttachments`, `renderStagedAttachmentsBlock`, `AttachmentStagingError`, `ATTACHMENTS_DIR_NAME='_attachments'`). The staging dir lives under the per-SESSION `convOutputId` (Task #173) so files uploaded in turn N stay reachable in turn N+1.

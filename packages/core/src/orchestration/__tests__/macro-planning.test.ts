@@ -24,6 +24,8 @@ import {
   shouldUseMacroPlanning,
   renderSpecMacroPreambleBlock,
   parseSpecPhases,
+  assertMacroPlanFeasible,
+  MACRO_PLAN_MAX_PHASES,
   type SpecReference,
 } from '../../agent/spec-loader.js';
 import { tmpdir } from 'node:os';
@@ -71,6 +73,34 @@ describe('shouldUseMacroPlanning (Task #197 thresholds)', () => {
 
   it('returns false when no spec carries >=3 phase markers', () => {
     expect(shouldUseMacroPlanning([])).toBe(false);
+  });
+});
+
+describe('assertMacroPlanFeasible (Task #197 input-layer size gate)', () => {
+  it('passes silently for specs within the limit', () => {
+    const spec = makeSpec('SPEC.md', Array.from({ length: 10 }, (_, i) => `body-${i}`));
+    expect(() => assertMacroPlanFeasible([spec])).not.toThrow();
+  });
+
+  it('throws an actionable "split the spec" error when over the limit', () => {
+    const spec = makeSpec(
+      'HUGE.md',
+      Array.from({ length: MACRO_PLAN_MAX_PHASES + 1 }, (_, i) => `body-${i}`),
+    );
+    expect(() => assertMacroPlanFeasible([spec])).toThrow(
+      /Input too large for hierarchical planning — split the spec/,
+    );
+  });
+
+  it('reports per-spec phase counts in the error breakdown', () => {
+    const a = makeSpec('A.md', Array.from({ length: 25 }, (_, i) => `a-${i}`));
+    const b = makeSpec('B.md', Array.from({ length: 20 }, (_, i) => `b-${i}`));
+    expect(() => assertMacroPlanFeasible([a, b])).toThrow(/A\.md \(25 phases\), B\.md \(20 phases\)/);
+  });
+
+  it('honours a custom maxPhases override (so tests/operators can tighten the gate)', () => {
+    const spec = makeSpec('S.md', Array.from({ length: 10 }, (_, i) => `s-${i}`));
+    expect(() => assertMacroPlanFeasible([spec], 5)).toThrow(/limit is 5/);
   });
 });
 
@@ -352,6 +382,119 @@ describe('GraphExecutor.expandMacroNodesInLayer — strict post-splice validatio
       (executor as unknown as { expandMacroNodesInLayer(i: number): Promise<void> })
         .expandMacroNodesInLayer(0),
     ).rejects.toThrow(/Macro splice produced an invalid graph/);
+  });
+});
+
+describe('Bridge wiring — sub-planner invoked once per macro node with resolved body', () => {
+  /**
+   * Integration-style test that reconstructs the closure pattern
+   * `OrchestrationBridge.executePlan` wires into
+   * `ExecutorConfig.macroExpansionCallback`: a body-resolution lookup
+   * against a trusted phase-body map, followed by a `planner.subPlan`
+   * invocation. This proves end-to-end that:
+   *   1. The executor invokes the callback exactly once per macro node
+   *      in a layer (not once per layer, not zero times).
+   *   2. The body-lookup key (`${specRef}::${phaseId}`) the bridge uses
+   *      matches what the executor's MACRO_NODE config carries.
+   *   3. The resolved body is passed through to `subPlan` verbatim.
+   *   4. Sub-DAGs returned by `subPlan` are spliced into the live graph.
+   */
+  it('invokes the bridge-style callback once per macro node with the right body', async () => {
+    const macroNodes: WorkflowNode[] = [
+      {
+        id: 'macro-1',
+        type: 'MACRO_NODE',
+        label: 'phase 1',
+        dependsOn: [],
+        macro: { specRef: 'SPEC.md', phaseId: 'phase-1', phaseTitle: 'P1' },
+      },
+      {
+        id: 'macro-2',
+        type: 'MACRO_NODE',
+        label: 'phase 2',
+        dependsOn: [],
+        macro: { specRef: 'SPEC.md', phaseId: 'phase-2', phaseTitle: 'P2' },
+      },
+      {
+        id: 'macro-3',
+        type: 'MACRO_NODE',
+        label: 'phase 3',
+        dependsOn: [],
+        macro: { specRef: 'OTHER.md', phaseId: 'other-1', phaseTitle: 'O1' },
+      },
+    ];
+
+    // Mirror the bridge's macroPhaseBodies map shape.
+    const phaseBodies = new Map<string, { title: string; body: string }>([
+      ['SPEC.md::phase-1', { title: 'P1', body: 'body for SPEC phase 1' }],
+      ['SPEC.md::phase-2', { title: 'P2', body: 'body for SPEC phase 2' }],
+      ['OTHER.md::other-1', { title: 'O1', body: 'body for OTHER phase 1' }],
+    ]);
+
+    // Mock subPlan that records every invocation and returns a trivial
+    // 1-node sub-DAG.
+    const subPlanMock = vi.fn(
+      async (node: WorkflowNode, _preamble: string, body: string): Promise<WorkflowNode[]> => [
+        {
+          id: `${node.macro!.phaseId}__only`,
+          type: 'AGENT',
+          label: `${body.length}c`,
+          dependsOn: [],
+          agent: { model: 'm', task: body },
+        },
+      ],
+    );
+
+    // Reconstruct the bridge's closure. This is the exact shape wired
+    // in `OrchestrationBridge.executePlan` for coding dispatches.
+    const codingPreamble = '<repo block>';
+    const macroExpansionCallback = (node: WorkflowNode): Promise<WorkflowNode[]> => {
+      const cfg = node.macro;
+      if (!cfg) throw new Error(`MACRO_NODE '${node.id}' missing macro config`);
+      const key = `${cfg.specRef}::${cfg.phaseId}`;
+      const phase = phaseBodies.get(key);
+      if (!phase) throw new Error(`No body for '${key}'`);
+      return subPlanMock(node, codingPreamble, phase.body);
+    };
+
+    const graph = buildGraph(macroNodes, 'bridge-wiring');
+    const bus = new EventBus();
+    const checkpointDir = mkdtempSync(join(tmpdir(), 'mp-bridge-'));
+    const executor = new GraphExecutor(graph, bus, {
+      workspaceDir: tmpdir(),
+      checkpointDir,
+      workerTimeout: 60,
+      maxRetries: 0,
+      checkpointInterval: 1,
+      macroExpansionCallback,
+    });
+
+    await (executor as unknown as { expandMacroNodesInLayer(i: number): Promise<void> })
+      .expandMacroNodesInLayer(0);
+
+    // 1. Called exactly once per macro node.
+    expect(subPlanMock).toHaveBeenCalledTimes(3);
+
+    // 2 + 3. Each call received the right resolved body.
+    const calls = subPlanMock.mock.calls.map((c) => ({
+      phaseId: (c[0] as WorkflowNode).macro!.phaseId,
+      preamble: c[1] as string,
+      body: c[2] as string,
+    }));
+    expect(calls.find((c) => c.phaseId === 'phase-1')?.body).toBe('body for SPEC phase 1');
+    expect(calls.find((c) => c.phaseId === 'phase-2')?.body).toBe('body for SPEC phase 2');
+    expect(calls.find((c) => c.phaseId === 'other-1')?.body).toBe('body for OTHER phase 1');
+    // All calls share the same preamble.
+    for (const c of calls) expect(c.preamble).toBe(codingPreamble);
+
+    // 4. Sub-DAGs were spliced in; original macro nodes are gone.
+    const liveGraph = (executor as unknown as { graph: { nodes: Map<string, WorkflowNode> } }).graph;
+    expect(liveGraph.nodes.has('macro-1')).toBe(false);
+    expect(liveGraph.nodes.has('macro-2')).toBe(false);
+    expect(liveGraph.nodes.has('macro-3')).toBe(false);
+    expect(liveGraph.nodes.has('phase-1__only')).toBe(true);
+    expect(liveGraph.nodes.has('phase-2__only')).toBe(true);
+    expect(liveGraph.nodes.has('other-1__only')).toBe(true);
   });
 });
 
