@@ -135,6 +135,16 @@ export function extractBareFilenameReferences(task: string): string[] {
  *
  * "Phase N:" / "Stage N -" suffixes are tolerated.
  */
+/**
+ * Threshold (chars) above which {@link parseSpecPhases} will fall back
+ * to generic H2 / H1 heading splitting when the strict
+ * Phase/Stage/Step/numbered patterns yield <3 hits. Below this size a
+ * spec is small enough to inline as plain context, so the relaxed
+ * splitter is suppressed to avoid false positives on short specs that
+ * happen to have a few `## Section` headings.
+ */
+export const SPEC_HEADING_FALLBACK_MIN_CHARS = 30_000;
+
 export function parseSpecPhases(content: string): SpecPhase[] {
   const lines = content.split(/\r?\n/);
   const phaseRe = /^#{1,6}\s+(?:Phase|Stage|Step)\s+(\d+)(?:\s*[:\-.]\s*(.*))?\s*$/i;
@@ -152,6 +162,38 @@ export function parseSpecPhases(content: string): SpecPhase[] {
       hits.push({ lineNo: i, declaredNumber: parseInt(m[1], 10), title: m[2].trim() });
     }
   }
+
+  // Task #197 follow-up (May-2026 bug report): large specs that DON'T
+  // use the strict `## Phase N` / `## Stage N` / `## N.` markers were
+  // bypassing macro-mode and getting inlined verbatim, blowing the
+  // planner's input window with `Request Too Large`. Fall back to
+  // splitting on H2 (preferred) or H1 headings so any large
+  // structured spec — Cannabis MSO Legal, multi-section design docs,
+  // etc. — gets phase-chunked. The size gate (>= 30KB) and >=3-hit
+  // requirement keep this from over-firing on short docs.
+  if (hits.length < 3 && content.length >= SPEC_HEADING_FALLBACK_MIN_CHARS) {
+    const h2Re = /^##\s+(.+?)\s*$/;
+    const h1Re = /^#\s+(.+?)\s*$/;
+    const h2Hits: Array<{ lineNo: number; title: string }> = [];
+    const h1Hits: Array<{ lineNo: number; title: string }> = [];
+    for (let i = 0; i < lines.length; i++) {
+      let m = lines[i].match(h2Re);
+      if (m) {
+        h2Hits.push({ lineNo: i, title: m[1].trim() });
+        continue;
+      }
+      m = lines[i].match(h1Re);
+      if (m) h1Hits.push({ lineNo: i, title: m[1].trim() });
+    }
+    const fallback = h2Hits.length >= 3 ? h2Hits : h1Hits.length >= 3 ? h1Hits : null;
+    if (fallback) {
+      hits.length = 0;
+      fallback.forEach((h, i) => {
+        hits.push({ lineNo: h.lineNo, declaredNumber: i + 1, title: h.title });
+      });
+    }
+  }
+
   if (hits.length < 3) return [];
 
   const phases: SpecPhase[] = hits.map((h, i) => {

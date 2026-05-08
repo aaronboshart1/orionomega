@@ -106,6 +106,34 @@ describe('Multi-phase spec fan-out (Task #174)', () => {
     it('returns an empty list when fewer than 3 phase markers are present', () => {
       expect(parseSpecPhases('## Phase 1\n## Phase 2\nbody')).toEqual([]);
     });
+
+    it('falls back to H2 splitting on large specs without strict markers (May-2026 bug)', () => {
+      // Build a ~32KB spec with ## Section headings — this is the
+      // shape the Cannabis MSO Legal spec used, which previously
+      // bypassed macro mode and blew the planner input window.
+      const filler = 'lorem ipsum dolor sit amet '.repeat(160) + '\n';
+      const big =
+        '# Cannabis MSO Legal Operations Platform\n' +
+        '## Authentication\n' + filler + filler +
+        '## Case Management\n' + filler + filler +
+        '## Billing\n' + filler + filler +
+        '## Reporting\n' + filler + filler;
+      expect(big.length).toBeGreaterThanOrEqual(30_000);
+      const phases = parseSpecPhases(big);
+      expect(phases.length).toBe(4);
+      expect(phases.map((p) => p.title)).toEqual([
+        'Authentication',
+        'Case Management',
+        'Billing',
+        'Reporting',
+      ]);
+    });
+
+    it('does NOT fall back to H2 splitting on small specs (avoids false positives)', () => {
+      const small =
+        '# Title\n## Intro\nshort\n## Setup\nshort\n## Conclusion\nshort\n';
+      expect(parseSpecPhases(small)).toEqual([]);
+    });
   });
 
   describe('extractSpecReferences', () => {
