@@ -430,7 +430,6 @@ export class Planner {
                   allowedTools: Array.isArray(ca.allowedTools)
                     ? (ca.allowedTools as string[])
                     : undefined,
-                  maxTurns: ca.maxTurns ? Number(ca.maxTurns) : undefined,
                   maxBudgetUsd: ca.maxBudgetUsd ? Number(ca.maxBudgetUsd) : undefined,
                   agents: ca.agents && typeof ca.agents === 'object'
                     ? (ca.agents as Record<string, { description: string; prompt: string; tools?: string[] }>)
@@ -779,7 +778,7 @@ retrieval/quick lookups 200K-400K, analysis 500K-800K, deep multi-step research 
 The \`estimatedTime\` field is the *expected* total runtime of the entire plan in seconds.
 Per-node \`timeout\` values are *budgets* that must comfortably exceed expected runtimes (see rule 7).
 \`\`\`json
-{"reasoning":"...","estimatedCost":0.05,"estimatedTime":600,"summary":"...","nodes":[{"id":"...","type":"AGENT|TOOL|ROUTER|JOIN|CODING_AGENT|LOOP","label":"...","dependsOn":[],"timeout":600,"retries":1,"agent":{"model":"...","task":"...","skillIds":["linear"]},"codingAgent":{"task":"...","model":"...","allowedTools":["Read","Write","Edit","Bash","Glob","Grep"],"maxTurns":30},"tool":{"name":"BINARY","params":{}},"router":{"condition":"key","routes":{"val":"node-id","default":"node-id"}},"loop":{"body":[...],"maxIterations":5,"exitCondition":{"type":"all_pass|output_match|llm_judge"},"carryForward":true}}]}
+{"reasoning":"...","estimatedCost":0.05,"estimatedTime":600,"summary":"...","nodes":[{"id":"...","type":"AGENT|TOOL|ROUTER|JOIN|CODING_AGENT|LOOP","label":"...","dependsOn":[],"timeout":600,"retries":1,"agent":{"model":"...","task":"...","skillIds":["linear"]},"codingAgent":{"task":"...","model":"...","allowedTools":["Read","Write","Edit","Bash","Glob","Grep"]},"tool":{"name":"BINARY","params":{}},"router":{"condition":"key","routes":{"val":"node-id","default":"node-id"}},"loop":{"body":[...],"maxIterations":5,"exitCondition":{"type":"all_pass|output_match|llm_judge"},"carryForward":true}}]}
 \`\`\`
 Note: For a CODING_AGENT node specifically, set \`timeout: 1800\` (or higher) — never 120 or 300.
 Include only the relevant config key per node type (agent/tool/router/codingAgent/loop). Every node: id, type, label, dependsOn.
@@ -1196,7 +1195,6 @@ ${upstreamPhaseSummary}
                 allowedTools: Array.isArray(ca.allowedTools)
                   ? (ca.allowedTools as string[])
                   : undefined,
-                maxTurns: ca.maxTurns ? Number(ca.maxTurns) : undefined,
               };
             })()
           : undefined,

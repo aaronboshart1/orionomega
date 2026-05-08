@@ -24,13 +24,6 @@ export interface TestSuiteParams {
     integrator: number;
     reporter: number;
   };
-  maxTurns: {
-    scanner: number;
-    coverageAnalyst: number;
-    testGen: number;
-    integrator: number;
-    reporter: number;
-  };
   validationCommands?: string[];
   validationMaxRetries?: number;
   /**
@@ -49,7 +42,6 @@ export function buildTestSuiteTemplate(params: TestSuiteParams): WorkflowNode[] 
     cwd,
     models,
     budgets,
-    maxTurns,
     validationCommands = [],
     validationMaxRetries = 2,
     validationTimeoutMs = 300_000,
@@ -67,7 +59,6 @@ export function buildTestSuiteTemplate(params: TestSuiteParams): WorkflowNode[] 
       task: `Analyze the codebase to understand: test framework, existing test patterns, coverage gaps relevant to: ${task}`,
       model: models.scanner,
       cwd,
-      maxTurns: maxTurns.scanner,
       maxBudgetUsd: budgets.scanner,
       allowedTools: ['Read', 'Glob', 'Grep', 'Bash'],
     },
@@ -75,7 +66,6 @@ export function buildTestSuiteTemplate(params: TestSuiteParams): WorkflowNode[] 
       task: `Scan for test writing: ${task}`,
       model: models.scanner,
       cwd,
-      maxTurns: maxTurns.scanner,
       maxBudgetUsd: budgets.scanner,
       allowedTools: ['Read', 'Glob', 'Grep', 'Bash'],
       codingRole: 'codebase-scanner',
@@ -99,7 +89,6 @@ export function buildTestSuiteTemplate(params: TestSuiteParams): WorkflowNode[] 
       task: `Coverage analysis: ${task}`,
       model: models.coverageAnalyst,
       cwd,
-      maxTurns: maxTurns.coverageAnalyst,
       maxBudgetUsd: budgets.coverageAnalyst,
       allowedTools: ['Read', 'Glob', 'Grep'],
       codingRole: 'architect',
@@ -119,7 +108,6 @@ export function buildTestSuiteTemplate(params: TestSuiteParams): WorkflowNode[] 
       task: `Generate tests for the assigned module as part of: ${task}`,
       model: models.testGen,
       cwd,
-      maxTurns: maxTurns.testGen,
       maxBudgetUsd: budgets.testGen,
       allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'],
     },
@@ -127,7 +115,6 @@ export function buildTestSuiteTemplate(params: TestSuiteParams): WorkflowNode[] 
       task: `Generate tests: ${task}`,
       model: models.testGen,
       cwd,
-      maxTurns: maxTurns.testGen,
       maxBudgetUsd: budgets.testGen,
       allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'],
       codingRole: 'test-writer',
@@ -147,7 +134,6 @@ export function buildTestSuiteTemplate(params: TestSuiteParams): WorkflowNode[] 
       task: `Integrate all generated tests:\n- Ensure shared fixtures/helpers are not duplicated\n- Update test index/runner if needed\n- Verify all imports are correct\n\nTest task: ${task}`,
       model: models.integrator,
       cwd,
-      maxTurns: maxTurns.integrator,
       maxBudgetUsd: budgets.integrator,
       allowedTools: ['Read', 'Write', 'Edit', 'Glob', 'Grep'],
     },
@@ -155,7 +141,6 @@ export function buildTestSuiteTemplate(params: TestSuiteParams): WorkflowNode[] 
       task: `Integrate tests: ${task}`,
       model: models.integrator,
       cwd,
-      maxTurns: maxTurns.integrator,
       maxBudgetUsd: budgets.integrator,
       allowedTools: ['Read', 'Write', 'Edit', 'Glob', 'Grep'],
       codingRole: 'stitcher',
@@ -210,7 +195,6 @@ export function buildTestSuiteTemplate(params: TestSuiteParams): WorkflowNode[] 
       task: `Summarize test suite: ${task}`,
       model: models.reporter,
       cwd,
-      maxTurns: maxTurns.reporter,
       maxBudgetUsd: budgets.reporter,
       allowedTools: ['Read'],
       codingRole: 'reporter',

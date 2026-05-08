@@ -43,8 +43,6 @@ export interface CommonTemplateParams {
   models: Record<string, string>;
   /** Per-node budget in USD. */
   budgets: Record<string, number>;
-  /** Per-node max turns. */
-  maxTurns: Record<string, number>;
   /** Validation commands. Empty = auto-detect. */
   validationCommands?: string[];
   validationMaxRetries?: number;
@@ -81,7 +79,6 @@ export function loadCodingTemplate(
     cwd,
     models,
     budgets,
-    maxTurns,
     validationCommands,
     validationMaxRetries,
     validationTimeoutMs,
@@ -109,14 +106,6 @@ export function loadCodingTemplate(
           testWriter:  budgets.testWriter  ?? 0.50,
           reporter:    budgets.reporter    ?? 0.05,
         },
-        maxTurns: {
-          scanner:     maxTurns.scanner     ?? 10,
-          architect:   maxTurns.architect   ?? 15,
-          implementer: maxTurns.implementer ?? 30,
-          stitcher:    maxTurns.stitcher    ?? 20,
-          testWriter:  maxTurns.testWriter  ?? 25,
-          reporter:    maxTurns.reporter    ?? 5,
-        },
         validationCommands,
         validationMaxRetries,
         validationTimeoutMs,
@@ -140,13 +129,6 @@ export function loadCodingTemplate(
           fixer:       budgets.implementer ?? 0.50,
           testWriter:  budgets.testWriter ?? 0.30,
           reporter:    budgets.reporter   ?? 0.05,
-        },
-        maxTurns: {
-          scanner:     maxTurns.scanner    ?? 10,
-          rootCause:   maxTurns.architect  ?? 15,
-          fixer:       maxTurns.implementer ?? 25,
-          testWriter:  maxTurns.testWriter  ?? 15,
-          reporter:    maxTurns.reporter    ?? 5,
         },
         validationCommands,
         validationMaxRetries,
@@ -173,14 +155,6 @@ export function loadCodingTemplate(
           testUpdater: budgets.testWriter  ?? 0.30,
           reporter:    budgets.reporter    ?? 0.05,
         },
-        maxTurns: {
-          scanner:     maxTurns.scanner     ?? 10,
-          analyst:     maxTurns.architect   ?? 15,
-          refactorer:  maxTurns.implementer ?? 30,
-          stitcher:    maxTurns.stitcher    ?? 20,
-          testUpdater: maxTurns.testWriter  ?? 20,
-          reporter:    maxTurns.reporter    ?? 5,
-        },
         validationCommands,
         validationMaxRetries,
         validationTimeoutMs,
@@ -204,13 +178,6 @@ export function loadCodingTemplate(
           integrator:      budgets.stitcher   ?? 0.20,
           reporter:        budgets.reporter   ?? 0.05,
         },
-        maxTurns: {
-          scanner:         maxTurns.scanner    ?? 10,
-          coverageAnalyst: maxTurns.architect  ?? 12,
-          testGen:         maxTurns.testWriter ?? maxTurns.implementer ?? 25,
-          integrator:      maxTurns.stitcher   ?? 15,
-          reporter:        maxTurns.reporter   ?? 5,
-        },
         validationCommands,
         validationMaxRetries,
         validationTimeoutMs,
@@ -231,12 +198,6 @@ export function loadCodingTemplate(
           reviewer: budgets.reviewer   ?? budgets.architect ?? 0.30,
           fixer:    budgets.implementer ?? 0.50,
           reporter: budgets.reporter   ?? 0.05,
-        },
-        maxTurns: {
-          scanner:  maxTurns.scanner    ?? 10,
-          reviewer: maxTurns.reviewer   ?? maxTurns.architect ?? 20,
-          fixer:    maxTurns.implementer ?? 25,
-          reporter: maxTurns.reporter   ?? 5,
         },
         validationCommands,
         validationMaxRetries,

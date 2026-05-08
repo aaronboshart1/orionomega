@@ -9,6 +9,9 @@ import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import type { OrionOmegaConfig } from './types.js';
 import { deepMerge } from '../utils/deep-merge.js';
+import { createLogger } from '../logging/logger.js';
+
+const log = createLogger('config-loader');
 
 const require = createRequire(import.meta.url);
 
@@ -114,7 +117,6 @@ export function getDefaultConfig(): OrionOmegaConfig {
       enabled: true,
       permissionMode: 'acceptEdits',
       effort: 'high',
-      maxTurns: 50,
     },
     codingMode: {
       enabled: true,
@@ -216,6 +218,15 @@ export function readConfig(configPath?: string): OrionOmegaConfig {
   }
 
   const interpolated = interpolateEnvVars(parsed) as Record<string, unknown>;
+
+  // Task #211: silently strip stale `agentSdk.maxTurns` from on-disk configs.
+  // Max turns is now unlimited by default; lingering YAML keys would otherwise
+  // be merged into the runtime config and surface in writeConfig() round-trips.
+  const agentSdkRaw = interpolated.agentSdk;
+  if (agentSdkRaw && typeof agentSdkRaw === 'object' && 'maxTurns' in agentSdkRaw) {
+    delete (agentSdkRaw as Record<string, unknown>).maxTurns;
+    log.debug('Stripped stale agentSdk.maxTurns from config (Task #211: maxTurns is now unlimited by default)');
+  }
 
   const merged = deepMerge(
     defaults as unknown as Record<string, unknown>,

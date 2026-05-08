@@ -175,7 +175,6 @@ Fix the minimum set of code changes required to make the above commands pass.
         task,
         model: budget.model || undefined,
         cwd,
-        maxTurns: Math.min(budget.maxTurns, 20),
         maxBudgetUsd: budget.maxBudgetUsd,
         allowedTools: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash'],
       },

@@ -264,8 +264,6 @@ export interface ValidatorOutput {
 export interface NodeBudget {
   /** Maximum spend for this node in USD. */
   maxBudgetUsd: number;
-  /** Maximum agentic turns (tool-use round trips). */
-  maxTurns: number;
   /** Input token estimate. */
   tokenBudget: number;
   /** Resolved model ID for this node. */

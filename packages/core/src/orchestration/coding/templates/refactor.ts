@@ -27,14 +27,6 @@ export interface RefactorParams {
     testUpdater: number;
     reporter: number;
   };
-  maxTurns: {
-    scanner: number;
-    analyst: number;
-    refactorer: number;
-    stitcher: number;
-    testUpdater: number;
-    reporter: number;
-  };
   validationCommands?: string[];
   validationMaxRetries?: number;
   /**
@@ -53,7 +45,6 @@ export function buildRefactorTemplate(params: RefactorParams): WorkflowNode[] {
     cwd,
     models,
     budgets,
-    maxTurns,
     validationCommands = [],
     validationMaxRetries = 2,
     validationTimeoutMs = 300_000,
@@ -71,7 +62,6 @@ export function buildRefactorTemplate(params: RefactorParams): WorkflowNode[] {
       task: `Analyze the codebase structure to understand what needs to be refactored:\n\n${task}\n\nMap out: file structure, import/export relationships, shared utilities, and test files.`,
       model: models.scanner,
       cwd,
-      maxTurns: maxTurns.scanner,
       maxBudgetUsd: budgets.scanner,
       allowedTools: ['Read', 'Glob', 'Grep', 'Bash'],
     },
@@ -79,7 +69,6 @@ export function buildRefactorTemplate(params: RefactorParams): WorkflowNode[] {
       task: `Analyze codebase for refactoring: ${task}`,
       model: models.scanner,
       cwd,
-      maxTurns: maxTurns.scanner,
       maxBudgetUsd: budgets.scanner,
       allowedTools: ['Read', 'Glob', 'Grep', 'Bash'],
       codingRole: 'codebase-scanner',
@@ -103,7 +92,6 @@ export function buildRefactorTemplate(params: RefactorParams): WorkflowNode[] {
       task: `Dependency analysis for refactor: ${task}`,
       model: models.analyst,
       cwd,
-      maxTurns: maxTurns.analyst,
       maxBudgetUsd: budgets.analyst,
       allowedTools: ['Read', 'Glob', 'Grep'],
       codingRole: 'architect',
@@ -123,7 +111,6 @@ export function buildRefactorTemplate(params: RefactorParams): WorkflowNode[] {
       task: `Apply the assigned refactoring changes for: ${task}`,
       model: models.refactorer,
       cwd,
-      maxTurns: maxTurns.refactorer,
       maxBudgetUsd: budgets.refactorer,
       allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'],
     },
@@ -131,7 +118,6 @@ export function buildRefactorTemplate(params: RefactorParams): WorkflowNode[] {
       task: `Refactor assigned cluster: ${task}`,
       model: models.refactorer,
       cwd,
-      maxTurns: maxTurns.refactorer,
       maxBudgetUsd: budgets.refactorer,
       allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'],
       codingRole: 'implementer',
@@ -151,7 +137,6 @@ export function buildRefactorTemplate(params: RefactorParams): WorkflowNode[] {
       task: `Reconcile the parallel refactoring outputs. Fix import paths, resolve naming conflicts, and ensure consistency across all refactored files.\n\nTask: ${task}`,
       model: models.stitcher,
       cwd,
-      maxTurns: maxTurns.stitcher,
       maxBudgetUsd: budgets.stitcher,
       allowedTools: ['Read', 'Write', 'Edit', 'Glob', 'Grep'],
     },
@@ -159,7 +144,6 @@ export function buildRefactorTemplate(params: RefactorParams): WorkflowNode[] {
       task: `Stitch refactoring: ${task}`,
       model: models.stitcher,
       cwd,
-      maxTurns: maxTurns.stitcher,
       maxBudgetUsd: budgets.stitcher,
       allowedTools: ['Read', 'Write', 'Edit', 'Glob', 'Grep'],
       codingRole: 'stitcher',
@@ -179,7 +163,6 @@ export function buildRefactorTemplate(params: RefactorParams): WorkflowNode[] {
       task: `Update all affected tests to match the refactored code.\n\nRefactoring: ${task}\n\nUpdate import paths, renamed symbols, and any assertions that reference moved/renamed code.`,
       model: models.testUpdater,
       cwd,
-      maxTurns: maxTurns.testUpdater,
       maxBudgetUsd: budgets.testUpdater,
       allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'],
     },
@@ -187,7 +170,6 @@ export function buildRefactorTemplate(params: RefactorParams): WorkflowNode[] {
       task: `Update tests for refactoring: ${task}`,
       model: models.testUpdater,
       cwd,
-      maxTurns: maxTurns.testUpdater,
       maxBudgetUsd: budgets.testUpdater,
       allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'],
       codingRole: 'test-writer',
@@ -242,7 +224,6 @@ export function buildRefactorTemplate(params: RefactorParams): WorkflowNode[] {
       task: `Summarize refactoring: ${task}`,
       model: models.reporter,
       cwd,
-      maxTurns: maxTurns.reporter,
       maxBudgetUsd: budgets.reporter,
       allowedTools: ['Read'],
       codingRole: 'reporter',

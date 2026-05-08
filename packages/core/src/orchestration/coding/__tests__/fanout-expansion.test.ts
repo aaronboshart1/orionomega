@@ -61,7 +61,7 @@ function sixPhaseDecision(): FanOutDecision {
 describe('expandFanOut (Task #174 runtime expansion)', () => {
   it('emits one impl-chunk node per chunk and removes the placeholder', () => {
     const tmpl = buildFeatureImplementationTemplate({
-      task: 't', cwd: '/tmp/repo', models: STUB_MODELS, budgets: STUB, maxTurns: STUB,
+      task: 't', cwd: '/tmp/repo', models: STUB_MODELS, budgets: STUB,
     });
     const expanded = expandFanOut({ template: tmpl, decision: sixPhaseDecision() });
 
@@ -73,7 +73,7 @@ describe('expandFanOut (Task #174 runtime expansion)', () => {
 
   it('propagates per-chunk dependsOn as inter-chunk edges', () => {
     const tmpl = buildFeatureImplementationTemplate({
-      task: 't', cwd: '/tmp/repo', models: STUB_MODELS, budgets: STUB, maxTurns: STUB,
+      task: 't', cwd: '/tmp/repo', models: STUB_MODELS, budgets: STUB,
     });
     const expanded = expandFanOut({ template: tmpl, decision: sixPhaseDecision() });
 
@@ -87,7 +87,7 @@ describe('expandFanOut (Task #174 runtime expansion)', () => {
 
   it('keeps independent phases parallel (only inherit placeholder upstreams)', () => {
     const tmpl = buildFeatureImplementationTemplate({
-      task: 't', cwd: '/tmp/repo', models: STUB_MODELS, budgets: STUB, maxTurns: STUB,
+      task: 't', cwd: '/tmp/repo', models: STUB_MODELS, budgets: STUB,
     });
     const expanded = expandFanOut({ template: tmpl, decision: sixPhaseDecision() });
 
@@ -99,7 +99,7 @@ describe('expandFanOut (Task #174 runtime expansion)', () => {
 
   it('rewrites successor nodes (stitcher) to fan-in across all chunks', () => {
     const tmpl = buildFeatureImplementationTemplate({
-      task: 't', cwd: '/tmp/repo', models: STUB_MODELS, budgets: STUB, maxTurns: STUB,
+      task: 't', cwd: '/tmp/repo', models: STUB_MODELS, budgets: STUB,
     });
     const expanded = expandFanOut({ template: tmpl, decision: sixPhaseDecision() });
 
@@ -112,7 +112,7 @@ describe('expandFanOut (Task #174 runtime expansion)', () => {
 
   it('populates fileScope.owned / readable from each chunk', () => {
     const tmpl = buildFeatureImplementationTemplate({
-      task: 't', cwd: '/tmp/repo', models: STUB_MODELS, budgets: STUB, maxTurns: STUB,
+      task: 't', cwd: '/tmp/repo', models: STUB_MODELS, budgets: STUB,
     });
     const expanded = expandFanOut({ template: tmpl, decision: sixPhaseDecision() });
 
@@ -123,7 +123,7 @@ describe('expandFanOut (Task #174 runtime expansion)', () => {
 
   it('throws on duplicate chunk ids', () => {
     const tmpl = buildFeatureImplementationTemplate({
-      task: 't', cwd: '/tmp/repo', models: STUB_MODELS, budgets: STUB, maxTurns: STUB,
+      task: 't', cwd: '/tmp/repo', models: STUB_MODELS, budgets: STUB,
     });
     const dup: FanOutDecision = {
       chunks: [
@@ -137,7 +137,7 @@ describe('expandFanOut (Task #174 runtime expansion)', () => {
 
   it('returns the template unchanged when the decision is empty', () => {
     const tmpl = buildFeatureImplementationTemplate({
-      task: 't', cwd: '/tmp/repo', models: STUB_MODELS, budgets: STUB, maxTurns: STUB,
+      task: 't', cwd: '/tmp/repo', models: STUB_MODELS, budgets: STUB,
     });
     const out = expandFanOut({ template: tmpl, decision: { chunks: [], maxParallelism: 1 } });
     expect(out.find((n) => n.id === FANOUT_PLACEHOLDER_ID)).toBeDefined();
@@ -145,7 +145,7 @@ describe('expandFanOut (Task #174 runtime expansion)', () => {
 
   it('skips unknown chunk-level dependsOn references with a warning, not an error', () => {
     const tmpl = buildFeatureImplementationTemplate({
-      task: 't', cwd: '/tmp/repo', models: STUB_MODELS, budgets: STUB, maxTurns: STUB,
+      task: 't', cwd: '/tmp/repo', models: STUB_MODELS, budgets: STUB,
     });
     const decision: FanOutDecision = {
       chunks: [

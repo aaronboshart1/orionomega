@@ -218,9 +218,6 @@ agentSdk:
   # Default: high
   effort: high
 
-  # Maximum agentic turns (tool-use round trips) per invocation. Default: 50
-  maxTurns: 50
-
   # Maximum spend in USD per coding-agent invocation (optional — no limit if unset).
   # maxBudgetUsd: 5
 

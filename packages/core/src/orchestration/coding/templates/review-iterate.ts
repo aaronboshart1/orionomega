@@ -23,12 +23,6 @@ export interface ReviewIterateParams {
     fixer: number;
     reporter: number;
   };
-  maxTurns: {
-    scanner: number;
-    reviewer: number;
-    fixer: number;
-    reporter: number;
-  };
   validationCommands?: string[];
   validationMaxRetries?: number;
   /**
@@ -44,7 +38,6 @@ export function buildReviewIterateTemplate(params: ReviewIterateParams): Workflo
     cwd,
     models,
     budgets,
-    maxTurns,
     validationCommands = [],
     validationMaxRetries = 2,
     validationTimeoutMs = 300_000,
@@ -62,7 +55,6 @@ export function buildReviewIterateTemplate(params: ReviewIterateParams): Workflo
       task: `Analyze the code changes to understand scope and context for review.\n\nReview task: ${task}\n\nCapture:\n- Summary of changes\n- Files modified\n- Complexity and risk areas\n- Dependencies affected`,
       model: models.scanner,
       cwd,
-      maxTurns: maxTurns.scanner,
       maxBudgetUsd: budgets.scanner,
       allowedTools: ['Read', 'Glob', 'Grep', 'Bash'],
     },
@@ -70,7 +62,6 @@ export function buildReviewIterateTemplate(params: ReviewIterateParams): Workflo
       task: `Diff analysis: ${task}`,
       model: models.scanner,
       cwd,
-      maxTurns: maxTurns.scanner,
       maxBudgetUsd: budgets.scanner,
       allowedTools: ['Read', 'Glob', 'Grep', 'Bash'],
       codingRole: 'codebase-scanner',
@@ -94,7 +85,6 @@ export function buildReviewIterateTemplate(params: ReviewIterateParams): Workflo
       task: `Code review: ${task}`,
       model: models.reviewer,
       cwd,
-      maxTurns: maxTurns.reviewer,
       maxBudgetUsd: budgets.reviewer,
       allowedTools: ['Read', 'Glob', 'Grep'],
       codingRole: 'reviewer',
@@ -114,7 +104,6 @@ export function buildReviewIterateTemplate(params: ReviewIterateParams): Workflo
       task: `Fix the assigned review findings for: ${task}`,
       model: models.fixer,
       cwd,
-      maxTurns: maxTurns.fixer,
       maxBudgetUsd: budgets.fixer,
       allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'],
     },
@@ -122,7 +111,6 @@ export function buildReviewIterateTemplate(params: ReviewIterateParams): Workflo
       task: `Fix review findings: ${task}`,
       model: models.fixer,
       cwd,
-      maxTurns: maxTurns.fixer,
       maxBudgetUsd: budgets.fixer,
       allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'],
       codingRole: 'implementer',
@@ -146,7 +134,6 @@ export function buildReviewIterateTemplate(params: ReviewIterateParams): Workflo
       task: `Re-review: ${task}`,
       model: models.reviewer,
       cwd,
-      maxTurns: maxTurns.reviewer,
       maxBudgetUsd: budgets.reviewer,
       allowedTools: ['Read', 'Glob', 'Grep'],
       codingRole: 'reviewer',
@@ -203,7 +190,6 @@ export function buildReviewIterateTemplate(params: ReviewIterateParams): Workflo
       task: `Summarize review: ${task}`,
       model: models.reporter,
       cwd,
-      maxTurns: maxTurns.reporter,
       maxBudgetUsd: budgets.reporter,
       allowedTools: ['Read'],
       codingRole: 'reporter',

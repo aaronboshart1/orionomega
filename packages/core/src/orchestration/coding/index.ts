@@ -39,7 +39,6 @@ export { OutputAggregator } from './output-aggregator.js';
 export {
   CodingBudgetAllocator,
   complexityMultiplier,
-  estimateMaxTurns,
   estimateTokenBudget,
   calculateTokenCost,
   MODEL_COST_RATES,

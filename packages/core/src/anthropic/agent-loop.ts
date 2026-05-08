@@ -35,7 +35,12 @@ export interface AgentLoopOptions {
   tools: BuiltInTool[];
   /** Initial conversation messages. */
   messages: AnthropicMessage[];
-  /** Maximum conversation turns before stopping. Defaults to 50. */
+  /**
+   * Optional soft cap on conversation turns. Default is unlimited
+   * (Task #211). When provided, the loop breaks once this many turns
+   * have been completed — useful for tests and bounded callers that
+   * want to short-circuit a runaway agent.
+   */
   maxTurns?: number;
   /** Maximum tokens per response. Defaults to 8192. */
   maxTokens?: number;
@@ -83,7 +88,7 @@ export interface AgentLoopResult {
  * Runs the agent loop: send messages → stream response → execute tools → repeat.
  *
  * The loop continues until the model returns stop_reason 'end_turn',
- * the maximum number of turns is reached, or cancellation is requested.
+ * the token budget is exhausted, or cancellation is requested.
  *
  * @param options - Agent loop configuration and callbacks.
  * @returns The final result with conversation history and usage stats.
@@ -97,7 +102,7 @@ export async function runAgentLoop(
     systemPrompt,
     tools,
     messages,
-    maxTurns = 50,
+    maxTurns,
     maxTokens = maxOutputTokensForModel(model),
     workingDir,
     onThinking,
@@ -135,7 +140,13 @@ export async function runAgentLoop(
   let budgetWarningInjected = false;
   let stoppedByBudget = false;
 
-  for (let turn = 0; turn < maxTurns; turn++) {
+  // Unbounded by default (Task #211) — termination is governed by
+  // stop_reason, cancellation, or token-budget exhaustion. Callers that
+  // pass an explicit `maxTurns` get a soft cap enforced below.
+  let turn = 0;
+  for (;;) {
+    if (maxTurns !== undefined && turn >= maxTurns) break;
+    turn++;
     // Check cancellation
     if (isCancelled?.()) break;
 

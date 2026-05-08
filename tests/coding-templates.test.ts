@@ -41,15 +41,6 @@ const DEFAULT_BUDGETS = {
   reporter: 0.05,
 };
 
-const DEFAULT_MAX_TURNS = {
-  scanner: 10,
-  architect: 15,
-  implementer: 30,
-  stitcher: 20,
-  testWriter: 25,
-  reporter: 5,
-};
-
 const COMMON_PARAMS = {
   task: 'Add a new /health endpoint to the Express API',
   cwd: '/tmp/test-repo',
@@ -80,19 +71,6 @@ const COMMON_PARAMS = {
     testGen: 0.50,
     integrator: 0.20,
   },
-  maxTurns: {
-    ...DEFAULT_MAX_TURNS,
-    default: 20,
-    rootCause: 15,
-    fixer: 25,
-    analyst: 15,
-    refactorer: 30,
-    testUpdater: 20,
-    reviewer: 20,
-    coverageAnalyst: 12,
-    testGen: 25,
-    integrator: 15,
-  },
 };
 
 function nodeById(nodes: WorkflowNode[], id: string): WorkflowNode | undefined {
@@ -109,7 +87,6 @@ section('1. feature-implementation template structure');
     cwd: '/tmp/repo',
     models: DEFAULT_MODELS,
     budgets: DEFAULT_BUDGETS,
-    maxTurns: DEFAULT_MAX_TURNS,
   });
 
   assertEq(nodes.length, 7, '1.1 feature-implementation produces exactly 7 nodes');
@@ -121,7 +98,6 @@ section('1. feature-implementation template structure');
     cwd: '/tmp/repo',
     models: DEFAULT_MODELS,
     budgets: DEFAULT_BUDGETS,
-    maxTurns: DEFAULT_MAX_TURNS,
   });
 
   const expectedIds = [
@@ -145,7 +121,6 @@ section('1. feature-implementation template structure');
     cwd: '/tmp/repo',
     models: DEFAULT_MODELS,
     budgets: DEFAULT_BUDGETS,
-    maxTurns: DEFAULT_MAX_TURNS,
   });
 
   const scan = nodeById(nodes, 'codebase-scan')!;
@@ -162,7 +137,6 @@ section('1. feature-implementation template structure');
     cwd: '/tmp/repo',
     models: DEFAULT_MODELS,
     budgets: DEFAULT_BUDGETS,
-    maxTurns: DEFAULT_MAX_TURNS,
   });
 
   const arch = nodeById(nodes, 'architecture-design')!;
@@ -177,7 +151,6 @@ section('1. feature-implementation template structure');
     cwd: '/tmp/repo',
     models: DEFAULT_MODELS,
     budgets: DEFAULT_BUDGETS,
-    maxTurns: DEFAULT_MAX_TURNS,
   });
 
   const impl = nodeById(nodes, 'impl-placeholder')!;
@@ -192,7 +165,6 @@ section('1. feature-implementation template structure');
     cwd: '/tmp/repo',
     models: DEFAULT_MODELS,
     budgets: DEFAULT_BUDGETS,
-    maxTurns: DEFAULT_MAX_TURNS,
   });
 
   const stitch = nodeById(nodes, 'integration-stitch')!;
@@ -210,7 +182,6 @@ section('1. feature-implementation template structure');
     cwd: '/tmp/repo',
     models: DEFAULT_MODELS,
     budgets: DEFAULT_BUDGETS,
-    maxTurns: DEFAULT_MAX_TURNS,
   });
 
   const loop = nodeById(nodes, 'validation-loop')!;
@@ -227,7 +198,6 @@ section('1. feature-implementation template structure');
     cwd: '/tmp/repo',
     models: DEFAULT_MODELS,
     budgets: DEFAULT_BUDGETS,
-    maxTurns: DEFAULT_MAX_TURNS,
     validationCommands: ['npm test', 'npm run lint'],
     validationMaxRetries: 3,
   });
@@ -248,7 +218,6 @@ section('1. feature-implementation template structure');
     cwd: '/tmp/repo',
     models: DEFAULT_MODELS,
     budgets: DEFAULT_BUDGETS,
-    maxTurns: DEFAULT_MAX_TURNS,
   });
 
   const scan = nodeById(nodes, 'codebase-scan')!;
@@ -269,7 +238,6 @@ section('2. bug-fix template structure');
     cwd: '/tmp/repo',
     models: { scanner: HAIKU, rootCause: FALLBACK_MODEL, fixer: FALLBACK_MODEL, testWriter: FALLBACK_MODEL, reporter: HAIKU },
     budgets: { scanner: 0.10, rootCause: 0.20, fixer: 0.50, testWriter: 0.30, reporter: 0.05 },
-    maxTurns: { scanner: 10, rootCause: 15, fixer: 25, testWriter: 15, reporter: 5 },
   });
 
   assert(nodes.length >= 5, '2.1 bug-fix has at least 5 nodes (scan→root-cause→fix→test→report)');
@@ -281,7 +249,6 @@ section('2. bug-fix template structure');
     cwd: '/tmp/repo',
     models: { scanner: HAIKU, rootCause: FALLBACK_MODEL, fixer: FALLBACK_MODEL, testWriter: FALLBACK_MODEL, reporter: HAIKU },
     budgets: { scanner: 0.10, rootCause: 0.20, fixer: 0.50, testWriter: 0.30, reporter: 0.05 },
-    maxTurns: { scanner: 10, rootCause: 15, fixer: 25, testWriter: 15, reporter: 5 },
   });
 
   // All nodes must have unique IDs
@@ -296,7 +263,6 @@ section('2. bug-fix template structure');
     cwd: '/tmp/repo',
     models: { scanner: HAIKU, rootCause: FALLBACK_MODEL, fixer: FALLBACK_MODEL, testWriter: FALLBACK_MODEL, reporter: HAIKU },
     budgets: { scanner: 0.10, rootCause: 0.20, fixer: 0.50, testWriter: 0.30, reporter: 0.05 },
-    maxTurns: { scanner: 10, rootCause: 15, fixer: 25, testWriter: 15, reporter: 5 },
   });
 
   // Bug-fix is sequential: scan → root-cause → fix → test → validate → report
@@ -407,7 +373,6 @@ section('5. CodingNodeConfig presence and correctness');
     cwd: '/tmp/repo',
     models: DEFAULT_MODELS,
     budgets: DEFAULT_BUDGETS,
-    maxTurns: DEFAULT_MAX_TURNS,
   });
 
   // All nodes should have codingConfig (it's always attached)
@@ -425,13 +390,11 @@ section('5. CodingNodeConfig presence and correctness');
     cwd: '/tmp/repo',
     models: DEFAULT_MODELS,
     budgets: DEFAULT_BUDGETS,
-    maxTurns: DEFAULT_MAX_TURNS,
   });
 
-  // Budget and maxTurns should be passed through to node configs
+  // Budget should be passed through to node configs
   const scan = nodeById(nodes, 'codebase-scan')!;
   assertEq(scan.codingAgent?.maxBudgetUsd, DEFAULT_BUDGETS.scanner, '5.2 scanner budget passed through');
-  assertEq(scan.codingAgent?.maxTurns, DEFAULT_MAX_TURNS.scanner, '5.2 scanner maxTurns passed through');
   assertEq(scan.codingAgent?.model, DEFAULT_MODELS.scanner, '5.2 scanner model passed through');
 }
 
@@ -441,7 +404,6 @@ section('5. CodingNodeConfig presence and correctness');
     cwd: '/tmp/repo',
     models: DEFAULT_MODELS,
     budgets: DEFAULT_BUDGETS,
-    maxTurns: DEFAULT_MAX_TURNS,
   });
 
   // Verify allowed tools per role

@@ -919,7 +919,6 @@ export class CodingOrchestrator {
           task: fullTask,
           model: this.cfg.highPowerModel,
           cwd: targetDir,
-          maxTurns: 50,
           maxBudgetUsd: 2.0,
           allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'],
         },

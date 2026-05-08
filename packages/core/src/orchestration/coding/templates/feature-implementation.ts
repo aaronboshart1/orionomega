@@ -39,15 +39,6 @@ export interface FeatureImplementationParams {
     testWriter: number;
     reporter: number;
   };
-  /** Maximum turns per node. */
-  maxTurns: {
-    scanner: number;
-    architect: number;
-    implementer: number;
-    stitcher: number;
-    testWriter: number;
-    reporter: number;
-  };
   /** Validation commands to run. Empty = auto-detect. */
   validationCommands?: string[];
   /** Max validation retry iterations. */
@@ -77,7 +68,6 @@ export function buildFeatureImplementationTemplate(
     cwd,
     models,
     budgets,
-    maxTurns,
     validationCommands = [],
     validationMaxRetries = 2,
     validationTimeoutMs = 300_000,
@@ -105,7 +95,6 @@ export function buildFeatureImplementationTemplate(
     task: `Analyze the codebase to understand its structure, language, framework, test framework, and files most relevant to this feature request:\n\n${task}`,
     model: models.scanner,
     cwd,
-    maxTurns: maxTurns.scanner,
     maxBudgetUsd: budgets.scanner,
     allowedTools: ['Read', 'Glob', 'Grep', 'Bash'],
     codingRole: 'codebase-scanner',
@@ -127,7 +116,6 @@ export function buildFeatureImplementationTemplate(
       task: codingConfigScanner.task,
       model: models.scanner,
       cwd,
-      maxTurns: maxTurns.scanner,
       maxBudgetUsd: budgets.scanner,
       allowedTools: ['Read', 'Glob', 'Grep', 'Bash'],
     },
@@ -210,7 +198,6 @@ a retask if any is unmet — so be specific and observable.`;
     task: architectTask,
     model: models.architect,
     cwd,
-    maxTurns: maxTurns.architect,
     maxBudgetUsd: budgets.architect,
     allowedTools: ['Read', 'Glob', 'Grep'],
     codingRole: 'architect',
@@ -243,7 +230,6 @@ a retask if any is unmet — so be specific and observable.`;
     task: `Implement the assigned file cluster for: ${task}`,
     model: models.implementer,
     cwd,
-    maxTurns: maxTurns.implementer,
     maxBudgetUsd: budgets.implementer,
     allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'],
     codingRole: 'implementer',
@@ -264,7 +250,6 @@ a retask if any is unmet — so be specific and observable.`;
       task: implPlaceholderConfig.task,
       model: models.implementer,
       cwd,
-      maxTurns: maxTurns.implementer,
       maxBudgetUsd: budgets.implementer,
       allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'],
     },
@@ -277,7 +262,6 @@ a retask if any is unmet — so be specific and observable.`;
     task: `You are the integration stitcher. Review all implementation outputs and resolve any conflicts or inconsistencies between parallel implementation chunks.\n\nFeature: ${task}`,
     model: models.stitcher,
     cwd,
-    maxTurns: maxTurns.stitcher,
     maxBudgetUsd: budgets.stitcher,
     allowedTools: ['Read', 'Write', 'Edit', 'Glob', 'Grep'],
     codingRole: 'stitcher',
@@ -298,7 +282,6 @@ a retask if any is unmet — so be specific and observable.`;
       task: stitcherCodingConfig.task,
       model: models.stitcher,
       cwd,
-      maxTurns: maxTurns.stitcher,
       maxBudgetUsd: budgets.stitcher,
       allowedTools: ['Read', 'Write', 'Edit', 'Glob', 'Grep'],
     },
@@ -311,7 +294,6 @@ a retask if any is unmet — so be specific and observable.`;
     task: `Write comprehensive tests for the implemented feature.\n\nFeature: ${task}\n\nUse the existing test framework and conventions in this project.`,
     model: models.testWriter,
     cwd,
-    maxTurns: maxTurns.testWriter,
     maxBudgetUsd: budgets.testWriter,
     allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'],
     codingRole: 'test-writer',
@@ -332,7 +314,6 @@ a retask if any is unmet — so be specific and observable.`;
       task: testWriterCodingConfig.task,
       model: models.testWriter,
       cwd,
-      maxTurns: maxTurns.testWriter,
       maxBudgetUsd: budgets.testWriter,
       allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'],
     },
@@ -389,7 +370,6 @@ a retask if any is unmet — so be specific and observable.`;
     task: `Generate a concise summary report of the implemented feature.\n\nFeature: ${task}\n\nInclude: files created/modified, what was implemented, test results, any known limitations.`,
     model: models.reporter,
     cwd,
-    maxTurns: maxTurns.reporter,
     maxBudgetUsd: budgets.reporter,
     allowedTools: ['Read'],
     codingRole: 'reporter',

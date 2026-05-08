@@ -28,13 +28,6 @@ export interface BugFixParams {
     testWriter: number;
     reporter: number;
   };
-  maxTurns: {
-    scanner: number;
-    rootCause: number;
-    fixer: number;
-    testWriter: number;
-    reporter: number;
-  };
   validationCommands?: string[];
   validationMaxRetries?: number;
   /**
@@ -55,7 +48,6 @@ export function buildBugFixTemplate(params: BugFixParams): WorkflowNode[] {
     cwd,
     models,
     budgets,
-    maxTurns,
     validationCommands = [],
     validationMaxRetries = 2,
     validationTimeoutMs = 300_000,
@@ -67,7 +59,6 @@ export function buildBugFixTemplate(params: BugFixParams): WorkflowNode[] {
     task: `Analyze this bug report and try to reproduce it by reading relevant code:\n\n${task}\n\nDo NOT make any code changes. Capture:\n- Exact error message and stack trace\n- Which files are involved\n- The likely code path that triggers the bug`,
     model: models.scanner,
     cwd,
-    maxTurns: maxTurns.scanner,
     maxBudgetUsd: budgets.scanner,
     allowedTools: ['Read', 'Glob', 'Grep', 'Bash'],
     codingRole: 'codebase-scanner',
@@ -84,7 +75,6 @@ export function buildBugFixTemplate(params: BugFixParams): WorkflowNode[] {
       task: reproduceConfig.task,
       model: models.scanner,
       cwd,
-      maxTurns: maxTurns.scanner,
       maxBudgetUsd: budgets.scanner,
       allowedTools: ['Read', 'Glob', 'Grep', 'Bash'],
     },
@@ -97,7 +87,6 @@ export function buildBugFixTemplate(params: BugFixParams): WorkflowNode[] {
     task: `Based on the reproduction analysis, identify the root cause of the bug.\n\nBug: ${task}\n\nTrace the bug to its source:\n1. Follow the code path from symptom to root cause\n2. Identify the exact line(s) responsible\n3. Explain why the bug occurs\n4. List the minimal set of files that need to be changed to fix it`,
     model: models.rootCause,
     cwd,
-    maxTurns: maxTurns.rootCause,
     maxBudgetUsd: budgets.rootCause,
     allowedTools: ['Read', 'Glob', 'Grep'],
     codingRole: 'architect',
@@ -123,7 +112,6 @@ export function buildBugFixTemplate(params: BugFixParams): WorkflowNode[] {
     task: `Fix the bug identified in the root cause analysis.\n\nBug: ${task}\n\nGuidelines:\n- Make the minimum change necessary to fix the bug\n- Do NOT refactor or reorganize unrelated code\n- Add inline comments where non-obvious\n- Ensure the fix handles edge cases mentioned in the analysis`,
     model: models.fixer,
     cwd,
-    maxTurns: maxTurns.fixer,
     maxBudgetUsd: budgets.fixer,
     allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'],
     codingRole: 'implementer',
@@ -144,7 +132,6 @@ export function buildBugFixTemplate(params: BugFixParams): WorkflowNode[] {
       task: fixConfig.task,
       model: models.fixer,
       cwd,
-      maxTurns: maxTurns.fixer,
       maxBudgetUsd: budgets.fixer,
       allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'],
     },
@@ -157,7 +144,6 @@ export function buildBugFixTemplate(params: BugFixParams): WorkflowNode[] {
     task: `Write a regression test that proves this bug is fixed and will catch future regressions.\n\nBug: ${task}\n\nThe test must:\n1. Reproduce the original failure scenario\n2. Assert the correct behavior after the fix\n3. Follow the existing test conventions in this project`,
     model: models.testWriter,
     cwd,
-    maxTurns: maxTurns.testWriter,
     maxBudgetUsd: budgets.testWriter,
     allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'],
     codingRole: 'test-writer',
@@ -174,7 +160,6 @@ export function buildBugFixTemplate(params: BugFixParams): WorkflowNode[] {
       task: regressionConfig.task,
       model: models.testWriter,
       cwd,
-      maxTurns: maxTurns.testWriter,
       maxBudgetUsd: budgets.testWriter,
       allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'],
     },
@@ -221,7 +206,6 @@ export function buildBugFixTemplate(params: BugFixParams): WorkflowNode[] {
     task: `Write a concise bug fix report.\n\nBug: ${task}\n\nInclude: root cause, fix applied, regression test added, files changed.`,
     model: models.reporter,
     cwd,
-    maxTurns: maxTurns.reporter,
     maxBudgetUsd: budgets.reporter,
     allowedTools: ['Read'],
     codingRole: 'reporter',

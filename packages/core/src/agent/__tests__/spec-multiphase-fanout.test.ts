@@ -284,7 +284,6 @@ describe('Multi-phase spec fan-out (Task #174)', () => {
         cwd: '/tmp/ws/output/run-T/repo',
         models: STUB_MODELS,
         budgets: STUB_NUMERIC,
-        maxTurns: STUB_NUMERIC,
       });
       const architect = dag.find((n) => n.id === 'architecture-design');
       expect(architect).toBeDefined();

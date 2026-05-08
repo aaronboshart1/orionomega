@@ -60,18 +60,6 @@ const MAX_WORKFLOW_BUDGET_USD = 25.00;
 
 // ── Token/Turn Estimation ─────────────────────────────────────────────────────
 
-/** Average total tokens (input + output) consumed per agentic turn, by role. */
-const AVG_TOKENS_PER_TURN: Record<CodingRole, number> = {
-  'codebase-scanner': 3_000,
-  'architect':        5_000,
-  'implementer':      8_000,
-  'stitcher':         6_000,
-  'test-writer':      7_000,
-  'validator':        0,
-  'reviewer':         4_000,
-  'reporter':         2_000,
-};
-
 /** Per-model-tier cost rates (USD per million tokens). */
 export interface ModelCostRate {
   input: number;
@@ -88,13 +76,6 @@ export const MODEL_COST_RATES: Record<string, ModelCostRate> = {
   haiku:  { input: 0.80,  output: 4.00,  cacheRead: 0.08,  cacheWrite: 1.00  },
   sonnet: { input: 3.00,  output: 15.00, cacheRead: 0.30,  cacheWrite: 3.75  },
   opus:   { input: 15.00, output: 75.00, cacheRead: 1.50,  cacheWrite: 18.75 },
-};
-
-/** Blended cost per million tokens for backward-compatible budget estimation. */
-const MODEL_COST_PER_MILLION_TOKENS: Record<string, number> = {
-  haiku:  1.60,    // weighted blend: 60% input + 40% output
-  sonnet: 7.80,    // weighted blend: 60% input + 40% output
-  opus:   39.00,   // weighted blend: 60% input + 40% output
 };
 
 /**
@@ -208,12 +189,10 @@ export class CodingBudgetAllocator {
       const maxBudget = MAX_PER_NODE_USD[role] ?? rawBudget;
       const clampedBudget = Math.max(minBudget, Math.min(rawBudget, maxBudget));
 
-      const maxTurns = estimateMaxTurns(role, clampedBudget, node.model);
       const tokenBudget = estimateTokenBudget(role, clampedBudget, node.model);
 
       perNode.set(node.id, {
         maxBudgetUsd: clampedBudget,
-        maxTurns,
         tokenBudget,
         model: node.model,
       });
@@ -245,7 +224,7 @@ export class CodingBudgetAllocator {
     allocation: BudgetAllocation,
     failedNodeId: string,
     role: CodingRole,
-    attempt: number,
+    _attempt: number,
   ): BudgetAllocation {
     const existing = allocation.perNode.get(failedNodeId);
     if (!existing) return allocation;
@@ -266,7 +245,6 @@ export class CodingBudgetAllocator {
     newAllocation.perNode.set(failedNodeId, {
       ...existing,
       maxBudgetUsd: newBudget,
-      maxTurns: Math.floor(existing.maxTurns * (1 + 0.3 * attempt)),
     });
 
     log.debug(
@@ -300,27 +278,6 @@ export function complexityMultiplier(profile: CodebaseScanOutput): number {
   const complexityScale = avgComplexity / 2;          // medium = 1.0×
 
   return Math.max(0.5, Math.min(fileScale * complexityScale, 3.0));
-}
-
-/**
- * Estimates the maximum number of agentic turns for a node given its budget.
- * Clamps to [5, 100].
- */
-export function estimateMaxTurns(
-  role: CodingRole,
-  budgetUsd: number,
-  model: string,
-): number {
-  if (role === 'validator') return 0;
-
-  const tier = resolveModelTier(model);
-  const costPerMillion = MODEL_COST_PER_MILLION_TOKENS[tier] ?? 3.00;
-  const avgTokens = AVG_TOKENS_PER_TURN[role];
-
-  if (avgTokens === 0 || costPerMillion === 0) return 0;
-
-  const costPerTurn = (avgTokens / 1_000_000) * costPerMillion;
-  return Math.max(5, Math.min(Math.floor(budgetUsd / costPerTurn), 100));
 }
 
 /**

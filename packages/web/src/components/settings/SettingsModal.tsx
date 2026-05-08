@@ -638,12 +638,6 @@ function OmegaClawTab({
           onChange={(v) => onChange('agentSdk.maxBudgetUsd', v)}
         />
       </FormField>
-      <FormField label="Max Turns">
-        <NumberInput
-          value={Number(getNestedValue(config, 'agentSdk.maxTurns') ?? 50)}
-          onChange={(v) => onChange('agentSdk.maxTurns', v)}
-        />
-      </FormField>
       <FormField label="Additional Directories">
         <TextInput
           value={((getNestedValue(config, 'agentSdk.additionalDirectories') as string[]) ?? []).join(', ')}

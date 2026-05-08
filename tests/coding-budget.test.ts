@@ -1,7 +1,7 @@
 /**
  * Unit tests for CodingBudgetAllocator and its pure helper functions.
  *
- * Covers: complexityMultiplier, estimateMaxTurns, estimateTokenBudget,
+ * Covers: complexityMultiplier, estimateTokenBudget,
  * CodingBudgetAllocator.allocate(), and CodingBudgetAllocator.adjustForRetry().
  */
 
@@ -11,7 +11,6 @@ import {
 import {
   CodingBudgetAllocator,
   complexityMultiplier,
-  estimateMaxTurns,
   estimateTokenBudget,
   type NodeDescriptor,
 } from '../packages/core/src/orchestration/coding/coding-budget.js';
@@ -87,47 +86,6 @@ section('1. complexityMultiplier()');
   // result = max(0.5, min(0.5 * 1.0, 3.0)) = max(0.5, 0.5) = 0.5
   const profile = makeProfile(Array(10).fill({ complexity: 'medium' }));
   assertApprox(complexityMultiplier(profile), 0.4, 0.6, '1.5 10 medium files → ~0.5');
-}
-
-// ── Section 2: estimateMaxTurns ───────────────────────────────────────────────
-
-section('2. estimateMaxTurns()');
-
-{
-  assertEq(
-    estimateMaxTurns('validator', 1.0, 'claude-sonnet-4-6'),
-    0,
-    '2.1 validator role always returns 0 turns',
-  );
-}
-
-{
-  // Sonnet: $3/M tokens. Implementer: 8000 tokens/turn → $0.024/turn
-  // budgetUsd=1.0 → turns = floor(1.0 / 0.024) ≈ 41, clamped to [5,100]
-  const turns = estimateMaxTurns('implementer', 1.0, 'claude-sonnet-4-6');
-  assertGt(turns, 5, '2.2 implementer/sonnet turns > 5 for $1 budget');
-  assertLt(turns, 101, '2.2 implementer/sonnet turns ≤ 100');
-}
-
-{
-  // Haiku: $0.80/M tokens. Implementer: 8000 tokens/turn → $0.0064/turn
-  // budgetUsd=1.0 → turns = floor(1.0 / 0.0064) ≈ 156, clamped to 100
-  const haiku = estimateMaxTurns('implementer', 1.0, 'claude-haiku-4-5');
-  const sonnet = estimateMaxTurns('implementer', 1.0, 'claude-sonnet-4-6');
-  assertGt(haiku, sonnet, '2.3 haiku gets more turns per dollar than sonnet');
-}
-
-{
-  // Opus: $15/M tokens. Same budget → fewer turns
-  const opus = estimateMaxTurns('architect', 0.5, 'claude-opus-4-6');
-  const sonnet = estimateMaxTurns('architect', 0.5, 'claude-sonnet-4-6');
-  assertLt(opus, sonnet, '2.4 opus gets fewer turns per dollar than sonnet');
-}
-
-{
-  // Minimum clamp: very small budget → at least 5 turns
-  const turns = estimateMaxTurns('reporter', 0.001, 'claude-sonnet-4-6');
-  assertEq(turns, 5, '2.5 tiny budget → clamped to minimum 5 turns');
 }
 
 // ── Section 3: estimateTokenBudget ────────────────────────────────────────────
@@ -211,7 +169,6 @@ const mediumProfile = makeProfile(Array(20).fill({ complexity: 'medium' }));
   // Validator has weight=0 → raw budget = 0 → clamped to 0 minimum (no entry in MIN map)
   const validatorBudget = result.perNode.get('validation-loop');
   assertEq(validatorBudget?.maxBudgetUsd, 0, '4.3 validator node gets $0 budget (TOOL node)');
-  assertEq(validatorBudget?.maxTurns, 0, '4.3 validator node gets 0 turns');
 }
 
 {
@@ -298,16 +255,6 @@ section('5. adjustForRetry()');
     allocation.perNode.get('impl-placeholder')?.maxBudgetUsd,
     '5.2 adjustForRetry on unknown node is a no-op',
   );
-}
-
-{
-  const allocator = new CodingBudgetAllocator();
-  const allocation = allocator.allocate('feature-implementation', mediumProfile, standardNodes);
-  const origTurns = allocation.perNode.get('codebase-scan')?.maxTurns ?? 0;
-
-  const adjusted = allocator.adjustForRetry(allocation, 'codebase-scan', 'codebase-scanner', 2);
-  const newTurns = adjusted.perNode.get('codebase-scan')?.maxTurns ?? 0;
-  assertGt(newTurns, origTurns, '5.3 adjustForRetry increases maxTurns on retry');
 }
 
 // ── Summary ───────────────────────────────────────────────────────────────────

@@ -169,8 +169,6 @@ export interface OrionOmegaConfig {
     effort: 'low' | 'medium' | 'high' | 'max';
     /** Maximum budget in USD per coding agent invocation. */
     maxBudgetUsd?: number;
-    /** Maximum agentic turns (tool-use round trips) per invocation. */
-    maxTurns?: number;
     /** Additional directories the agent can access beyond the working directory. */
     additionalDirectories?: string[];
   };

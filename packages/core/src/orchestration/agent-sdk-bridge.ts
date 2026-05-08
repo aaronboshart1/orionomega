@@ -145,8 +145,6 @@ export interface CodingAgentConfig {
   systemPrompt?: string;
   /** Specific tools to allow (defaults to full coding toolset). */
   allowedTools?: string[];
-  /** Maximum turns for this invocation. */
-  maxTurns?: number;
   /** Maximum budget in USD for this invocation. */
   maxBudgetUsd?: number;
   /** Subagent definitions. */
@@ -190,8 +188,6 @@ export interface AgentExecutionConfig {
   tokenBudget?: number;
   /** Explicit USD budget override (takes precedence over tokenBudget). */
   maxBudgetUsd?: number;
-  /** Maximum agentic turns. Defaults to SDK config then 50. */
-  maxTurns?: number;
   /** Abort signal for cooperative cancellation. */
   abortSignal?: AbortSignal;
   /** Progress callback for WorkerEvent emission. */
@@ -445,12 +441,11 @@ export async function executeAgent(
     abortSignal, onProgress, outputFormat,
   } = options;
 
-  const maxTurns = options.maxTurns ?? sdkConfig.maxTurns ?? 50;
   const maxBudgetUsd = options.maxBudgetUsd
     ?? sdkConfig.maxBudgetUsd
     ?? (options.tokenBudget ? tokenBudgetToUsd(options.tokenBudget, model) : undefined);
 
-  log.info(`Starting agent: "${task.slice(0, 80)}..."`, { model, cwd, maxTurns });
+  log.info(`Starting agent: "${task.slice(0, 80)}..."`, { model, cwd });
   onProgress?.({ type: 'status', message: `Agent starting: ${task.slice(0, 60)}...`, progress: 0 });
 
   const abortController = new AbortController();
@@ -596,7 +591,6 @@ export async function executeAgent(
         effort: sdkConfig.effort ?? 'high',
         // Adaptive thinking — Claude decides when/how much to think
         thinking: { type: 'adaptive' },
-        maxTurns,
         ...(maxBudgetUsd ? { maxBudgetUsd } : {}),
         systemPrompt,
         abortController,
@@ -860,11 +854,10 @@ export async function executeCodingAgent(
   const cwd = codingConfig.cwd ?? workspaceDir;
   const model = codingConfig.model ?? node.agent?.model ?? config.models.default;
   const allowedTools = codingConfig.allowedTools ?? DEFAULT_CODING_TOOLS;
-  const maxTurns = codingConfig.maxTurns ?? sdkConfig.maxTurns ?? 50;
   const maxBudgetUsd = codingConfig.maxBudgetUsd ?? sdkConfig.maxBudgetUsd;
 
   log.info(`Starting coding agent: "${task.slice(0, 80)}..."`, {
-    model, cwd, tools: allowedTools.length, maxTurns,
+    model, cwd, tools: allowedTools.length,
   });
 
   onProgress?.({ type: 'status', message: `Coding agent starting: ${task.slice(0, 60)}...`, progress: 0 });
@@ -1044,7 +1037,6 @@ export async function executeCodingAgent(
           ? { allowDangerouslySkipPermissions: true }
           : {}),
         effort: sdkConfig.effort ?? 'high',
-        maxTurns,
         ...(maxBudgetUsd ? { maxBudgetUsd } : {}),
         systemPrompt,
         // P4: Adaptive thinking — Claude decides when and how much to think
@@ -1109,7 +1101,10 @@ export async function executeCodingAgent(
             }
             if (block.type === 'tool_use') {
               toolCalls++;
-              const pct = Math.min(90, Math.round((toolCalls / maxTurns) * 100));
+              // Asymptotic progress curve — approaches 90% as tool calls
+              // accumulate, since maxTurns is no longer a fixed denominator
+              // (Task #211: unlimited turns by default).
+              const pct = Math.min(90, Math.round(90 * (1 - Math.exp(-toolCalls / 30))));
               const toolInput = block.input as Record<string, unknown> | undefined;
               const toolName = block.name;
               auditToolInvocation(toolName, toolInput ?? {});
