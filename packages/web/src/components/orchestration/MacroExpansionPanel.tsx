@@ -3,6 +3,12 @@
 import { useCallback, useMemo } from 'react';
 import { Layers, Loader2, CheckCircle2, XCircle } from 'lucide-react';
 import { useOrchestrationStore, type WorkerEvent } from '@/stores/orchestration';
+import {
+  formatPlanningCost,
+  formatTokenInOut,
+  buildTokenTooltip,
+  type PlanningTokenUsage,
+} from '@/lib/planning-format';
 
 type Phase = {
   key: string;
@@ -16,6 +22,8 @@ type Phase = {
   subNodeCount?: number;
   /** Task #201: ids of spliced sub-nodes; populated on completion. */
   subNodeIds?: string[];
+  /** Task #204: per-pass sub-planner token usage; populated on completion. */
+  tokenUsage?: PlanningTokenUsage;
   error?: string;
   startedAt?: string;
   endedAt?: string;
@@ -97,6 +105,7 @@ export function MacroExpansionPanel() {
           status: 'done',
           subNodeCount: m.subNodeCount,
           subNodeIds: m.subNodeIds,
+          tokenUsage: m.tokenUsage,
           endedAt: e.timestamp,
         });
       } else {
@@ -182,6 +191,19 @@ export function MacroExpansionPanel() {
             {p.status === 'done' && p.subNodeCount !== undefined && (
               <span className="shrink-0 text-emerald-400/80 text-[10px]">
                 +{p.subNodeCount}
+              </span>
+            )}
+            {p.status === 'done' && p.tokenUsage && (
+              <span
+                className="shrink-0 text-zinc-500 font-mono text-[10px]"
+                title={buildTokenTooltip(p.tokenUsage)}
+              >
+                {formatTokenInOut(p.tokenUsage)}
+                {p.tokenUsage.costUsd != null && (
+                  <span className="ml-1 text-emerald-300/80">
+                    {formatPlanningCost(p.tokenUsage.costUsd)}
+                  </span>
+                )}
               </span>
             )}
             {p.status === 'failed' && p.error && (

@@ -14,6 +14,7 @@ import { createLogger } from '../logging/logger.js';
 import { isExternalAction } from '../memory/query-classifier.js';
 import { discoverModels, buildModelGuide, pickModelByTier, type DiscoveredModel } from '../models/model-discovery.js';
 import { getPortAvoidanceInstructions } from '../utils/port-restrictions.js';
+import { calculateTokenCost } from './coding/coding-budget.js';
 
 const log = createLogger('planner');
 
@@ -524,10 +525,30 @@ export class Planner {
           (macroNodeCount > 0 ? ` (${macroNodeCount} MACRO_NODE)` : ''),
       );
 
+      // Task #204: surface planner LLM token usage on completion so
+      // the orchestration UI can render an "X in / Y out" line (and
+      // cost when known) on the planning indicator.
+      const inputTokens = response.usage.input_tokens ?? 0;
+      const outputTokens = response.usage.output_tokens ?? 0;
+      const cacheRead = response.usage.cache_read_input_tokens ?? 0;
+      const cacheWrite = response.usage.cache_creation_input_tokens ?? 0;
+      let plannerCostUsd: number | undefined;
+      try {
+        plannerCostUsd = calculateTokenCost(model, inputTokens, outputTokens, cacheRead, cacheWrite);
+      } catch {
+        plannerCostUsd = undefined;
+      }
       this.emitPlannerEvent(emit, 'planner_complete', {
         model,
         promptChars: systemPrompt.length + task.length,
         nodeCount: nodes.length,
+        tokenUsage: {
+          input: inputTokens,
+          output: outputTokens,
+          ...(cacheRead > 0 ? { cacheRead } : {}),
+          ...(cacheWrite > 0 ? { cacheWrite } : {}),
+          ...(plannerCostUsd != null ? { costUsd: plannerCostUsd } : {}),
+        },
       });
 
       return {
@@ -1188,15 +1209,30 @@ ${upstreamPhaseSummary}
       };
     });
 
+    // Task #204: include cache + cost in the per-pass usage so the
+    // executor can forward the same shape on macro_expansion_complete.
+    const subInput = response.usage.input_tokens ?? 0;
+    const subOutput = response.usage.output_tokens ?? 0;
+    const subCacheRead = response.usage.cache_read_input_tokens ?? 0;
+    const subCacheWrite = response.usage.cache_creation_input_tokens ?? 0;
+    let subCostUsd: number | undefined;
+    try {
+      subCostUsd = calculateTokenCost(model, subInput, subOutput, subCacheRead, subCacheWrite);
+    } catch {
+      subCostUsd = undefined;
+    }
     log.info(`subPlan: macro '${macroNode.id}' expanded to ${subNodes.length} sub-node(s)`, {
-      outputTokens: response.usage.output_tokens,
-      inputTokens: response.usage.input_tokens,
+      outputTokens: subOutput,
+      inputTokens: subInput,
     });
     return {
       nodes: subNodes,
       usage: {
-        inputTokens: response.usage.input_tokens,
-        outputTokens: response.usage.output_tokens,
+        inputTokens: subInput,
+        outputTokens: subOutput,
+        ...(subCacheRead > 0 ? { cacheReadTokens: subCacheRead } : {}),
+        ...(subCacheWrite > 0 ? { cacheWriteTokens: subCacheWrite } : {}),
+        ...(subCostUsd != null ? { costUsd: subCostUsd } : {}),
       },
     };
   }

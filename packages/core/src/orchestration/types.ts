@@ -241,6 +241,19 @@ export interface WorkerEvent {
     subNodeIds?: string[];
     /** Set on `macro_expansion_failed`. */
     error?: string;
+    /**
+     * Task #204: per-pass token usage for the sub-planner LLM call,
+     * set on `macro_expansion_complete`. Mirrors the planner payload
+     * so the UI can surface sub-plan spend with the same treatment as
+     * the top-level plan.
+     */
+    tokenUsage?: {
+      input: number;
+      output: number;
+      cacheRead?: number;
+      cacheWrite?: number;
+      costUsd?: number;
+    };
   };
   /**
    * Task #200: top-level planner lifecycle payload, set on the three
@@ -258,6 +271,19 @@ export interface WorkerEvent {
     fellBack?: boolean;
     /** Set on `planner_failed`. */
     error?: string;
+    /**
+     * Task #204: token usage from the planner LLM call, set on
+     * `planner_complete`. Lets the UI render an "X in / Y out" line
+     * (and cost when known) on completion, mirroring the per-agent
+     * cost pill.
+     */
+    tokenUsage?: {
+      input: number;
+      output: number;
+      cacheRead?: number;
+      cacheWrite?: number;
+      costUsd?: number;
+    };
   };
 }
 
@@ -372,7 +398,14 @@ export interface MacroExpansionRecord {
  */
 export interface MacroExpansionResult {
   nodes: WorkflowNode[];
-  usage?: { inputTokens: number; outputTokens: number };
+  usage?: {
+    inputTokens: number;
+    outputTokens: number;
+    /** Task #204: optional cache + cost telemetry for sub-plan UI parity. */
+    cacheReadTokens?: number;
+    cacheWriteTokens?: number;
+    costUsd?: number;
+  };
 }
 
 // ── Checkpointing ───────────────────────────────────────────────────────────

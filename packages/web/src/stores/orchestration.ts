@@ -41,6 +41,14 @@ export interface MacroEventPayload {
    */
   subNodeIds?: string[];
   error?: string;
+  /** Task #204: per-pass sub-planner token usage (set on `macro_expansion_complete`). */
+  tokenUsage?: {
+    input: number;
+    output: number;
+    cacheRead?: number;
+    cacheWrite?: number;
+    costUsd?: number;
+  };
 }
 
 export interface WorkerEvent {
@@ -72,6 +80,14 @@ export interface WorkerEvent {
     nodeCount?: number;
     fellBack?: boolean;
     error?: string;
+    /** Task #204: planner LLM token usage (set on `planner_complete`). */
+    tokenUsage?: {
+      input: number;
+      output: number;
+      cacheRead?: number;
+      cacheWrite?: number;
+      costUsd?: number;
+    };
   };
 }
 

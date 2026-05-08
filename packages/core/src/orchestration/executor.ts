@@ -1326,7 +1326,7 @@ export class GraphExecutor {
       this.emitMacroEvent('macro_expansion_started', macroEventBase);
 
       let subNodes: WorkflowNode[];
-      let usage: { inputTokens: number; outputTokens: number } | undefined;
+      let usage: import('./types.js').MacroExpansionResult['usage'];
       try {
         const raw = await this.config.macroExpansionCallback(macroNode);
         // Back-compat: callbacks may return either WorkflowNode[] or
@@ -1427,6 +1427,24 @@ export class GraphExecutor {
         ...macroEventBase,
         subNodeCount: subNodes.length,
         subNodeIds: subNodes.map((n) => n.id),
+        // Task #204: forward sub-planner token usage so the UI's
+        // MacroExpansionPanel can show per-pass spend with the same
+        // treatment as the top-level planning indicator.
+        ...(usage
+          ? {
+              tokenUsage: {
+                input: usage.inputTokens,
+                output: usage.outputTokens,
+                ...(usage.cacheReadTokens && usage.cacheReadTokens > 0
+                  ? { cacheRead: usage.cacheReadTokens }
+                  : {}),
+                ...(usage.cacheWriteTokens && usage.cacheWriteTokens > 0
+                  ? { cacheWrite: usage.cacheWriteTokens }
+                  : {}),
+                ...(usage.costUsd != null ? { costUsd: usage.costUsd } : {}),
+              },
+            }
+          : {}),
       });
     }
 
