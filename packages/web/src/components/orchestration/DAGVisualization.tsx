@@ -122,14 +122,92 @@ export function DAGVisualization() {
   const [nodes, setNodes, onNodesChange] = useNodesState(rfNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(rfEdges);
 
-  // Sync store-derived nodes/edges into React Flow's internal state on every change
-  useEffect(() => {
-    setNodes(rfNodes);
-  }, [rfNodes, setNodes]);
+  /**
+   * Stable structural signature: changes only when the *set* of node ids or
+   * edge ids changes (e.g. new layers stream in, or the active workflow
+   * switches), not when a node's status/progress ticks. Used both to gate
+   * wholesale array replacement (which interacts badly with React Flow's
+   * measurement pass on large graphs) and to schedule a viewport re-fit so
+   * newly-added nodes don't end up off-screen.
+   */
+  const structuralSignature = useMemo(() => {
+    const nodeIds = rfNodes.map((n) => n.id).sort().join('|');
+    const edgeIds = rfEdges.map((e) => e.id).sort().join('|');
+    // Include the active workflow id so switching between two workflows that
+    // happen to share node ids still counts as a structural change and
+    // triggers a re-fit rather than silently keeping the old viewport.
+    return `${activeWorkflowId ?? ''}::${nodeIds}::${edgeIds}`;
+  }, [activeWorkflowId, rfNodes, rfEdges]);
 
+  const prevSignatureRef = useRef<string>('');
+  const pendingFitRef = useRef(false);
+
+  /**
+   * Sync store-derived nodes/edges into React Flow's internal state.
+   *
+   * - Structural change (new/removed nodes or edges, workflow switch):
+   *   replace the arrays wholesale and schedule a viewport re-fit so the
+   *   newly-grown graph stays on-screen.
+   * - Data-only change (status, progress, model badge, edge animation):
+   *   patch existing nodes/edges in place by id so React Flow keeps its
+   *   internal measurements and doesn't tear mid-render. On a large
+   *   streaming run this is what previously caused the canvas to go blank.
+   */
   useEffect(() => {
-    setEdges(rfEdges);
-  }, [rfEdges, setEdges]);
+    const signatureChanged = prevSignatureRef.current !== structuralSignature;
+    if (signatureChanged) {
+      const isFirstStructure = prevSignatureRef.current === '';
+      prevSignatureRef.current = structuralSignature;
+      setNodes(rfNodes);
+      setEdges(rfEdges);
+      if (!isFirstStructure) {
+        // First mount is handled by the `fitView` prop on <ReactFlow>.
+        pendingFitRef.current = true;
+      }
+      return;
+    }
+    // Data-only update — patch by id, preserving node identity & measurements.
+    const nodeById = new Map(rfNodes.map((n) => [n.id, n]));
+    const edgeById = new Map(rfEdges.map((e) => [e.id, e]));
+    setNodes((curr) =>
+      curr.map((n) => {
+        const next = nodeById.get(n.id);
+        return next ? { ...n, data: next.data } : n;
+      }),
+    );
+    setEdges((curr) =>
+      curr.map((e) => {
+        const next = edgeById.get(e.id);
+        return next ? { ...e, animated: next.animated, style: next.style } : e;
+      }),
+    );
+  }, [structuralSignature, rfNodes, rfEdges, setNodes, setEdges]);
+
+  /**
+   * After a structural change, re-fit the viewport on the next frame so
+   * React Flow has a chance to measure the new nodes. Skipped when a
+   * deep-link selection is active so the selected-node `setCenter` effect
+   * (Task #201) keeps winning.
+   */
+  useEffect(() => {
+    if (!pendingFitRef.current) return;
+    if (selectedWorker) {
+      // Selection takes precedence; drop the pending fit so we don't fight it.
+      pendingFitRef.current = false;
+      return;
+    }
+    const inst = rfInstanceRef.current;
+    if (!inst) return;
+    pendingFitRef.current = false;
+    const handle = requestAnimationFrame(() => {
+      try {
+        inst.fitView({ padding: 0.2, duration: 400 });
+      } catch {
+        /* instance torn down between frames — ignore */
+      }
+    });
+    return () => cancelAnimationFrame(handle);
+  }, [structuralSignature, selectedWorker]);
 
   const onNodeClick = useCallback(
     (_: React.MouseEvent, node: Node) => {
