@@ -481,7 +481,45 @@ export function ChatInput({ onSend, disabled, modeToggle, costBar }: ChatInputPr
             <div className="mx-2 md:mx-3 h-px shrink-0 bg-zinc-700/70" aria-hidden="true" />
           </>
         )}
-        <div className="flex items-end gap-2 md:gap-3 px-2 md:px-3 py-2 md:py-2.5">
+        {/*
+          iOS Safari mobile-tap fix: the textarea defaults to ~20 px tall
+          (rows=1, line-height ~1.4rem) but lives inside a `flex items-end`
+          row alongside two 44 px buttons (paperclip + send). Most of that
+          row's vertical space is therefore *dead* — taps on it don't focus
+          the textarea. iOS users tap the visually obvious "input box" but
+          land outside the actual <textarea> hit area, so nothing happens.
+
+          Two things below address this:
+          1. `min-h-[44px]` on the textarea (mobile only — desktop keeps the
+             tighter `md:min-h-0` to preserve current desktop look) gives the
+             textarea the full iOS HIG touch target without affecting layout
+             when content grows past 44 px.
+          2. The wrapping row gets `onPointerDown` that focuses the textarea
+             on any tap inside the row that isn't on a button. We use
+             `onPointerDown` (not `onMouseDown` or `onClick`) because iOS
+             Safari does not consistently synthesize `mousedown` on plain
+             `<div>` containers for touch — relying on it would leave the
+             original bug in place. Pointer Events are universally supported
+             on iOS Safari 13+ and React normalises them across browsers.
+             We only call `preventDefault()` for *non-touch* pointers (mouse
+             /pen) so iOS keeps its native tap → focus → keyboard sequence
+             intact for touch; on touch we just call `.focus()` and let the
+             browser do the rest. The `disabled` guard avoids hijacking
+             clicks when the input is intentionally read-only.
+        */}
+        <div
+          className="flex items-end gap-2 md:gap-3 px-2 md:px-3 py-2 md:py-2.5"
+          onPointerDown={(e) => {
+            if (disabled) return;
+            const target = e.target as HTMLElement;
+            if (target === textareaRef.current) return;
+            if (target.closest('button')) return;
+            if (e.pointerType === 'mouse' || e.pointerType === 'pen') {
+              e.preventDefault();
+            }
+            textareaRef.current?.focus();
+          }}
+        >
           <textarea
             ref={textareaRef}
             value={input}
@@ -490,11 +528,12 @@ export function ChatInput({ onSend, disabled, modeToggle, costBar }: ChatInputPr
             placeholder="Message OmegaClaw..."
             disabled={disabled}
             rows={1}
-            className="max-h-64 flex-1 resize-none bg-transparent pl-1 text-sm leading-relaxed text-zinc-100 placeholder-zinc-500 outline-none transition-[height] duration-150 ease-out disabled:opacity-50"
+            className="min-h-[44px] md:min-h-0 max-h-64 flex-1 resize-none bg-transparent pl-1 text-sm leading-relaxed text-zinc-100 placeholder-zinc-500 outline-none transition-[height] duration-150 ease-out disabled:opacity-50"
             aria-label="Message input"
             aria-multiline="true"
             enterKeyHint="send"
             autoComplete="off"
+            inputMode="text"
           />
 
           {/* Paperclip / attach button */}
