@@ -36,6 +36,7 @@ import {
   buildCanUseTool,
   buildPermissionRequestHook,
 } from './permission-policy.js';
+import { buildCommitSafetyToolGuard } from './coding/safe-commit.js';
 import { SkillExecutor } from '@orionomega/skills-sdk';
 import { buildSkillToolset } from '../agent/skill-tools.js';
 import path from 'node:path';
@@ -816,6 +817,26 @@ export async function executeCodingAgent(
    * response carries the human's decision instead of an automatic deny.
    */
   humanGateCallback?: (action: string, description: string, signal: AbortSignal) => Promise<boolean>,
+  /**
+   * Round-5 (architect, second pass): orchestration-side commit-safety
+   * checkout context. When provided, every Bash tool call the agent
+   * issues is intercepted by {@link buildCommitSafetyToolGuard} BEFORE
+   * the SDK forwards it to the shell — `--no-verify` is denied
+   * categorically, and any `git push` is gated by a fresh
+   * {@link findUnsafeCommittedFiles} scan against `baseHeadCommit..HEAD`.
+   * This complements the post-execution preflight in `GraphExecutor`
+   * but runs *before* push instead of after. See `safe-commit.ts` and
+   * `replit.md` Task #209 gotchas.
+   */
+  commitSafetyContext?: {
+    checkoutPath: string;
+    baseHeadCommit: string | null;
+    onRefuse?: (
+      refused: import('./types.js').RefusedCommittedFile[],
+      reason: 'no-verify' | 'unsafe-push',
+      command: string,
+    ) => void;
+  },
 ): Promise<CodingAgentResult> {
   const config = readConfig();
   const sdkConfig = config.agentSdk;
@@ -987,6 +1008,27 @@ export async function executeCodingAgent(
     });
     const codingPermissionRequestHook = buildPermissionRequestHook('coding-agent');
 
+    // Round-5 (architect, second pass): orchestration-side pre-push
+    // gate. Wraps the upstream canUseTool so any `git push` /
+    // `--no-verify` Bash call is denied BEFORE the SDK forwards it
+    // to the shell. The agent cannot bypass this — it lives above
+    // the Perl hooks (which `--no-verify` skips) and runs at every
+    // tool-use turn, not just at workflow shutdown.
+    const guardedCanUseTool = commitSafetyContext
+      ? (async (toolName, toolInput, ctx) => {
+          const guard = buildCommitSafetyToolGuard({
+            checkoutPath: commitSafetyContext.checkoutPath,
+            baseHeadCommit: commitSafetyContext.baseHeadCommit,
+            ...(commitSafetyContext.onRefuse ? { onRefuse: commitSafetyContext.onRefuse } : {}),
+          });
+          const safety = await guard(toolName, toolInput);
+          if (safety.decision === 'deny') {
+            return { behavior: 'deny', message: safety.reason, toolUseID: ctx.toolUseID };
+          }
+          return codingCanUseTool(toolName, toolInput, ctx);
+        }) as typeof codingCanUseTool
+      : codingCanUseTool;
+
     const queryResult = query({
       prompt: task,
       options: {
@@ -994,7 +1036,7 @@ export async function executeCodingAgent(
         cwd,
         allowedTools,
         permissionMode: codingPermissionMode,
-        canUseTool: codingCanUseTool,
+        canUseTool: guardedCanUseTool,
         hooks: {
           PermissionRequest: [{ hooks: [codingPermissionRequestHook] }],
         },

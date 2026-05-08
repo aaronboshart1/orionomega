@@ -1179,6 +1179,39 @@ export class GraphExecutor {
             // canUseTool can ask the user for one-off approval rather than
             // auto-denying gated tools. See permission-policy.ts.
             this.config.humanGateCallback,
+            // Round-5 (architect, second pass): hand the per-run
+            // commit-safety context to the bridge so it can install the
+            // pre-push gate (denies `git push` whose committed range
+            // contains deny-listed blobs, plus any `--no-verify`).
+            // Mirrors the post-execution preflight in
+            // `runCommitSafetyPreflight()` but fires BEFORE push.
+            this.commitSafety
+              ? {
+                  checkoutPath: this.commitSafety.checkoutPath,
+                  baseHeadCommit: this.commitSafety.baseHeadCommit,
+                  onRefuse: (refused, _reason, _command) => {
+                    if (refused.length > 0 && this.commitSafety) {
+                      const existing = this.commitSafety.refusedFiles ?? [];
+                      const seen = new Set(
+                        existing.map((r) => `${r.commit}:${r.blobSha}:${r.path}`),
+                      );
+                      const merged = [...existing];
+                      for (const r of refused) {
+                        const key = `${r.commit}:${r.blobSha}:${r.path}`;
+                        if (!seen.has(key)) { merged.push(r); seen.add(key); }
+                      }
+                      this.commitSafety = {
+                        ...this.commitSafety,
+                        refusedFiles: merged,
+                        preflightStatus: 'refused',
+                        preflightReason:
+                          this.commitSafety.preflightReason
+                          ?? 'Pre-push tool gate refused unsafe blob(s).',
+                      };
+                    }
+                  },
+                }
+              : undefined,
           );
 
           if (this.stopRequested) {

@@ -37,6 +37,8 @@ import {
   CommitSafetyError,
   formatCommitSafetyMessage,
   findUnsafeCommittedFiles,
+  parseGitCommandIntent,
+  buildCommitSafetyToolGuard,
 } from '../safe-commit.js';
 
 let repoDir: string;
@@ -656,6 +658,132 @@ describe('installSafeCommitHooks', () => {
       expect(r.skippedReason).toBeNull();
       expect(r.refused.map((x: { path: string }) => x.path)).toContain('.env');
     });
+  });
+});
+
+// Round-5 (architect, second pass): orchestration-side pre-push gate.
+// The Perl hooks can be skipped with `--no-verify` and the
+// post-execution preflight only fires after the workflow ends. The
+// canUseTool-level guard runs BEFORE every Bash tool call so the
+// agent can never reach the shell with an unsafe push.
+describe('parseGitCommandIntent', () => {
+  it('flags `git push` and `git commit`', () => {
+    expect(parseGitCommandIntent('git push origin main').kind).toBe('git-push');
+    expect(parseGitCommandIntent('git commit -m hi').kind).toBe('git-commit');
+  });
+  it('returns "other" for unrelated commands', () => {
+    expect(parseGitCommandIntent('git status').kind).toBe('other');
+    expect(parseGitCommandIntent('ls -la').kind).toBe('other');
+    expect(parseGitCommandIntent('npm run build').kind).toBe('other');
+  });
+  it('detects --no-verify regardless of position or quoting', () => {
+    expect(parseGitCommandIntent('git push --no-verify').noVerify).toBe(true);
+    expect(parseGitCommandIntent('git commit --no-verify -m x').noVerify).toBe(true);
+    expect(parseGitCommandIntent("git commit '--no-verify' -m x").noVerify).toBe(true);
+    expect(parseGitCommandIntent('git push').noVerify).toBe(false);
+  });
+  it('handles `git -C <dir> push` and `cd ... && git push` chains', () => {
+    expect(parseGitCommandIntent('git -C /tmp/repo push').kind).toBe('git-push');
+    expect(parseGitCommandIntent('cd /tmp/repo && git push origin main').kind).toBe('git-push');
+  });
+  // Round-6 architect feedback: separator/expansion bypasses.
+  it('detects --no-verify across shell terminators (; && | etc.)', () => {
+    expect(parseGitCommandIntent('git push --no-verify;').noVerify).toBe(true);
+    expect(parseGitCommandIntent('git push --no-verify&& echo ok').noVerify).toBe(true);
+    expect(parseGitCommandIntent('git push --no-verify|tee log').noVerify).toBe(true);
+    expect(parseGitCommandIntent('git push --no-verify)').noVerify).toBe(true);
+    expect(parseGitCommandIntent('git push --no-verify=true').noVerify).toBe(true);
+  });
+  it('collapses split-quote concatenations of --no-verify', () => {
+    expect(parseGitCommandIntent('git push --"no"-verify').noVerify).toBe(true);
+    expect(parseGitCommandIntent('git push --no""-verify').noVerify).toBe(true);
+    expect(parseGitCommandIntent("git push '--no-verify'").noVerify).toBe(true);
+  });
+  it('does not over-match on similar-looking flags', () => {
+    expect(parseGitCommandIntent('git push --no-verify-upstream').noVerify).toBe(false);
+    expect(parseGitCommandIntent('echo no-verify').noVerify).toBe(false);
+  });
+  it('promotes interpreter/eval wrappers that mention push or commit to the matching verb', () => {
+    expect(parseGitCommandIntent('sh -c "git push origin main"').kind).toBe('git-push');
+    expect(parseGitCommandIntent('bash -c \'git push --no-verify\'').kind).toBe('git-push');
+    expect(parseGitCommandIntent('bash -c \'git push --no-verify\'').noVerify).toBe(true);
+    expect(parseGitCommandIntent('eval "$(echo git push)"').kind).toBe('git-push');
+    expect(parseGitCommandIntent('python3 -c "import os; os.system(\'git push\')"').kind).toBe('git-push');
+    expect(parseGitCommandIntent('node -e "require(\'child_process\').execSync(\'git commit -m x\')"').kind).toBe('git-commit');
+    expect(parseGitCommandIntent('echo Z2l0IHB1c2g= | base64 -d | bash').kind).toBe('git-push');
+    expect(parseGitCommandIntent('cat <<EOF | sh\ngit push\nEOF').kind).toBe('git-push');
+  });
+  it('does not promote interpreter wrappers that do not mention push/commit', () => {
+    expect(parseGitCommandIntent('bash -c "ls -la"').kind).toBe('other');
+    expect(parseGitCommandIntent('python3 -c "print(1)"').kind).toBe('other');
+  });
+});
+
+describe('buildCommitSafetyToolGuard', () => {
+  const { execFileSync } = require('node:child_process');
+  function initRepo(): void {
+    execFileSync('git', ['-C', repoDir, 'init', '-q', '-b', 'main']);
+    execFileSync('git', ['-C', repoDir, 'config', 'user.email', 't@e.x']);
+    execFileSync('git', ['-C', repoDir, 'config', 'user.name', 'T']);
+    execFileSync('git', ['-C', repoDir, 'config', 'commit.gpgsign', 'false']);
+  }
+  function commitAll(msg: string): string {
+    execFileSync('git', ['-C', repoDir, 'add', '-A', '-f'], { stdio: 'pipe' });
+    execFileSync('git', ['-C', repoDir, 'commit', '-q', '--no-verify', '--allow-empty', '-m', msg], { stdio: 'pipe' });
+    return execFileSync('git', ['-C', repoDir, 'rev-parse', 'HEAD'], { encoding: 'utf-8' }).trim();
+  }
+
+  it('denies any Bash command containing --no-verify', async () => {
+    initRepo();
+    writeFileSync(join(repoDir, 'README.md'), '# hi\n', 'utf-8');
+    const base = commitAll('baseline');
+    const guard = buildCommitSafetyToolGuard({ checkoutPath: repoDir, baseHeadCommit: base });
+    const r = await guard('Bash', { command: 'git commit --no-verify -m x' });
+    expect(r.decision).toBe('deny');
+    if (r.decision === 'deny') expect(r.reason).toMatch(/--no-verify/);
+  });
+
+  it('denies `git push` when committed range contains a refused blob', async () => {
+    initRepo();
+    writeFileSync(join(repoDir, 'README.md'), '# hi\n', 'utf-8');
+    const base = commitAll('baseline');
+    writeFileSync(join(repoDir, '.env'), 'SECRET=leak\n', 'utf-8');
+    commitAll('agent leaked .env via --no-verify');
+    let captured: { count: number; reason: string } | null = null;
+    const guard = buildCommitSafetyToolGuard({
+      checkoutPath: repoDir,
+      baseHeadCommit: base,
+      onRefuse: (refused, reason) => { captured = { count: refused.length, reason }; },
+    });
+    const r = await guard('Bash', { command: 'git push origin main' });
+    expect(r.decision).toBe('deny');
+    if (r.decision === 'deny') expect(r.reason).toMatch(/safe-commit deny-list/);
+    expect(captured?.count).toBe(1);
+    expect(captured?.reason).toBe('unsafe-push');
+  });
+
+  it('allows `git push` when the committed range is clean', async () => {
+    initRepo();
+    writeFileSync(join(repoDir, 'README.md'), '# hi\n', 'utf-8');
+    const base = commitAll('baseline');
+    writeFileSync(join(repoDir, 'src.ts'), 'export const x = 1;\n', 'utf-8');
+    commitAll('legit code change');
+    const guard = buildCommitSafetyToolGuard({ checkoutPath: repoDir, baseHeadCommit: base });
+    const r = await guard('Bash', { command: 'git push origin main' });
+    expect(r.decision).toBe('allow');
+  });
+
+  it('passes through non-Bash tools and non-git Bash commands', async () => {
+    const guard = buildCommitSafetyToolGuard({ checkoutPath: repoDir, baseHeadCommit: null });
+    expect((await guard('Read', { file_path: '/x' })).decision).toBe('allow');
+    expect((await guard('Bash', { command: 'ls -la' })).decision).toBe('allow');
+    expect((await guard('Bash', { command: 'git status' })).decision).toBe('allow');
+  });
+
+  it('falls through to allow when the scan cannot run (no .git)', async () => {
+    const guard = buildCommitSafetyToolGuard({ checkoutPath: repoDir, baseHeadCommit: null });
+    const r = await guard('Bash', { command: 'git push origin main' });
+    expect(r.decision).toBe('allow');
   });
 });
 

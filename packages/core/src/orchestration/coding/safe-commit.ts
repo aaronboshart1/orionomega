@@ -431,6 +431,197 @@ export interface FindUnsafeCommittedFilesResult {
   skippedReason: string | null;
 }
 
+/**
+ * Round-5 review (architect, second pass): parse a Bash command string
+ * the agent is *about to* run and decide whether it's a `git commit`,
+ * a `git push`, or something else, plus whether the agent tried to
+ * sneak `--no-verify` past us. Used by the orchestration-side pre-push
+ * gate (see {@link buildCommitSafetyToolGuard}) — the gate has to
+ * answer "is this safe to allow?" purely from a string, so the parser
+ * is intentionally pessimistic: anything that *looks* like a push or
+ * commit is treated as one.
+ *
+ * Detection rules:
+ *  - The command may be wrapped in `bash -c "..."`, `sh -c '...'`,
+ *    chained with `&&` / `;` / `|`, or prefixed with `cd ... &&`. We
+ *    flag the WHOLE command string if any sub-token sequence matches
+ *    `git ... commit` or `git ... push` (ignoring `git -C <dir>`,
+ *    `git --git-dir=...`, etc.).
+ *  - `--no-verify` (or its glued form `--no-verify=anything`) is
+ *    flagged anywhere in the command — including inside quoted strings.
+ *    The agent cannot rationally need `--no-verify` here; the gate's
+ *    job is to deny it categorically, not to second-guess the context.
+ *  - `kind: 'other'` for everything else (including `git status`,
+ *    `git log`, `gh pr create`, etc.). Those need not be gated by the
+ *    pre-push scan.
+ */
+export type GitCommandKind = 'git-commit' | 'git-push' | 'other';
+
+export interface ParsedGitCommandIntent {
+  kind: GitCommandKind;
+  noVerify: boolean;
+  /** The raw command we matched on (for error messages / audit logs). */
+  matched: string;
+}
+
+export function parseGitCommandIntent(command: string): ParsedGitCommandIntent {
+  const lower = command.toLowerCase();
+  // Round-6 architect feedback: the previous separator class
+  // `[\s'"=]` missed shell terminators like `;`, `&`, `|`, `(`, `)`,
+  // `<`, `>`. Use a broad non-identifier class so anything that looks
+  // like the literal flag name `--no-verify` (anywhere, in any
+  // quoting/concatenation context) is caught. False positives just
+  // force the agent to rephrase; false negatives let the bypass
+  // through. We also strip backslash-escapes and quote characters
+  // before matching so `--no\-verify`, `--no-ver"ify`, `--no""-verify`
+  // collapse to the literal flag.
+  const stripped = lower.replace(/[\\'"`]/g, '');
+  const noVerify = /(^|[^a-z0-9_-])--no-verify($|[^a-z0-9_=-])/.test(stripped)
+    || /(^|[^a-z0-9_-])--no-verify=/.test(stripped);
+
+  // Tokenise on shell separators we can recognise without a real
+  // parser. We deliberately accept false positives (a string literal
+  // that mentions `git push` would be flagged) — the gate just denies
+  // the call and the agent can rephrase. False negatives are the
+  // dangerous direction.
+  const sanitised = stripped;
+  // Look for a `git ... <verb>` pattern allowing the standard
+  // pre-verb global flags: -C <dir>, --git-dir=..., --work-tree=...,
+  // -c <key>=<val>. Anything else between `git` and the verb breaks
+  // the match (we'd rather miss a malformed command than allow a
+  // disguised one — the agent will get a clean failure and retry).
+  const re = /\bgit\b(?:\s+(?:-c\s+\S+|-c=\S+|--git-dir(?:=\S+|\s+\S+)?|--work-tree(?:=\S+|\s+\S+)?|-c\s+\S+=\S+|-c\s+\S+|-c\s+\S+\s*|\s|-c|--no-pager|--bare|--quiet|--paginate|-P|--no-replace-objects|-C\s+\S+|-C=\S+))*\s+(commit|push)\b/;
+  const m = sanitised.match(re);
+  let kind: GitCommandKind = 'other';
+  if (m) kind = m[1] === 'push' ? 'git-push' : 'git-commit';
+
+  // Round-6 architect feedback: bypass via interpreter/eval wrappers.
+  // If the command launches a shell/script interpreter AND mentions
+  // `push` or `commit` (or `--no-verify`) anywhere in the command
+  // string, we cannot statically evaluate the inner command — refuse
+  // to classify it as `other` and instead promote it to the matching
+  // git verb so the gate engages. The agent can rephrase by inlining
+  // the git invocation directly.
+  const usesInterpreter =
+    /\b(sh|bash|zsh|dash|ksh|ash|fish)\s+-c\b/.test(sanitised)
+    || /\beval\b/.test(sanitised)
+    || /\b(python3?|node|perl|ruby|deno|bun)\s+-(c|e)\b/.test(sanitised)
+    || /\b(base64|xxd)\b.*\|\s*(sh|bash|zsh|dash|eval)/.test(sanitised)
+    || /<<-?\s*\S+/.test(sanitised); // heredoc
+
+  // Base64/hex/eval pipe-to-shell patterns are inherently opaque — the
+  // payload is what executes. We cannot know whether it pushes, so we
+  // assume the worst (git-push) and force the gate to engage. Same for
+  // eval. Inline-source interpreter wrappers (sh -c "..."), heredocs,
+  // and `python -c` get the visible-text-based promotion below.
+  const isOpaquePipe =
+    /\b(base64|xxd|openssl)\b[^|]*\|/.test(sanitised)
+    || /\beval\b/.test(sanitised);
+
+  if (kind === 'other' && usesInterpreter) {
+    if (isOpaquePipe) {
+      kind = 'git-push';
+    } else if (/\bpush\b/.test(sanitised) || noVerify) {
+      kind = 'git-push';
+    } else if (/\bcommit\b/.test(sanitised)) {
+      kind = 'git-commit';
+    }
+  }
+
+  return { kind, noVerify, matched: command };
+}
+
+/**
+ * Round-5 review: build a {@link CanUseTool}-shaped guard that wraps
+ * an upstream `CanUseTool` and adds two non-bypassable checks for
+ * coding-mode runs:
+ *
+ *  1. Any Bash command containing `--no-verify` (commit OR push) is
+ *     denied with a structured reason. `--no-verify` has no
+ *     legitimate use in this orchestration — that's the only way an
+ *     agent could plausibly bypass our hooks.
+ *  2. Any Bash command that resolves to `git push` triggers a fresh
+ *     {@link findUnsafeCommittedFiles} scan against the configured
+ *     checkout (`baseHeadCommit..HEAD`). Refused files block the
+ *     push BEFORE the SDK forwards the command to the shell.
+ *
+ * All other tool calls are passed through to the upstream guard
+ * unchanged. The wrapper is async because the pre-push scan shells
+ * out to `git`, but the scan is bounded by the same `maxCommits`
+ * limit as the post-execution preflight.
+ */
+export interface CommitSafetyToolGuardOptions {
+  /** Repo the agent is editing (where the push originates). */
+  checkoutPath: string;
+  /** HEAD at dispatch time; null = unborn-branch fallback. */
+  baseHeadCommit: string | null;
+  /**
+   * Optional emit callback so the orchestrator can record a structured
+   * `RefusedCommittedFile[]` snapshot whenever the gate fires. Useful
+   * for surfacing the deny in `run-summary.md` even when the agent
+   * gives up and never reaches the post-execution preflight.
+   */
+  onRefuse?: (
+    refused: import('../types.js').RefusedCommittedFile[],
+    reason: 'no-verify' | 'unsafe-push',
+    command: string,
+  ) => void;
+}
+
+export function buildCommitSafetyToolGuard(opts: CommitSafetyToolGuardOptions) {
+  const { checkoutPath, baseHeadCommit, onRefuse } = opts;
+  return async function evaluateBashForCommitSafety(
+    toolName: string,
+    toolInput: Record<string, unknown> | undefined,
+  ): Promise<{ decision: 'allow' } | { decision: 'deny'; reason: string }> {
+    if (toolName !== 'Bash' && toolName !== 'BashOutput') return { decision: 'allow' };
+    const cmd = typeof toolInput?.command === 'string' ? toolInput.command : '';
+    if (!cmd) return { decision: 'allow' };
+    const intent = parseGitCommandIntent(cmd);
+    if (intent.noVerify && (intent.kind === 'git-commit' || intent.kind === 'git-push')) {
+      const reason =
+        `Refusing Bash command: \`--no-verify\` is forbidden in coding mode ` +
+        `(would bypass the safe-commit hooks). Re-run without that flag.`;
+      onRefuse?.([], 'no-verify', cmd);
+      return { decision: 'deny', reason };
+    }
+    if (intent.kind === 'git-push') {
+      try {
+        const { refused, skippedReason } = findUnsafeCommittedFiles(
+          checkoutPath,
+          baseHeadCommit,
+        );
+        if (skippedReason !== null) {
+          // Scan couldn't run (e.g. no .git in the cwd the command
+          // would execute against). Fall through to allow — the
+          // post-execution preflight is still in place. Logging
+          // helps operators detect a mis-configured checkout.
+          return { decision: 'allow' };
+        }
+        if (refused.length > 0) {
+          const sample = refused
+            .slice(0, 3)
+            .map((r) => `${r.path} (${r.reason})`)
+            .join('; ');
+          const more = refused.length > 3 ? ` (+${refused.length - 3} more)` : '';
+          const reason =
+            `Refusing \`git push\`: ${refused.length} committed file(s) trip ` +
+            `the safe-commit deny-list (oversize / secret / build-artefact / ` +
+            `control-bytes): ${sample}${more}. Remove the offending blobs and ` +
+            `re-run; do NOT use \`--no-verify\`.`;
+          onRefuse?.(refused, 'unsafe-push', cmd);
+          return { decision: 'deny', reason };
+        }
+      } catch {
+        // Scan crashed — fall through to allow; the post-execution
+        // preflight still runs and will catch any leak.
+        return { decision: 'allow' };
+      }
+    }
+    return { decision: 'allow' };
+  };
+}
+
 function isControlBytePath(relPath: string): boolean {
   for (let i = 0; i < relPath.length; i++) {
     const code = relPath.charCodeAt(i);
