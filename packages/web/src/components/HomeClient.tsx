@@ -38,6 +38,11 @@ export function HomeClient() {
   // load. Desktop split-view (≥ md) is preserved — the pane stays open.
   // Users can still explicitly open it on mobile via the toggle button; the
   // close happens once on mount, not on every resize.
+  //
+  // The companion fix lives in `lib/gateway.ts` snapshot rehydration: it
+  // skips re-applying `orchPaneOpen: true` on mobile, otherwise the WS
+  // snapshot (which arrives AFTER this effect) would silently re-open the
+  // pane and re-hide the chat input.
   useEffect(() => {
     if (!orchHydrated) return;
     if (typeof window === 'undefined') return;

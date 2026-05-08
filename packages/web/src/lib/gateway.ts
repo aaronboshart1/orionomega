@@ -696,9 +696,23 @@ function rehydrateFromSnapshot(snapshot: any, bufferedEvents?: unknown[]): void 
             useAgentModeStore.getState().setMode(cs.agentMode);
           }
         }
-        // Restore orch pane state if present
+        // Restore orch pane state if present.
+        //
+        // Mobile guard: on a < md (768px) viewport the orch pane renders as a
+        // fullscreen `fixed inset-0` overlay and the chat container is
+        // `hidden md:block`, which removes the chat input from the DOM
+        // entirely. Re-applying a server-saved `orchPaneOpen: true` (commonly
+        // persisted from a desktop session) on mobile would silently hide the
+        // chat input and leave the user unable to type. Only ever auto-CLOSE
+        // the pane on mobile from a server snapshot; never auto-open it.
+        // Desktop and explicit user toggles via the in-app button are
+        // unaffected. Companion: HomeClient also auto-closes on mount.
         if (typeof cs.orchPaneOpen === 'boolean') {
-          useOrchestrationStore.getState().setOrchPaneOpen(cs.orchPaneOpen);
+          const isMobile =
+            typeof window !== 'undefined' && window.innerWidth < 768;
+          if (!(isMobile && cs.orchPaneOpen)) {
+            useOrchestrationStore.getState().setOrchPaneOpen(cs.orchPaneOpen);
+          }
         }
         if (cs.activePanel) {
           const validTabs = new Set(['memory', 'workflow', 'files', 'logs', 'schedules']);
