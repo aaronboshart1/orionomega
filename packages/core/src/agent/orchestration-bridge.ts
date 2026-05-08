@@ -23,6 +23,7 @@ import { WorkflowState } from '../orchestration/state.js';
 import type {
   PlannerOutput,
   WorkerEvent,
+  WorkflowNode,
   ExecutionResult,
   WorkflowCheckpoint,
   DAGDispatchInfo,
@@ -76,6 +77,22 @@ type ExecutorOverrides = Pick<ExecutorConfig, 'codingRepoDir' | 'stagedAttachmen
    * surfaced to the user but do not re-throw.
    */
   postExecute?: (success: boolean) => Promise<void>;
+  /**
+   * Task #197: Coding-mode preamble (Repository block + rules) that the
+   * macro-expansion callback passes to the per-phase sub-planner so each
+   * sub-DAG inherits the same repo / cwd / branch context. Set by
+   * `dispatchCodingWorkflow` only — non-coding dispatches leave this
+   * unset and the executor's `macroExpansionCallback` stays unwired.
+   */
+  codingPreamble?: string;
+  /**
+   * Task #197: Trusted phase bodies, keyed by `${specRef}::${phaseId}`.
+   * The macro-expansion callback looks bodies up here at run-time so
+   * the planner's top-level tool output never has to carry phase body
+   * text. Built by `dispatchCodingWorkflow` from `prepared.specs` and
+   * is only set when at least one referenced spec has parsed phases.
+   */
+  macroPhaseBodies?: Map<string, { title: string; body: string }>;
 };
 
 /** An active, running workflow. */
@@ -622,8 +639,28 @@ export class OrchestrationBridge {
         }
       : undefined;
 
+    // Task #197: build the trusted phase-body lookup map from the
+    // preloaded specs. Macro-expansion uses this instead of trusting
+    // any phase body the planner may have echoed in its output.
+    const macroPhaseBodies = new Map<string, { title: string; body: string }>();
+    for (const spec of prepared.specs) {
+      for (const phase of spec.phases) {
+        macroPhaseBodies.set(`${spec.reference}::${phase.id}`, {
+          title: phase.title,
+          body: phase.body,
+        });
+      }
+    }
+
     await this.dispatchFullDAG(prepared.codingTaskPreamble, pushHistory, {
-      executorOverrides: { codingRepoDir: prepared.checkoutPath },
+      executorOverrides: {
+        codingRepoDir: prepared.checkoutPath,
+        // Task #197: propagate the preamble so the executor can wire a
+        // macroExpansionCallback that re-uses the same Repository
+        // context for each per-phase sub-plan.
+        codingPreamble: prepared.codingTaskPreamble,
+        ...(macroPhaseBodies.size > 0 ? { macroPhaseBodies } : {}),
+      },
       workflowId: prepared.runId,
       ...(opts.stagedAttachments?.length ? { stagedAttachments: opts.stagedAttachments } : {}),
       ...(onPlanReady ? { onPlanReady } : {}),
@@ -992,6 +1029,47 @@ ${userTask}`;
       codingRepoDir: effectiveCodingRepoDir,
       ...(executorOverrides?.stagedAttachments?.length
         ? { stagedAttachments: executorOverrides.stagedAttachments }
+        : {}),
+      // Task #197: wire the macro-expansion callback for coding-mode
+      // dispatches that supplied a preamble. The callback re-uses
+      // `this.planner` so the same model, API key, and tool-use plumbing
+      // power the sub-plans. Non-coding dispatches leave it unset so
+      // any stray MACRO_NODE fails fast with a clear error.
+      //
+      // Phase BODY resolution lives here on the bridge — never on the
+      // planner output. We build a Map keyed by `${specRef}::${phaseId}`
+      // from the trusted `prepared.specs` list (set on the bridge in
+      // `dispatchCodingWorkflow` via `executorOverrides.macroPhaseBodies`)
+      // and look up the body at expansion time. This keeps the planner's
+      // top-level tool output tiny — the whole point of macro mode.
+      ...(executorOverrides?.codingPreamble
+        ? {
+            macroExpansionCallback: (node: WorkflowNode) => {
+              const cfg = node.macro;
+              if (!cfg) {
+                throw new Error(`MACRO_NODE '${node.id}' missing macro config`);
+              }
+              const bodies = executorOverrides.macroPhaseBodies;
+              if (!bodies) {
+                throw new Error(
+                  `Cannot expand MACRO_NODE '${node.id}': no preloaded spec bodies available`,
+                );
+              }
+              const key = `${cfg.specRef}::${cfg.phaseId}`;
+              const phase = bodies.get(key);
+              if (!phase) {
+                throw new Error(
+                  `Cannot expand MACRO_NODE '${node.id}': no preloaded body for '${key}' ` +
+                    `(known keys: ${[...bodies.keys()].slice(0, 8).join(', ')})`,
+                );
+              }
+              return this.planner.subPlan(
+                node,
+                executorOverrides.codingPreamble!,
+                phase.body,
+              );
+            },
+          }
         : {}),
       humanGateCallback: async (action: string, description: string, signal: AbortSignal): Promise<boolean> => {
         const gateId = randomBytes(8).toString('hex');

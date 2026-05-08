@@ -6,7 +6,44 @@
  */
 
 /** The kind of node in a workflow graph. */
-export type NodeType = 'AGENT' | 'TOOL' | 'ROUTER' | 'PARALLEL' | 'JOIN' | 'CODING_AGENT' | 'LOOP';
+export type NodeType = 'AGENT' | 'TOOL' | 'ROUTER' | 'PARALLEL' | 'JOIN' | 'CODING_AGENT' | 'LOOP' | 'MACRO_NODE';
+
+/**
+ * Task #197 — Hierarchical macro planning.
+ *
+ * A MACRO_NODE is a placeholder emitted by the macro planner for a single
+ * spec phase. It carries enough metadata for a per-node sub-planner to
+ * expand it into a concrete sub-DAG at execution time. The executor
+ * detects MACRO_NODE nodes in each layer and splices the resulting
+ * sub-DAG into the live graph, rewriting downstream `dependsOn` edges
+ * to fan-in across the sub-DAG's exit nodes.
+ *
+ * The macro layer keeps the top-level plan small enough to fit inside
+ * the planner LLM's output budget for very large multi-phase specs (the
+ * Cannabis MSO Legal Operations Platform is the canonical 17-phase /
+ * ~150 KB stress case that motivated the feature).
+ *
+ * Phase BODIES are deliberately NOT carried on this struct — we keep
+ * the planner LLM's output payload tiny by referencing the spec /
+ * phase by id only. The executor resolves the body at expansion time
+ * from the trusted preloaded `SpecReference` list (see
+ * `ExecutorConfig.macroExpansionCallback`'s closure in
+ * `OrchestrationBridge.executePlan`). This addresses the "primary
+ * objective regression" raised by the Task #197 code review — putting
+ * 150 KB of phase bodies back into the planner's TOOL output would
+ * have re-triggered the very `stop_reason=max_tokens` failure the
+ * macro plan was designed to avoid.
+ */
+export interface MacroNodeConfig {
+  /** The spec reference token from the user's task (e.g. `SPEC.md`). */
+  specRef: string;
+  /** Stable phase id (e.g. `phase-1`). */
+  phaseId: string;
+  /** Phase title (heading text). Cosmetic — used for labels / logs. */
+  phaseTitle: string;
+  /** Other macro phase ids this phase depends on (mirrors WorkflowNode.dependsOn). */
+  phaseDependsOn?: string[];
+}
 
 /** Runtime status of a single workflow node. */
 export type NodeStatus =
@@ -112,6 +149,8 @@ export interface WorkflowNode {
   router?: RouterConfig;
   codingAgent?: CodingAgentNodeConfig;
   loop?: LoopNodeConfig;
+  /** Task #197: Set when `type === 'MACRO_NODE'`. */
+  macro?: MacroNodeConfig;
   timeout?: number;
   retries?: number;
   fallbackNodeId?: string;

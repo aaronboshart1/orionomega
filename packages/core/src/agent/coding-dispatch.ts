@@ -44,6 +44,8 @@ import {
 import {
   loadSpecReferences as defaultLoadSpecReferences,
   renderSpecPreambleBlock,
+  renderSpecMacroPreambleBlock,
+  shouldUseMacroPlanning,
   type SpecReference,
 } from './spec-loader.js';
 import { createLogger } from '../logging/logger.js';
@@ -156,6 +158,13 @@ export interface PreparedCodingDispatch {
    * how many phases were detected per spec.
    */
   specs: SpecReference[];
+  /**
+   * Task #197: True when {@link shouldUseMacroPlanning} fired against
+   * the resolved specs and the preamble was rendered in macro mode
+   * (MACRO_NODE placeholders, no inlined phase bodies). Exposed for
+   * logging / diagnostics.
+   */
+  useMacroPlanning: boolean;
 }
 
 /**
@@ -257,6 +266,15 @@ export async function prepareCodingDispatch(
     });
   }
 
+  const useMacroPlanning = shouldUseMacroPlanning(specs);
+  if (useMacroPlanning) {
+    log.info('Hierarchical macro planning enabled (Task #197)', {
+      specCount: specs.length,
+      multiPhaseCount,
+      totalPhases: specs.reduce((acc, s) => acc + s.phases.length, 0),
+      combinedSpecChars: specs.reduce((acc, s) => acc + s.contents.length, 0),
+    });
+  }
   const codingTaskPreamble = buildCodingTaskPreamble({
     userTask: input.userTask,
     remoteUrl,
@@ -264,6 +282,7 @@ export async function prepareCodingDispatch(
     checkoutPath,
     headCommit,
     specs,
+    useMacroPlanning,
   });
 
   return {
@@ -275,6 +294,7 @@ export async function prepareCodingDispatch(
     headCommit,
     codingTaskPreamble,
     specs,
+    useMacroPlanning,
   };
 }
 
@@ -296,6 +316,13 @@ export interface BuildCodingTaskPreambleInput {
    * tagged `estimatedComplexity: high`.
    */
   specs?: SpecReference[];
+  /**
+   * Task #197: When true, render the **macro** preamble (one MACRO_NODE
+   * placeholder per phase, no inlined phase bodies) instead of the
+   * standard fan-out preamble. The decision is made by the caller via
+   * {@link shouldUseMacroPlanning}.
+   */
+  useMacroPlanning?: boolean;
 }
 
 /**
@@ -315,7 +342,10 @@ export function buildCodingTaskPreamble(input: BuildCodingTaskPreambleInput): st
   const { userTask, remoteUrl, branch, checkoutPath, headCommit } = input;
   const head = headCommit ?? 'unknown';
   const specs = input.specs ?? [];
-  const specBlock = renderSpecPreambleBlock(specs);
+  const useMacro = input.useMacroPlanning ?? false;
+  const specBlock = useMacro
+    ? renderSpecMacroPreambleBlock(specs)
+    : renderSpecPreambleBlock(specs);
   const specSection = specBlock ? `\n\n${specBlock}\n` : '';
   return `## CODING MODE — Structured Software Engineering Workflow
 

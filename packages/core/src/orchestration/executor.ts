@@ -17,6 +17,7 @@ import type {
   AutonomousConfig,
 } from './types.js';
 import type { EventBus } from './event-bus.js';
+import { topologicalSort, validateGraph } from './graph.js';
 import { WorkflowState } from './state.js';
 import { WorkerProcess, type WorkerResult } from './worker.js';
 import { TaggedRetryError } from './retry-error.js';
@@ -244,6 +245,35 @@ export interface ExecutorConfig {
   stagedAttachments?: import('../agent/attachment-staging.js').StagedAttachment[];
   /** Dedicated directory for storing run artifacts. When set, run output goes to {runsDir}/{workflowId}/ instead of {workspaceDir}/output/{workflowId}/. */
   runsDir?: string;
+  /**
+   * Task #197 — Hierarchical macro planning callback.
+   *
+   * When set, the executor scans each runnable layer for MACRO_NODE
+   * placeholders. Each MACRO_NODE is passed to this callback, which
+   * returns a sub-DAG (array of WorkflowNode) implementing that single
+   * spec phase. The executor splices the sub-DAG into the live graph,
+   * rewires inbound dependencies (sub-DAG entry nodes inherit the
+   * macro node's `dependsOn`) and outbound dependencies (any node that
+   * previously depended on the macro id now fans-in across the sub-DAG's
+   * leaf nodes), and recomputes layers via topological sort.
+   *
+   * When unset, MACRO_NODE encounters fail fast — the planner should
+   * not have emitted them.
+   */
+  macroExpansionCallback?: (node: WorkflowNode) => Promise<WorkflowNode[]>;
+  /**
+   * Task #197: Hard cap on total nodes in the live graph after splicing.
+   * Defaults to 200. Hit this and the executor fails the run with a
+   * clear "macro plan too large" error rather than launching hundreds
+   * of CODING_AGENT processes.
+   */
+  macroMaxTotalNodes?: number;
+  /**
+   * Task #197: Hard cap on the number of MACRO_NODE expansions performed
+   * during a single run. Defaults to 40 (the Cannabis MSO spec is 17
+   * phases; 40 leaves comfortable headroom for any plausible spec).
+   */
+  macroMaxExpansions?: number;
 }
 
 /**
@@ -280,6 +310,9 @@ export class GraphExecutor {
   private readonly nodeOutputs = new Map<string, string>();
   private totalCostUsd = 0;
   private readonly autonomousStartTime = Date.now();
+
+  /** Task #197: count of MACRO_NODE expansions performed so far. */
+  private macroExpansions = 0;
 
   // Control flags
   private pauseRequested = false;
@@ -374,7 +407,15 @@ export class GraphExecutor {
           log.info('Workflow resumed');
         }
 
-        const layer = this.graph.layers[layerIdx];
+        // Task #197: expand any MACRO_NODE placeholders in the current
+        // layer BEFORE running it. Each expansion is a network round-trip
+        // to the planner LLM, so we only do it for layers that actually
+        // contain macros. After expansion, refetch the (potentially
+        // recomputed) layer at this index — the sub-DAG's entry nodes
+        // take the macro node's slot in the topological order.
+        await this.expandMacroNodesInLayer(layerIdx);
+
+        const layer = this.graph.layers[layerIdx] ?? [];
         const runnableNodes = layer.filter((id) => {
           if (this.skippedNodes.has(id)) return false;
           const node = this.graph.nodes.get(id);
@@ -1162,9 +1203,195 @@ export class GraphExecutor {
       case 'LOOP':
         return this.executeLoop(node);
 
+      case 'MACRO_NODE':
+        // Defense-in-depth: a MACRO_NODE that reaches here was not
+        // expanded by `expandMacroNodesInLayer` — usually because no
+        // `macroExpansionCallback` was wired. Fail fast so the bridge
+        // surfaces a clear error instead of silently running a no-op.
+        throw new Error(
+          `MACRO_NODE '${node.id}' was not expanded — wire ExecutorConfig.macroExpansionCallback`,
+        );
+
       default:
         throw new Error(`Unsupported node type: ${node.type}`);
     }
+  }
+
+  /**
+   * Task #197: Detect MACRO_NODE placeholders in the current layer,
+   * invoke the macro-expansion callback for each, splice the resulting
+   * sub-DAG into the live graph, and recompute layers via topological
+   * sort.
+   *
+   * The splice is done in three steps per macro:
+   *
+   *   1. **Inbound rewire** — sub-DAG entry nodes (those with empty
+   *      `dependsOn`) inherit the macro's `dependsOn` so they slot into
+   *      the same position in the topological order.
+   *   2. **Outbound rewire** — every node in the live graph that
+   *      previously depended on the macro id gets its `dependsOn`
+   *      list rewritten: the macro id is removed and replaced by the
+   *      sub-DAG's leaf ids (nodes nobody else inside the sub-DAG
+   *      depends on). This produces a proper fan-in.
+   *   3. **Macro removal** — the original MACRO_NODE is deleted from
+   *      the node map; new sub-DAG nodes are inserted.
+   *
+   * After all macros in the layer are processed, the layer table is
+   * recomputed via {@link topologicalSort} so subsequent layer iteration
+   * sees the new shape. Hard caps (`macroMaxTotalNodes`,
+   * `macroMaxExpansions`) prevent runaway expansions.
+   */
+  private async expandMacroNodesInLayer(layerIdx: number): Promise<void> {
+    const layer = this.graph.layers[layerIdx];
+    if (!layer || layer.length === 0) return;
+
+    const macroIds: string[] = [];
+    for (const id of layer) {
+      const n = this.graph.nodes.get(id);
+      if (n && n.type === 'MACRO_NODE') macroIds.push(id);
+    }
+    if (macroIds.length === 0) return;
+
+    if (!this.config.macroExpansionCallback) {
+      throw new Error(
+        `Layer ${layerIdx + 1} contains ${macroIds.length} MACRO_NODE(s) ` +
+          'but no macroExpansionCallback was wired — refusing to run',
+      );
+    }
+
+    const maxExpansions = this.config.macroMaxExpansions ?? 40;
+    const maxTotalNodes = this.config.macroMaxTotalNodes ?? 200;
+
+    log.info(`Expanding ${macroIds.length} MACRO_NODE(s) in layer ${layerIdx + 1}`);
+
+    for (const macroId of macroIds) {
+      const macroNode = this.graph.nodes.get(macroId);
+      if (!macroNode || macroNode.type !== 'MACRO_NODE') continue;
+
+      this.macroExpansions += 1;
+      if (this.macroExpansions > maxExpansions) {
+        throw new Error(
+          `Macro expansion cap exceeded (>${maxExpansions}) — refusing to expand more`,
+        );
+      }
+
+      let subNodes: WorkflowNode[];
+      try {
+        subNodes = await this.config.macroExpansionCallback(macroNode);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        throw new Error(`MACRO_NODE '${macroId}' expansion failed: ${msg}`);
+      }
+      if (!Array.isArray(subNodes) || subNodes.length === 0) {
+        throw new Error(`MACRO_NODE '${macroId}' expansion returned no sub-nodes`);
+      }
+
+      // Validate uniqueness against the live graph before splicing.
+      for (const sn of subNodes) {
+        if (this.graph.nodes.has(sn.id)) {
+          throw new Error(
+            `MACRO_NODE '${macroId}' expansion produced duplicate node id '${sn.id}'`,
+          );
+        }
+      }
+
+      const projectedTotal = this.graph.nodes.size - 1 + subNodes.length;
+      if (projectedTotal > maxTotalNodes) {
+        throw new Error(
+          `Splicing MACRO_NODE '${macroId}' would push graph to ${projectedTotal} nodes (cap ${maxTotalNodes})`,
+        );
+      }
+
+      // Compute sub-DAG entry nodes (no internal deps) and leaf nodes
+      // (nobody inside the sub-DAG depends on them).
+      const subIds = new Set(subNodes.map((n) => n.id));
+      const subDeps = new Set<string>();
+      for (const sn of subNodes) {
+        for (const d of sn.dependsOn) {
+          if (subIds.has(d)) subDeps.add(d);
+        }
+      }
+      const entries = subNodes.filter((sn) =>
+        sn.dependsOn.every((d) => !subIds.has(d)),
+      );
+      const leaves = subNodes.filter((sn) => !subDeps.has(sn.id));
+      if (entries.length === 0 || leaves.length === 0) {
+        throw new Error(
+          `MACRO_NODE '${macroId}' sub-DAG is malformed (entries=${entries.length}, leaves=${leaves.length})`,
+        );
+      }
+
+      // 1. Inbound rewire — entries inherit the macro's dependsOn.
+      const inheritedDeps = [...macroNode.dependsOn];
+      for (const e of entries) {
+        // Preserve any external deps the sub-planner happened to declare.
+        const externalDeps = e.dependsOn.filter((d) => !subIds.has(d));
+        e.dependsOn = [...new Set([...inheritedDeps, ...externalDeps])];
+      }
+
+      // 2. Outbound rewire — anyone who depended on the macro now
+      //    depends on the sub-DAG's leaves (preserving fan-in).
+      const leafIds = leaves.map((l) => l.id);
+      for (const n of this.graph.nodes.values()) {
+        if (!n.dependsOn.includes(macroId)) continue;
+        const others = n.dependsOn.filter((d) => d !== macroId);
+        n.dependsOn = [...new Set([...others, ...leafIds])];
+      }
+
+      // 3. Splice — remove the macro, insert sub-nodes.
+      this.graph.nodes.delete(macroId);
+      for (const sn of subNodes) {
+        this.graph.nodes.set(sn.id, sn);
+      }
+
+      log.info(
+        `MACRO_NODE '${macroId}' spliced: +${subNodes.length} nodes ` +
+          `(graph size ${this.graph.nodes.size}, expansions ${this.macroExpansions}/${maxExpansions})`,
+      );
+      this.emitOrchestrator(
+        'status',
+        `Macro '${macroId}' expanded into ${subNodes.length} sub-node(s)`,
+        { macroId, subNodeIds: subNodes.map((n) => n.id) },
+      );
+    }
+
+    // Strict post-splice validation. `topologicalSort` happily ignores
+    // edges to nodes that don't exist in its input map (it counts only
+    // in-graph deps), so a malformed sub-DAG could silently turn a
+    // constrained node into a runnable entry. `validateGraph` catches
+    // missing dependencies, self-deps, and cycles — fail hard before
+    // the next layer runs.
+    const validationErrors = validateGraph(this.graph.nodes).filter(
+      (e) =>
+        e.message.startsWith('Cycle detected') ||
+        e.message.startsWith('Depends on unknown') ||
+        e.message.startsWith('Node depends on itself'),
+    );
+    if (validationErrors.length > 0) {
+      const summary = validationErrors.map((e) => `[${e.nodeId}] ${e.message}`).join('; ');
+      throw new Error(`Macro splice produced an invalid graph: ${summary}`);
+    }
+
+    // Recompute layers — typed cast because `layers` is exposed as a
+    // mutable array on WorkflowGraph but the executor's `graph` field
+    // is `readonly`. The reference is fine to mutate; we rebuild the
+    // array in place.
+    const newLayers = topologicalSort(this.graph.nodes);
+    (this.graph as { layers: string[][] }).layers = newLayers;
+
+    // Also refresh entry / exit nodes for downstream consumers (e.g.
+    // run-summary artifacts).
+    const hasDependents = new Set<string>();
+    for (const n of this.graph.nodes.values()) {
+      for (const d of n.dependsOn) hasDependents.add(d);
+    }
+    (this.graph as { entryNodes: string[] }).entryNodes = [...this.graph.nodes.values()]
+      .filter((n) => n.dependsOn.length === 0)
+      .map((n) => n.id)
+      .sort();
+    (this.graph as { exitNodes: string[] }).exitNodes = [...this.graph.nodes.keys()]
+      .filter((id) => !hasDependents.has(id))
+      .sort();
   }
 
   /**

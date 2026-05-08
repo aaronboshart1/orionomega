@@ -326,3 +326,114 @@ export function renderSpecPreambleBlock(specs: SpecReference[]): string {
 
   return out.join('\n');
 }
+
+/**
+ * Task #197: Threshold check — should the planner use hierarchical macro
+ * planning instead of inlining every spec body into a single
+ * monolithic prompt?
+ *
+ * The trigger fires when ANY of the following holds across the
+ * resolved specs:
+ *   - Combined spec contents exceed `bodyCharThreshold` (default 80 KB).
+ *   - Combined phase count is `≥ phaseCountThreshold` (default 8).
+ *   - Any single phase body exceeds `singlePhaseCharThreshold` (default 12 KB).
+ *
+ * Below all three thresholds the historical single-pass behaviour is
+ * preserved. Above any one of them, `coding-dispatch` swaps the
+ * `renderSpecPreambleBlock` call for `renderSpecMacroPreambleBlock` so
+ * the planner emits MACRO_NODE placeholders and the executor expands
+ * them lazily via per-phase sub-plans.
+ */
+export interface MacroPlanningThresholds {
+  bodyCharThreshold?: number;
+  phaseCountThreshold?: number;
+  singlePhaseCharThreshold?: number;
+}
+
+const DEFAULT_MACRO_THRESHOLDS: Required<MacroPlanningThresholds> = {
+  bodyCharThreshold: 80_000,
+  phaseCountThreshold: 8,
+  singlePhaseCharThreshold: 12_000,
+};
+
+export function shouldUseMacroPlanning(
+  specs: SpecReference[],
+  thresholds: MacroPlanningThresholds = {},
+): boolean {
+  const t = { ...DEFAULT_MACRO_THRESHOLDS, ...thresholds };
+  const multi = specs.filter((s) => s.phases.length >= 3);
+  if (multi.length === 0) return false;
+  const combinedChars = multi.reduce((acc, s) => acc + s.contents.length, 0);
+  if (combinedChars >= t.bodyCharThreshold) return true;
+  const totalPhases = multi.reduce((acc, s) => acc + s.phases.length, 0);
+  if (totalPhases >= t.phaseCountThreshold) return true;
+  for (const s of multi) {
+    for (const p of s.phases) {
+      if (p.body.length >= t.singlePhaseCharThreshold) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Task #197: Render the planner preamble for hierarchical macro mode.
+ *
+ * Unlike {@link renderSpecPreambleBlock}, this variant lists each phase
+ * by id / title / complexity / dependsOn ONLY — phase bodies are NOT
+ * inlined, because the whole point of macro planning is to keep the
+ * top-level prompt small. The planner is told to emit one MACRO_NODE
+ * per phase (same id namespace, same dependsOn topology), which the
+ * executor will expand at runtime by invoking the sub-planner against
+ * the phase body.
+ *
+ * Returns an empty string when no resolvable spec carries ≥3 phase
+ * markers (in which case the caller should fall back to the standard
+ * single-pass preamble).
+ */
+export function renderSpecMacroPreambleBlock(specs: SpecReference[]): string {
+  const multi = specs.filter((s) => s.phases.length >= 3);
+  if (multi.length === 0) return '';
+  const out: string[] = [];
+
+  out.push('### Hierarchical macro planning (CRITICAL — Task #197)');
+  out.push(
+    'The user referenced one or more LARGE multi-phase specifications. To stay within the planner ' +
+    "model's output token budget, you MUST emit a **macro plan** that contains one **MACRO_NODE** " +
+    'placeholder per spec phase. Do NOT emit per-phase implementer (CODING_AGENT) nodes yourself — ' +
+    'the executor will invoke a per-phase sub-planner at runtime to expand each MACRO_NODE into a ' +
+    'concrete sub-DAG. The macro plan is intentionally small: typically just a codebase-analysis ' +
+    'CODING_AGENT, one MACRO_NODE per phase (parallelised per the dependency graph below), and a ' +
+    'final commit/push CODING_AGENT.',
+  );
+  out.push(
+    '**MACRO_NODE schema:** `{ "id": "macro-phase-N", "type": "MACRO_NODE", "label": "<phase title>", ' +
+    '"dependsOn": [...prior macro ids...], "macro": { "specRef": "<spec ref>", "phaseId": "phase-N", ' +
+    '"phaseTitle": "<title>", "phaseDependsOn": [...phase ids this depends on...] } }`. ' +
+    'CRITICAL: do NOT include the phase body in your output — the executor resolves phase bodies ' +
+    'from the trusted preloaded spec at expansion time using `specRef` + `phaseId` as the lookup ' +
+    'key. Echoing the body back would re-trigger the planner-output-token blowup the macro mode is ' +
+    'designed to prevent. Use stable per-phase ids (`macro-phase-1`, `macro-phase-2`, …) so the ' +
+    'lookup is unambiguous.',
+  );
+  out.push(
+    '**Dependencies:** copy the `Depends on` edges from the listing into both the top-level ' +
+    "`dependsOn` of each MACRO_NODE *and* the inner `macro.phaseDependsOn` field. Independent phases " +
+    'MUST share a layer (parallel execution).',
+  );
+
+  for (const spec of multi) {
+    out.push('');
+    out.push(`### Referenced spec: \`${spec.reference}\``);
+    out.push(`Resolved path: \`${spec.resolvedPath}\` (size: ${spec.contents.length} chars, ${spec.phases.length} phases)`);
+    out.push('Phase summary (read the file for full bodies):');
+    for (const p of spec.phases) {
+      const dep = p.dependsOn.length > 0
+        ? ` — Depends on: ${p.dependsOn.join(', ')}`
+        : ' — independent (parallelisable)';
+      out.push(
+        `  - **${p.id}** "${p.title}" (complexity: ${p.estimatedComplexity}, body: ${p.body.length} chars)${dep}`,
+      );
+    }
+  }
+  return out.join('\n');
+}

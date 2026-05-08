@@ -196,7 +196,7 @@ export class Planner {
                   id: { type: 'string' },
                   type: {
                     type: 'string',
-                    enum: ['AGENT', 'TOOL', 'ROUTER', 'JOIN', 'CODING_AGENT', 'LOOP'],
+                    enum: ['AGENT', 'TOOL', 'ROUTER', 'JOIN', 'CODING_AGENT', 'LOOP', 'MACRO_NODE'],
                   },
                   label: { type: 'string' },
                   dependsOn: { type: 'array', items: { type: 'string' } },
@@ -208,6 +208,21 @@ export class Planner {
                   tool: { type: 'object', additionalProperties: true },
                   router: { type: 'object', additionalProperties: true },
                   loop: { type: 'object', additionalProperties: true },
+                  // Task #197: MACRO_NODE placeholder — see MacroNodeConfig.
+                  // Strict schema: forbid extra fields (especially `phaseBody`)
+                  // so the model cannot blow the planner output token budget
+                  // by echoing 150 KB of phase text back into the tool call.
+                  macro: {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      specRef: { type: 'string' },
+                      phaseId: { type: 'string' },
+                      phaseTitle: { type: 'string' },
+                      phaseDependsOn: { type: 'array', items: { type: 'string' } },
+                    },
+                    required: ['specRef', 'phaseId', 'phaseTitle'],
+                  },
                 },
               },
             },
@@ -385,6 +400,25 @@ export class Planner {
                   maxBudgetUsd: ca.maxBudgetUsd ? Number(ca.maxBudgetUsd) : undefined,
                   agents: ca.agents && typeof ca.agents === 'object'
                     ? (ca.agents as Record<string, { description: string; prompt: string; tools?: string[] }>)
+                    : undefined,
+                };
+              })()
+            : undefined,
+          macro: n.macro
+            ? (() => {
+                const m = n.macro as Record<string, unknown>;
+                // Task #197: phaseBody is intentionally NOT accepted from
+                // the planner's tool output — bodies are resolved at
+                // expansion time from the trusted preloaded specs (see
+                // OrchestrationBridge.executePlan). Echoing the body
+                // back into the planner output would defeat the whole
+                // point of macro mode (output-token blowup).
+                return {
+                  specRef: String(m.specRef ?? ''),
+                  phaseId: String(m.phaseId ?? ''),
+                  phaseTitle: String(m.phaseTitle ?? ''),
+                  phaseDependsOn: Array.isArray(m.phaseDependsOn)
+                    ? (m.phaseDependsOn as string[]).map(String)
                     : undefined,
                 };
               })()
@@ -753,6 +787,231 @@ Do NOT attempt to plan or execute the coding work yourself. Do NOT clone, write 
       estimatedTime: 0,
       summary: (isCodingMode ? `Coding planner failed: ${reason}` : task).slice(0, 120),
     };
+  }
+
+  /**
+   * Task #197: Expand a single MACRO_NODE into a concrete sub-DAG.
+   *
+   * Invoked by the GraphExecutor when it encounters a MACRO_NODE in a
+   * runnable layer. The sub-planner runs a focused planning pass scoped
+   * to ONE phase body — so the prompt is small (one phase ≪ a 17-phase
+   * spec) and the output JSON fits comfortably inside the planner LLM's
+   * output budget. Returns the sub-DAG nodes (already with stable
+   * per-phase id prefixes); the executor handles the splice.
+   *
+   * The returned nodes:
+   *   - All have a `<phaseId>__` id prefix to guarantee uniqueness when
+   *     spliced into the live graph.
+   *   - Include at least one node with `dependsOn === []` (the sub-DAG's
+   *     entry); the executor rewrites those to inherit the macro node's
+   *     own `dependsOn`.
+   *   - Include at least one node nobody else inside the sub-DAG depends
+   *     on (the sub-DAG's exit / leaf); the executor rewires every
+   *     downstream consumer of the macro node to fan-in across these
+   *     leaves.
+   */
+  async subPlan(
+    macroNode: WorkflowNode,
+    repoPreamble: string,
+    phaseBody: string,
+  ): Promise<WorkflowNode[]> {
+    const cfg = macroNode.macro;
+    if (!cfg) {
+      throw new Error(`subPlan called on node '${macroNode.id}' with no macro config`);
+    }
+    if (!phaseBody || phaseBody.trim().length === 0) {
+      throw new Error(
+        `subPlan called on macro '${macroNode.id}' (phase ${cfg.phaseId}) with empty phaseBody — ` +
+          'the executor failed to resolve the trusted spec body before invoking the sub-planner',
+      );
+    }
+
+    const appConfig = readConfig();
+    const apiKey = appConfig.models.apiKey;
+    const model = appConfig.models.planner || this.config.model;
+    if (!apiKey) {
+      throw new Error('subPlan: no API key configured');
+    }
+
+    const subTask = `## Sub-plan for spec phase \`${cfg.phaseId}\`: ${cfg.phaseTitle}
+
+This is a hierarchical macro-planning sub-pass (Task #197). The user's
+overall workflow has been decomposed into one MACRO_NODE per spec
+phase. You are now expanding ONE phase into a concrete sub-DAG.
+
+### Repository context (inherited from the parent run)
+${repoPreamble.slice(0, 4000)}
+
+### Phase body — verbatim (resolved by the executor from the preloaded spec)
+${phaseBody}
+
+### Sub-planning rules
+- Emit a small focused DAG that implements THIS phase only. Typically
+  1–6 nodes. Do NOT plan for other phases — they have their own
+  MACRO_NODE expansions.
+- Use CODING_AGENT nodes for actual implementation work; AGENT for
+  research/analysis sub-tasks if needed.
+- Do NOT include codebase-analysis or commit/push nodes — those live in
+  the macro plan's outer scaffolding.
+- Use stable per-node ids prefixed with \`${cfg.phaseId}__\` so they
+  remain unique after splicing into the live graph.
+- Within the sub-DAG, every CODING_AGENT MUST set \`cwd\` exactly as
+  shown in the repository context above.
+- DO NOT emit MACRO_NODE inside a sub-plan — recursion is forbidden.`;
+
+    const submitPlanTool = {
+      name: 'submit_plan',
+      description:
+        'Submit the sub-DAG for this single spec phase. Emit `nodes` first; keep `reasoning` short.',
+      input_schema: {
+        type: 'object',
+        additionalProperties: true,
+        required: ['nodes', 'summary'],
+        properties: {
+          nodes: {
+            type: 'array',
+            items: {
+              type: 'object',
+              additionalProperties: true,
+              required: ['id', 'type', 'label', 'dependsOn'],
+              properties: {
+                id: { type: 'string' },
+                type: {
+                  type: 'string',
+                  enum: ['AGENT', 'TOOL', 'ROUTER', 'JOIN', 'CODING_AGENT', 'LOOP'],
+                },
+                label: { type: 'string' },
+                dependsOn: { type: 'array', items: { type: 'string' } },
+                timeout: { type: 'number' },
+                retries: { type: 'number' },
+                agent: { type: 'object', additionalProperties: true },
+                codingAgent: { type: 'object', additionalProperties: true },
+                tool: { type: 'object', additionalProperties: true },
+                router: { type: 'object', additionalProperties: true },
+                loop: { type: 'object', additionalProperties: true },
+              },
+            },
+          },
+          summary: { type: 'string' },
+          reasoning: { type: 'string' },
+        },
+      },
+    } as const;
+
+    const client = new AnthropicClient(apiKey);
+    log.info(`subPlan: expanding macro '${macroNode.id}' (phase ${cfg.phaseId}, ${phaseBody.length} chars body)`);
+    const response = await client.createMessage({
+      model,
+      messages: [{ role: 'user', content: subTask }],
+      maxTokens: 8192,
+      tools: [submitPlanTool],
+      toolChoice: { type: 'tool', name: 'submit_plan' },
+    });
+
+    const toolUseBlock = response.content.find(
+      (b) => b.type === 'tool_use' && b.name === 'submit_plan',
+    );
+    if (!toolUseBlock || !toolUseBlock.input || typeof toolUseBlock.input !== 'object') {
+      throw new Error(
+        `subPlan for '${macroNode.id}' returned no tool_use (stop_reason=${response.stop_reason})`,
+      );
+    }
+    const parsed = toolUseBlock.input as Record<string, unknown>;
+    const rawNodes = parsed.nodes;
+    if (!Array.isArray(rawNodes) || rawNodes.length === 0) {
+      throw new Error(`subPlan for '${macroNode.id}' returned no nodes`);
+    }
+
+    const idPrefix = `${cfg.phaseId}__`;
+    const ensurePrefix = (id: string): string =>
+      id.startsWith(idPrefix) ? id : `${idPrefix}${id}`;
+
+    // Build the set of legitimate internal id targets (both raw and
+    // already-prefixed) so we can refuse external deps from the
+    // sub-planner. Sub-plans are scoped to a single phase: the only
+    // valid in-graph references are siblings within the same sub-DAG.
+    // Also detect duplicate ids inside the returned sub-DAG — without
+    // this, two nodes with the same id would silently overwrite each
+    // other when the executor inserts them into the graph's id Map.
+    const internalIdAliases = new Set<string>();
+    const seenRawIds = new Set<string>();
+    for (const rn of rawNodes as Record<string, unknown>[]) {
+      const rid = String(rn.id ?? '');
+      if (!rid) continue;
+      if (seenRawIds.has(rid)) {
+        throw new Error(
+          `subPlan for '${macroNode.id}' returned duplicate sub-node id '${rid}' — refused`,
+        );
+      }
+      seenRawIds.add(rid);
+      internalIdAliases.add(rid);
+      internalIdAliases.add(ensurePrefix(rid));
+    }
+
+    const subNodes: WorkflowNode[] = rawNodes.map((n: Record<string, unknown>) => {
+      const rawType = String(n.type ?? 'CODING_AGENT');
+      // Defense-in-depth: refuse MACRO_NODE inside a sub-plan to prevent recursion.
+      if (rawType === 'MACRO_NODE') {
+        throw new Error(
+          `subPlan for '${macroNode.id}' returned a nested MACRO_NODE — recursion is forbidden`,
+        );
+      }
+      const rawDeps = Array.isArray(n.dependsOn) ? (n.dependsOn as string[]).map(String) : [];
+      const safeDeps = rawDeps.map((d) => {
+        if (!internalIdAliases.has(d)) {
+          // External dep — the sub-planner has no business referencing
+          // anything outside its own sub-DAG. Refuse hard so the
+          // executor surfaces a clear error rather than silently
+          // letting `topologicalSort` ignore the dangling edge.
+          throw new Error(
+            `subPlan for '${macroNode.id}' returned external dependency '${d}' — refused. ` +
+              'Sub-plans may only reference sibling nodes inside the same sub-DAG.',
+          );
+        }
+        return ensurePrefix(d);
+      });
+      return {
+        id: ensurePrefix(String(n.id ?? `node-${Math.random().toString(36).slice(2, 8)}`)),
+        type: rawType as WorkflowNode['type'],
+        label: String(n.label ?? cfg.phaseTitle),
+        dependsOn: safeDeps,
+        status: 'pending' as const,
+        timeout: n.timeout != null ? Number(n.timeout) : undefined,
+        retries: n.retries != null ? Number(n.retries) : undefined,
+        agent: n.agent
+          ? {
+              model: String((n.agent as Record<string, unknown>).model ?? this.config.model),
+              task: String((n.agent as Record<string, unknown>).task ?? ''),
+            }
+          : undefined,
+        codingAgent: n.codingAgent
+          ? (() => {
+              const ca = n.codingAgent as Record<string, unknown>;
+              return {
+                task: String(ca.task ?? ''),
+                model: ca.model ? String(ca.model) : undefined,
+                cwd: ca.cwd ? String(ca.cwd) : undefined,
+                allowedTools: Array.isArray(ca.allowedTools)
+                  ? (ca.allowedTools as string[])
+                  : undefined,
+                maxTurns: ca.maxTurns ? Number(ca.maxTurns) : undefined,
+              };
+            })()
+          : undefined,
+        tool: n.tool
+          ? {
+              name: String((n.tool as Record<string, unknown>).name ?? ''),
+              params: ((n.tool as Record<string, unknown>).params as Record<string, unknown>) ?? {},
+            }
+          : undefined,
+      };
+    });
+
+    log.info(`subPlan: macro '${macroNode.id}' expanded to ${subNodes.length} sub-node(s)`, {
+      outputTokens: response.usage.output_tokens,
+      inputTokens: response.usage.input_tokens,
+    });
+    return subNodes;
   }
 
   /**
