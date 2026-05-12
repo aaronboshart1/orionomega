@@ -3,11 +3,17 @@
  * Atlassian skill setup handler.
  *
  * When invoked as postInstall: checks if credentials are already configured.
- * When invoked as setup handler: validates auth and returns config fields.
+ * When invoked as setup handler: validates auth, performs OAuth flow if needed.
  */
-import { readFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
+import { createServer } from 'node:http';
+import { URL } from 'node:url';
+
+const ATLASSIAN_AUTH_URL = 'https://auth.atlassian.com/authorize';
+const ATLASSIAN_TOKEN_URL = 'https://auth.atlassian.com/oauth/token';
+const ATLASSIAN_RESOURCES_URL = 'https://api.atlassian.com/oauth/token/accessible-resources';
 
 async function main() {
   // Read config from stdin (may be empty for postInstall)
@@ -31,7 +37,7 @@ async function main() {
   const authMethod = config.auth_method || process.env.ATLASSIAN_AUTH_METHOD || 'oauth';
   result.fields.auth_method = authMethod;
 
-  // Check existing config
+  // Load existing config
   const skillsDir = process.env.ORIONOMEGA_SKILLS_DIR
     || join(process.env.ORIONOMEGA_HOME || join(homedir(), '.orionomega'), 'skills');
   const configPath = join(skillsDir, 'atlassian', 'config.json');
@@ -44,25 +50,24 @@ async function main() {
     } catch { /* ignore */ }
   }
 
-  // Validate connectivity by calling list_resources
+  // Merge incoming config
+  const merged = { ...existingConfig, ...config };
+
+  // Validate connectivity
   try {
-    const endpoint = existingConfig.mcp_endpoint || 'https://mcp.atlassian.com/v1/mcp';
+    const endpoint = merged.mcp_endpoint || 'https://mcp.atlassian.com/v1/mcp';
     let authHeader = '';
 
     if (authMethod === 'oauth') {
-      const token = existingConfig.oauth_token || config.oauth_token || process.env.ATLASSIAN_OAUTH_TOKEN;
+      const token = merged.oauth_access_token || process.env.ATLASSIAN_OAUTH_TOKEN;
       if (token) authHeader = `Bearer ${token}`;
     } else if (authMethod === 'basic') {
-      const email = existingConfig.api_email || config.api_email || process.env.ATLASSIAN_EMAIL;
-      const token = existingConfig.api_token || config.api_token || process.env.ATLASSIAN_API_TOKEN;
+      const email = merged.api_email || process.env.ATLASSIAN_EMAIL;
+      const token = merged.api_token || process.env.ATLASSIAN_API_TOKEN;
       if (email && token) authHeader = `Basic ${Buffer.from(`${email}:${token}`).toString('base64')}`;
-    } else if (authMethod === 'bearer') {
-      const token = existingConfig.api_token || config.api_token || process.env.ATLASSIAN_API_TOKEN;
-      if (token) authHeader = `Bearer ${token}`;
     }
 
     if (authHeader) {
-      // Try a lightweight call to verify auth
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 15_000);
 
@@ -80,7 +85,7 @@ async function main() {
           params: {
             protocolVersion: '2024-11-05',
             capabilities: {},
-            clientInfo: { name: 'orionomega-atlassian-setup', version: '1.0.0' },
+            clientInfo: { name: 'orionomega-atlassian-setup', version: '1.1.0' },
           },
         }),
         signal: controller.signal,
@@ -96,23 +101,88 @@ async function main() {
         result.fields.mcp_server_status = `HTTP ${res.status}`;
       }
     } else {
-      result.fields.mcp_server_status = 'no credentials configured';
+      if (authMethod === 'oauth') {
+        // Check if we have client credentials for OAuth
+        const clientId = merged.oauth_client_id;
+        const clientSecret = merged.oauth_client_secret;
+        const callbackUrl = merged.oauth_callback_url || 'http://localhost:9876/callback';
+
+        if (clientId && clientSecret) {
+          result.fields.mcp_server_status = 'OAuth credentials configured — ready to authorize';
+          result.fields.oauth_authorize_url = buildAuthUrl(clientId, callbackUrl, merged.oauth_scopes);
+          result.fields.setup_instructions =
+            'Click the authorization URL above to complete the OAuth flow, or run the skill\'s authorize command.';
+        } else {
+          result.fields.mcp_server_status = 'OAuth not configured';
+          result.fields.setup_instructions =
+            'Enter your OAuth Client ID and Client Secret from developer.atlassian.com/console/myapps/, ' +
+            'then set your Callback URL to match what you configured in the Developer Console.';
+        }
+      } else {
+        result.fields.mcp_server_status = 'no credentials configured';
+        result.fields.setup_instructions =
+          'Enter your Atlassian account email and API token from id.atlassian.com/manage-profile/security/api-tokens';
+      }
     }
   } catch (err) {
     result.fields.mcp_server_status = `error: ${err.message || String(err)}`;
+  }
+
+  // If we have OAuth credentials but no access token, try to detect accessible resources
+  if (authMethod === 'oauth' && merged.oauth_access_token && !merged.default_cloud_id) {
+    try {
+      const res = await fetch(ATLASSIAN_RESOURCES_URL, {
+        headers: {
+          'Authorization': `Bearer ${merged.oauth_access_token}`,
+          'Accept': 'application/json',
+        },
+      });
+      if (res.ok) {
+        const sites = await res.json();
+        if (Array.isArray(sites) && sites.length > 0) {
+          result.fields.accessible_sites = sites.map(s => `${s.name} (${s.id})`).join(', ');
+          result.fields.auto_cloud_id = sites[0].id;
+          result.fields.auto_site_url = sites[0].url;
+        }
+      }
+    } catch { /* ignore */ }
   }
 
   // Report enabled products
   const products = ['jira', 'confluence', 'compass', 'jsm', 'bitbucket', 'search'];
   const enabled = products.filter(p => {
     const key = `enable_${p}`;
-    if (key in existingConfig) return !!existingConfig[key];
-    // defaults
+    if (key in merged) return !!merged[key];
     return p === 'jira' || p === 'confluence' || p === 'search';
   });
   result.fields.enabled_products = enabled.join(', ');
 
+  // Persist merged config
+  try {
+    const dir = dirname(configPath);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeFileSync(configPath, JSON.stringify({ fields: merged }, null, 2), { mode: 0o600 });
+  } catch { /* ignore */ }
+
   process.stdout.write(JSON.stringify(result));
+}
+
+function buildAuthUrl(clientId, callbackUrl, scopes) {
+  const defaultScopes = 'read:jira-work write:jira-work read:jira-user manage:jira-project ' +
+    'read:confluence-content.all write:confluence-content read:confluence-space.summary offline_access';
+  const scopeStr = scopes || defaultScopes;
+
+  const params = new URLSearchParams({
+    audience: 'api.atlassian.com',
+    client_id: clientId,
+    scope: scopeStr,
+    redirect_uri: callbackUrl,
+    state: `orionomega_${Date.now()}`,
+    response_type: 'code',
+    prompt: 'consent',
+  });
+
+  return `${ATLASSIAN_AUTH_URL}?${params.toString()}`;
 }
 
 main();

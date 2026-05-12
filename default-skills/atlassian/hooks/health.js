@@ -38,7 +38,7 @@ async function main() {
   const config = getConfig();
 
   const checks = await Promise.all([
-    // Check 1: Config exists
+    // Check 1: Config exists and products enabled
     check('config loaded', () => {
       const method = config.auth_method || 'not set';
       const products = ['jira', 'confluence', 'compass', 'jsm', 'bitbucket', 'search']
@@ -53,16 +53,25 @@ async function main() {
     // Check 2: Auth credentials present
     check('credentials configured', () => {
       const method = config.auth_method || 'oauth';
-      if (method === 'oauth' && (config.oauth_token || process.env.ATLASSIAN_OAUTH_TOKEN)) {
-        return 'OAuth token present';
+      if (method === 'oauth') {
+        if (config.oauth_access_token || process.env.ATLASSIAN_OAUTH_TOKEN) {
+          return 'OAuth access token present';
+        }
+        if (config.oauth_client_id && config.oauth_client_secret) {
+          if (config.oauth_refresh_token) {
+            return 'OAuth client credentials + refresh token present (can auto-refresh)';
+          }
+          return 'OAuth client credentials present — needs authorization';
+        }
+        throw new Error('No OAuth credentials. Enter Client ID, Client Secret, and complete the authorization flow in Settings.');
       }
-      if (method === 'basic' && (config.api_email || process.env.ATLASSIAN_EMAIL) && (config.api_token || process.env.ATLASSIAN_API_TOKEN)) {
-        return 'Basic auth credentials present';
+      if (method === 'basic') {
+        const hasEmail = config.api_email || process.env.ATLASSIAN_EMAIL;
+        const hasToken = config.api_token || process.env.ATLASSIAN_API_TOKEN;
+        if (hasEmail && hasToken) return 'Basic auth credentials present';
+        throw new Error('Missing email or API token for Basic auth.');
       }
-      if (method === 'bearer' && (config.api_token || process.env.ATLASSIAN_API_TOKEN)) {
-        return 'Bearer token present';
-      }
-      throw new Error(`No credentials for auth_method="${method}"`);
+      throw new Error(`Unknown auth_method="${method}"`);
     }),
 
     // Check 3: MCP server reachable
@@ -72,18 +81,15 @@ async function main() {
       const method = config.auth_method || 'oauth';
 
       if (method === 'oauth') {
-        const token = config.oauth_token || process.env.ATLASSIAN_OAUTH_TOKEN || '';
+        const token = config.oauth_access_token || process.env.ATLASSIAN_OAUTH_TOKEN || '';
         if (token) authHeader = `Bearer ${token}`;
       } else if (method === 'basic') {
         const email = config.api_email || process.env.ATLASSIAN_EMAIL || '';
         const token = config.api_token || process.env.ATLASSIAN_API_TOKEN || '';
         if (email && token) authHeader = `Basic ${Buffer.from(`${email}:${token}`).toString('base64')}`;
-      } else if (method === 'bearer') {
-        const token = config.api_token || process.env.ATLASSIAN_API_TOKEN || '';
-        if (token) authHeader = `Bearer ${token}`;
       }
 
-      if (!authHeader) throw new Error('No auth header — cannot test connectivity');
+      if (!authHeader) throw new Error('No auth header — cannot test connectivity. Complete auth setup first.');
 
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 15_000);
@@ -102,7 +108,7 @@ async function main() {
           params: {
             protocolVersion: '2024-11-05',
             capabilities: {},
-            clientInfo: { name: 'orionomega-atlassian-health', version: '1.0.0' },
+            clientInfo: { name: 'orionomega-atlassian-health', version: '1.1.0' },
           },
         }),
         signal: controller.signal,
@@ -110,9 +116,7 @@ async function main() {
 
       clearTimeout(timer);
 
-      if (res.ok) {
-        return `HTTP ${res.status} — connected to ${endpoint}`;
-      }
+      if (res.ok) return `HTTP ${res.status} — connected to ${endpoint}`;
       throw new Error(`HTTP ${res.status} from ${endpoint}`);
     }),
   ]);

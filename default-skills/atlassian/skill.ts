@@ -8,15 +8,29 @@ export default class AtlassianSkill extends BaseSkill {
     await super.initialize(ctx);
 
     // Push auth secrets into env so handlers can read them
-    if (ctx.secrets.oauth_token) {
-      process.env.ATLASSIAN_OAUTH_TOKEN = ctx.secrets.oauth_token;
+    // OAuth fields
+    if (ctx.secrets.oauth_access_token) {
+      process.env.ATLASSIAN_OAUTH_TOKEN = ctx.secrets.oauth_access_token;
     }
+    if (ctx.secrets.oauth_refresh_token) {
+      process.env.ATLASSIAN_REFRESH_TOKEN = ctx.secrets.oauth_refresh_token;
+    }
+    if (ctx.secrets.oauth_client_secret) {
+      process.env.ATLASSIAN_CLIENT_SECRET = ctx.secrets.oauth_client_secret;
+    }
+    if (ctx.config.oauth_client_id) {
+      process.env.ATLASSIAN_CLIENT_ID = String(ctx.config.oauth_client_id);
+    }
+
+    // API token fields
     if (ctx.secrets.api_token) {
       process.env.ATLASSIAN_API_TOKEN = ctx.secrets.api_token;
     }
     if (ctx.config.api_email) {
       process.env.ATLASSIAN_EMAIL = String(ctx.config.api_email);
     }
+
+    // Common fields
     if (ctx.config.auth_method) {
       process.env.ATLASSIAN_AUTH_METHOD = String(ctx.config.auth_method);
     }
