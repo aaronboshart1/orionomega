@@ -21,7 +21,7 @@ interface SkillSettingSchema {
   };
   order?: number;
   hidden?: boolean;
-  dependsOn?: string;
+  dependsOn?: string | { field: string; value: unknown };
 }
 
 interface SkillSettingsBlock {
@@ -54,6 +54,31 @@ function SkillField({
   onChange: (name: string, value: unknown) => void;
 }) {
   if (schema.hidden) return null;
+
+  // Render display-only widgets (headings / info blocks) without input controls
+  if (schema.widget === 'heading') {
+    return (
+      <div className="pt-2 pb-0.5">
+        <h4 className="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">
+          {schema.label}
+        </h4>
+        {schema.description && (
+          <p className="text-[11px] text-zinc-500 leading-relaxed mt-0.5">{schema.description}</p>
+        )}
+      </div>
+    );
+  }
+
+  if (schema.widget === 'info') {
+    return (
+      <div className="rounded border border-zinc-700/50 bg-zinc-800/40 px-3 py-2">
+        <p className="text-[11px] font-medium text-zinc-300 mb-1">{schema.label}</p>
+        {schema.description && (
+          <p className="text-[10px] text-zinc-500 leading-relaxed whitespace-pre-line">{schema.description}</p>
+        )}
+      </div>
+    );
+  }
 
   const types = Array.isArray(schema.type) ? schema.type : [schema.type];
   const isPassword = types.includes('password') || schema.widget === 'secret';
@@ -944,7 +969,7 @@ function SkillCard({
                     </h4>
                   )}
                   {fields.map(([key, schema]) => {
-                    if (schema.dependsOn && !localSettings[schema.dependsOn]) return null;
+                    if (schema.dependsOn) { if (typeof schema.dependsOn === "string") { if (!localSettings[schema.dependsOn]) return null; } else { const dep = schema.dependsOn as { field: string; value: unknown }; if (localSettings[dep.field] !== dep.value) return null; } }
                     return (
                       <SkillField
                         key={key}
