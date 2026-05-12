@@ -7,7 +7,28 @@
  * selection exists or `ensureSessionClone` fails.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+
+// Mock ensureSessionClone so we don't shell out to git in the
+// positive-path test. The mock just returns the localPath the caller
+// passed in (treating it as already-cloned and up-to-date).
+vi.mock('../../orchestration/coding/repo-manager.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../orchestration/coding/repo-manager.js')>();
+  return {
+    ...actual,
+    ensureSessionClone: vi.fn(async (
+      _remoteUrl: string,
+      localPath: string,
+      _branch?: string,
+    ) => ({
+      localPath,
+      cloned: false,
+      fetched: false,
+      fastForwarded: false,
+      headCommit: 'deadbeef',
+    })),
+  };
+});
 import { mkdtempSync, rmSync, mkdirSync, existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
@@ -91,6 +112,29 @@ describe('Direct mode runDir selection (Task #216)', () => {
     expect(prompts[0]).toContain('## Output Directory (STRICT)');
     expect(prompts[0]).not.toContain('## Working Directory (STRICT)');
     expect(prompts[0]).toContain(path.join(workspaceDir, 'output', convId));
+  });
+
+  it('emits Working Directory (STRICT) block + uses repo localPath when selection exists (Reviewer comment #1)', async () => {
+    const agent = buildAgentWithGetSessionRepo(() => ({
+      remoteUrl: 'https://github.com/example/myrepo.git',
+      branch: 'develop',
+      localPath: fakeRepoDir,
+    }));
+    const { prompts } = stubAnthropicAndCapturePrompts(agent);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const a = agent as any;
+    a.currentSessionId = 's1';
+    const convId = a.getOrAllocateConvOutputId('s1');
+    await a.respondConversationally('hi', undefined, 'run-1', convId);
+    expect(prompts).toHaveLength(1);
+    const sp = prompts[0]!;
+    // The selected-repo prompt variant — not the legacy fallback wording.
+    expect(sp).toContain('## Working Directory (STRICT)');
+    expect(sp).not.toContain('## Output Directory (STRICT)');
+    // Names the actual repo + branch + cwd.
+    expect(sp).toContain('https://github.com/example/myrepo.git');
+    expect(sp).toContain('develop');
+    expect(sp).toContain(fakeRepoDir);
   });
 
   it('does not throw when getSessionRepo returns undefined (treated as no selection)', async () => {

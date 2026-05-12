@@ -1259,11 +1259,11 @@ export class GraphExecutor {
             const preview = installLeaks.slice(0, 5).join(', ');
             const more = installLeaks.length > 5 ? ` (+${installLeaks.length - 5} more)` : '';
             log.warn(
-              `CODING_AGENT '${node.id}' wrote ${installLeaks.length} file(s) into the OrionOmega install dir: ${preview}${more}`,
+              `CODING_AGENT '${node.id}' wrote ${installLeaks.length} file(s) into the OrionOmega install/source tree: ${preview}${more}`,
             );
             this.emitOrchestrator(
               'status',
-              `⚠️ CODING_AGENT '${node.label}' wrote ${installLeaks.length} file(s) into the OrionOmega install dir — these will not appear in the run output. Affected: ${preview}${more}`,
+              `⚠️ CODING_AGENT '${node.label}' wrote ${installLeaks.length} file(s) into the OrionOmega install/source tree — these will not appear in the run output. Affected: ${preview}${more}`,
               { installDirLeaks: installLeaks },
             );
           }
