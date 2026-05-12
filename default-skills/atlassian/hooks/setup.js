@@ -175,16 +175,37 @@ async function main() {
   process.stdout.write(JSON.stringify(result));
 }
 
-function buildAuthUrl(clientId, callbackUrl, scopes) {
-  const defaultScopes =
-    'read:jira-work write:jira-work search:jira-work ' +
-    'read:page:confluence read:comment:confluence read:space:confluence read:hierarchical-content:confluence ' +
-    'write:page:confluence search:confluence ' +
-    'read:component:compass write:component:compass ' +
-    'read:me read:account ' +
-    'search:rovo:mcp read:3p-data:mcp read:home:mcp read:whiteboard:confluence read:confluence:mcp read:focus:mcp read:loom:mcp read:talent:mcp ' +
-    'offline_access';
-  const scopeStr = scopes || defaultScopes;
+// Hardcoded scopes — must match what is approved in the Atlassian Developer Console.
+// Jira platform REST API (classic)
+const JIRA_SCOPES = [
+  'read:jira-work', 'write:jira-work', 'manage:jira-project',
+  'manage:jira-configuration', 'read:jira-user',
+  'manage:jira-webhook', 'manage:jira-data-provider',
+];
+// Jira Service Management API (classic)
+const JSM_SCOPES = [
+  'read:servicedesk-request', 'manage:servicedesk-customer',
+  'write:servicedesk-request', 'read:servicemanagement-insight-objects',
+];
+// Confluence API (classic)
+const CONFLUENCE_SCOPES = [
+  'write:confluence-content', 'read:confluence-space.summary',
+  'write:confluence-space', 'write:confluence-file',
+  'read:confluence-props', 'write:confluence-props',
+  'manage:confluence-configuration', 'read:confluence-content.all',
+  'read:confluence-content.summary', 'search:confluence',
+  'read:confluence-content.permission', 'read:confluence-user',
+  'read:confluence-groups', 'write:confluence-groups',
+  'readonly:content.attachment:confluence',
+];
+const ALL_APPROVED_SCOPES = [
+  ...JIRA_SCOPES, ...JSM_SCOPES, ...CONFLUENCE_SCOPES, 'offline_access',
+];
+const HARDCODED_SCOPE_STRING = ALL_APPROVED_SCOPES.join(' ');
+
+function buildAuthUrl(clientId, callbackUrl, _scopes) {
+  // Always use the hardcoded scope string — ignore any dynamic/persisted value.
+  const scopeStr = HARDCODED_SCOPE_STRING;
 
   const params = new URLSearchParams({
     audience: 'api.atlassian.com',
