@@ -13,7 +13,7 @@ import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { exec as execCb } from 'node:child_process';
 import { promisify } from 'node:util';
-import { detectInstallDirWrites } from '../utils/install-dir.js';
+import { detectInstallDirWrites, getProtectedOrionOmegaRoots } from '../utils/install-dir.js';
 import { executeSkillToolEntry, type SkillToolEntry } from './skill-tools.js';
 
 const execAsync = promisify(execCb);
@@ -128,6 +128,66 @@ export const MAIN_AGENT_TOOLS = [
   },
 ];
 
+// ── Internal helpers ────────────────────────────────────────────────────
+
+/**
+ * Tokens / regexes that signal a command's *intent* is to mutate the
+ * filesystem. Used together with a path-token sweep to decide whether
+ * an `exec` call is trying to write into a protected OrionOmega root.
+ * Pessimistic by design — false positives are recoverable, silent
+ * source-tree corruption is not.
+ */
+const EXEC_WRITE_INTENT_PATTERNS: RegExp[] = [
+  /(?:^|[\s|;&(`])(?:tee|cp|mv|rm|install|touch|chmod|chown|ln|mkdir|rmdir)\b/i,
+  /(?:^|[\s|;&(`])sed\s+-i\b/i,
+  /(?:^|[\s|;&(`])(?:python|node|bash|sh|zsh|perl|ruby)\s+[^|;&]*-c\b/i,
+  /(?:^|[\s|;&(`])(?:patch|git\s+(?:apply|reset|clean|checkout|restore))\b/i,
+  /(?:^|[\s|;&(`])(?:dd|truncate)\b/i,
+  // Redirection: `>`, `>>` (but not `2>&1`/`>&`/`<>` heredocs etc.)
+  /[^&\d](?:>>?)\s*\S/,
+  /^(?:>>?)\s*\S/,
+];
+
+/**
+ * Returns the first protected-root offender if `command` looks like a
+ * write/delete targeting it; null otherwise. Path tokens are resolved
+ * against `cwd` so a write to `./foo` inside a protected cwd is caught.
+ */
+export function detectExecProtectedWriteIntent(
+  command: string,
+  cwd: string,
+): { offender: string } | null {
+  if (!command.trim()) return null;
+  const protectedRoots = getProtectedOrionOmegaRoots();
+  if (protectedRoots.length === 0) return null;
+
+  const hasWriteIntent = EXEC_WRITE_INTENT_PATTERNS.some((p) => p.test(command));
+  if (!hasWriteIntent) return null;
+
+  // Sweep all whitespace-separated tokens for path-like values.
+  // Strip surrounding quotes, expand a leading `~`. Don't attempt full
+  // shell parsing — pessimism beats cleverness here.
+  const home = process.env.HOME ?? '';
+  const tokens = command.match(/[^\s"';|&()`]+|"[^"]*"|'[^']*'/g) ?? [];
+  for (const raw of tokens) {
+    const stripped = raw.replace(/^["']|["']$/g, '');
+    if (!stripped) continue;
+    // Only consider tokens that look path-like.
+    const looksLikePath = stripped.startsWith('/')
+      || stripped.startsWith('~')
+      || stripped.startsWith('./')
+      || stripped.startsWith('../')
+      || stripped.includes('/');
+    if (!looksLikePath) continue;
+    const expanded = stripped.startsWith('~')
+      ? (home ? home + stripped.slice(1) : stripped)
+      : stripped;
+    const offenders = detectInstallDirWrites([expanded], cwd);
+    if (offenders.length > 0) return { offender: offenders[0]! };
+  }
+  return null;
+}
+
 // ── Public Functions ─────────────────────────────────────────────────────
 
 /** Check if a message signals immediate execution ("do it", "run it"). */
@@ -231,6 +291,25 @@ export async function executeMainTool(
     }
     case 'exec': {
       const command = String(input.command ?? '');
+      // Task #216: pessimistic static guard for shell commands that look
+      // like they intend to write to one of OrionOmega's own protected
+      // roots (~/.orionomega/... or any packages/*/src/ in a dev
+      // checkout). Mirrors the write_file refusal so the chat agent
+      // can't bypass that block by piping through a shell. Detection is
+      // intentionally conservative — if any path-shaped token in the
+      // command resolves under a protected root AND a write-intent verb
+      // (>, tee, cp, mv, rm, sed -i, etc.) appears in the command, we
+      // refuse. False positives are recoverable (the model can rephrase);
+      // false negatives can silently corrupt OrionOmega.
+      const execRefusal = detectExecProtectedWriteIntent(command, runDir ?? workspaceDir);
+      if (execRefusal) {
+        log.warn('Refused exec write into OrionOmega install/source tree', {
+          command: command.slice(0, 200),
+          offender: execRefusal.offender,
+          runDir,
+        });
+        return `Error: refused to run "${command.slice(0, 120)}${command.length > 120 ? '…' : ''}" — it looks like a write/delete command targeting "${execRefusal.offender}", which is inside the OrionOmega application's own source/install tree. Direct mode does NOT edit OrionOmega itself. If the user genuinely wants to change OrionOmega, switch to Coding mode and select the OrionOmega repository on the Git tab. Otherwise, scope the command to the current working directory.`;
+      }
       try {
         const { stdout, stderr } = await execAsync(command, {
           cwd: runDir ?? workspaceDir,

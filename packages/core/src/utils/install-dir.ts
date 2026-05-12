@@ -12,9 +12,9 @@
  * regardless of how it was launched.
  */
 
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, resolve as resolvePath } from 'node:path';
+import { dirname, resolve as resolvePath, join as joinPath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /**
@@ -40,18 +40,26 @@ let _sourceRootsCache: string[] | null = null;
 /**
  * When OrionOmega is running from a dev checkout (i.e. `pnpm --filter
  * @orionomega/core ...` against the monorepo, rather than the bundled
- * `~/.orionomega` install), return the absolute path of the monorepo's
- * `packages/` directory. The Direct-mode write guard treats anything
- * under this path as the OrionOmega source tree itself and refuses to
- * write to it — so a confused chat agent cannot silently edit
+ * `~/.orionomega` install), return the absolute path of every
+ * `packages/<pkg>/src` directory in the monorepo. The Direct-mode
+ * write guard treats anything under one of these paths as the
+ * OrionOmega source tree itself and refuses to write to it — so a
+ * confused chat agent cannot silently edit
  * `packages/core/src/agent/main-agent.ts` while the user thinks they
  * asked for a fix in their own repo.
  *
+ * Note: deliberately scoped to `packages/<pkg>/src/` (per Task #216)
+ * rather than the broader `packages/` root, so the guard does NOT
+ * spuriously block writes to `packages/<pkg>/dist/` (build outputs)
+ * or `packages/<pkg>/test-fixtures/` (sandbox files agents legitimately
+ * touch). The install root (~/.orionomega) is still protected wholesale.
+ *
  * Detection: walk up from this module's own location until we find a
- * directory that contains BOTH `pnpm-workspace.yaml` and a `packages/`
- * subdirectory. Cached after first call — the install layout doesn't
- * change at runtime. Returns an empty array when no monorepo root is
- * found (the bundled install case).
+ * directory containing BOTH `pnpm-workspace.yaml` and a `packages/`
+ * subdirectory, then enumerate `packages/*` and include each one's
+ * `src/` if it exists. Cached after first call — the install layout
+ * doesn't change at runtime. Returns an empty array when no monorepo
+ * root is found (the bundled install case).
  */
 export function getOrionOmegaSourceRoots(): string[] {
   if (_sourceRootsCache) return _sourceRootsCache;
@@ -62,7 +70,17 @@ export function getOrionOmegaSourceRoots(): string[] {
       const ws = resolvePath(dir, 'pnpm-workspace.yaml');
       const pkgs = resolvePath(dir, 'packages');
       if (existsSync(ws) && existsSync(pkgs)) {
-        roots.add(pkgs);
+        try {
+          for (const entry of readdirSync(pkgs)) {
+            if (entry.startsWith('.')) continue;
+            const pkgDir = joinPath(pkgs, entry);
+            try {
+              if (!statSync(pkgDir).isDirectory()) continue;
+            } catch { continue; }
+            const srcDir = joinPath(pkgDir, 'src');
+            if (existsSync(srcDir)) roots.add(srcDir);
+          }
+        } catch { /* ignore */ }
         break;
       }
       const parent = dirname(dir);

@@ -21,13 +21,23 @@ import {
 } from '../install-dir.js';
 
 describe('getOrionOmegaSourceRoots', () => {
-  it('finds the live monorepo packages dir when running from a dev checkout', () => {
+  it('finds packages/<pkg>/src dirs when running from a dev checkout', () => {
     _resetOrionOmegaSourceRootsCache();
     const roots = getOrionOmegaSourceRoots();
     expect(roots.length).toBeGreaterThan(0);
     for (const r of roots) {
       expect(existsSync(r)).toBe(true);
-      expect(existsSync(join(r, 'core'))).toBe(true); // packages/core
+      expect(r.endsWith('/src')).toBe(true);
+    }
+    // packages/core/src must be present since this very test lives there.
+    expect(roots.some((r) => r.endsWith('/packages/core/src'))).toBe(true);
+  });
+
+  it('does NOT include packages/<pkg>/dist (so build outputs stay writable)', () => {
+    _resetOrionOmegaSourceRootsCache();
+    const roots = getOrionOmegaSourceRoots();
+    for (const r of roots) {
+      expect(r.includes('/dist')).toBe(false);
     }
   });
 
@@ -44,9 +54,20 @@ describe('detectInstallDirWrites — dev-checkout source-tree refusal (Task #216
     _resetOrionOmegaSourceRootsCache();
     const roots = getOrionOmegaSourceRoots();
     expect(roots.length).toBeGreaterThan(0);
-    const fakePath = resolvePath(roots[0]!, 'core', 'src', 'agent', 'fake-direct-mode-edit.ts');
+    // roots are now packages/<pkg>/src directly — drop a fake path under one.
+    const fakePath = resolvePath(roots[0]!, 'agent', 'fake-direct-mode-edit.ts');
     const offenders = detectInstallDirWrites([fakePath]);
     expect(offenders).toEqual([fakePath]);
+  });
+
+  it('allows a write to packages/<pkg>/dist (build outputs are not source)', () => {
+    _resetOrionOmegaSourceRootsCache();
+    const roots = getOrionOmegaSourceRoots();
+    expect(roots.length).toBeGreaterThan(0);
+    // sibling of src — dist
+    const distPath = resolvePath(roots[0]!, '..', 'dist', 'fake.js');
+    const offenders = detectInstallDirWrites([distPath]);
+    expect(offenders).toEqual([]);
   });
 
   it('allows a write that lands outside the OrionOmega tree (e.g. user repo checkout)', () => {
