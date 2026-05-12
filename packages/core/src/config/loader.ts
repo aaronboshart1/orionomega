@@ -100,7 +100,7 @@ export function getDefaultConfig(): OrionOmegaConfig {
     },
     webui: {
       port: 5000,
-      bind: ['127.0.0.1'],
+      bind: ['0.0.0.0'],
     },
     commands: {
       directory: join(homedir(), 'orionomega', 'commands'),

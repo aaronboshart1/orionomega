@@ -788,6 +788,138 @@ export async function handleGoogleOAuthCallback(
   }
 }
 
+/**
+ * GET /api/skills/atlassian/oauth/callback
+ *
+ * Browser-facing OAuth 2.0 (3LO) callback for the Atlassian skill.
+ * Atlassian redirects the user's browser here after authorization.
+ * This handler exchanges the code for tokens and saves them to the skill
+ * config, so the callback URL can point at the public server URL rather
+ * than localhost — making OAuth work over Tailscale or any remote host.
+ *
+ * Register `http://<your-server>/api/gateway/skills/atlassian/oauth/callback`
+ * as the "Callback URL" in your Atlassian Developer Console OAuth app.
+ */
+export async function handleAtlassianOAuthCallback(
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<void> {
+  const ATLASSIAN_TOKEN_URL = 'https://auth.atlassian.com/oauth/token';
+
+  // Extract code + state from query string
+  let code: string | null = null;
+  let errorParam: string | null = null;
+  try {
+    const url = new URL(req.url ?? '', 'http://localhost');
+    code = url.searchParams.get('code');
+    errorParam = url.searchParams.get('error');
+  } catch {
+    res.writeHead(400, { 'Content-Type': 'text/html' });
+    res.end('<p>Bad request: could not parse callback URL.</p>');
+    return;
+  }
+
+  if (errorParam) {
+    const desc = (() => { try { return new URL(req.url ?? '', 'http://localhost').searchParams.get('error_description') ?? ''; } catch { return ''; } })();
+    log.warn('Atlassian OAuth callback: authorization denied', { error: errorParam, description: desc });
+    res.writeHead(400, { 'Content-Type': 'text/html' });
+    res.end(`<p>Atlassian authorization denied: <strong>${errorParam}</strong>${desc ? ' — ' + desc : ''}.</p><p>Close this tab and try again.</p>`);
+    return;
+  }
+
+  if (!code) {
+    res.writeHead(400, { 'Content-Type': 'text/html' });
+    res.end('<p>Missing <code>code</code> parameter in callback URL.</p>');
+    return;
+  }
+
+  // Load stored Atlassian skill config to get client credentials
+  const skillsDir = getConfiguredSkillsDir();
+  const skillCfg = readSkillConfig(skillsDir, 'atlassian');
+  const fields = (skillCfg.fields ?? {}) as Record<string, string>;
+  const clientId = fields.oauth_client_id;
+  const clientSecret = fields.oauth_client_secret;
+  const callbackUrl = fields.oauth_callback_url;
+
+  if (!clientId || !clientSecret) {
+    log.error('Atlassian OAuth callback: OAuth client credentials not configured');
+    res.writeHead(400, { 'Content-Type': 'text/html' });
+    res.end('<p>Atlassian OAuth client credentials are not configured. Open OrionOmega Settings → Atlassian and save your Client ID and Secret first.</p>');
+    return;
+  }
+  if (!callbackUrl) {
+    log.error('Atlassian OAuth callback: oauth_callback_url not set in skill config');
+    res.writeHead(400, { 'Content-Type': 'text/html' });
+    res.end('<p>The Atlassian skill Callback URL is not configured. Open OrionOmega Settings → Atlassian, set the Callback URL, and save before authenticating.</p>');
+    return;
+  }
+
+  // Exchange the authorization code for tokens
+  let tokenData: Record<string, unknown>;
+  try {
+    const tokenRes = await fetch(ATLASSIAN_TOKEN_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        grant_type: 'authorization_code',
+        client_id: clientId,
+        client_secret: clientSecret,
+        code,
+        redirect_uri: callbackUrl,
+      }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    const raw = await tokenRes.text();
+    try { tokenData = JSON.parse(raw) as Record<string, unknown>; } catch { tokenData = {}; }
+    if (!tokenRes.ok) {
+      const msg = (tokenData.error_description as string) || (tokenData.error as string) || `HTTP ${tokenRes.status}`;
+      log.error('Atlassian OAuth callback: token exchange failed', { status: tokenRes.status, message: msg });
+      res.writeHead(502, { 'Content-Type': 'text/html' });
+      res.end(`<p>Failed to exchange authorization code with Atlassian: <strong>${msg}</strong>.</p><p>This may mean your Callback URL or client credentials are incorrect. Close this tab and check your Atlassian skill settings.</p>`);
+      return;
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log.error('Atlassian OAuth callback: token exchange request failed', { error: msg });
+    res.writeHead(502, { 'Content-Type': 'text/html' });
+    res.end(`<p>Could not reach Atlassian token endpoint: ${msg}</p>`);
+    return;
+  }
+
+  // Persist tokens into the skill config
+  const accessToken = tokenData.access_token as string | undefined;
+  const refreshToken = tokenData.refresh_token as string | undefined;
+  if (!accessToken) {
+    log.error('Atlassian OAuth callback: no access_token in response', { keys: Object.keys(tokenData) });
+    res.writeHead(502, { 'Content-Type': 'text/html' });
+    res.end('<p>Atlassian returned a success response but no access token was included. Close this tab and try again.</p>');
+    return;
+  }
+
+  try {
+    const updated: SkillConfig = {
+      ...skillCfg,
+      fields: {
+        ...fields,
+        oauth_access_token: accessToken,
+        ...(refreshToken ? { oauth_refresh_token: refreshToken } : {}),
+      },
+    };
+    writeSkillConfig(skillsDir, updated);
+    log.info('Atlassian OAuth callback: tokens saved successfully');
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log.error('Atlassian OAuth callback: failed to save tokens', { error: msg });
+    res.writeHead(500, { 'Content-Type': 'text/html' });
+    res.end(`<p>Authorized successfully, but failed to save tokens: ${msg}</p>`);
+    return;
+  }
+
+  // Redirect to the web UI — user sees the updated token in Settings
+  res.writeHead(302, { Location: '/?atlassian_oauth=success' });
+  res.end();
+}
+
 export function handleGoogleOAuthStatus(
   req: IncomingMessage,
   res: ServerResponse,

@@ -304,7 +304,7 @@
       "_oauth_instructions": {
         "type": "textarea",
         "label": "OAuth 2.0 Setup Instructions",
-        "description": "To configure OAuth 2.0 (3LO):\n\n1. Go to https://developer.atlassian.com/console/myapps/\n2. Create a new app (or select your existing one)\n3. Under 'Authorization', click 'Configure' next to 'OAuth 2.0 (3LO)'\n4. Set the Callback URL to: http://localhost:9876/callback\n5. Under 'Permissions', add the Jira API, Confluence API, and any others you need\n6. Add the required scopes for each API\n7. Under 'Settings', copy the Client ID and Secret below\n8. Click 'Authorize' below to complete the OAuth flow",
+        "description": "To configure OAuth 2.0 (3LO):\n\n1. Go to https://developer.atlassian.com/console/myapps/\n2. Create a new app (or select your existing one)\n3. Under 'Authorization', click 'Configure' next to 'OAuth 2.0 (3LO)'\n4. Set the Callback URL to: http://<your-server-host>:5000/api/gateway/skills/atlassian/oauth/callback\n   (The settings panel below shows the exact URL for your current server — copy it from there)\n5. Under 'Permissions', add the Jira API, Confluence API, and any others you need\n6. Add the required scopes for each API\n7. Under 'Settings', copy the Client ID and Secret below\n8. Click 'Authorize with Atlassian' below to complete the OAuth flow",
         "widget": "info",
         "group": "auth",
         "order": 2,
@@ -337,9 +337,9 @@
       "oauth_callback_url": {
         "type": "url",
         "label": "OAuth Callback URL",
-        "description": "The callback URL configured in your Atlassian OAuth app. This MUST match exactly what you set in the Developer Console under Authorization → OAuth 2.0 (3LO) → Callback URL.",
-        "default": "http://localhost:9876/callback",
-        "placeholder": "http://localhost:9876/callback",
+        "description": "The callback URL configured in your Atlassian OAuth app. This MUST match exactly what you set in the Developer Console under Authorization → OAuth 2.0 (3LO) → Callback URL.\n\nRecommended: use the built-in gateway callback so it works over any network (Tailscale, remote server, etc.):\n  http://<your-server-host>:5000/api/gateway/skills/atlassian/oauth/callback\n\nRegister that same URL in Atlassian Developer Console. For localhost development you can also use http://localhost:5000/api/gateway/skills/atlassian/oauth/callback.",
+        "default": "",
+        "placeholder": "http://your-server:5000/api/gateway/skills/atlassian/oauth/callback",
         "required": false,
         "group": "auth",
         "order": 5,

@@ -156,6 +156,112 @@ function SkillField({
   );
 }
 
+/**
+ * Atlassian OAuth 2.0 authorization helper shown inside the Atlassian SkillCard.
+ *
+ * Derives the callback URL from `window.location.origin` so it automatically
+ * resolves to the Tailscale hostname, LAN IP, or localhost — whichever the
+ * user is currently accessing the app from.  The callback is handled server-
+ * side by the gateway's GET /api/skills/atlassian/oauth/callback endpoint.
+ */
+function AtlassianOAuthSection({ skillSettings }: { skillSettings: Record<string, unknown> }) {
+  const authMethod = (skillSettings.auth_method as string) || 'oauth';
+  const clientId = skillSettings.oauth_client_id as string | undefined;
+  const callbackUrl = skillSettings.oauth_callback_url as string | undefined;
+  const scopes = skillSettings.oauth_scopes as string | undefined;
+  const accessToken = skillSettings.oauth_access_token as string | undefined;
+
+  // Derived from browser origin so it works on localhost, LAN, and Tailscale
+  const suggestedCallbackUrl =
+    typeof window !== 'undefined'
+      ? `${window.location.origin}/api/gateway/skills/atlassian/oauth/callback`
+      : '';
+
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = () => {
+    if (!suggestedCallbackUrl) return;
+    void navigator.clipboard.writeText(suggestedCallbackUrl).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  const buildAuthUrl = (cId: string, cbUrl: string) => {
+    const ATLASSIAN_AUTH_URL = 'https://auth.atlassian.com/authorize';
+    const defaultScopes =
+      'read:jira-work write:jira-work read:jira-user manage:jira-project ' +
+      'read:confluence-content.all write:confluence-content read:confluence-space.summary offline_access';
+    const params = new URLSearchParams({
+      audience: 'api.atlassian.com',
+      client_id: cId,
+      scope: scopes || defaultScopes,
+      redirect_uri: cbUrl,
+      state: `orionomega_${Date.now()}`,
+      response_type: 'code',
+      prompt: 'consent',
+    });
+    return `${ATLASSIAN_AUTH_URL}?${params.toString()}`;
+  };
+
+  if (authMethod !== 'oauth') return null;
+
+  const effectiveCallback = callbackUrl || suggestedCallbackUrl;
+  const authUrl = clientId && effectiveCallback ? buildAuthUrl(clientId, effectiveCallback) : null;
+
+  return (
+    <div className="mt-2 rounded border border-zinc-700/50 bg-zinc-800/40 px-3 py-2.5 space-y-2.5">
+      <p className="text-[11px] font-semibold text-zinc-300">OAuth 2.0 Authorization</p>
+
+      <div className="space-y-1">
+        <p className="text-[10px] text-zinc-400">
+          Callback URL for <strong>this server</strong> — register it in your Atlassian Developer Console:
+        </p>
+        <div className="flex items-center gap-1.5">
+          <code className="flex-1 block px-2 py-1 rounded bg-zinc-900 text-green-400 font-mono text-[10px] select-all overflow-x-auto">
+            {suggestedCallbackUrl || '…'}
+          </code>
+          <button
+            type="button"
+            onClick={handleCopy}
+            className="shrink-0 rounded bg-zinc-700 px-2 py-1 text-[10px] text-zinc-300 hover:bg-zinc-600"
+          >
+            {copied ? 'Copied!' : 'Copy'}
+          </button>
+        </div>
+        <p className="text-[10px] text-zinc-500">
+          Paste this into the Callback URL field above and add the same URL in the Atlassian Developer Console
+          under Authorization → OAuth 2.0 (3LO) → Callback URL.
+        </p>
+      </div>
+
+      {accessToken && (
+        <div className="flex items-center gap-1.5 text-[11px] text-green-400">
+          <CheckCircle size={12} />
+          <span>OAuth access token is configured</span>
+        </div>
+      )}
+
+      {authUrl ? (
+        <a
+          href={authUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-block rounded bg-blue-600 px-3 py-1 text-[11px] font-medium text-white hover:bg-blue-500 transition-colors"
+        >
+          {accessToken ? 'Re-authorize with Atlassian →' : 'Authorize with Atlassian →'}
+        </a>
+      ) : (
+        <p className="text-[10px] text-amber-400">
+          {!clientId
+            ? 'Enter your OAuth Client ID above, then save settings to enable authorization.'
+            : 'Enter a Callback URL above, then save settings to enable authorization.'}
+        </p>
+      )}
+    </div>
+  );
+}
+
 interface GoogleAccount {
   id: string;
   label: string;
@@ -1006,6 +1112,10 @@ function SkillCard({
                 {saving ? 'Saving...' : `Save ${skill.name} settings`}
               </button>
             </div>
+          )}
+
+          {skill.name === 'atlassian' && (
+            <AtlassianOAuthSection skillSettings={localSettings} />
           )}
 
           {skill.name === 'google-workspace' && (

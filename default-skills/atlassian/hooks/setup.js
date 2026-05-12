@@ -105,18 +105,26 @@ async function main() {
         // Check if we have client credentials for OAuth
         const clientId = merged.oauth_client_id;
         const clientSecret = merged.oauth_client_secret;
-        const callbackUrl = merged.oauth_callback_url || 'http://localhost:9876/callback';
+        // Prefer the user-configured callback URL. Fall back to the built-in
+        // gateway route which works over any network (Tailscale, remote, etc.)
+        // and does not require a separate listener on port 9876.
+        const callbackUrl = merged.oauth_callback_url ||
+          'http://localhost:5000/api/gateway/skills/atlassian/oauth/callback';
 
         if (clientId && clientSecret) {
           result.fields.mcp_server_status = 'OAuth credentials configured — ready to authorize';
           result.fields.oauth_authorize_url = buildAuthUrl(clientId, callbackUrl, merged.oauth_scopes);
           result.fields.setup_instructions =
-            'Click the authorization URL above to complete the OAuth flow, or run the skill\'s authorize command.';
+            'Click the authorization URL above to complete the OAuth flow. ' +
+            'Ensure the Callback URL field above is registered in your Atlassian Developer Console under ' +
+            'Authorization → OAuth 2.0 (3LO) → Callback URL. ' +
+            'For Tailscale/remote access use http://<your-tailscale-host>:5000/api/gateway/skills/atlassian/oauth/callback.';
         } else {
           result.fields.mcp_server_status = 'OAuth not configured';
           result.fields.setup_instructions =
-            'Enter your OAuth Client ID and Client Secret from developer.atlassian.com/console/myapps/, ' +
-            'then set your Callback URL to match what you configured in the Developer Console.';
+            'Enter your OAuth Client ID and Client Secret from developer.atlassian.com/console/myapps/. ' +
+            'Set the Callback URL to http://<your-server>:5000/api/gateway/skills/atlassian/oauth/callback ' +
+            'and register that same URL in the Developer Console.';
         }
       } else {
         result.fields.mcp_server_status = 'no credentials configured';

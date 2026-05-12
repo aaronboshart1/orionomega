@@ -36,6 +36,7 @@ import {
   handleGoogleOAuthStart, handleGoogleOAuthStatus, handleGoogleOAuthCallback,
   handleListGoogleAccounts, handleCreateGoogleAccount, handleUpdateGoogleAccount,
   handleDeleteGoogleAccount, handleActivateGoogleAccount,
+  handleAtlassianOAuthCallback,
 } from './routes/skills.js';
 import { SchedulerService } from './scheduler.js';
 import {
@@ -1493,6 +1494,16 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
       log.error('Config route error', { error: err instanceof Error ? err.message : String(err) });
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Internal server error' }));
+    });
+    return;
+  }
+
+  // --- Skills: Atlassian OAuth callback (GET — browser redirect from Atlassian) ---
+  if (pathname === '/api/skills/atlassian/oauth/callback' && method === 'GET') {
+    handleAtlassianOAuthCallback(req, res).catch((err) => {
+      log.error('Atlassian OAuth callback route error', { error: err instanceof Error ? err.message : String(err) });
+      res.writeHead(500, { 'Content-Type': 'text/html' });
+      res.end('<p>Internal server error handling Atlassian OAuth callback.</p>');
     });
     return;
   }

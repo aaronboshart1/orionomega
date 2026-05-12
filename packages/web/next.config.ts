@@ -41,6 +41,7 @@ function getGitHash(): string {
 
 // Extra dev origins from env var — avoids committing internal IPs to source control.
 // Usage: ALLOWED_DEV_ORIGINS=192.168.1.10,192.168.1.10:5000 pnpm dev
+// For Tailscale: ALLOWED_DEV_ORIGINS=machine.tail1234.ts.net,machine.tail1234.ts.net:5000
 const extraDevOrigins = (process.env.ALLOWED_DEV_ORIGINS ?? '')
   .split(',')
   .map((o) => o.trim())
@@ -52,6 +53,8 @@ const nextConfig: NextConfig = {
     '*.janeway.replit.dev',
     'localhost',
     'localhost:5000',
+    // Tailscale MagicDNS hostnames (*.ts.net covers all tailnet domains)
+    '*.ts.net',
     ...extraDevOrigins,
   ],
   devIndicators: false,
