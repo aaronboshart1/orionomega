@@ -81,7 +81,7 @@ function buildArgs(p, config) {
       if (!p.transition_id) fail('transition_id is required for transition_issue');
       return cleanArgs({
         issueIdOrKey: p.issue_key,
-        transitionId: p.transition_id,
+        transition: { id: p.transition_id },
         cloudId,
       });
 
@@ -90,7 +90,7 @@ function buildArgs(p, config) {
       if (!p.comment) fail('comment is required for add_comment');
       return cleanArgs({
         issueIdOrKey: p.issue_key,
-        body: p.comment,
+        commentBody: p.comment,
         cloudId,
       });
 
@@ -113,7 +113,7 @@ function buildArgs(p, config) {
     case 'get_issue_types': {
       const projKey = p.project_key || config.default_jira_project;
       if (!projKey) fail('project_key is required for get_issue_types');
-      return cleanArgs({ projectKey: projKey, cloudId });
+      return cleanArgs({ projectIdOrKey: projKey, cloudId });
     }
 
     case 'get_transitions':
@@ -129,12 +129,12 @@ function buildArgs(p, config) {
 
     case 'lookup_user':
       if (!p.query) fail('query is required for lookup_user');
-      return cleanArgs({ query: p.query, cloudId });
+      return cleanArgs({ searchString: p.query, cloudId });
 
     case 'get_field_metadata': {
       const projKey = p.project_key || config.default_jira_project;
       if (!projKey) fail('project_key is required for get_field_metadata');
-      return cleanArgs({ projectKey: projKey, issueTypeName: p.issue_type, cloudId });
+      return cleanArgs({ projectIdOrKey: projKey, issueTypeId: p.issue_type, cloudId });
     }
 
     default:

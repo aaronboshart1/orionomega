@@ -4,7 +4,7 @@
  * Maps actions to Atlassian Rovo MCP Server JSM tool names.
  * Note: JSM tools require API token authentication.
  */
-import { mcpCall, readParams, respond, fail, truncate, cleanArgs, isProductEnabled, getCloudId } from './lib.js';
+import { mcpCall, readParams, respond, fail, truncate, cleanArgs, isProductEnabled, getCloudId, getConfig } from './lib.js';
 
 const ACTION_MAP = {
   get_alert:        'getJsmOpsAlerts',
@@ -19,6 +19,18 @@ const ACTION_MAP = {
 async function main() {
   if (!isProductEnabled('jsm')) {
     fail('Jira Service Management is not enabled. Go to Settings → Skills → Atlassian → Enable JSM. Note: JSM requires API token authentication.');
+  }
+
+  // JSM Ops tools only work with API token (Basic) auth — OAuth 2.1 is not supported.
+  const config = getConfig();
+  const authMethod = config.auth_method || process.env.ATLASSIAN_AUTH_METHOD || 'oauth';
+  if (authMethod !== 'basic') {
+    fail(
+      'JSM Ops tools require API token authentication (Basic auth). ' +
+      'OAuth 2.1 is not supported for JSM. ' +
+      'Go to Settings → Skills → Atlassian → set Auth Method to "API Token", ' +
+      'then enter your Atlassian email and API token.'
+    );
   }
 
   const p = await readParams();

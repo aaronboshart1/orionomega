@@ -4,7 +4,7 @@
  * Maps actions to Atlassian Rovo MCP Server Bitbucket tool names.
  * Note: Bitbucket tools require API token authentication with Bitbucket scopes.
  */
-import { mcpCall, readParams, respond, fail, truncate, cleanArgs, isProductEnabled, getCloudId } from './lib.js';
+import { mcpCall, readParams, respond, fail, truncate, cleanArgs, isProductEnabled, getCloudId, getConfig } from './lib.js';
 
 // Bitbucket Rovo tools use a resource + action pattern.
 // We flatten to simple action names for a better UX.
@@ -47,6 +47,18 @@ const ACTION_MAP = {
 async function main() {
   if (!isProductEnabled('bitbucket')) {
     fail('Bitbucket is not enabled. Go to Settings → Skills → Atlassian → Enable Bitbucket. Note: Bitbucket requires API token authentication with Bitbucket scopes.');
+  }
+
+  // Bitbucket tools only work with API token (Basic) auth — OAuth 2.1 is not supported.
+  const config = getConfig();
+  const authMethod = config.auth_method || process.env.ATLASSIAN_AUTH_METHOD || 'oauth';
+  if (authMethod !== 'basic') {
+    fail(
+      'Bitbucket tools require API token authentication (Basic auth). ' +
+      'OAuth 2.1 is not supported for Bitbucket. ' +
+      'Go to Settings → Skills → Atlassian → set Auth Method to "API Token", ' +
+      'then enter your Atlassian email and API token.'
+    );
   }
 
   const p = await readParams();

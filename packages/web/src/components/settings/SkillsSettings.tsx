@@ -197,8 +197,13 @@ function AtlassianOAuthSection({ skillSettings }: { skillSettings: Record<string
   const buildAuthUrl = (cId: string, cbUrl: string) => {
     const ATLASSIAN_AUTH_URL = 'https://auth.atlassian.com/authorize';
     const defaultScopes =
-      'read:jira-work write:jira-work read:jira-user manage:jira-project ' +
-      'read:confluence-content.all write:confluence-content read:confluence-space.summary offline_access';
+      'read:jira-work write:jira-work search:jira-work ' +
+      'read:page:confluence read:comment:confluence read:space:confluence read:hierarchical-content:confluence ' +
+      'write:page:confluence search:confluence ' +
+      'read:component:compass write:component:compass ' +
+      'read:me read:account ' +
+      'search:rovo:mcp read:3p-data:mcp read:home:mcp read:whiteboard:confluence read:confluence:mcp read:focus:mcp read:loom:mcp read:talent:mcp ' +
+      'offline_access';
     const params = new URLSearchParams({
       audience: 'api.atlassian.com',
       client_id: cId,
