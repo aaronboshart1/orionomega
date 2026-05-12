@@ -345,7 +345,10 @@ export class SessionManager {
     this.ensureSessionsDir();
     this.loadAllFromDisk();
     this.ensureDefaultSession();
-    this.startCleanupLoop();
+    // INTENTIONALLY DISABLED: Automatic session cleanup is disabled.
+    // Sessions must only be deleted by explicit user action (e.g. the delete
+    // button in the UI or DELETE /api/sessions/:id). Do NOT re-enable this.
+    // this.startCleanupLoop();
 
     log.info('[session:config] Session manager initialized', {
       maxMessages: MAX_MESSAGES_PER_SESSION,
@@ -1575,36 +1578,27 @@ export class SessionManager {
 
   // ─── Cleanup / Rotation ─────────────────────────────────────
 
-  /** Start the periodic cleanup loop. */
+  /**
+   * Start the periodic cleanup loop.
+   * INTENTIONALLY DISABLED: automatic session cleanup has been removed.
+   * Sessions are never automatically deleted — they must be explicitly deleted
+   * by the user via the UI delete button or DELETE /api/sessions/:id endpoint.
+   */
   private startCleanupLoop(): void {
-    this.cleanupTimer = setInterval(() => this.cleanupStaleSessions(), CLEANUP_INTERVAL_MS);
+    // Automatic cleanup is disabled. Sessions are only deleted by explicit
+    // user action. Do NOT restore the setInterval call here.
+    // Original: this.cleanupTimer = setInterval(() => this.cleanupStaleSessions(), CLEANUP_INTERVAL_MS);
   }
 
   /**
-   * Archive (delete) sessions that are older than SESSION_MAX_AGE_MS
-   * and have no active clients connected.
-   * The default session is always exempt from cleanup.
+   * INTENTIONALLY DISABLED: automatic stale-session deletion has been removed.
+   * Previously this would delete sessions older than SESSION_MAX_AGE_MS with no
+   * connected clients. Sessions must only be deleted by explicit user action
+   * (UI trash icon or DELETE /api/sessions/:id). Do NOT re-enable this logic.
    */
   private cleanupStaleSessions(): void {
-    const now = Date.now();
-    let cleaned = 0;
-
-    for (const [id, session] of this.sessions) {
-      if (id === DEFAULT_SESSION_ID) continue;
-
-      const age = now - new Date(session.updatedAt).getTime();
-      const hasClients = session.clients.size > 0;
-
-      if (age > SESSION_MAX_AGE_MS && !hasClients) {
-        log.info(`[session:expired] Session ${id} expired (age=${Math.round(age / 60000)}min)`);
-        this.deleteSession(id);
-        cleaned++;
-      }
-    }
-
-    if (cleaned > 0) {
-      log.info(`[session:cleanup] Cleaned up ${cleaned} stale session(s)`);
-    }
+    // Automatic session deletion is disabled. This method is intentionally a
+    // no-op. Sessions are only removed when the user explicitly requests it.
   }
 
   /**
