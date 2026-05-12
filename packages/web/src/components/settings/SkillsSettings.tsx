@@ -159,10 +159,14 @@ function SkillField({
 /**
  * Atlassian OAuth 2.0 authorization helper shown inside the Atlassian SkillCard.
  *
- * Derives the callback URL from `window.location.origin` so it automatically
- * resolves to the Tailscale hostname, LAN IP, or localhost — whichever the
- * user is currently accessing the app from.  The callback is handled server-
- * side by the gateway's GET /api/skills/atlassian/oauth/callback endpoint.
+ * Flow:
+ *  1. User clicks "Authorize with Atlassian" — opens Atlassian in a new tab
+ *  2. Atlassian redirects to the configured callback URL (typically http://localhost:9876/callback)
+ *  3. Since no listener is running there, the browser shows an error page — that's expected
+ *  4. User copies the full URL from their browser address bar
+ *  5. User pastes it into the text field here and clicks Submit
+ *  6. The WebUI sends the URL to POST /api/gateway/api/skills/atlassian/oauth/exchange
+ *  7. The gateway extracts the code, exchanges it for tokens, and saves them to config
  */
 function AtlassianOAuthSection({ skillSettings }: { skillSettings: Record<string, unknown> }) {
   const authMethod = (skillSettings.auth_method as string) || 'oauth';
@@ -171,21 +175,16 @@ function AtlassianOAuthSection({ skillSettings }: { skillSettings: Record<string
   const scopes = skillSettings.oauth_scopes as string | undefined;
   const accessToken = skillSettings.oauth_access_token as string | undefined;
 
-  // Derived from browser origin so it works on localhost, LAN, and Tailscale
-  const suggestedCallbackUrl =
-    typeof window !== 'undefined'
-      ? `${window.location.origin}/api/gateway/skills/atlassian/oauth/callback`
-      : '';
+  const [pasteInput, setPasteInput] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState(false);
+  const [showPasteField, setShowPasteField] = useState(false);
+  const pasteInputRef = useRef<HTMLInputElement>(null);
 
-  const [copied, setCopied] = useState(false);
-
-  const handleCopy = () => {
-    if (!suggestedCallbackUrl) return;
-    void navigator.clipboard.writeText(suggestedCallbackUrl).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
-  };
+  // Default callback URL — just localhost:9876 since that's what Atlassian
+  // apps commonly register. User can override in the settings.
+  const effectiveCallback = callbackUrl || 'http://localhost:9876/callback';
 
   const buildAuthUrl = (cId: string, cbUrl: string) => {
     const ATLASSIAN_AUTH_URL = 'https://auth.atlassian.com/authorize';
@@ -204,58 +203,138 @@ function AtlassianOAuthSection({ skillSettings }: { skillSettings: Record<string
     return `${ATLASSIAN_AUTH_URL}?${params.toString()}`;
   };
 
+  const handleAuthorize = () => {
+    if (!clientId) return;
+    const url = buildAuthUrl(clientId, effectiveCallback);
+    window.open(url, '_blank');
+    setShowPasteField(true);
+    setError('');
+    setSuccess(false);
+    // Focus the paste field after a short delay
+    setTimeout(() => pasteInputRef.current?.focus(), 300);
+  };
+
+  const handleSubmitCode = async () => {
+    if (!pasteInput.trim()) return;
+    setSubmitting(true);
+    setError('');
+    setSuccess(false);
+    try {
+      const res = await fetch('/api/gateway/api/skills/atlassian/oauth/exchange', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: pasteInput.trim() }),
+      });
+      const data = await res.json().catch(() => ({} as Record<string, unknown>));
+      if (!res.ok) {
+        const parts = [
+          (data as { error?: string }).error || `HTTP ${res.status}`,
+          (data as { detail?: string }).detail,
+        ].filter(Boolean);
+        throw new Error(parts.join(' — '));
+      }
+      setSuccess(true);
+      setPasteInput('');
+      setShowPasteField(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to exchange authorization code');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   if (authMethod !== 'oauth') return null;
 
-  const effectiveCallback = callbackUrl || suggestedCallbackUrl;
-  const authUrl = clientId && effectiveCallback ? buildAuthUrl(clientId, effectiveCallback) : null;
+  const hasClientId = !!clientId && !clientId.startsWith('••••');
+  const authUrl = hasClientId ? buildAuthUrl(clientId, effectiveCallback) : null;
 
   return (
     <div className="mt-2 rounded border border-zinc-700/50 bg-zinc-800/40 px-3 py-2.5 space-y-2.5">
       <p className="text-[11px] font-semibold text-zinc-300">OAuth 2.0 Authorization</p>
 
-      <div className="space-y-1">
-        <p className="text-[10px] text-zinc-400">
-          Callback URL for <strong>this server</strong> — register it in your Atlassian Developer Console:
-        </p>
-        <div className="flex items-center gap-1.5">
-          <code className="flex-1 block px-2 py-1 rounded bg-zinc-900 text-green-400 font-mono text-[10px] select-all overflow-x-auto">
-            {suggestedCallbackUrl || '…'}
-          </code>
-          <button
-            type="button"
-            onClick={handleCopy}
-            className="shrink-0 rounded bg-zinc-700 px-2 py-1 text-[10px] text-zinc-300 hover:bg-zinc-600"
-          >
-            {copied ? 'Copied!' : 'Copy'}
-          </button>
-        </div>
-        <p className="text-[10px] text-zinc-500">
-          Paste this into the Callback URL field above and add the same URL in the Atlassian Developer Console
-          under Authorization → OAuth 2.0 (3LO) → Callback URL.
-        </p>
-      </div>
-
-      {accessToken && (
+      {(accessToken || success) && (
         <div className="flex items-center gap-1.5 text-[11px] text-green-400">
           <CheckCircle size={12} />
-          <span>OAuth access token is configured</span>
+          <span>{success ? 'Authorization successful! Tokens saved.' : 'OAuth access token is configured'}</span>
+        </div>
+      )}
+
+      {error && (
+        <div className="flex items-start gap-1.5 text-[11px] text-red-400 bg-red-900/20 rounded px-2 py-1.5">
+          <AlertCircle size={12} className="shrink-0 mt-0.5" />
+          <span className="break-words">{error}</span>
         </div>
       )}
 
       {authUrl ? (
-        <a
-          href={authUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="inline-block rounded bg-blue-600 px-3 py-1 text-[11px] font-medium text-white hover:bg-blue-500 transition-colors"
-        >
-          {accessToken ? 'Re-authorize with Atlassian →' : 'Authorize with Atlassian →'}
-        </a>
+        <div className="space-y-2.5">
+          {/* Step 1: Authorize button */}
+          <div className="space-y-1">
+            <button
+              type="button"
+              onClick={handleAuthorize}
+              className="rounded bg-blue-600 px-3 py-1 text-[11px] font-medium text-white hover:bg-blue-500 transition-colors"
+            >
+              {accessToken ? 'Re-authorize with Atlassian →' : 'Authorize with Atlassian →'}
+            </button>
+          </div>
+
+          {/* Step 2: Paste redirect URL */}
+          {showPasteField && (
+            <div className="space-y-1.5 rounded border border-zinc-700 bg-zinc-800/50 p-2.5">
+              <p className="text-[10px] text-zinc-400 leading-relaxed">
+                <strong className="text-zinc-300">After authorizing:</strong> Atlassian will redirect your browser
+                to <code className="text-zinc-400">{effectiveCallback}</code> which won&apos;t load — that&apos;s expected.
+                Copy the <strong>entire URL</strong> from your browser&apos;s address bar and paste it below.
+              </p>
+              <p className="text-[10px] text-zinc-500">
+                The URL looks like: <code className="text-zinc-500">{effectiveCallback}?state=...&amp;code=eyJ...</code>
+              </p>
+              <div className="flex gap-1.5">
+                <input
+                  ref={pasteInputRef}
+                  type="text"
+                  value={pasteInput}
+                  onChange={(e) => setPasteInput(e.target.value)}
+                  placeholder="Paste the full redirect URL here"
+                  className="flex-1 rounded border border-zinc-600 bg-zinc-900 px-2 py-1 text-[11px] text-zinc-200 outline-none focus:border-blue-500 placeholder:text-zinc-600"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && pasteInput.trim()) {
+                      void handleSubmitCode();
+                    }
+                  }}
+                />
+                <button
+                  onClick={() => void handleSubmitCode()}
+                  disabled={submitting || !pasteInput.trim()}
+                  className="rounded bg-zinc-700 px-2.5 py-1 text-[11px] font-medium text-zinc-200 transition-colors hover:bg-zinc-600 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  {submitting ? (
+                    <Loader2 size={10} className="animate-spin" />
+                  ) : (
+                    'Submit'
+                  )}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Show a link to open the paste field if it's hidden */}
+          {!showPasteField && !success && (
+            <button
+              type="button"
+              onClick={() => { setShowPasteField(true); setTimeout(() => pasteInputRef.current?.focus(), 100); }}
+              className="text-[10px] text-blue-400 hover:text-blue-300 underline"
+            >
+              Already authorized? Paste the redirect URL here
+            </button>
+          )}
+        </div>
       ) : (
         <p className="text-[10px] text-amber-400">
-          {!clientId
-            ? 'Enter your OAuth Client ID above, then save settings to enable authorization.'
-            : 'Enter a Callback URL above, then save settings to enable authorization.'}
+          {!hasClientId
+            ? 'Enter your OAuth Client ID above and save settings to enable authorization.'
+            : 'Enter a Callback URL above and save settings to enable authorization.'}
         </p>
       )}
     </div>

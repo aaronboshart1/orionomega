@@ -8,7 +8,11 @@
   "homepage": "https://github.com/aaronboshart1/orionomega",
   "repository": "https://github.com/aaronboshart1/orionomega",
   "orionomega": ">=0.1.0",
-  "os": ["linux", "darwin", "win32"],
+  "os": [
+    "linux",
+    "darwin",
+    "win32"
+  ],
   "requires": {
     "commands": [],
     "env": [],
@@ -21,7 +25,7 @@
       "methods": [
         {
           "type": "oauth",
-          "label": "OAuth 2.0 (3LO) — recommended",
+          "label": "OAuth 2.0 (3LO) \u2014 recommended",
           "description": "Use Atlassian's three-legged OAuth flow. Requires an OAuth app registered at developer.atlassian.com. Supports all Rovo MCP Server tools including Compass.",
           "tokenUrl": "https://developer.atlassian.com/console/myapps/"
         },
@@ -38,10 +42,25 @@
   },
   "triggers": {
     "keywords": [
-      "atlassian", "jira", "confluence", "compass", "bitbucket",
-      "jsm", "jira service management", "sprint", "epic", "story",
-      "jql", "cql", "confluence page", "jira issue", "jira ticket",
-      "backlog", "kanban", "scrum", "rovo"
+      "atlassian",
+      "jira",
+      "confluence",
+      "compass",
+      "bitbucket",
+      "jsm",
+      "jira service management",
+      "sprint",
+      "epic",
+      "story",
+      "jql",
+      "cql",
+      "confluence page",
+      "jira issue",
+      "jira ticket",
+      "backlog",
+      "kanban",
+      "scrum",
+      "rovo"
     ],
     "patterns": [
       "\\batlassian\\b",
@@ -54,7 +73,11 @@
       "\\bjql\\b",
       "\\bcql\\b"
     ],
-    "commands": ["/atlassian", "/jira", "/confluence"]
+    "commands": [
+      "/atlassian",
+      "/jira",
+      "/confluence"
+    ]
   },
   "tools": [
     {
@@ -68,29 +91,79 @@
           "action": {
             "type": "string",
             "enum": [
-              "get_issue", "create_issue", "edit_issue", "transition_issue",
-              "add_comment", "add_worklog", "search_jql",
-              "list_projects", "get_issue_types", "get_transitions",
-              "get_link_types", "get_remote_links", "lookup_user",
+              "get_issue",
+              "create_issue",
+              "edit_issue",
+              "transition_issue",
+              "add_comment",
+              "add_worklog",
+              "search_jql",
+              "list_projects",
+              "get_issue_types",
+              "get_transitions",
+              "get_link_types",
+              "get_remote_links",
+              "lookup_user",
               "get_field_metadata"
             ],
             "description": "Jira action to perform"
           },
-          "issue_key": { "type": "string", "description": "Jira issue key (e.g. 'PROJ-123') for get/edit/transition/comment" },
-          "project_key": { "type": "string", "description": "Jira project key (e.g. 'PROJ') for create/list operations" },
-          "issue_type": { "type": "string", "description": "Issue type name (e.g. 'Story', 'Bug', 'Task', 'Epic') for create" },
-          "summary": { "type": "string", "description": "Issue summary/title for create/edit" },
-          "description": { "type": "string", "description": "Issue description (ADF or plain text) for create/edit" },
-          "fields": { "type": "object", "description": "Additional fields to set (for create/edit). Keys are field IDs or names." },
-          "transition_id": { "type": "string", "description": "Workflow transition ID (for transition_issue)" },
-          "comment": { "type": "string", "description": "Comment body text (for add_comment)" },
-          "time_spent": { "type": "string", "description": "Time spent (e.g. '2h 30m') for add_worklog" },
-          "jql": { "type": "string", "description": "JQL query string (for search_jql)" },
-          "max_results": { "type": "number", "description": "Maximum results to return (default 10)" },
-          "query": { "type": "string", "description": "User name or email to look up (for lookup_user)" },
-          "cloud_id": { "type": "string", "description": "Atlassian Cloud site ID. If omitted, uses the default from settings." }
+          "issue_key": {
+            "type": "string",
+            "description": "Jira issue key (e.g. 'PROJ-123') for get/edit/transition/comment"
+          },
+          "project_key": {
+            "type": "string",
+            "description": "Jira project key (e.g. 'PROJ') for create/list operations"
+          },
+          "issue_type": {
+            "type": "string",
+            "description": "Issue type name (e.g. 'Story', 'Bug', 'Task', 'Epic') for create"
+          },
+          "summary": {
+            "type": "string",
+            "description": "Issue summary/title for create/edit"
+          },
+          "description": {
+            "type": "string",
+            "description": "Issue description (ADF or plain text) for create/edit"
+          },
+          "fields": {
+            "type": "object",
+            "description": "Additional fields to set (for create/edit). Keys are field IDs or names."
+          },
+          "transition_id": {
+            "type": "string",
+            "description": "Workflow transition ID (for transition_issue)"
+          },
+          "comment": {
+            "type": "string",
+            "description": "Comment body text (for add_comment)"
+          },
+          "time_spent": {
+            "type": "string",
+            "description": "Time spent (e.g. '2h 30m') for add_worklog"
+          },
+          "jql": {
+            "type": "string",
+            "description": "JQL query string (for search_jql)"
+          },
+          "max_results": {
+            "type": "number",
+            "description": "Maximum results to return (default 10)"
+          },
+          "query": {
+            "type": "string",
+            "description": "User name or email to look up (for lookup_user)"
+          },
+          "cloud_id": {
+            "type": "string",
+            "description": "Atlassian Cloud site ID. If omitted, uses the default from settings."
+          }
         },
-        "required": ["action"]
+        "required": [
+          "action"
+        ]
       }
     },
     {
@@ -104,28 +177,73 @@
           "action": {
             "type": "string",
             "enum": [
-              "get_page", "create_page", "update_page",
-              "get_descendants", "list_spaces", "list_pages_in_space",
+              "get_page",
+              "create_page",
+              "update_page",
+              "get_descendants",
+              "list_spaces",
+              "list_pages_in_space",
               "search_cql",
-              "get_footer_comments", "get_inline_comments", "get_comment_children",
-              "create_footer_comment", "create_inline_comment"
+              "get_footer_comments",
+              "get_inline_comments",
+              "get_comment_children",
+              "create_footer_comment",
+              "create_inline_comment"
             ],
             "description": "Confluence action to perform"
           },
-          "page_id": { "type": "string", "description": "Confluence page ID (for get/update/comments)" },
-          "space_id": { "type": "string", "description": "Confluence space ID (for list_pages_in_space)" },
-          "space_key": { "type": "string", "description": "Confluence space key (for create_page)" },
-          "parent_page_id": { "type": "string", "description": "Parent page ID (for create_page, get_descendants)" },
-          "title": { "type": "string", "description": "Page title (for create/update)" },
-          "body": { "type": "string", "description": "Page body content in storage format or wiki markup (for create/update)" },
-          "comment_text": { "type": "string", "description": "Comment text (for create_footer_comment/create_inline_comment)" },
-          "comment_id": { "type": "string", "description": "Comment ID (for get_comment_children)" },
-          "inline_text_selection": { "type": "string", "description": "Text selection to anchor inline comment to" },
-          "cql": { "type": "string", "description": "CQL query string (for search_cql)" },
-          "max_results": { "type": "number", "description": "Maximum results to return (default 10)" },
-          "cloud_id": { "type": "string", "description": "Atlassian Cloud site ID. If omitted, uses the default from settings." }
+          "page_id": {
+            "type": "string",
+            "description": "Confluence page ID (for get/update/comments)"
+          },
+          "space_id": {
+            "type": "string",
+            "description": "Confluence space ID (for list_pages_in_space)"
+          },
+          "space_key": {
+            "type": "string",
+            "description": "Confluence space key (for create_page)"
+          },
+          "parent_page_id": {
+            "type": "string",
+            "description": "Parent page ID (for create_page, get_descendants)"
+          },
+          "title": {
+            "type": "string",
+            "description": "Page title (for create/update)"
+          },
+          "body": {
+            "type": "string",
+            "description": "Page body content in storage format or wiki markup (for create/update)"
+          },
+          "comment_text": {
+            "type": "string",
+            "description": "Comment text (for create_footer_comment/create_inline_comment)"
+          },
+          "comment_id": {
+            "type": "string",
+            "description": "Comment ID (for get_comment_children)"
+          },
+          "inline_text_selection": {
+            "type": "string",
+            "description": "Text selection to anchor inline comment to"
+          },
+          "cql": {
+            "type": "string",
+            "description": "CQL query string (for search_cql)"
+          },
+          "max_results": {
+            "type": "number",
+            "description": "Maximum results to return (default 10)"
+          },
+          "cloud_id": {
+            "type": "string",
+            "description": "Atlassian Cloud site ID. If omitted, uses the default from settings."
+          }
         },
-        "required": ["action"]
+        "required": [
+          "action"
+        ]
       }
     },
     {
@@ -139,25 +257,63 @@
           "action": {
             "type": "string",
             "enum": [
-              "get_component", "list_components", "create_component",
-              "get_activity", "get_labels", "get_types",
-              "get_custom_fields", "get_my_team_components",
-              "create_relationship", "create_custom_field"
+              "get_component",
+              "list_components",
+              "create_component",
+              "get_activity",
+              "get_labels",
+              "get_types",
+              "get_custom_fields",
+              "get_my_team_components",
+              "create_relationship",
+              "create_custom_field"
             ],
             "description": "Compass action to perform"
           },
-          "component_id": { "type": "string", "description": "Compass component ID" },
-          "name": { "type": "string", "description": "Component name (for create)" },
-          "type": { "type": "string", "description": "Component type (for create/filter)" },
-          "query": { "type": "string", "description": "Search query for listing components" },
-          "fields": { "type": "object", "description": "Additional fields for create/custom field operations" },
-          "source_id": { "type": "string", "description": "Source component ID (for create_relationship)" },
-          "target_id": { "type": "string", "description": "Target component ID (for create_relationship)" },
-          "relationship_type": { "type": "string", "description": "Relationship type (for create_relationship)" },
-          "max_results": { "type": "number", "description": "Maximum results to return (default 10)" },
-          "cloud_id": { "type": "string", "description": "Atlassian Cloud site ID. If omitted, uses the default from settings." }
+          "component_id": {
+            "type": "string",
+            "description": "Compass component ID"
+          },
+          "name": {
+            "type": "string",
+            "description": "Component name (for create)"
+          },
+          "type": {
+            "type": "string",
+            "description": "Component type (for create/filter)"
+          },
+          "query": {
+            "type": "string",
+            "description": "Search query for listing components"
+          },
+          "fields": {
+            "type": "object",
+            "description": "Additional fields for create/custom field operations"
+          },
+          "source_id": {
+            "type": "string",
+            "description": "Source component ID (for create_relationship)"
+          },
+          "target_id": {
+            "type": "string",
+            "description": "Target component ID (for create_relationship)"
+          },
+          "relationship_type": {
+            "type": "string",
+            "description": "Relationship type (for create_relationship)"
+          },
+          "max_results": {
+            "type": "number",
+            "description": "Maximum results to return (default 10)"
+          },
+          "cloud_id": {
+            "type": "string",
+            "description": "Atlassian Cloud site ID. If omitted, uses the default from settings."
+          }
         },
-        "required": ["action"]
+        "required": [
+          "action"
+        ]
       }
     },
     {
@@ -171,26 +327,54 @@
           "action": {
             "type": "string",
             "enum": [
-              "get_alert", "search_alerts",
-              "get_schedule", "list_schedules",
-              "get_team", "list_teams",
+              "get_alert",
+              "search_alerts",
+              "get_schedule",
+              "list_schedules",
+              "get_team",
+              "list_teams",
               "update_alert"
             ],
             "description": "JSM Ops action to perform"
           },
-          "alert_id": { "type": "string", "description": "Alert ID or alias" },
-          "query": { "type": "string", "description": "Search query for alerts" },
-          "schedule_id": { "type": "string", "description": "On-call schedule ID" },
-          "team_id": { "type": "string", "description": "Operations team ID" },
+          "alert_id": {
+            "type": "string",
+            "description": "Alert ID or alias"
+          },
+          "query": {
+            "type": "string",
+            "description": "Search query for alerts"
+          },
+          "schedule_id": {
+            "type": "string",
+            "description": "On-call schedule ID"
+          },
+          "team_id": {
+            "type": "string",
+            "description": "Operations team ID"
+          },
           "alert_action": {
             "type": "string",
-            "enum": ["acknowledge", "unacknowledge", "close", "escalate"],
+            "enum": [
+              "acknowledge",
+              "unacknowledge",
+              "close",
+              "escalate"
+            ],
             "description": "Alert action to perform (for update_alert)"
           },
-          "max_results": { "type": "number", "description": "Maximum results to return (default 10)" },
-          "cloud_id": { "type": "string", "description": "Atlassian Cloud site ID. If omitted, uses the default from settings." }
+          "max_results": {
+            "type": "number",
+            "description": "Maximum results to return (default 10)"
+          },
+          "cloud_id": {
+            "type": "string",
+            "description": "Atlassian Cloud site ID. If omitted, uses the default from settings."
+          }
         },
-        "required": ["action"]
+        "required": [
+          "action"
+        ]
       }
     },
     {
@@ -204,39 +388,115 @@
           "action": {
             "type": "string",
             "enum": [
-              "list_workspaces", "get_workspace",
-              "list_repos", "get_repo", "get_default_reviewers",
-              "list_pull_requests", "get_pull_request", "get_pr_diff", "get_pr_comments",
-              "create_pull_request", "merge_pull_request", "approve_pull_request", "comment_on_pr",
-              "get_branch", "get_commit", "list_files",
-              "create_branch", "create_commit",
-              "list_pipelines", "get_pipeline", "get_pipeline_steps", "get_step_log", "run_pipeline",
-              "list_deployments", "get_deployment",
-              "list_environments", "create_environment", "update_environment", "delete_environment",
+              "list_workspaces",
+              "get_workspace",
+              "list_repos",
+              "get_repo",
+              "get_default_reviewers",
+              "list_pull_requests",
+              "get_pull_request",
+              "get_pr_diff",
+              "get_pr_comments",
+              "create_pull_request",
+              "merge_pull_request",
+              "approve_pull_request",
+              "comment_on_pr",
+              "get_branch",
+              "get_commit",
+              "list_files",
+              "create_branch",
+              "create_commit",
+              "list_pipelines",
+              "get_pipeline",
+              "get_pipeline_steps",
+              "get_step_log",
+              "run_pipeline",
+              "list_deployments",
+              "get_deployment",
+              "list_environments",
+              "create_environment",
+              "update_environment",
+              "delete_environment",
               "my_pull_requests"
             ],
             "description": "Bitbucket action to perform"
           },
-          "workspace": { "type": "string", "description": "Bitbucket workspace slug" },
-          "repo_slug": { "type": "string", "description": "Repository slug" },
-          "pr_id": { "type": "string", "description": "Pull request ID" },
-          "branch": { "type": "string", "description": "Branch name" },
-          "commit_hash": { "type": "string", "description": "Commit hash" },
-          "title": { "type": "string", "description": "PR or environment title" },
-          "description": { "type": "string", "description": "PR or environment description" },
-          "source_branch": { "type": "string", "description": "Source branch for PR creation" },
-          "destination_branch": { "type": "string", "description": "Destination branch for PR creation (default: main)" },
-          "comment": { "type": "string", "description": "Comment text" },
-          "pipeline_id": { "type": "string", "description": "Pipeline UUID" },
-          "step_id": { "type": "string", "description": "Pipeline step UUID" },
-          "environment_id": { "type": "string", "description": "Deployment environment UUID" },
-          "deployment_id": { "type": "string", "description": "Deployment UUID" },
-          "files": { "type": "object", "description": "Files to commit: { 'path/to/file': 'content' }" },
-          "commit_message": { "type": "string", "description": "Commit message (for create_commit)" },
-          "max_results": { "type": "number", "description": "Maximum results to return (default 10)" },
-          "cloud_id": { "type": "string", "description": "Atlassian Cloud site ID. If omitted, uses the default from settings." }
+          "workspace": {
+            "type": "string",
+            "description": "Bitbucket workspace slug"
+          },
+          "repo_slug": {
+            "type": "string",
+            "description": "Repository slug"
+          },
+          "pr_id": {
+            "type": "string",
+            "description": "Pull request ID"
+          },
+          "branch": {
+            "type": "string",
+            "description": "Branch name"
+          },
+          "commit_hash": {
+            "type": "string",
+            "description": "Commit hash"
+          },
+          "title": {
+            "type": "string",
+            "description": "PR or environment title"
+          },
+          "description": {
+            "type": "string",
+            "description": "PR or environment description"
+          },
+          "source_branch": {
+            "type": "string",
+            "description": "Source branch for PR creation"
+          },
+          "destination_branch": {
+            "type": "string",
+            "description": "Destination branch for PR creation (default: main)"
+          },
+          "comment": {
+            "type": "string",
+            "description": "Comment text"
+          },
+          "pipeline_id": {
+            "type": "string",
+            "description": "Pipeline UUID"
+          },
+          "step_id": {
+            "type": "string",
+            "description": "Pipeline step UUID"
+          },
+          "environment_id": {
+            "type": "string",
+            "description": "Deployment environment UUID"
+          },
+          "deployment_id": {
+            "type": "string",
+            "description": "Deployment UUID"
+          },
+          "files": {
+            "type": "object",
+            "description": "Files to commit: { 'path/to/file': 'content' }"
+          },
+          "commit_message": {
+            "type": "string",
+            "description": "Commit message (for create_commit)"
+          },
+          "max_results": {
+            "type": "number",
+            "description": "Maximum results to return (default 10)"
+          },
+          "cloud_id": {
+            "type": "string",
+            "description": "Atlassian Cloud site ID. If omitted, uses the default from settings."
+          }
         },
-        "required": ["action"]
+        "required": [
+          "action"
+        ]
       }
     },
     {
@@ -250,67 +510,102 @@
           "action": {
             "type": "string",
             "enum": [
-              "search", "fetch",
-              "get_context", "get_object",
-              "get_user_info", "list_resources"
+              "search",
+              "fetch",
+              "get_context",
+              "get_object",
+              "get_user_info",
+              "list_resources"
             ],
             "description": "Search/platform action to perform"
           },
-          "query": { "type": "string", "description": "Natural language search query (for search)" },
-          "ari": { "type": "string", "description": "Atlassian Resource Identifier (for fetch/get_object)" },
-          "aris": { "type": "array", "items": { "type": "string" }, "description": "Multiple ARIs (for get_object batch)" },
-          "entity_ari": { "type": "string", "description": "Entity ARI to get connected context for (for get_context)" },
-          "max_results": { "type": "number", "description": "Maximum results to return (default 10)" },
-          "cloud_id": { "type": "string", "description": "Atlassian Cloud site ID. If omitted, uses the default from settings." }
+          "query": {
+            "type": "string",
+            "description": "Natural language search query (for search)"
+          },
+          "ari": {
+            "type": "string",
+            "description": "Atlassian Resource Identifier (for fetch/get_object)"
+          },
+          "aris": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Multiple ARIs (for get_object batch)"
+          },
+          "entity_ari": {
+            "type": "string",
+            "description": "Entity ARI to get connected context for (for get_context)"
+          },
+          "max_results": {
+            "type": "number",
+            "description": "Maximum results to return (default 10)"
+          },
+          "cloud_id": {
+            "type": "string",
+            "description": "Atlassian Cloud site ID. If omitted, uses the default from settings."
+          }
         },
-        "required": ["action"]
+        "required": [
+          "action"
+        ]
       }
     }
   ],
   "workerProfile": {
     "tools": [
-      "atlassian_jira", "atlassian_confluence", "atlassian_compass",
-      "atlassian_jsm", "atlassian_bitbucket", "atlassian_search"
+      "atlassian_jira",
+      "atlassian_confluence",
+      "atlassian_compass",
+      "atlassian_jsm",
+      "atlassian_bitbucket",
+      "atlassian_search"
     ],
     "maxTimeout": 120000
   },
   "settings": {
     "type": "object",
     "properties": {
-
       "_auth_header": {
         "type": "string",
-        "label": "── Authentication ──",
+        "label": "\u2500\u2500 Authentication \u2500\u2500",
         "description": "Choose your authentication method and enter your credentials below.",
         "widget": "heading",
         "group": "auth",
         "order": 0
       },
-
       "auth_method": {
         "type": "select",
         "label": "Authentication Method",
         "description": "How to authenticate with Atlassian Cloud. OAuth 2.0 (3LO) supports all products; API Token is simpler but may not support Compass.",
         "options": [
-          { "value": "oauth", "label": "OAuth 2.0 (3LO) — recommended" },
-          { "value": "basic", "label": "Personal API Token (Basic auth)" }
+          {
+            "value": "oauth",
+            "label": "OAuth 2.0 (3LO) \u2014 recommended"
+          },
+          {
+            "value": "basic",
+            "label": "Personal API Token (Basic auth)"
+          }
         ],
         "default": "oauth",
         "required": true,
         "group": "auth",
         "order": 1
       },
-
       "_oauth_instructions": {
         "type": "textarea",
         "label": "OAuth 2.0 Setup Instructions",
-        "description": "To configure OAuth 2.0 (3LO):\n\n1. Go to https://developer.atlassian.com/console/myapps/\n2. Create a new app (or select your existing one)\n3. Under 'Authorization', click 'Configure' next to 'OAuth 2.0 (3LO)'\n4. Set the Callback URL to: http://<your-server-host>:5000/api/gateway/skills/atlassian/oauth/callback\n   (The settings panel below shows the exact URL for your current server — copy it from there)\n5. Under 'Permissions', add the Jira API, Confluence API, and any others you need\n6. Add the required scopes for each API\n7. Under 'Settings', copy the Client ID and Secret below\n8. Click 'Authorize with Atlassian' below to complete the OAuth flow",
+        "description": "To configure OAuth 2.0 (3LO):\n\n1. Go to https://developer.atlassian.com/console/myapps/\n2. Create a new app (or select your existing one)\n3. Under 'Authorization', click 'Configure' next to 'OAuth 2.0 (3LO)'\n4. Set the Callback URL to: http://localhost:9876/callback\n   (Register this exact URL in the Developer Console)\n5. Under 'Permissions', add the Jira API, Confluence API, and any others you need\n6. Add the required scopes for each API\n7. Under 'Settings', copy the Client ID and Secret below\n8. Save settings, then click 'Authorize with Atlassian' below\n9. After authorizing, your browser will redirect to a localhost URL that won't load\n10. Copy the full URL from your address bar and paste it into the field that appears",
         "widget": "info",
         "group": "auth",
         "order": 2,
-        "dependsOn": { "field": "auth_method", "value": "oauth" }
+        "dependsOn": {
+          "field": "auth_method",
+          "value": "oauth"
+        }
       },
-
       "oauth_client_id": {
         "type": "string",
         "label": "OAuth Client ID",
@@ -319,9 +614,11 @@
         "required": false,
         "group": "auth",
         "order": 3,
-        "dependsOn": { "field": "auth_method", "value": "oauth" }
+        "dependsOn": {
+          "field": "auth_method",
+          "value": "oauth"
+        }
       },
-
       "oauth_client_secret": {
         "type": "password",
         "label": "OAuth Client Secret",
@@ -331,21 +628,25 @@
         "group": "auth",
         "widget": "secret",
         "order": 4,
-        "dependsOn": { "field": "auth_method", "value": "oauth" }
+        "dependsOn": {
+          "field": "auth_method",
+          "value": "oauth"
+        }
       },
-
       "oauth_callback_url": {
         "type": "url",
         "label": "OAuth Callback URL",
-        "description": "The callback URL configured in your Atlassian OAuth app. This MUST match exactly what you set in the Developer Console under Authorization → OAuth 2.0 (3LO) → Callback URL.\n\nRecommended: use the built-in gateway callback so it works over any network (Tailscale, remote server, etc.):\n  http://<your-server-host>:5000/api/gateway/skills/atlassian/oauth/callback\n\nRegister that same URL in Atlassian Developer Console. For localhost development you can also use http://localhost:5000/api/gateway/skills/atlassian/oauth/callback.",
-        "default": "",
-        "placeholder": "http://your-server:5000/api/gateway/skills/atlassian/oauth/callback",
+        "description": "The callback URL registered in your Atlassian OAuth app. This MUST match exactly what you set in the Developer Console under Authorization \u2192 OAuth 2.0 (3LO) \u2192 Callback URL.\n\nRecommended: http://localhost:9876/callback\n\nAfter authorizing, your browser will redirect to this URL (which won't load \u2014 that's normal). Copy the full URL from your browser's address bar and paste it into the text field that appears in the OAuth Authorization section below.",
+        "default": "http://localhost:9876/callback",
+        "placeholder": "http://localhost:9876/callback",
         "required": false,
         "group": "auth",
         "order": 5,
-        "dependsOn": { "field": "auth_method", "value": "oauth" }
+        "dependsOn": {
+          "field": "auth_method",
+          "value": "oauth"
+        }
       },
-
       "oauth_scopes": {
         "type": "textarea",
         "label": "OAuth Scopes",
@@ -355,9 +656,11 @@
         "required": false,
         "group": "auth",
         "order": 6,
-        "dependsOn": { "field": "auth_method", "value": "oauth" }
+        "dependsOn": {
+          "field": "auth_method",
+          "value": "oauth"
+        }
       },
-
       "oauth_access_token": {
         "type": "password",
         "label": "OAuth Access Token",
@@ -367,9 +670,11 @@
         "group": "auth",
         "widget": "secret",
         "order": 7,
-        "dependsOn": { "field": "auth_method", "value": "oauth" }
+        "dependsOn": {
+          "field": "auth_method",
+          "value": "oauth"
+        }
       },
-
       "oauth_refresh_token": {
         "type": "password",
         "label": "OAuth Refresh Token",
@@ -379,9 +684,11 @@
         "group": "auth",
         "widget": "secret",
         "order": 8,
-        "dependsOn": { "field": "auth_method", "value": "oauth" }
+        "dependsOn": {
+          "field": "auth_method",
+          "value": "oauth"
+        }
       },
-
       "_api_token_instructions": {
         "type": "textarea",
         "label": "API Token Setup Instructions",
@@ -389,9 +696,11 @@
         "widget": "info",
         "group": "auth",
         "order": 2,
-        "dependsOn": { "field": "auth_method", "value": "basic" }
+        "dependsOn": {
+          "field": "auth_method",
+          "value": "basic"
+        }
       },
-
       "api_email": {
         "type": "string",
         "label": "Atlassian Account Email",
@@ -400,9 +709,11 @@
         "required": false,
         "group": "auth",
         "order": 3,
-        "dependsOn": { "field": "auth_method", "value": "basic" }
+        "dependsOn": {
+          "field": "auth_method",
+          "value": "basic"
+        }
       },
-
       "api_token": {
         "type": "password",
         "label": "Personal API Token",
@@ -412,18 +723,19 @@
         "group": "auth",
         "widget": "secret",
         "order": 4,
-        "dependsOn": { "field": "auth_method", "value": "basic" }
+        "dependsOn": {
+          "field": "auth_method",
+          "value": "basic"
+        }
       },
-
       "_site_header": {
         "type": "string",
-        "label": "── Atlassian Site ──",
+        "label": "\u2500\u2500 Atlassian Site \u2500\u2500",
         "description": "Configure your Atlassian Cloud site connection.",
         "widget": "heading",
         "group": "preferences",
         "order": 9
       },
-
       "default_cloud_id": {
         "type": "string",
         "label": "Atlassian Site URL",
@@ -433,7 +745,6 @@
         "group": "preferences",
         "order": 10
       },
-
       "default_jira_project": {
         "type": "string",
         "label": "Default Jira Project Key",
@@ -443,7 +754,6 @@
         "group": "preferences",
         "order": 11
       },
-
       "default_confluence_space": {
         "type": "string",
         "label": "Default Confluence Space",
@@ -453,16 +763,14 @@
         "group": "preferences",
         "order": 12
       },
-
       "_products_header": {
         "type": "string",
-        "label": "── Product Enablement ──",
+        "label": "\u2500\u2500 Product Enablement \u2500\u2500",
         "description": "Choose which Atlassian products to enable. Disabled products won't load their tools.",
         "widget": "heading",
         "group": "preferences",
         "order": 13
       },
-
       "enable_jira": {
         "type": "boolean",
         "label": "Enable Jira",
@@ -471,7 +779,6 @@
         "group": "preferences",
         "order": 14
       },
-
       "enable_confluence": {
         "type": "boolean",
         "label": "Enable Confluence",
@@ -480,7 +787,6 @@
         "group": "preferences",
         "order": 15
       },
-
       "enable_compass": {
         "type": "boolean",
         "label": "Enable Compass",
@@ -489,7 +795,6 @@
         "group": "preferences",
         "order": 16
       },
-
       "enable_jsm": {
         "type": "boolean",
         "label": "Enable Jira Service Management",
@@ -498,7 +803,6 @@
         "group": "preferences",
         "order": 17
       },
-
       "enable_bitbucket": {
         "type": "boolean",
         "label": "Enable Bitbucket",
@@ -507,7 +811,6 @@
         "group": "preferences",
         "order": 18
       },
-
       "enable_search": {
         "type": "boolean",
         "label": "Enable Cross-Product Search",
@@ -516,7 +819,6 @@
         "group": "preferences",
         "order": 19
       },
-
       "max_results": {
         "type": "number",
         "label": "Default Max Results",
@@ -525,7 +827,6 @@
         "group": "advanced",
         "order": 20
       },
-
       "mcp_endpoint": {
         "type": "url",
         "label": "MCP Server Endpoint",

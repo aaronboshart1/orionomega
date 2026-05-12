@@ -37,6 +37,7 @@ import {
   handleListGoogleAccounts, handleCreateGoogleAccount, handleUpdateGoogleAccount,
   handleDeleteGoogleAccount, handleActivateGoogleAccount,
   handleAtlassianOAuthCallback,
+  handleAtlassianOAuthExchange,
 } from './routes/skills.js';
 import { SchedulerService } from './scheduler.js';
 import {
@@ -1504,6 +1505,16 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
       log.error('Atlassian OAuth callback route error', { error: err instanceof Error ? err.message : String(err) });
       res.writeHead(500, { 'Content-Type': 'text/html' });
       res.end('<p>Internal server error handling Atlassian OAuth callback.</p>');
+    });
+    return;
+  }
+
+  // --- Skills: Atlassian OAuth exchange (POST — WebUI manual-paste flow) ---
+  if (pathname === '/api/skills/atlassian/oauth/exchange' && method === 'POST') {
+    handleAtlassianOAuthExchange(req, res, config).catch((err) => {
+      log.error('Atlassian OAuth exchange route error', { error: err instanceof Error ? err.message : String(err) });
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Internal server error' }));
     });
     return;
   }
