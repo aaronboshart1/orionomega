@@ -164,25 +164,35 @@ export function detectExecProtectedWriteIntent(
   const hasWriteIntent = EXEC_WRITE_INTENT_PATTERNS.some((p) => p.test(command));
   if (!hasWriteIntent) return null;
 
-  // Sweep all whitespace-separated tokens for path-like values.
-  // Strip surrounding quotes, expand a leading `~`. Don't attempt full
-  // shell parsing — pessimism beats cleverness here.
   const home = process.env.HOME ?? '';
+  const expand = (s: string): string => (s.startsWith('~') && home ? home + s.slice(1) : s);
+
+  // Pass A — redirection targets (`>` / `>>` next-token) are ALWAYS
+  // resolved against `cwd`, even bare filenames like `foo.ts`. This is
+  // critical when the cwd itself is a protected root (e.g. agent ran
+  // `cd packages/core/src && echo x > main-agent.ts`).
+  const redirRe = /(?:^|[^&\d])>>?\s*(["']?)([^\s"';|&()`]+)\1/g;
+  let m: RegExpExecArray | null;
+  while ((m = redirRe.exec(command)) !== null) {
+    const target = expand(m[2]!);
+    const offenders = detectInstallDirWrites([target], cwd);
+    if (offenders.length > 0) return { offender: offenders[0]! };
+  }
+
+  // Pass B — sweep all path-shaped tokens (slash / ~ / ./ / ../ / abs).
+  // Strip surrounding quotes; don't attempt full shell parsing — pessimism
+  // beats cleverness here.
   const tokens = command.match(/[^\s"';|&()`]+|"[^"]*"|'[^']*'/g) ?? [];
   for (const raw of tokens) {
     const stripped = raw.replace(/^["']|["']$/g, '');
     if (!stripped) continue;
-    // Only consider tokens that look path-like.
     const looksLikePath = stripped.startsWith('/')
       || stripped.startsWith('~')
       || stripped.startsWith('./')
       || stripped.startsWith('../')
       || stripped.includes('/');
     if (!looksLikePath) continue;
-    const expanded = stripped.startsWith('~')
-      ? (home ? home + stripped.slice(1) : stripped)
-      : stripped;
-    const offenders = detectInstallDirWrites([expanded], cwd);
+    const offenders = detectInstallDirWrites([expand(stripped)], cwd);
     if (offenders.length > 0) return { offender: offenders[0]! };
   }
   return null;

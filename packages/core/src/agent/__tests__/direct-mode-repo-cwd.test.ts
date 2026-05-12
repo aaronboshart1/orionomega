@@ -191,4 +191,19 @@ describe('detectExecProtectedWriteIntent (Task #216)', () => {
     const target = path.join(process.env.HOME ?? '/root', '.orionomega', 'config.yaml');
     expect(detectExecProtectedWriteIntent(`cat ${target}`, fakeRepoDir)).toBeNull();
   });
+
+  it('refuses bare-filename redirection when cwd itself is a protected root', () => {
+    // Reviewer comment #1: `echo x > main-agent.ts` from a protected
+    // cwd must be caught even though the target has no slash.
+    const roots = getOrionOmegaSourceRoots();
+    const protectedCwd = roots[0]!; // packages/<pkg>/src
+    const result = detectExecProtectedWriteIntent('echo x > main-agent.ts', protectedCwd);
+    expect(result).not.toBeNull();
+    expect(result!.offender).toBe(path.join(protectedCwd, 'main-agent.ts'));
+  });
+
+  it('still allows bare-filename redirection in a non-protected cwd', () => {
+    // Same syntax, different cwd — must NOT trigger.
+    expect(detectExecProtectedWriteIntent('echo x > main-agent.ts', fakeRepoDir)).toBeNull();
+  });
 });
