@@ -16,6 +16,7 @@ import { existsSync, unlinkSync } from 'node:fs';
 import { AnthropicClient } from '../anthropic/client.js';
 import type { AnthropicMessage, ContentBlock } from '../anthropic/client.js';
 import { buildSystemPrompt, buildRunDirBlock, type PromptContext } from './prompt-builder.js';
+import { ensureSessionClone } from '../orchestration/coding/repo-manager.js';
 import { createLogger } from '../logging/logger.js';
 import { SkillLoader, readSkillConfig, writeSkillConfig } from '@orionomega/skills-sdk';
 import type { OrionOmegaConfig } from '../config/types.js';
@@ -1886,32 +1887,77 @@ export class MainAgent {
       });
     }
 
-    // Per-CONVERSATION run output directory (stable across every turn of
-    // the same session). Mirrors the orchestration executor's
-    // `${workspaceDir}/output/<id>` layout, but uses the per-session
-    // `effectiveConvOutputId` rather than the per-turn `effectiveRunId`
-    // so files written in turn N are still visible to turn N+1 at the
-    // same relative path. The runDir block in the system prompt and the
-    // relative-path resolution + install-dir guard in `executeMainTool`
-    // both pivot off this path.
-    const runDir = this.config.workspaceDir
-      ? `${this.config.workspaceDir}/output/${effectiveConvOutputId}`
-      : undefined;
-    if (runDir) {
+    const sid = _sessionAtTurnStart;
+
+    // Task #216: When the user has selected a repo on the Git tab, Direct
+    // mode treats that repo's local checkout as its working directory for
+    // every code-affecting tool call (`exec` cwd, relative `read_file` /
+    // `write_file` resolution). We reuse the same `ensureSessionClone`
+    // helper Coding mode calls so the clone is lazily created on first
+    // use and fast-forwarded on subsequent turns — there is one source of
+    // truth for "this session's working tree". When no repo is selected
+    // we fall back to the per-conversation scratch output dir (legacy
+    // behavior). Either way, the install/source-tree refusal in
+    // `executeMainTool` still fires so a confused agent can't write into
+    // OrionOmega's own files no matter which cwd it runs in.
+    let runDir: string | undefined;
+    let selectedRepoForPrompt: { remoteUrl: string; branch: string } | undefined;
+    const sessionRepo = this.config.getSessionRepo?.(sid) ?? null;
+    if (sessionRepo) {
       try {
-        const { mkdir } = await import('node:fs/promises');
-        await mkdir(runDir, { recursive: true });
+        const ensured = await ensureSessionClone(
+          sessionRepo.remoteUrl,
+          sessionRepo.localPath,
+          sessionRepo.branch,
+        );
+        runDir = ensured.localPath;
+        selectedRepoForPrompt = { remoteUrl: sessionRepo.remoteUrl, branch: sessionRepo.branch };
+        log.info('Direct mode: using Git-tab selected repo as cwd', {
+          sid,
+          remoteUrl: sessionRepo.remoteUrl,
+          branch: sessionRepo.branch,
+          localPath: ensured.localPath,
+          cloned: ensured.cloned,
+          fetched: ensured.fetched,
+          fastForwarded: ensured.fastForwarded,
+        });
       } catch (err) {
-        log.warn('Failed to create direct-mode run output dir', {
-          runDir,
+        // Don't fail the turn if the clone/fetch hiccups — just fall back
+        // to the legacy scratch dir and warn. The user can re-sync from
+        // the Git tab if it's a persistent issue.
+        log.warn('Direct mode: ensureSessionClone failed, falling back to scratch output dir', {
+          sid,
+          remoteUrl: sessionRepo.remoteUrl,
           error: err instanceof Error ? err.message : String(err),
         });
       }
     }
 
-    const sid = _sessionAtTurnStart;
+    if (!runDir) {
+      // Per-CONVERSATION run output directory (stable across every turn of
+      // the same session). Mirrors the orchestration executor's
+      // `${workspaceDir}/output/<id>` layout, but uses the per-session
+      // `effectiveConvOutputId` rather than the per-turn `effectiveRunId`
+      // so files written in turn N are still visible to turn N+1 at the
+      // same relative path.
+      runDir = this.config.workspaceDir
+        ? `${this.config.workspaceDir}/output/${effectiveConvOutputId}`
+        : undefined;
+      if (runDir) {
+        try {
+          const { mkdir } = await import('node:fs/promises');
+          await mkdir(runDir, { recursive: true });
+        } catch (err) {
+          log.warn('Failed to create direct-mode run output dir', {
+            runDir,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+    }
+
     const [systemPrompt, assembled] = await Promise.all([
-      this.getSystemPrompt(runDir),
+      this.getSystemPrompt(runDir, selectedRepoForPrompt),
       this.getContext(sid).assemble(userMessage),
     ]);
 
@@ -2168,7 +2214,10 @@ export class MainAgent {
    * file reads; the runDir block changes every turn so it's appended on the fly
    * rather than baked into the cache.
    */
-  private async getSystemPrompt(runDir?: string): Promise<string> {
+  private async getSystemPrompt(
+    runDir?: string,
+    selectedRepo?: { remoteUrl: string; branch: string },
+  ): Promise<string> {
     let base: string;
     if (this.cachedSystemPrompt) {
       base = this.cachedSystemPrompt;
@@ -2183,7 +2232,7 @@ export class MainAgent {
       this.cachedSystemPrompt = await buildSystemPrompt(context);
       base = this.cachedSystemPrompt;
     }
-    return runDir ? base + buildRunDirBlock(runDir) : base;
+    return runDir ? base + buildRunDirBlock(runDir, selectedRepo ? { selectedRepo } : {}) : base;
   }
 
   /** Build messages from a session's hot window only (sync, for non-conversational paths). */

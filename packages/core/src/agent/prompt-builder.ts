@@ -32,13 +32,35 @@ export interface PromptContext {
 }
 
 /**
+ * Optional context that customizes the "Output Directory" block. When the
+ * caller is Direct mode and the user has selected a repo on the Git tab,
+ * pass `selectedRepo` so the block tells the model truthfully that it is
+ * working inside a real repo (not a scratch output dir) and that
+ * `write_file` writes will land in that repo's working tree. The
+ * OrionOmega-source refusal language is always present regardless.
+ */
+export interface RunDirBlockOptions {
+  /**
+   * When set, the runDir IS the local checkout of the user's selected
+   * repo (Task #216). Wording shifts from "scratch output directory"
+   * to "the repo you are working in" so the agent doesn't try to copy
+   * files back out into a separate output folder.
+   */
+  selectedRepo?: { remoteUrl: string; branch: string };
+}
+
+/**
  * Builds the strict "Output Directory" block appended to the main agent's
  * system prompt for a given run directory. Exported so callers that cache
  * the base prompt (e.g. MainAgent.getSystemPrompt) can append it per turn
  * without rebuilding the whole prompt.
  */
-export function buildRunDirBlock(runDir: string): string {
-  return `\n\n## Output Directory (STRICT)\nAll deliverable artifacts (specs, reports, research docs, generated data files, code you produce for the user) MUST be written under the run output directory: \`${runDir}\`\nThis directory is the canonical location for this conversation turn's artifacts.\n\nForbidden write locations — NEVER write deliverable artifacts to:\n- \`/home/user/...\`, \`/home/kali/...\`, or any other home directory outside \`${runDir}\`\n- \`/tmp/...\` or other system temp dirs\n- \`~/...\` or shell-expanded home paths\n- \`~/.orionomega/...\` or any subdirectory of the OrionOmega install tree (e.g. \`~/.orionomega/src\`) — that is the application's own source tree, never a place for run deliverables\n\nWhen calling \`write_file\`, prefer relative paths (just the filename) — they are resolved against \`${runDir}\` automatically. If you must use an absolute path, it must be under \`${runDir}\`. If the user names an absolute output path outside \`${runDir}\`, IGNORE that path and write the file under \`${runDir}\` instead.`;
+export function buildRunDirBlock(runDir: string, opts: RunDirBlockOptions = {}): string {
+  if (opts.selectedRepo) {
+    const { remoteUrl, branch } = opts.selectedRepo;
+    return `\n\n## Working Directory (STRICT)\nThe user has selected a repository on the Git tab. Your tools (\`exec\`, \`read_file\`, \`write_file\`) operate inside that repo's local checkout: \`${runDir}\`\n- Remote: \`${remoteUrl}\`\n- Branch: \`${branch}\`\n\n\`exec\` runs from this directory. Relative \`read_file\` / \`write_file\` paths resolve here. Files you write land in the user's actual repo working tree — they are NOT scratch artifacts. Treat this as the user's project.\n\nForbidden write locations — REFUSE to write to:\n- \`~/.orionomega/...\` or any subdirectory of the OrionOmega install tree (the application's own files).\n- The OrionOmega monorepo source tree (\`packages/*/src/...\`) when running from a dev checkout — that is OrionOmega editing itself, which Direct mode does not do. If the user genuinely wants to modify OrionOmega, point them at Coding mode with a Git-tab selection of the OrionOmega repo.\n- Any other home / temp / system path outside \`${runDir}\`.\n\nDirect mode does NOT auto-commit or push. Make the edits the user asked for; let them review and commit on their own (or switch to Coding mode for a guided commit/push flow).`;
+  }
+  return `\n\n## Output Directory (STRICT)\nAll deliverable artifacts (specs, reports, research docs, generated data files, code you produce for the user) MUST be written under the run output directory: \`${runDir}\`\nThis directory is the canonical location for this conversation turn's artifacts.\n\nForbidden write locations — NEVER write deliverable artifacts to:\n- \`/home/user/...\`, \`/home/kali/...\`, or any other home directory outside \`${runDir}\`\n- \`/tmp/...\` or other system temp dirs\n- \`~/...\` or shell-expanded home paths\n- \`~/.orionomega/...\` or any subdirectory of the OrionOmega install tree (e.g. \`~/.orionomega/src\`) — that is the application's own source tree, never a place for run deliverables\n- The OrionOmega monorepo source tree (\`packages/*/src/...\`) when running from a dev checkout — that is OrionOmega editing itself, which Direct mode does not do. The user should switch to Coding mode and select the OrionOmega repo on the Git tab if they want changes there.\n\nWhen calling \`write_file\`, prefer relative paths (just the filename) — they are resolved against \`${runDir}\` automatically. If you must use an absolute path, it must be under \`${runDir}\`. If the user names an absolute output path outside \`${runDir}\`, IGNORE that path and write the file under \`${runDir}\` instead.`;
 }
 
 const CORE_INSTRUCTIONS = `You are OrionOmega's main agent. Your role:

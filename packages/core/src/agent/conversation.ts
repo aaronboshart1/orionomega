@@ -217,7 +217,13 @@ export async function executeMainTool(
   switch (name) {
     case 'read_file': {
       const filePath = String(input.path ?? '');
-      const resolved = filePath.startsWith('/') ? filePath : `${workspaceDir}/${filePath}`;
+      // Task #216: relative paths resolve against the active runDir (the
+      // Git-tab selected repo's checkout when one is selected, the
+      // per-conversation scratch dir otherwise) — matching `exec`'s cwd
+      // and `write_file`'s base. Falls back to workspaceDir when no
+      // runDir is provided so legacy callers are unaffected.
+      const baseDir = runDir ?? workspaceDir;
+      const resolved = filePath.startsWith('/') ? filePath : `${baseDir}/${filePath}`;
       if (!existsSync(resolved)) return `Error: File not found: ${resolved}`;
       const data = await readFile(resolved, 'utf-8');
       if (data.length > 30_000) return data.slice(0, 30_000) + '\n... [truncated at 30KB]';
@@ -263,12 +269,12 @@ export async function executeMainTool(
       const leaks = detectInstallDirWrites([resolved]);
       if (leaks.length > 0) {
         const target = runDir ?? '<run output dir>';
-        log.warn('Refused write into OrionOmega install dir', {
+        log.warn('Refused write into OrionOmega install/source tree', {
           requestedPath: filePath,
           resolvedPath: resolved,
           runDir,
         });
-        return `Error: refused to write to "${resolved}" — that path is inside the OrionOmega install tree (~/.orionomega/...), which is the application's own source code, not a place for run deliverables. Write the file under the run output directory instead: ${target}. If you pass a relative path (e.g. just the filename), it will be resolved against the run output directory automatically.`;
+        return `Error: refused to write to "${resolved}" — that path is inside the OrionOmega application's own source/install tree (either \`~/.orionomega/...\` for a bundled install, or \`packages/*/src/...\` for a dev checkout). Direct mode does NOT edit OrionOmega itself. If the user genuinely wants to change OrionOmega, switch to Coding mode and select the OrionOmega repository on the Git tab — that path goes through the safe-commit/push flow. Otherwise, write the file under the current working directory instead: ${target}. If you pass a relative path (e.g. just the filename), it resolves against the current working directory automatically.`;
       }
 
       const { mkdir } = await import('node:fs/promises');
