@@ -159,14 +159,18 @@ function SkillField({
 /**
  * Atlassian OAuth 2.0 authorization helper shown inside the Atlassian SkillCard.
  *
- * Flow:
+ * Paste flow (oauth_callback_url = http://localhost:9876/callback or similar):
  *  1. User clicks "Authorize with Atlassian" — opens Atlassian in a new tab
- *  2. Atlassian redirects to the configured callback URL (typically http://localhost:9876/callback)
- *  3. Since no listener is running there, the browser shows an error page — that's expected
- *  4. User copies the full URL from their browser address bar
- *  5. User pastes it into the text field here and clicks Submit
- *  6. The WebUI sends the URL to POST /api/gateway/api/skills/atlassian/oauth/exchange
- *  7. The gateway extracts the code, exchanges it for tokens, and saves them to config
+ *  2. Atlassian redirects to the configured callback URL (nothing listening there — expected)
+ *  3. User copies the full URL from their browser address bar
+ *  4. User pastes it into the text field here and clicks Submit
+ *  5. The WebUI sends the URL to POST /api/gateway/api/skills/atlassian/oauth/exchange
+ *  6. The gateway extracts the code, exchanges it for tokens, and saves them to config
+ *
+ * Auto / gateway flow (oauth_callback_url contains /api/gateway/skills/atlassian/oauth/callback):
+ *  1. User clicks "Authorize with Atlassian" — opens Atlassian in a new tab
+ *  2. Atlassian redirects directly to the gateway callback endpoint
+ *  3. The gateway exchanges the code and saves tokens automatically — no paste needed
  */
 function AtlassianOAuthSection({ skillSettings }: { skillSettings: Record<string, unknown> }) {
   const authMethod = (skillSettings.auth_method as string) || 'oauth';
@@ -185,6 +189,10 @@ function AtlassianOAuthSection({ skillSettings }: { skillSettings: Record<string
   // Default callback URL — just localhost:9876 since that's what Atlassian
   // apps commonly register. User can override in the settings.
   const effectiveCallback = callbackUrl || 'http://localhost:9876/callback';
+
+  // Detect if the user has configured a gateway callback URL (Option B / auto flow).
+  // When true, the gateway receives the code directly so no paste step is needed.
+  const isGatewayCallback = effectiveCallback.includes('/api/gateway/skills/atlassian/oauth/callback');
 
   const buildAuthUrl = (cId: string, cbUrl: string) => {
     const ATLASSIAN_AUTH_URL = 'https://auth.atlassian.com/authorize';
@@ -207,11 +215,13 @@ function AtlassianOAuthSection({ skillSettings }: { skillSettings: Record<string
     if (!clientId) return;
     const url = buildAuthUrl(clientId, effectiveCallback);
     window.open(url, '_blank');
-    setShowPasteField(true);
     setError('');
     setSuccess(false);
-    // Focus the paste field after a short delay
-    setTimeout(() => pasteInputRef.current?.focus(), 300);
+    if (!isGatewayCallback) {
+      setShowPasteField(true);
+      // Focus the paste field after a short delay
+      setTimeout(() => pasteInputRef.current?.focus(), 300);
+    }
   };
 
   const handleSubmitCode = async () => {
@@ -279,55 +289,65 @@ function AtlassianOAuthSection({ skillSettings }: { skillSettings: Record<string
             </button>
           </div>
 
-          {/* Step 2: Paste redirect URL */}
-          {showPasteField && (
-            <div className="space-y-1.5 rounded border border-zinc-700 bg-zinc-800/50 p-2.5">
-              <p className="text-[10px] text-zinc-400 leading-relaxed">
-                <strong className="text-zinc-300">After authorizing:</strong> Atlassian will redirect your browser
-                to <code className="text-zinc-400">{effectiveCallback}</code> which won&apos;t load — that&apos;s expected.
-                Copy the <strong>entire URL</strong> from your browser&apos;s address bar and paste it below.
-              </p>
-              <p className="text-[10px] text-zinc-500">
-                The URL looks like: <code className="text-zinc-500">{effectiveCallback}?state=...&amp;code=eyJ...</code>
-              </p>
-              <div className="flex gap-1.5">
-                <input
-                  ref={pasteInputRef}
-                  type="text"
-                  value={pasteInput}
-                  onChange={(e) => setPasteInput(e.target.value)}
-                  placeholder="Paste the full redirect URL here"
-                  className="flex-1 rounded border border-zinc-600 bg-zinc-900 px-2 py-1 text-[11px] text-zinc-200 outline-none focus:border-blue-500 placeholder:text-zinc-600"
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && pasteInput.trim()) {
-                      void handleSubmitCode();
-                    }
-                  }}
-                />
-                <button
-                  onClick={() => void handleSubmitCode()}
-                  disabled={submitting || !pasteInput.trim()}
-                  className="rounded bg-zinc-700 px-2.5 py-1 text-[11px] font-medium text-zinc-200 transition-colors hover:bg-zinc-600 disabled:opacity-40 disabled:cursor-not-allowed"
-                >
-                  {submitting ? (
-                    <Loader2 size={10} className="animate-spin" />
-                  ) : (
-                    'Submit'
-                  )}
-                </button>
-              </div>
-            </div>
-          )}
+          {/* Step 2: either paste redirect URL (localhost flow) or auto-complete notice (gateway flow) */}
+          {isGatewayCallback ? (
+            <p className="text-[10px] text-zinc-400 leading-relaxed">
+              <strong className="text-zinc-300">Auto flow:</strong> After authorizing, Atlassian will redirect
+              directly to your gateway callback URL. The gateway will exchange the code and save tokens automatically
+              — no pasting needed. Return to this page once the authorization is complete.
+            </p>
+          ) : (
+            <>
+              {showPasteField && (
+                <div className="space-y-1.5 rounded border border-zinc-700 bg-zinc-800/50 p-2.5">
+                  <p className="text-[10px] text-zinc-400 leading-relaxed">
+                    <strong className="text-zinc-300">After authorizing:</strong> Atlassian will redirect your browser
+                    to <code className="text-zinc-400">{effectiveCallback}</code> which won&apos;t load — that&apos;s expected.
+                    Copy the <strong>entire URL</strong> from your browser&apos;s address bar and paste it below.
+                  </p>
+                  <p className="text-[10px] text-zinc-500">
+                    The URL looks like: <code className="text-zinc-500">{effectiveCallback}?state=...&amp;code=eyJ...</code>
+                  </p>
+                  <div className="flex gap-1.5">
+                    <input
+                      ref={pasteInputRef}
+                      type="text"
+                      value={pasteInput}
+                      onChange={(e) => setPasteInput(e.target.value)}
+                      placeholder="Paste the full redirect URL here"
+                      className="flex-1 rounded border border-zinc-600 bg-zinc-900 px-2 py-1 text-[11px] text-zinc-200 outline-none focus:border-blue-500 placeholder:text-zinc-600"
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && pasteInput.trim()) {
+                          void handleSubmitCode();
+                        }
+                      }}
+                    />
+                    <button
+                      onClick={() => void handleSubmitCode()}
+                      disabled={submitting || !pasteInput.trim()}
+                      className="rounded bg-zinc-700 px-2.5 py-1 text-[11px] font-medium text-zinc-200 transition-colors hover:bg-zinc-600 disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      {submitting ? (
+                        <Loader2 size={10} className="animate-spin" />
+                      ) : (
+                        'Submit'
+                      )}
+                    </button>
+                  </div>
+                </div>
+              )}
 
-          {/* Show a link to open the paste field if it's hidden */}
-          {!showPasteField && !success && (
-            <button
-              type="button"
-              onClick={() => { setShowPasteField(true); setTimeout(() => pasteInputRef.current?.focus(), 100); }}
-              className="text-[10px] text-blue-400 hover:text-blue-300 underline"
-            >
-              Already authorized? Paste the redirect URL here
-            </button>
+              {/* Show a link to open the paste field if it's hidden */}
+              {!showPasteField && !success && (
+                <button
+                  type="button"
+                  onClick={() => { setShowPasteField(true); setTimeout(() => pasteInputRef.current?.focus(), 100); }}
+                  className="text-[10px] text-blue-400 hover:text-blue-300 underline"
+                >
+                  Already authorized? Paste the redirect URL here
+                </button>
+              )}
+            </>
           )}
         </div>
       ) : (

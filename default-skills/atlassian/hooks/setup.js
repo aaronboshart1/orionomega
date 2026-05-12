@@ -122,7 +122,9 @@ async function main() {
           result.fields.mcp_server_status = 'OAuth not configured';
           result.fields.setup_instructions =
             'Enter your OAuth Client ID and Client Secret from developer.atlassian.com/console/myapps/. ' +
-            'Set the Callback URL to http://localhost:9876/callback and register that same URL in the Developer Console.';
+            'Set the Callback URL in the Developer Console and in the field above. ' +
+            'Option A (paste flow, works everywhere): use http://localhost:9876/callback — after authorizing, copy the redirect URL and paste it here. ' +
+            'Option B (auto flow, best for Tailscale/remote): use http://<your-hostname>:<gateway-port>/api/gateway/skills/atlassian/oauth/callback — authorization completes automatically.';
         }
       } else {
         result.fields.mcp_server_status = 'no credentials configured';

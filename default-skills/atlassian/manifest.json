@@ -597,7 +597,7 @@
       "_oauth_instructions": {
         "type": "textarea",
         "label": "OAuth 2.0 Setup Instructions",
-        "description": "To configure OAuth 2.0 (3LO):\n\n1. Go to https://developer.atlassian.com/console/myapps/\n2. Create a new app (or select your existing one)\n3. Under 'Authorization', click 'Configure' next to 'OAuth 2.0 (3LO)'\n4. Set the Callback URL to: http://localhost:9876/callback\n   (Register this exact URL in the Developer Console)\n5. Under 'Permissions', add the Jira API, Confluence API, and any others you need\n6. Add the required scopes for each API\n7. Under 'Settings', copy the Client ID and Secret below\n8. Save settings, then click 'Authorize with Atlassian' below\n9. After authorizing, your browser will redirect to a localhost URL that won't load\n10. Copy the full URL from your address bar and paste it into the field that appears",
+        "description": "To configure OAuth 2.0 (3LO):\n\n1. Go to https://developer.atlassian.com/console/myapps/\n2. Create a new app (or select your existing one)\n3. Under 'Authorization', click 'Configure' next to 'OAuth 2.0 (3LO)'\n4. Set the Callback URL — choose one of two options:\n   Option A (Paste flow — works everywhere): http://localhost:9876/callback\n     After authorizing, your browser redirects to a URL that won't load — copy it and paste it into the field below.\n   Option B (Auto flow — best for Tailscale/remote): http://<your-hostname>:<gateway-port>/api/gateway/skills/atlassian/oauth/callback\n     After authorizing, the gateway receives the code automatically — no pasting needed.\n5. Under 'Permissions', add the Jira API, Confluence API, and any others you need\n6. Add the required scopes for each API\n7. Under 'Settings', copy the Client ID and Secret below\n8. Enter your chosen Callback URL in the field below, save settings, then click 'Authorize with Atlassian'",
         "widget": "info",
         "group": "auth",
         "order": 2,
@@ -636,7 +636,7 @@
       "oauth_callback_url": {
         "type": "url",
         "label": "OAuth Callback URL",
-        "description": "The callback URL registered in your Atlassian OAuth app. This MUST match exactly what you set in the Developer Console under Authorization \u2192 OAuth 2.0 (3LO) \u2192 Callback URL.\n\nRecommended: http://localhost:9876/callback\n\nAfter authorizing, your browser will redirect to this URL (which won't load \u2014 that's normal). Copy the full URL from your browser's address bar and paste it into the text field that appears in the OAuth Authorization section below.",
+        "description": "The callback URL registered in your Atlassian OAuth app. This MUST match exactly what you set in the Developer Console under Authorization \u2192 OAuth 2.0 (3LO) \u2192 Callback URL.\n\nOption A \u2014 Paste flow (works everywhere):\n  http://localhost:9876/callback\n  After authorizing, your browser redirects to a URL that won't load \u2014 that's normal. Copy the full URL from your address bar and paste it into the field that appears below.\n\nOption B \u2014 Auto flow (best for Tailscale or remote access):\n  http://<your-hostname>:<gateway-port>/api/gateway/skills/atlassian/oauth/callback\n  The gateway receives the code directly \u2014 no pasting needed. Authorization completes automatically.",
         "default": "http://localhost:9876/callback",
         "placeholder": "http://localhost:9876/callback",
         "required": false,
