@@ -176,12 +176,13 @@ async function main() {
 }
 
 function buildAuthUrl(clientId, callbackUrl, scopes) {
-  const defaultScopes = 'read:jira-work manage:jira-project manage:jira-configuration read:jira-user write:jira-work manage:jira-webhook manage:jira-data-provider ' +
-    'read:servicedesk-request manage:servicedesk-customer write:servicedesk-request read:servicemanagement-insight-objects ' +
-    'write:confluence-content read:confluence-space.summary write:confluence-space write:confluence-file ' +
-    'read:confluence-props write:confluence-props manage:confluence-configuration ' +
-    'read:confluence-content.all read:confluence-content.summary search:confluence read:confluence-content.permission ' +
-    'read:confluence-user read:confluence-groups write:confluence-groups readonly:content.attachment:confluence ' +
+  const defaultScopes =
+    'read:jira-work write:jira-work search:jira-work ' +
+    'read:page:confluence read:comment:confluence read:space:confluence read:hierarchical-content:confluence ' +
+    'write:page:confluence search:confluence ' +
+    'read:component:compass write:component:compass ' +
+    'read:me read:account ' +
+    'search:rovo:mcp read:3p-data:mcp read:home:mcp read:whiteboard:confluence read:confluence:mcp read:focus:mcp read:loom:mcp read:talent:mcp ' +
     'offline_access';
   const scopeStr = scopes || defaultScopes;
 
