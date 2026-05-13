@@ -1,0 +1,745 @@
+{
+  "$schema": "https://orionomega.dev/schemas/skill-manifest.v1.json",
+  "name": "pipedream",
+  "version": "1.0.0",
+  "description": "Pipedream Connect integration for workflow automation, managed auth, and 3,000+ app integrations. Run actions, deploy triggers, manage connected accounts, and invoke workflows via the Pipedream API.",
+  "author": "OrionOmega",
+  "license": "MIT",
+  "homepage": "https://pipedream.com/docs/connect",
+  "repository": "https://github.com/aaronboshart1/orionomega",
+  "orionomega": ">=0.1.0",
+  "os": [
+    "linux",
+    "darwin",
+    "win32"
+  ],
+  "requires": {
+    "commands": [],
+    "env": [],
+    "skills": []
+  },
+  "setup": {
+    "required": true,
+    "description": "Configure Pipedream Connect credentials to access 3,000+ app integrations, run actions, and deploy triggers.",
+    "auth": {
+      "methods": [
+        {
+          "type": "api-key",
+          "label": "OAuth Client Credentials (recommended)",
+          "description": "Use Pipedream OAuth client_id and client_secret for server-to-server API access. Create an OAuth client at pipedream.com/settings/api.",
+          "tokenUrl": "https://pipedream.com/settings/api"
+        },
+        {
+          "type": "api-key",
+          "label": "User API Key (legacy)",
+          "description": "Use a personal API key from your Pipedream account. Limited endpoint support.",
+          "tokenUrl": "https://pipedream.com/settings/account",
+          "envVar": "PIPEDREAM_API_KEY"
+        }
+      ]
+    },
+    "handler": "hooks/setup.js"
+  },
+  "triggers": {
+    "keywords": [
+      "pipedream",
+      "workflow",
+      "automation",
+      "integration",
+      "connect",
+      "trigger",
+      "action",
+      "webhook",
+      "slack",
+      "google sheets",
+      "zapier alternative",
+      "managed auth",
+      "oauth",
+      "third-party",
+      "api proxy",
+      "event source",
+      "component"
+    ],
+    "patterns": [
+      "\\bpipedream\\b",
+      "\\b(run|execute|invoke)\\s+(action|workflow|component)\\b",
+      "\\b(deploy|create|delete)\\s+trigger\\b",
+      "\\b(connect|link|authorize)\\s+(account|app|service)\\b",
+      "\\b(list|search|find)\\s+(apps|actions|triggers|components|integrations)\\b",
+      "\\b(send|post|create)\\s+(slack|email|message|notification)\\s+via\\s+pipedream\\b"
+    ],
+    "commands": [
+      "/pipedream",
+      "/pd"
+    ]
+  },
+  "tools": [
+    {
+      "name": "pipedream_apps",
+      "description": "Search and browse the Pipedream app catalog (3,000+ integrations). List available apps, search by name/category, get app details including auth type and proxy support.",
+      "handler": "handlers/pipedream_apps.js",
+      "timeout": 30000,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "list_apps",
+              "get_app",
+              "list_categories"
+            ],
+            "description": "App catalog action to perform"
+          },
+          "query": {
+            "type": "string",
+            "description": "Search query string (for list_apps)"
+          },
+          "app_id": {
+            "type": "string",
+            "description": "App ID or name_slug (e.g. 'slack', 'google_sheets') for get_app"
+          },
+          "has_actions": {
+            "type": "boolean",
+            "description": "Filter to apps with actions only"
+          },
+          "has_triggers": {
+            "type": "boolean",
+            "description": "Filter to apps with triggers only"
+          },
+          "category_ids": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Filter by category IDs (appcat_xxx)"
+          },
+          "limit": {
+            "type": "number",
+            "description": "Max results (default 20, max 100)"
+          }
+        },
+        "required": ["action"]
+      }
+    },
+    {
+      "name": "pipedream_components",
+      "description": "List and retrieve Pipedream component definitions (actions and triggers). Search components by app or keyword, get full prop schemas for configuration.",
+      "handler": "handlers/pipedream_components.js",
+      "timeout": 30000,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "list_components",
+              "get_component",
+              "configure_prop",
+              "reload_props"
+            ],
+            "description": "Component action to perform"
+          },
+          "component_key": {
+            "type": "string",
+            "description": "Component key (e.g. 'gitlab-list-commits') for get_component"
+          },
+          "query": {
+            "type": "string",
+            "description": "Search query for list_components"
+          },
+          "app": {
+            "type": "string",
+            "description": "Filter by app slug (e.g. 'slack') for list_components"
+          },
+          "component_type": {
+            "type": "string",
+            "enum": ["action", "trigger"],
+            "description": "Filter by component type"
+          },
+          "external_user_id": {
+            "type": "string",
+            "description": "External user ID (for configure_prop and reload_props)"
+          },
+          "prop_name": {
+            "type": "string",
+            "description": "Prop name to configure (for configure_prop)"
+          },
+          "configured_props": {
+            "type": "object",
+            "description": "Currently configured props (for configure_prop and reload_props)"
+          },
+          "limit": {
+            "type": "number",
+            "description": "Max results (default 20)"
+          }
+        },
+        "required": ["action"]
+      }
+    },
+    {
+      "name": "pipedream_actions",
+      "description": "List, configure, and run Pipedream action components. Execute any of 10,000+ pre-built API operations (send Slack messages, create Jira issues, add Google Sheets rows, etc.) on behalf of connected users.",
+      "handler": "handlers/pipedream_actions.js",
+      "timeout": 60000,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "list_actions",
+              "get_action",
+              "configure_prop",
+              "reload_props",
+              "run_action"
+            ],
+            "description": "Action operation to perform"
+          },
+          "action_key": {
+            "type": "string",
+            "description": "Action component key (e.g. 'slack-send-message', 'google_sheets-add-single-row')"
+          },
+          "external_user_id": {
+            "type": "string",
+            "description": "External user ID that owns the connected account"
+          },
+          "configured_props": {
+            "type": "object",
+            "description": "Configured props including auth provision (e.g. { slack: { authProvisionId: 'apn_xxx' }, channel: 'C123' })"
+          },
+          "prop_name": {
+            "type": "string",
+            "description": "Prop name to configure (for configure_prop)"
+          },
+          "dynamic_props_id": {
+            "type": "string",
+            "description": "Dynamic props ID from reload_props (dyp_xxx) — required if component uses dynamic props"
+          },
+          "version": {
+            "type": "string",
+            "description": "Component version (semver, e.g. '0.0.3') — defaults to latest"
+          },
+          "query": {
+            "type": "string",
+            "description": "Search query for list_actions"
+          },
+          "app": {
+            "type": "string",
+            "description": "Filter by app slug for list_actions"
+          },
+          "limit": {
+            "type": "number",
+            "description": "Max results (default 20)"
+          }
+        },
+        "required": ["action"]
+      }
+    },
+    {
+      "name": "pipedream_triggers",
+      "description": "Deploy, list, update, and delete Pipedream trigger components (event sources). Deploy triggers to listen for events from third-party apps (new Slack messages, GitHub PRs, etc.) and forward them to webhooks or workflows.",
+      "handler": "handlers/pipedream_triggers.js",
+      "timeout": 60000,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "list_triggers",
+              "get_trigger",
+              "configure_prop",
+              "reload_props",
+              "deploy_trigger",
+              "list_deployed",
+              "get_deployed",
+              "update_deployed",
+              "delete_deployed",
+              "get_events"
+            ],
+            "description": "Trigger operation to perform"
+          },
+          "trigger_key": {
+            "type": "string",
+            "description": "Trigger component key (e.g. 'github-new-issue', 'slack-new-message')"
+          },
+          "deployed_trigger_id": {
+            "type": "string",
+            "description": "Deployed trigger ID (dc_xxx) for get/update/delete/events"
+          },
+          "external_user_id": {
+            "type": "string",
+            "description": "External user ID that owns the connected account"
+          },
+          "configured_props": {
+            "type": "object",
+            "description": "Configured props including auth provision"
+          },
+          "prop_name": {
+            "type": "string",
+            "description": "Prop name to configure"
+          },
+          "dynamic_props_id": {
+            "type": "string",
+            "description": "Dynamic props ID from reload_props"
+          },
+          "webhook_url": {
+            "type": "string",
+            "description": "Webhook URL to receive trigger events"
+          },
+          "workflow_id": {
+            "type": "string",
+            "description": "Workflow ID (p_xxx) to receive trigger events"
+          },
+          "emit_on_deploy": {
+            "type": "boolean",
+            "description": "Emit historical events on deploy (default true)"
+          },
+          "active": {
+            "type": "boolean",
+            "description": "Set trigger active/inactive (for update_deployed)"
+          },
+          "query": {
+            "type": "string",
+            "description": "Search query for list_triggers"
+          },
+          "app": {
+            "type": "string",
+            "description": "Filter by app slug"
+          },
+          "version": {
+            "type": "string",
+            "description": "Component version"
+          },
+          "limit": {
+            "type": "number",
+            "description": "Max results (default 20)"
+          }
+        },
+        "required": ["action"]
+      }
+    },
+    {
+      "name": "pipedream_accounts",
+      "description": "Manage Pipedream connected accounts (OAuth and API key connections for end users). List accounts, get account details with credentials, and delete accounts.",
+      "handler": "handlers/pipedream_accounts.js",
+      "timeout": 30000,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "list_accounts",
+              "get_account",
+              "delete_account",
+              "delete_accounts_by_app"
+            ],
+            "description": "Account operation to perform"
+          },
+          "account_id": {
+            "type": "string",
+            "description": "Account ID (apn_xxx) for get/delete"
+          },
+          "external_user_id": {
+            "type": "string",
+            "description": "Filter accounts by external user ID"
+          },
+          "app": {
+            "type": "string",
+            "description": "Filter by app slug (e.g. 'slack', 'github') — also used for delete_accounts_by_app"
+          },
+          "include_credentials": {
+            "type": "boolean",
+            "description": "Include OAuth tokens/API keys in response (requires own OAuth client)"
+          },
+          "limit": {
+            "type": "number",
+            "description": "Max results (default 20)"
+          }
+        },
+        "required": ["action"]
+      }
+    },
+    {
+      "name": "pipedream_users",
+      "description": "Manage Pipedream Connect external users and tokens. List external users, delete users (and all their accounts/triggers), and create Connect tokens for frontend auth flows.",
+      "handler": "handlers/pipedream_users.js",
+      "timeout": 30000,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "list_users",
+              "delete_user",
+              "create_connect_token"
+            ],
+            "description": "User operation to perform"
+          },
+          "external_user_id": {
+            "type": "string",
+            "description": "External user ID (your app's user identifier)"
+          },
+          "token_expires_in": {
+            "type": "number",
+            "description": "Connect token TTL in seconds (1-14400, default 14400 = 4 hours)"
+          },
+          "token_scope": {
+            "type": "string",
+            "description": "Connect token scope (default 'connect:*')"
+          },
+          "webhook_uri": {
+            "type": "string",
+            "description": "Webhook URI for connection event notifications"
+          },
+          "success_redirect_uri": {
+            "type": "string",
+            "description": "Redirect URI after successful account connection"
+          },
+          "error_redirect_uri": {
+            "type": "string",
+            "description": "Redirect URI on connection error"
+          },
+          "limit": {
+            "type": "number",
+            "description": "Max results (default 20)"
+          }
+        },
+        "required": ["action"]
+      }
+    },
+    {
+      "name": "pipedream_workflows",
+      "description": "Invoke Pipedream workflows via HTTP trigger. Trigger multi-step workflows passing user identity and custom data.",
+      "handler": "handlers/pipedream_workflows.js",
+      "timeout": 60000,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": ["invoke_workflow"],
+            "description": "Workflow operation to perform"
+          },
+          "workflow_url": {
+            "type": "string",
+            "description": "Workflow HTTP trigger URL (https://xxx.m.pipedream.net)"
+          },
+          "workflow_id": {
+            "type": "string",
+            "description": "Workflow ID (p_xxx) — alternative to workflow_url for invoking via Connect"
+          },
+          "external_user_id": {
+            "type": "string",
+            "description": "External user ID for user-scoped workflow execution"
+          },
+          "payload": {
+            "type": "object",
+            "description": "JSON payload to send to the workflow"
+          },
+          "method": {
+            "type": "string",
+            "enum": ["GET", "POST", "PUT"],
+            "description": "HTTP method (default POST)"
+          }
+        },
+        "required": ["action"]
+      }
+    },
+    {
+      "name": "pipedream_proxy",
+      "description": "Route custom API requests through Pipedream's Connect Proxy with automatic credential injection. Send requests to any of 3,000+ third-party APIs using managed auth — no raw tokens needed.",
+      "handler": "handlers/pipedream_proxy.js",
+      "timeout": 45000,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": ["proxy_request"],
+            "description": "Always 'proxy_request'"
+          },
+          "app": {
+            "type": "string",
+            "description": "App slug (e.g. 'slack', 'github', 'google_sheets')"
+          },
+          "account_id": {
+            "type": "string",
+            "description": "Account ID (apn_xxx) to use for auth injection"
+          },
+          "external_user_id": {
+            "type": "string",
+            "description": "External user ID (alternative to account_id)"
+          },
+          "url": {
+            "type": "string",
+            "description": "Target API URL path or full URL (e.g. '/api/chat.postMessage' or 'https://slack.com/api/chat.postMessage')"
+          },
+          "method": {
+            "type": "string",
+            "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+            "description": "HTTP method (default GET)"
+          },
+          "headers": {
+            "type": "object",
+            "description": "Additional headers to include"
+          },
+          "body": {
+            "type": "object",
+            "description": "Request body (for POST/PUT/PATCH)"
+          },
+          "query_params": {
+            "type": "object",
+            "description": "URL query parameters"
+          }
+        },
+        "required": ["action", "app"]
+      }
+    }
+  ],
+  "workerProfile": {
+    "tools": [
+      "pipedream_apps",
+      "pipedream_components",
+      "pipedream_actions",
+      "pipedream_triggers",
+      "pipedream_accounts",
+      "pipedream_users",
+      "pipedream_workflows",
+      "pipedream_proxy"
+    ],
+    "maxTimeout": 120000
+  },
+  "settings": {
+    "type": "object",
+    "properties": {
+      "_auth_header": {
+        "type": "string",
+        "label": "\u2500\u2500 Authentication \u2500\u2500",
+        "description": "Configure your Pipedream API credentials.",
+        "widget": "heading",
+        "group": "auth",
+        "order": 0
+      },
+      "auth_method": {
+        "type": "select",
+        "label": "Authentication Method",
+        "description": "How to authenticate with the Pipedream API. OAuth Client Credentials is recommended for full API access. User API Key is simpler but has limited endpoint support.",
+        "options": [
+          { "value": "oauth", "label": "OAuth Client Credentials (recommended)" },
+          { "value": "api_key", "label": "User API Key (legacy)" }
+        ],
+        "default": "oauth",
+        "required": true,
+        "group": "auth",
+        "order": 1
+      },
+      "_oauth_instructions": {
+        "type": "textarea",
+        "label": "OAuth Setup Instructions",
+        "description": "To configure OAuth Client Credentials:\n\n1. Go to https://pipedream.com/settings/api in your workspace\n2. Click 'New OAuth Client' and name it (e.g. 'OrionOmega')\n3. Copy the Client ID and Client Secret immediately — the secret is only shown once\n4. Enter them in the fields below\n5. Enter your Project ID from Project Settings\n\nThe skill will automatically exchange these for short-lived bearer tokens (1-hour TTL) and refresh them as needed.",
+        "widget": "info",
+        "group": "auth",
+        "order": 2,
+        "dependsOn": { "field": "auth_method", "value": "oauth" }
+      },
+      "oauth_client_id": {
+        "type": "string",
+        "label": "OAuth Client ID",
+        "description": "Pipedream OAuth client ID from pipedream.com/settings/api.",
+        "placeholder": "oc_xxxxxxxx",
+        "required": false,
+        "group": "auth",
+        "order": 3,
+        "dependsOn": { "field": "auth_method", "value": "oauth" }
+      },
+      "oauth_client_secret": {
+        "type": "password",
+        "label": "OAuth Client Secret",
+        "description": "Pipedream OAuth client secret. Only shown once when created.",
+        "placeholder": "ocs_xxxxxxxxxxxxxxxx",
+        "required": false,
+        "group": "auth",
+        "widget": "secret",
+        "order": 4,
+        "dependsOn": { "field": "auth_method", "value": "oauth" }
+      },
+      "_api_key_instructions": {
+        "type": "textarea",
+        "label": "API Key Setup Instructions",
+        "description": "To configure API Key authentication:\n\n1. Go to https://pipedream.com/settings/account\n2. Copy your API Key from 'My Account'\n3. Paste it below\n\nNote: User API Keys have limited endpoint support compared to OAuth.",
+        "widget": "info",
+        "group": "auth",
+        "order": 2,
+        "dependsOn": { "field": "auth_method", "value": "api_key" }
+      },
+      "api_key": {
+        "type": "password",
+        "label": "User API Key",
+        "description": "Personal API key from pipedream.com/settings/account.",
+        "placeholder": "pd_xxxxxxxxxxxxxxxx",
+        "required": false,
+        "group": "auth",
+        "widget": "secret",
+        "order": 3,
+        "dependsOn": { "field": "auth_method", "value": "api_key" }
+      },
+      "oauth_access_token": {
+        "type": "password",
+        "label": "OAuth Access Token (auto-managed)",
+        "description": "Current OAuth bearer token. Automatically obtained and refreshed by the skill — do not edit manually unless troubleshooting.",
+        "required": false,
+        "group": "auth",
+        "widget": "secret",
+        "order": 5,
+        "hidden": true
+      },
+      "oauth_token_expires_at": {
+        "type": "string",
+        "label": "Token Expiry (auto-managed)",
+        "description": "ISO 8601 timestamp when the current access token expires.",
+        "required": false,
+        "group": "auth",
+        "order": 6,
+        "hidden": true
+      },
+      "_project_header": {
+        "type": "string",
+        "label": "\u2500\u2500 Project Configuration \u2500\u2500",
+        "description": "Configure your Pipedream project settings.",
+        "widget": "heading",
+        "group": "preferences",
+        "order": 10
+      },
+      "project_id": {
+        "type": "string",
+        "label": "Project ID",
+        "description": "Pipedream project ID (proj_xxx). Find this in Project Settings on pipedream.com. Required for all Connect API calls.",
+        "placeholder": "proj_xxxxxxxx",
+        "required": true,
+        "group": "preferences",
+        "order": 11,
+        "validation": {
+          "pattern": "^proj_[a-zA-Z0-9]+$"
+        }
+      },
+      "environment": {
+        "type": "select",
+        "label": "Environment",
+        "description": "Pipedream environment. Development is free (max 10 users). Production requires a paid plan.",
+        "options": [
+          { "value": "development", "label": "Development (free, max 10 users)" },
+          { "value": "production", "label": "Production (paid, unlimited users)" }
+        ],
+        "default": "development",
+        "required": true,
+        "group": "preferences",
+        "order": 12
+      },
+      "default_external_user_id": {
+        "type": "string",
+        "label": "Default External User ID",
+        "description": "Default external user ID to use when none is specified in tool calls. This maps to your app's user identifier.",
+        "placeholder": "user_default",
+        "required": false,
+        "group": "preferences",
+        "order": 13
+      },
+      "_features_header": {
+        "type": "string",
+        "label": "\u2500\u2500 Feature Enablement \u2500\u2500",
+        "description": "Toggle major feature areas on/off. Disabled features won't load their tools.",
+        "widget": "heading",
+        "group": "preferences",
+        "order": 20
+      },
+      "enable_apps": {
+        "type": "boolean",
+        "label": "Enable App Catalog",
+        "description": "Enable app search and discovery tools.",
+        "default": true,
+        "group": "preferences",
+        "order": 21
+      },
+      "enable_components": {
+        "type": "boolean",
+        "label": "Enable Components",
+        "description": "Enable component listing and retrieval tools.",
+        "default": true,
+        "group": "preferences",
+        "order": 22
+      },
+      "enable_actions": {
+        "type": "boolean",
+        "label": "Enable Actions",
+        "description": "Enable action listing, configuration, and execution tools.",
+        "default": true,
+        "group": "preferences",
+        "order": 23
+      },
+      "enable_triggers": {
+        "type": "boolean",
+        "label": "Enable Triggers",
+        "description": "Enable trigger deployment and management tools.",
+        "default": true,
+        "group": "preferences",
+        "order": 24
+      },
+      "enable_accounts": {
+        "type": "boolean",
+        "label": "Enable Account Management",
+        "description": "Enable connected account listing and management tools.",
+        "default": true,
+        "group": "preferences",
+        "order": 25
+      },
+      "enable_users": {
+        "type": "boolean",
+        "label": "Enable User Management",
+        "description": "Enable external user and token management tools.",
+        "default": true,
+        "group": "preferences",
+        "order": 26
+      },
+      "enable_workflows": {
+        "type": "boolean",
+        "label": "Enable Workflow Invocation",
+        "description": "Enable workflow trigger/invocation tools.",
+        "default": true,
+        "group": "preferences",
+        "order": 27
+      },
+      "enable_proxy": {
+        "type": "boolean",
+        "label": "Enable Connect Proxy",
+        "description": "Enable API proxy tools for routing requests through Pipedream with managed credentials.",
+        "default": false,
+        "group": "preferences",
+        "order": 28
+      },
+      "max_results": {
+        "type": "number",
+        "label": "Default Max Results",
+        "description": "Default maximum results for list/search operations (1-100).",
+        "default": 20,
+        "group": "advanced",
+        "order": 30
+      },
+      "api_base_url": {
+        "type": "url",
+        "label": "API Base URL",
+        "description": "Pipedream API base URL. Only change for custom deployments or proxies.",
+        "default": "https://api.pipedream.com/v1",
+        "placeholder": "https://api.pipedream.com/v1",
+        "required": false,
+        "group": "advanced",
+        "order": 31
+      }
+    }
+  },
+  "hooks": {
+    "healthCheck": "hooks/health.js",
+    "postInstall": "hooks/setup.js"
+  }
+}
