@@ -480,6 +480,7 @@ export function handleExportSession(
   const rawName = (session?.name?.trim() || sessionId);
   const slug = rawName
     .normalize('NFKD')
+    // eslint-disable-next-line no-control-regex
     .replace(/[\\/:*?"<>|\x00-\x1f]+/g, '')
     .replace(/\s+/g, '-')
     .replace(/-+/g, '-')

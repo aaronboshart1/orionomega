@@ -49,13 +49,13 @@ async function main() {
     fail('Bitbucket is not enabled. Go to Settings → Skills → Atlassian → Enable Bitbucket. Note: Bitbucket requires API token authentication with Bitbucket scopes.');
   }
 
-  // Bitbucket tools only work with API token (Basic) auth — OAuth 2.1 is not supported.
+  // Bitbucket tools only work with API token (Basic) auth via the Rovo MCP Server.
   const config = getConfig();
   const authMethod = config.auth_method || process.env.ATLASSIAN_AUTH_METHOD || 'oauth';
   if (authMethod !== 'basic') {
     fail(
       'Bitbucket tools require API token authentication (Basic auth). ' +
-      'OAuth 2.1 is not supported for Bitbucket. ' +
+      'OAuth 2.0 (3LO) is not supported for Bitbucket via the Rovo MCP Server. ' +
       'Go to Settings → Skills → Atlassian → set Auth Method to "API Token", ' +
       'then enter your Atlassian email and API token.'
     );

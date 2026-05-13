@@ -774,6 +774,7 @@ export interface InstallSafeCommitHooksResult {
  * bypasses the hook) is explicitly forbidden in the preamble
  * alongside `git push --no-verify`.
  */
+/* eslint-disable no-useless-escape */
 const PRE_COMMIT_HOOK_BODY = `#!/usr/bin/env perl
 # Auto-installed by OrionOmega coding mode (Task #209).
 # Refuses to record a commit whose staged index contains:
@@ -1036,6 +1037,7 @@ if (@bad) {
 }
 exit 0;
 `;
+/* eslint-enable no-useless-escape */
 
 /**
  * Install BOTH safe-commit hooks (pre-commit + pre-push) into a

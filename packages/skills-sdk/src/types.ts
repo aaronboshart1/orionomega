@@ -73,7 +73,7 @@ export interface SkillSettingSchema {
    * UI widget override for non-obvious renderings.
    * For example, `"secret"` forces a password field regardless of `type`.
    */
-  widget?: 'secret' | 'textarea' | 'code' | 'color' | 'file';
+  widget?: 'secret' | 'textarea' | 'code' | 'color' | 'file' | 'info' | 'heading';
   /** Options for {@link SkillSettingType.Select} and {@link SkillSettingType.Multiselect} types. */
   options?: Array<{ label: string; value: string }>;
   /** Additional validation constraints applied at save time. */
@@ -95,10 +95,13 @@ export interface SkillSettingSchema {
   /** Hide this setting from the UI while still including it in validation. */
   hidden?: boolean;
   /**
-   * Name of another setting whose truthy value is required to show this one.
-   * When the dependency is falsy this setting is hidden and its value cleared.
+   * Conditional display rule: this setting is only shown when another setting
+   * matches a specific value. Use an object `{ field, value }` to check that
+   * `field` equals `value`, or a plain string to check that the named setting
+   * is truthy. When the condition is not met, this setting is hidden and its
+   * value cleared.
    */
-  dependsOn?: string;
+  dependsOn?: string | { field: string; value: string };
 }
 
 /**

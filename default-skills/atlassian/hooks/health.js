@@ -74,7 +74,28 @@ async function main() {
       throw new Error(`Unknown auth_method="${method}"`);
     }),
 
-    // Check 3: MCP server reachable
+    // Check 3: Auth/product compatibility — JSM and Bitbucket require Basic auth
+    check('product/auth compatibility', () => {
+      const method = config.auth_method || 'oauth';
+      if (method === 'oauth') {
+        const products = ['jira', 'confluence', 'compass', 'jsm', 'bitbucket', 'search'];
+        const enabled = products.filter(p => {
+          const key = `enable_${p}`;
+          if (key in config) return !!config[key];
+          return p === 'jira' || p === 'confluence' || p === 'search';
+        });
+        const incompatible = enabled.filter(p => p === 'jsm' || p === 'bitbucket');
+        if (incompatible.length > 0) {
+          throw new Error(
+            `Products [${incompatible.join(', ')}] require API token (Basic auth) but auth_method is "oauth". ` +
+            'Every call to these tools will fail. Switch auth method to "API Token" or disable these products.'
+          );
+        }
+      }
+      return 'OK';
+    }),
+
+    // Check 4: MCP server reachable
     check('MCP server reachable', async () => {
       const endpoint = config.mcp_endpoint || 'https://mcp.atlassian.com/v1/mcp';
       let authHeader = '';

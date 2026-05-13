@@ -2,7 +2,7 @@
 /**
  * Compass handler — manage components, relationships, labels, types, custom fields.
  * Maps actions to Atlassian Rovo MCP Server Compass tool names.
- * Note: Compass tools require OAuth 2.1 authentication.
+ * Note: Compass tools require OAuth 2.0 (3LO) authentication.
  */
 import { mcpCall, readParams, respond, fail, truncate, cleanArgs, isProductEnabled, getMaxResults, getCloudId } from './lib.js';
 

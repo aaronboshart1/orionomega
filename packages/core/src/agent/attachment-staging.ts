@@ -106,6 +106,7 @@ function stripBase64Prefix(raw: string): string | null {
  * `../`, absolute paths, and accidental directory components.
  */
 function sanitiseName(name: string): string {
+  // eslint-disable-next-line no-control-regex
   const base = basename(name).replace(/[\x00-\x1f]/g, '').trim();
   if (!base || base === '.' || base === '..') {
     return `attachment-${Date.now().toString(36)}`;
