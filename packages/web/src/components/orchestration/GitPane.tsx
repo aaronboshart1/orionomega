@@ -145,7 +145,7 @@ export function GitPane() {
         if (syncResult.statusError) {
           setError(`Could not read repo status: ${syncResult.statusError}`);
         }
-        const head = syncResult.result.headCommit ? syncResult.result.headCommit.slice(0, 8) : 'unknown';
+        const head = syncResult.result.headCommit ? syncResult.result.headCommit.slice(0, 7) : 'unknown';
         const parts = [
           syncResult.result.cloned ? 'cloned' : null,
           syncResult.result.fetched ? 'fetched' : null,
@@ -189,7 +189,7 @@ export function GitPane() {
         `/api/git/sessions/${encodeURIComponent(sessionId)}/repo/sync`,
         { method: 'POST' },
       );
-      const head = r.result.headCommit ? r.result.headCommit.slice(0, 8) : 'unknown';
+      const head = r.result.headCommit ? r.result.headCommit.slice(0, 7) : 'unknown';
       const parts = [
         r.result.cloned ? 'cloned' : null,
         r.result.fetched ? 'fetched' : null,

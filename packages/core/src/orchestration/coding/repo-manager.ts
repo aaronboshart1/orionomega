@@ -732,7 +732,7 @@ export async function getLastCommit(localPath: string): Promise<{
   if (!sha) return null;
   return {
     sha,
-    shortSha: sha.slice(0, 8),
+    shortSha: sha.slice(0, 7),
     subject: subject ?? '',
     author: author ?? '',
     date: date ?? '',
