@@ -185,7 +185,18 @@ export function workspace(toolName, args = {}, opts = {}) {
     });
 
     const send = (obj) => {
-      try { child.stdin.write(JSON.stringify(obj) + '\n'); } catch {}
+      try {
+        child.stdin.write(JSON.stringify(obj) + '\n');
+      } catch (err) {
+        // stdin.write() throws if the child process has already exited (e.g.
+        // EPIPE / ERR_STREAM_DESTROYED). Swallowing it silently would leave
+        // every entry in `pending` hanging until the 90-second TIMEOUT fires.
+        // Call finish() immediately so callers get a fast, descriptive error.
+        finish({
+          ok: false,
+          error: `Failed to write to workspace-mcp stdin: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
     };
     const request = (method, params) => new Promise((res) => {
       const id = nextId++;
