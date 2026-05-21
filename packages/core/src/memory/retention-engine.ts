@@ -360,6 +360,7 @@ export class RetentionEngine {
   private recentRetentions: Array<{ content: string; bankId: string; ts: number }> = [];
   private static readonly RECENT_BUFFER_TTL_MS = 30_000; // 30 seconds
   private static readonly RECENT_BUFFER_MAX = 50;
+  private retainStats = { totalRetains: 0, totalItems: 0, lastRetainMs: 0 };
 
   onMemoryEvent?: (op: string, detail: string, bank?: string, meta?: Record<string, unknown>) => void;
   /** Called after every successful retention so downstream consumers (e.g. MentalModelManager) can react. */
@@ -528,6 +529,9 @@ export class RetentionEngine {
 
       // Track in local buffer
       this.trackRetention(bankId, compressed);
+      this.retainStats.totalRetains++;
+      this.retainStats.totalItems++;
+      this.retainStats.lastRetainMs = Date.now();
 
       log.debug('Retained memory', {
         bankId, context, length: compressed.length,
@@ -659,6 +663,7 @@ export class RetentionEngine {
         content: summary,
         context: 'project_update',
         timestamp: now,
+        importance: computeImportance(summary, 'project_update', now).composite,
         metadata: {
           workflowId: outcome.workflowId ?? '',
           workerCount: String(workerCount),
@@ -669,12 +674,24 @@ export class RetentionEngine {
 
       // Decisions
       for (const decision of decisions) {
-        allItems.push({ content: decision, context: 'decision', timestamp: now, ...(sessionTags ? { tags: sessionTags } : {}) });
+        allItems.push({
+          content: decision,
+          context: 'decision',
+          timestamp: now,
+          importance: computeImportance(decision, 'decision', now).composite,
+          ...(sessionTags ? { tags: sessionTags } : {}),
+        });
       }
 
       // Consolidated findings
       for (const finding of consolidatedFindings) {
-        allItems.push({ content: finding.content, context: 'lesson', timestamp: now, ...(sessionTags ? { tags: sessionTags } : {}) });
+        allItems.push({
+          content: finding.content,
+          context: 'lesson',
+          timestamp: now,
+          importance: computeImportance(finding.content, 'lesson', now).composite,
+          ...(sessionTags ? { tags: sessionTags } : {}),
+        });
       }
 
       // Errors as lessons
@@ -682,12 +699,25 @@ export class RetentionEngine {
         const errorContent = error.resolution
           ? `Error in ${error.worker}: ${error.message} — Resolution: ${error.resolution}`
           : `Error in ${error.worker}: ${error.message}`;
-        allItems.push({ content: errorContent, context: 'lesson', timestamp: now, ...(sessionTags ? { tags: sessionTags } : {}) });
+        allItems.push({
+          content: errorContent,
+          context: 'lesson',
+          timestamp: now,
+          importance: computeImportance(errorContent, 'lesson', now).composite,
+          ...(sessionTags ? { tags: sessionTags } : {}),
+        });
       }
 
       // Single batch retain for all main items
       if (allItems.length > 0) {
         await this.hs.retain(bankId, allItems);
+        // Also retain to core bank for cross-project recall
+        if (bankId !== 'core') {
+          await this.hs.retain('core', allItems);
+        }
+        this.retainStats.totalRetains++;
+        this.retainStats.totalItems += allItems.length;
+        this.retainStats.lastRetainMs = Date.now();
       }
 
       // Trigger server-side consolidation after bulk retain (non-fatal)

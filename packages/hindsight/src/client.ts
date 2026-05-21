@@ -417,6 +417,15 @@ export class HindsightClient {
     }
   }
 
+  /**
+   * Delete a memory bank and all its contents.
+   * @param bankId - The bank identifier to delete.
+   */
+  async deleteBank(bankId: string): Promise<void> {
+    await this.request<unknown>('DELETE', this.bankPath(bankId));
+    this.invalidateBanksCache();
+  }
+
   // ── Memories ───────────────────────────────────────────────────────
 
   /**

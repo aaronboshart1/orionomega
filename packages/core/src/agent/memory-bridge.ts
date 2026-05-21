@@ -179,6 +179,10 @@ export class MemoryBridge {
               `You are OrionOmega's persistent memory. Answer questions about user preferences, ` +
               `past decisions, project history, and system knowledge using stored facts and observations.`,
             enable_observations: true,
+            // Disposition: core bank is fact-focused — higher skepticism, moderate literalism, lower empathy
+            skepticism: 4,
+            literalism: 3,
+            empathy: 2,
           });
           log.info('Created persistent core bank');
         }
@@ -350,7 +354,8 @@ export class MemoryBridge {
           totalResults += result.results.length;
           totalTokensUsed += result.tokens_used;
           if (result.results.length > 0) {
-            memories.push(result.results.map((m) => m.content).join('\n\n'));
+            const prefixed = result.results.map((m) => `[Cross-project: ${bank.bank_id}] ${m.content}`);
+            memories.push(prefixed.join('\n\n'));
           }
         } catch {
           // Per-bank federation failures are non-fatal; skip silently
@@ -668,8 +673,10 @@ export class MemoryBridge {
               updatedAt: bank.updated_at,
               maxAgeDays,
             });
-            // Actual deletion would call: await this.hindsightClient.deleteBank(bank.bank_id);
-            // Not yet implemented on the client — this method logs candidates only.
+            // TODO(spec 3.12): Wire actual deletion once HindsightClient.deleteBank() is added.
+            // client.ts currently has no deleteBank method — that must be implemented first
+            // (DELETE /v1/<ns>/banks/<bankId>), then this block should call:
+            //   await this.hindsightClient.deleteBank(bank.bank_id);
           }
         }
       }
