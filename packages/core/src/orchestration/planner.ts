@@ -126,7 +126,7 @@ export class Planner {
         const hindsightUrl = appConfig.hindsight?.url;
         if (hindsightUrl) {
           const { HindsightClient } = await import('@orionomega/hindsight');
-          const hsClient = new HindsightClient(hindsightUrl);
+          const hsClient = new HindsightClient(hindsightUrl, 'default', appConfig.hindsight?.apiKey);
           const recallQuery = this.extractRecallQuery(task);
 
           const recalls = await Promise.allSettled([

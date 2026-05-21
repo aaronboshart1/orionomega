@@ -1001,7 +1001,7 @@ export class GraphExecutor {
               const toolCfg = readConfig();
               if (toolCfg.hindsight?.url) {
                 const bankId = toolCfg.hindsight.defaultBank ?? 'core';
-                const hsClient = new HindsightClient(toolCfg.hindsight.url, bankId);
+                const hsClient = new HindsightClient(toolCfg.hindsight.url, bankId, toolCfg.hindsight.apiKey);
                 if (this.config.onMemoryIO) hsClient.onIO = this.config.onMemoryIO;
                 const toolContent = [
                   `Tool: ${node.label ?? node.id}`,
@@ -2074,7 +2074,7 @@ export class GraphExecutor {
       }
 
       const defaultBank = config.hindsight?.defaultBank ?? 'default';
-      const client = new HindsightClient(hindsightUrl, defaultBank);
+      const client = new HindsightClient(hindsightUrl, defaultBank, config.hindsight?.apiKey);
       if (this.config.onMemoryIO) {
         client.onIO = this.config.onMemoryIO;
       }

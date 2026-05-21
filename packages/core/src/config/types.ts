@@ -31,6 +31,8 @@ export interface OrionOmegaConfig {
     retainOnComplete: boolean;
     /** Retain memories on workflow error. */
     retainOnError: boolean;
+    /** Optional API key for authenticating with the Hindsight server. Falls back to HINDSIGHT_API_KEY env var. */
+    apiKey?: string;
   };
 
   models: {

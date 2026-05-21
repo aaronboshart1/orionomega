@@ -126,10 +126,17 @@ export interface Directive {
   updated_at: string;
 }
 
+/** Options for constructing a HindsightClient. */
+export interface HindsightClientOptions {
+  /** Maximum content size in characters. Content exceeding this is truncated with a warning. Default: 32768 (32 KB). */
+  maxContentSize?: number;
+}
+
 export class HindsightClient {
   private readonly baseUrl: string;
   private readonly namespace: string;
   private readonly apiKey?: string;
+  private readonly _maxContentSize: number;
   private _activeOps = 0;
   private _connected = false;
 
@@ -304,10 +311,11 @@ export class HindsightClient {
    * @param namespace - Namespace for bank isolation (default: `'default'`).
    * @param apiKey - Optional API key for authenticating with the Hindsight server.
    */
-  constructor(baseUrl: string, namespace: string = 'default', apiKey?: string) {
+  constructor(baseUrl: string, namespace: string = 'default', apiKey?: string, opts?: HindsightClientOptions) {
     this.baseUrl = baseUrl.replace(/\/+$/, '');
     this.namespace = namespace;
     this.apiKey = apiKey || process.env.HINDSIGHT_API_KEY;
+    this._maxContentSize = opts?.maxContentSize ?? 32_768;
   }
 
   // ── Health ──────────────────────────────────────────────────────────
@@ -334,16 +342,47 @@ export class HindsightClient {
     if (config.reflect_mission) body.reflect_mission = config.reflect_mission;
     if (config.enable_observations !== undefined) body.enable_observations = config.enable_observations;
     if (config.retain_extraction_mode) body.retain_extraction_mode = config.retain_extraction_mode;
-    await this.request<unknown>('PUT', this.bankPath(bankId), body);
+    try {
+      await this.withRetry(`createBank(${bankId})`, () =>
+        this.request<unknown>('PUT', this.bankPath(bankId), body),
+      );
+    } catch (err) {
+      // /dev/shm exhaustion can cause the PostgreSQL embedding process to fail
+      // *after* the bank write completes, producing a spurious 500. Before
+      // propagating the error, verify whether the bank was actually created.
+      //
+      // Operator note: to reduce SHM exhaustion incidents, either increase
+      // /dev/shm (e.g. `--shm-size=4g` in Docker / `shm_size: 4g` in
+      // docker-compose) or lower PostgreSQL `shared_buffers` in postgresql.conf
+      // (e.g. `shared_buffers = 256MB`).
+      const statusCode = err instanceof HindsightError ? err.statusCode : 0;
+      if (statusCode === 500 || statusCode === 502 || statusCode === 503) {
+        const exists = await this.bankExists(bankId);
+        if (exists) {
+          log.warn(
+            `createBank(${bankId}) returned ${statusCode} but bank exists — treating as success (possible /dev/shm exhaustion)`,
+          );
+          this.invalidateBanksCache();
+          return;
+        }
+      }
+      throw err;
+    }
     this.invalidateBanksCache();
   }
 
   /**
    * Get information about an existing bank.
+   * Uses the cached list endpoint — GET /v1/{ns}/banks/{id} returns 405.
    * @param bankId - The bank identifier.
    */
   async getBank(bankId: string): Promise<BankInfo> {
-    return this.request<BankInfo>('GET', this.bankPath(bankId));
+    const banks = await this.listBanksCached();
+    const bank = banks.find((b) => b.bank_id === bankId);
+    if (!bank) {
+      throw new Error(`Bank not found: ${bankId}`);
+    }
+    return bank;
   }
 
   /** List all banks in the current namespace. */
@@ -394,6 +433,38 @@ export class HindsightClient {
     }
   }
 
+  /**
+   * List stored memories in a bank.
+   * @param bankId - Source bank identifier.
+   * @param opts - Pagination options.
+   */
+  async listMemories(
+    bankId: string,
+    opts?: { limit?: number; offset?: number },
+  ): Promise<{ items: RecalledMemory[]; total?: number }> {
+    const limit = opts?.limit;
+    const offset = opts?.offset;
+
+    if (limit !== undefined && limit < 0) {
+      throw new HindsightError(
+        `limit must be >= 0, got ${limit}`,
+        422,
+        `GET ${this.bankPath(bankId)}/memories/list`,
+      );
+    }
+
+    const params = new URLSearchParams();
+    if (limit !== undefined) params.set('limit', String(limit));
+    if (offset !== undefined) params.set('offset', String(offset));
+    const qs = params.size > 0 ? `?${params.toString()}` : '';
+
+    const raw = await this.request<{ items?: RecalledMemory[]; total?: number }>(
+      'GET',
+      `${this.bankPath(bankId)}/memories/list${qs}`,
+    );
+    return { items: raw.items ?? [], total: raw.total };
+  }
+
   static budgetMaxTokens(tier: 'low' | 'mid' | 'high'): number {
     return BUDGET_TIER_MAX_TOKENS[tier] ?? 4096;
   }
@@ -435,6 +506,41 @@ export class HindsightClient {
    */
   async retain(bankId: string, items: MemoryItem[], opts?: { async?: boolean }): Promise<RetainResult> {
     const start = Date.now();
+
+    // Client-side validation before hitting the server.
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+
+      // 1. Empty-content guard: reject before burning LLM tokens on the server.
+      if (!item.content || item.content.trim().length === 0) {
+        throw new HindsightError(
+          `Item at index ${i} has empty content — retain aborted`,
+          422,
+          `retain:${bankId}`,
+        );
+      }
+
+      // 2. Content size limit: truncate oversized content with a warning.
+      if (item.content.length > this._maxContentSize) {
+        log.warn(`Retain item[${i}] content exceeds maxContentSize (${item.content.length} > ${this._maxContentSize}) — truncating`, {
+          bankId,
+          originalLength: item.content.length,
+          maxContentSize: this._maxContentSize,
+        });
+        items = items.map((it, idx) =>
+          idx === i ? { ...it, content: it.content.slice(0, this._maxContentSize) } : it,
+        );
+      }
+
+      // 3. Importance range: clamp to [0, 1].
+      if (item.importance !== undefined && (item.importance < 0 || item.importance > 1)) {
+        const clamped = Math.max(0, Math.min(1, item.importance));
+        log.warn(`Retain item[${i}] importance ${item.importance} out of [0,1] range — clamped to ${clamped}`, { bankId });
+        items = items.map((it, idx) =>
+          idx === i ? { ...it, importance: clamped } : it,
+        );
+      }
+    }
 
     // Compress content and compute token estimates before storage
     const processedItems = items.map((item) => {
@@ -910,6 +1016,37 @@ export class HindsightClient {
     );
   }
 
+  /**
+   * Create a new mental model. The model is initialised with a reflect query
+   * that runs asynchronously in the background — content will be populated
+   * once the operation completes.
+   * @param bankId - Target bank identifier.
+   * @param opts - Creation options (name and source_query are required).
+   */
+  async createMentalModel(
+    bankId: string,
+    opts: { name: string; source_query: string; id?: string; max_tokens?: number },
+  ): Promise<{ mental_model_id?: string | null; operation_id: string }> {
+    return this.request<{ mental_model_id?: string | null; operation_id: string }>(
+      'POST',
+      `${this.bankPath(bankId)}/mental-models`,
+      opts as Record<string, unknown>,
+    );
+  }
+
+  /**
+   * List all mental models in a bank.
+   * @param bankId - Source bank identifier.
+   * @returns Array of mental models (may be empty if none have been created).
+   */
+  async listMentalModels(bankId: string): Promise<MentalModel[]> {
+    const result = await this.request<{ items: MentalModel[] }>(
+      'GET',
+      `${this.bankPath(bankId)}/mental-models`,
+    );
+    return result.items ?? [];
+  }
+
   // ── Reflect ────────────────────────────────────────────────────────
 
   /**
@@ -1147,12 +1284,22 @@ export class HindsightClient {
       let message: string;
       try {
         const errorBody = (await res.json()) as Record<string, unknown>;
-        message =
-          typeof errorBody['error'] === 'string'
-            ? errorBody['error']
-            : typeof errorBody['message'] === 'string'
-              ? errorBody['message']
-              : res.statusText;
+        if (typeof errorBody['error'] === 'string') {
+          message = errorBody['error'];
+        } else if (typeof errorBody['message'] === 'string') {
+          message = errorBody['message'];
+        } else if (typeof errorBody['detail'] === 'string') {
+          // 500: wrap raw server/DB errors so they're structured rather than leaked as-is.
+          message = res.status >= 500
+            ? `Server error: ${errorBody['detail']}`
+            : errorBody['detail'];
+        } else if (Array.isArray(errorBody['detail'])) {
+          // 422: FastAPI validation array — extract human-readable messages.
+          const details = errorBody['detail'] as Array<{ msg?: string }>;
+          message = details.map((d) => d.msg ?? JSON.stringify(d)).join('; ');
+        } else {
+          message = res.statusText;
+        }
       } catch {
         message = res.statusText;
       }
@@ -1202,6 +1349,52 @@ export class HindsightClient {
       return undefined as T;
     }
     return JSON.parse(text) as T;
+  }
+
+  /** Resolves after `ms` milliseconds. Used for retry backoff. */
+  private static sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Retry a factory function on transient server errors (500/502/503).
+   *
+   * /dev/shm exhaustion and similar infrastructure issues produce intermittent
+   * 500s on write endpoints. These are safe to retry — unlike 4xx errors
+   * (client mistakes) or 401/403 (auth failures) which will not self-heal.
+   *
+   * @param label      - Human-readable label for log messages.
+   * @param fn         - Async factory to invoke (and possibly retry).
+   * @param maxAttempts - Maximum attempts including the first (default 3).
+   */
+  private async withRetry<T>(
+    label: string,
+    fn: () => Promise<T>,
+    maxAttempts = 3,
+  ): Promise<T> {
+    const backoff = [1_000, 2_000, 4_000];
+    let lastErr: unknown;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        return await fn();
+      } catch (err) {
+        lastErr = err;
+        const status = err instanceof HindsightError ? err.statusCode : 0;
+        // Only retry on transient server-side errors; propagate everything else.
+        if (status !== 500 && status !== 502 && status !== 503) {
+          throw err;
+        }
+        if (attempt < maxAttempts) {
+          const delay = backoff[attempt - 1] ?? 4_000;
+          log.warn(
+            `Hindsight ${label} returned ${status}, retrying in ${delay}ms (attempt ${attempt}/${maxAttempts})`,
+            { error: err instanceof Error ? err.message : String(err) },
+          );
+          await HindsightClient.sleep(delay);
+        }
+      }
+    }
+    throw lastErr;
   }
 
   /**

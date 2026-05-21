@@ -65,29 +65,6 @@ export class SessionBootstrap {
 
     const effectiveSessionContext = sessionContext || recentSessions;
 
-    // F7: Seed mental models that returned empty (404).
-    // Fire-and-forget so bootstrap isn't blocked, but the models will be
-    // available for the next session.
-    const missingModels: Array<{ bank: string; id: string }> = [];
-    if (!userProfile) missingModels.push({ bank: 'core', id: 'user-profile' });
-    if (!sessionContext) missingModels.push({ bank: 'core', id: 'session-context' });
-    if (!infraContext) missingModels.push({ bank: 'infra', id: 'infra-map' });
-
-    if (missingModels.length > 0) {
-      log.info('Seeding missing mental models', {
-        models: missingModels.map((m) => `${m.bank}/${m.id}`),
-      });
-      for (const model of missingModels) {
-        this.hs.refreshMentalModel(model.bank, model.id).catch((err) => {
-          log.debug('Mental model seed failed (will retry next session)', {
-            bank: model.bank,
-            modelId: model.id,
-            error: err instanceof Error ? err.message : String(err),
-          });
-        });
-      }
-    }
-
     log.debug('Bootstrap complete', {
       hasUserProfile: userProfile.length > 0,
       hasSessionContext: effectiveSessionContext.length > 0,
@@ -95,7 +72,6 @@ export class SessionBootstrap {
       hasInfraContext: infraContext.length > 0,
       hasProjectMemories: projectMemories.length > 0,
       hasSessionAnchor: sessionAnchor.length > 0,
-      seededModels: missingModels.length,
     });
 
     return { userProfile, sessionContext: effectiveSessionContext, projectMemories, infraContext, sessionAnchor };

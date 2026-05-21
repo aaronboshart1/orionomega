@@ -13,9 +13,13 @@ const log = createLogger('mental-models');
 interface ModelDefinition {
   /** Hindsight bank containing the model. */
   bank: string;
-  /** Model identifier within the bank. */
+  /** Model identifier within the bank (used as the custom `id` on creation). */
   id: string;
-  /** Human-readable description. */
+  /** Human-readable name sent to the API on creation. */
+  name: string;
+  /** The reflect query used to generate/refresh the model's content. */
+  source_query: string;
+  /** Human-readable description (internal). */
   description: string;
   /** The context category that triggers a refresh of this model. */
   refreshTrigger: string;
@@ -33,24 +37,40 @@ const SYSTEM_MODELS: ModelDefinition[] = [
   {
     bank: 'core',
     id: 'user-profile',
+    name: 'User Profile',
+    source_query:
+      'What are the user preferences, communication style, technical expertise level, ' +
+      'and recurring behavioural patterns?',
     description: 'Synthesized user preferences and patterns',
     refreshTrigger: 'preference',
   },
   {
     bank: 'core',
     id: 'session-context',
+    name: 'Session Context',
+    source_query:
+      'What happened in recent sessions? Summarise what was accomplished, ' +
+      'key decisions made, open questions, and unfinished work.',
     description: 'Recent session context and continuity',
     refreshTrigger: 'session_summary',
   },
   {
     bank: 'core',
     id: 'active-projects',
+    name: 'Active Projects',
+    source_query:
+      'What are the current active projects, their goals, current status, ' +
+      'and next steps?',
     description: 'Current projects and priorities',
     refreshTrigger: 'project_update',
   },
   {
     bank: 'infra',
     id: 'infra-map',
+    name: 'Infrastructure Map',
+    source_query:
+      'What is the infrastructure topology — services, ports, databases, ' +
+      'deployment configuration, and known operational issues?',
     description: 'Infrastructure topology and service map',
     refreshTrigger: 'infrastructure',
   },
@@ -169,12 +189,24 @@ export class MentalModelManager {
           results.push({ key, action: 'exists' });
           continue;
         }
+        // Model exists but has no content yet — trigger a refresh.
+        await this.hs.refreshMentalModel(model.bank, model.id);
+        this.lastRefreshAt.set(key, Date.now());
+        results.push({ key, action: 'refreshed' });
+        continue;
       } catch {
-        // 404 or other error — model doesn't exist, seed it
+        // 404 — model doesn't exist yet; fall through to create it below.
       }
 
       try {
-        await this.hs.refreshMentalModel(model.bank, model.id);
+        // Create the model for the first time. The server runs the reflect
+        // query asynchronously — content will be available on the next
+        // session once the operation completes.
+        await this.hs.createMentalModel(model.bank, {
+          id: model.id,
+          name: model.name,
+          source_query: model.source_query,
+        });
         this.lastRefreshAt.set(key, Date.now());
         results.push({ key, action: 'seeded' });
       } catch (err) {
@@ -187,11 +219,12 @@ export class MentalModelManager {
     }
 
     const seeded = results.filter((r) => r.action === 'seeded').length;
+    const refreshed = results.filter((r) => r.action === 'refreshed').length;
     const existing = results.filter((r) => r.action === 'exists').length;
     const failed = results.filter((r) => r.action === 'failed').length;
 
-    if (seeded > 0 || failed > 0) {
-      log.info('Mental model seed complete', { seeded, existing, failed });
+    if (seeded > 0 || refreshed > 0 || failed > 0) {
+      log.info('Mental model seed complete', { seeded, refreshed, existing, failed });
     }
   }
 }
