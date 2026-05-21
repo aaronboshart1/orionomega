@@ -203,7 +203,7 @@ export class SessionBootstrap {
         const result = await this.hs.recall(
           'core',
           'recent session summaries, what was accomplished, key decisions',
-          { maxTokens: 2048, budget: 'mid' },
+          { maxTokens: 2048, budget: 'mid', types: ['world', 'experience', 'observation'] },
         );
         return result.results.map((m) => `[${m.context}] ${m.content}`).join('\n');
       },
@@ -221,7 +221,7 @@ export class SessionBootstrap {
         const result = await this.hs.recall(
           bankId,
           'recent context, active work, key decisions',
-          { maxTokens: 4096, budget: 'mid' },
+          { maxTokens: 4096, budget: 'mid', types: ['world', 'experience', 'observation'] },
         );
         return result.results.map((m) => `[${m.context}] ${m.content}`).join('\n');
       },
@@ -250,7 +250,7 @@ export class SessionBootstrap {
         const result = await this.hs.recall(
           'core',
           'session anchor, where we left off, pending decisions, unfinished work',
-          { maxTokens: 1024, budget: 'low', minRelevance: 0.2 },
+          { maxTokens: 1024, budget: 'low', minRelevance: 0.2, types: ['world', 'experience', 'observation'] },
         );
         const anchors = this.filterAnchorResults(result.results);
         if (anchors.length === 0) return '';

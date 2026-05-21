@@ -71,11 +71,14 @@ export class SelfKnowledge {
     let stored = 0;
     for (const mem of memories) {
       try {
-        const isDup = await this.hs.isDuplicateContent('core', mem.content, this.dedupThreshold);
-        if (!isDup) {
-          await this.hs.retainOne('core', mem.content, mem.context);
-          stored++;
-        }
+        const docId = `self-knowledge-${mem.context}-${this.hashContent(mem.content)}`;
+        await this.hs.retain('core', [{
+          content: mem.content,
+          context: mem.context,
+          timestamp: new Date().toISOString(),
+          document_id: docId,
+        }]);
+        stored++;
       } catch (err) {
         log.warn('Failed to store self-knowledge memory', {
           error: err instanceof Error ? err.message : String(err),
@@ -88,6 +91,15 @@ export class SelfKnowledge {
       stored,
       skippedDuplicates: memories.length - stored,
     });
+  }
+
+  private hashContent(content: string): string {
+    let hash = 0;
+    for (let i = 0; i < Math.min(content.length, 100); i++) {
+      hash = ((hash << 5) - hash) + content.charCodeAt(i);
+      hash |= 0;
+    }
+    return Math.abs(hash).toString(36);
   }
 
   async retainConfigChange(description: string): Promise<void> {

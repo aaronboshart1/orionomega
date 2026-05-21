@@ -995,6 +995,23 @@ export class GraphExecutor {
 
         try {
           const result = await worker.run();
+          // Change 2.7: Retain significant TOOL outputs to memory
+          if (node.type === 'TOOL' && typeof result.output === 'string' && result.output.length > 50) {
+            try {
+              const toolCfg = readConfig();
+              if (toolCfg.hindsight?.url) {
+                const bankId = toolCfg.hindsight.defaultBank ?? 'core';
+                const hsClient = new HindsightClient(toolCfg.hindsight.url, bankId);
+                if (this.config.onMemoryIO) hsClient.onIO = this.config.onMemoryIO;
+                const toolContent = [
+                  `Tool: ${node.label ?? node.id}`,
+                  `Command: ${node.tool?.name ?? 'unknown'}`,
+                  `Output: ${result.output.slice(0, 2000)}`,
+                ].join('\n');
+                await hsClient.retainOne(bankId, toolContent, 'tool_output');
+              }
+            } catch { /* non-fatal */ }
+          }
           return result;
         } finally {
           this.activeWorkers.delete(node.id);
@@ -2085,7 +2102,7 @@ export class GraphExecutor {
       // Recall from all banks concurrently
       const recallPromises = [...banks].map(async (bankId) => {
         try {
-          const result = await client.recall(bankId, task, { maxTokens: 4096, budget: 'mid' });
+          const result = await client.recall(bankId, task, { maxTokens: 4096, budget: 'mid', types: ['world', 'experience', 'observation'] });
           const memories = result?.results ?? [];
           if (memories.length > 0) {
             const text = memories.map((m: { content: string }) => m.content).join('\n');

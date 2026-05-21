@@ -8,6 +8,16 @@ export interface BankConfig {
   literalism?: number;
   /** How much emotional/relational context is weighted in recall (1–5). */
   empathy?: number;
+  /** Mission for the retain (storage) phase — steers what gets extracted during ingestion. */
+  retain_mission?: string;
+  /** Mission for the observations phase — steers what gets synthesized into observations. */
+  observations_mission?: string;
+  /** Mission for the reflect phase — how the LLM interprets memories when answering queries. */
+  reflect_mission?: string;
+  /** Whether to enable automatic observation synthesis for this bank. */
+  enable_observations?: boolean;
+  /** Retention extraction mode: 'concise', 'verbose', or 'custom'. */
+  retain_extraction_mode?: 'concise' | 'verbose' | 'custom';
 }
 
 /** Summary information about a memory bank. */
@@ -33,6 +43,10 @@ export interface MemoryItem {
   tags?: string[];
   /** Importance score (0-1). Higher = more critical to retain long-term. */
   importance?: number;
+  /** Optional document ID for upsert semantics — same document_id updates the existing document. */
+  document_id?: string;
+  /** Arbitrary key-value metadata per memory (e.g. workflowId, nodeId, durationSec). */
+  metadata?: Record<string, string>;
 }
 
 /** Result of a retain (store) operation. */
@@ -58,6 +72,12 @@ export interface RecallOptions {
   maxCandidates?: number;
   /** ISO 8601 timestamp — only return memories created before this date (for temporal diversity). */
   before?: string;
+  /** Fact types to recall: 'world', 'experience', 'observation'. Omit for server default (world + experience). */
+  types?: string[];
+  /** Filter memories by tags. */
+  tags?: string[];
+  /** How to match tags: 'any' (OR, includes untagged), 'all' (AND), 'any_strict' (OR, excludes untagged), 'all_strict' (AND, excludes untagged). */
+  tags_match?: 'any' | 'all' | 'any_strict' | 'all_strict';
 }
 
 /** A single recalled memory with relevance score. */

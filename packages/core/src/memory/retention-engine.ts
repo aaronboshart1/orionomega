@@ -8,7 +8,7 @@
  */
 
 import { HindsightClient, estimateTokens, compressMemoryContent, isDuplicateInBatch } from '@orionomega/hindsight';
-import type { RetentionPolicy, ImportanceFactors } from '@orionomega/hindsight';
+import type { RetentionPolicy, ImportanceFactors, MemoryItem } from '@orionomega/hindsight';
 import type { EventBus } from '../orchestration/event-bus.js';
 import type { WorkerEvent } from '../orchestration/types.js';
 import { createLogger } from '../logging/logger.js';
@@ -457,7 +457,7 @@ export class RetentionEngine {
    *   downstream provenance queries can attribute it. Recall remains
    *   cross-session; tags do NOT scope retrieval.
    */
-  async retain(bankId: string, content: string, context: string, sessionId?: string): Promise<void> {
+  async retain(bankId: string, content: string, context: string, sessionId?: string, asyncMode?: boolean): Promise<void> {
     try {
       // Compress content before any scoring or storage
       const compressed = compressMemoryContent(content);
@@ -518,7 +518,13 @@ export class RetentionEngine {
       const importance = computeImportance(compressed, context);
 
       const tags = sessionId ? [`session:${sessionId}`] : undefined;
-      await this.hs.retainOne(bankId, compressed, context, tags);
+      await this.hs.retain(bankId, [{
+        content: compressed,
+        context,
+        timestamp: new Date().toISOString(),
+        importance: importance.composite,
+        ...(tags ? { tags } : {}),
+      }], asyncMode ? { async: true } : undefined);
 
       // Track in local buffer
       this.trackRetention(bankId, compressed);
@@ -574,9 +580,26 @@ export class RetentionEngine {
       this.retain('core', content, 'preference', sessionId).catch((err) => { log.debug('Fire-and-forget retain failed', { error: err instanceof Error ? err.message : String(err) }); });
     }
 
-    // Check for decision phrases
+    // Check for decision phrases — with conflict resolution for contradictory decisions
     if (DECISION_PATTERNS.some((p) => p.test(content))) {
       const bank = projectBank ?? 'core';
+
+      // Recall prior decisions to detect conflicts before storing
+      try {
+        const prior = await this.hs.recall(bank, content, {
+          maxTokens: 1024,
+          types: ['world'],
+        });
+        const conflicts = prior.results.filter((r: MemoryItem & { relevance: number }) =>
+          r.context === 'decision' && r.relevance > 0.3
+        );
+        if (conflicts.length > 0) {
+          const updatedContent = `${content}\n\n[Supersedes prior decision: "${conflicts[0].content.slice(0, 200)}"]`;
+          this.retain(bank, updatedContent, 'decision', sessionId).catch((err) => { log.debug('Fire-and-forget retain failed', { error: err instanceof Error ? err.message : String(err) }); });
+          return;
+        }
+      } catch { /* fall through to normal retain */ }
+
       this.retain(bank, content, 'decision', sessionId).catch((err) => { log.debug('Fire-and-forget retain failed', { error: err instanceof Error ? err.message : String(err) }); });
     }
   }
@@ -623,32 +646,57 @@ export class RetentionEngine {
         }
       }
 
-      await this.retain(bankId, summary, 'project_update', sessionId);
-
-      // Consolidate findings before retaining to reduce redundant memories
+      // Batch all items into a single retain call (summary + decisions + findings + errors)
       const now = new Date().toISOString();
+      const sessionTags = sessionId ? [`session:${sessionId}`] : undefined;
       const findingItems = findings.map((f) => ({ content: f, context: 'lesson', timestamp: now }));
       const consolidatedFindings = consolidateMemories(findingItems);
 
-      // Retain decisions individually
+      const allItems: MemoryItem[] = [];
+
+      // Summary with provenance metadata
+      allItems.push({
+        content: summary,
+        context: 'project_update',
+        timestamp: now,
+        metadata: {
+          workflowId: outcome.workflowId ?? '',
+          workerCount: String(workerCount),
+          durationSec: String(durationSec),
+        },
+        ...(sessionTags ? { tags: sessionTags } : {}),
+      });
+
+      // Decisions
       for (const decision of decisions) {
-        this.retain(bankId, decision, 'decision', sessionId).catch((err) => { log.debug('Fire-and-forget retain failed', { error: err instanceof Error ? err.message : String(err) }); });
+        allItems.push({ content: decision, context: 'decision', timestamp: now, ...(sessionTags ? { tags: sessionTags } : {}) });
       }
 
-      // Retain consolidated findings
+      // Consolidated findings
       for (const finding of consolidatedFindings) {
-        this.retain(bankId, finding.content, 'lesson', sessionId).catch((err) => { log.debug('Fire-and-forget retain failed', { error: err instanceof Error ? err.message : String(err) }); });
+        allItems.push({ content: finding.content, context: 'lesson', timestamp: now, ...(sessionTags ? { tags: sessionTags } : {}) });
       }
 
-      // Retain errors as lessons
+      // Errors as lessons
       for (const error of errors) {
         const errorContent = error.resolution
           ? `Error in ${error.worker}: ${error.message} — Resolution: ${error.resolution}`
           : `Error in ${error.worker}: ${error.message}`;
-        this.retain(bankId, errorContent, 'lesson', sessionId).catch((err) => { log.debug('Fire-and-forget retain failed', { error: err instanceof Error ? err.message : String(err) }); });
+        allItems.push({ content: errorContent, context: 'lesson', timestamp: now, ...(sessionTags ? { tags: sessionTags } : {}) });
       }
 
-      // Retain infrastructure changes
+      // Single batch retain for all main items
+      if (allItems.length > 0) {
+        await this.hs.retain(bankId, allItems);
+      }
+
+      // Trigger server-side consolidation after bulk retain (non-fatal)
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await (this.hs as any).consolidate(bankId);
+      } catch { /* non-fatal */ }
+
+      // Retain infrastructure changes (separate bank — not batched with main items)
       if (infraChanges && infraChanges.length > 0) {
         for (const change of infraChanges) {
           this.retain('infra', change, 'infrastructure', sessionId).catch((err) => { log.debug('Fire-and-forget retain failed', { error: err instanceof Error ? err.message : String(err) }); });
@@ -739,6 +787,7 @@ export class RetentionEngine {
         event.message,
         'lesson',
         sid,
+        true,
       ).catch((err) => { log.debug('Fire-and-forget retain failed', { error: err instanceof Error ? err.message : String(err) }); });
     }
 
@@ -748,6 +797,7 @@ export class RetentionEngine {
         `Worker ${event.workerId} error: ${event.error}`,
         'lesson',
         sid,
+        true,
       ).catch((err) => { log.debug('Fire-and-forget retain failed', { error: err instanceof Error ? err.message : String(err) }); });
     }
 

@@ -438,9 +438,10 @@ export class ContextAssembler {
         content: formattedContent,
         context: `conversation_${msg.role}`,
         timestamp: msg.timestamp ?? new Date().toISOString(),
+        document_id: `conv-${this.sessionId ?? 'anon'}-${this.totalMessageCount}`,
         ...(tags.length ? { tags } : {}),
       },
-    ]);
+    ], { async: true });
 
     this.onMemoryEvent?.('retain', `Retained ${msg.role} message (${textContent.length} chars)`, this.conversationBank, {
       role: msg.role,
@@ -584,6 +585,7 @@ export class ContextAssembler {
         budget: effectiveRecallBudget,
         minRelevance: effectiveMinRelevance,
         temporalDiversityRatio: effectiveTemporalRatio,
+        types: ['world', 'experience', 'observation'],
       })
         .then((response) => {
           if (!response.results || response.results.length === 0) return null;
@@ -640,6 +642,9 @@ export class ContextAssembler {
       if (preferredCategories.length > 0) {
         const prefSet = new Set(preferredCategories);
         r.items.sort((a, b) => {
+          const aObs = a.context === 'observation' ? 0 : 1;
+          const bObs = b.context === 'observation' ? 0 : 1;
+          if (aObs !== bObs) return aObs - bObs;
           const aPreferred = prefSet.has(a.context) ? 0 : 1;
           const bPreferred = prefSet.has(b.context) ? 0 : 1;
           if (aPreferred !== bPreferred) return aPreferred - bPreferred;
@@ -648,9 +653,17 @@ export class ContextAssembler {
       }
 
       if (temporalBias === 'broad') {
-        r.items.sort((a, b) => b.relevance - a.relevance);
+        r.items.sort((a, b) => {
+          const aObs = a.context === 'observation' ? 0 : 1;
+          const bObs = b.context === 'observation' ? 0 : 1;
+          if (aObs !== bObs) return aObs - bObs;
+          return b.relevance - a.relevance;
+        });
       } else if (temporalBias === 'recent') {
         r.items.sort((a, b) => {
+          const aObs = a.context === 'observation' ? 0 : 1;
+          const bObs = b.context === 'observation' ? 0 : 1;
+          if (aObs !== bObs) return aObs - bObs;
           if (!a.timestamp && !b.timestamp) return b.relevance - a.relevance;
           if (!a.timestamp) return 1;
           if (!b.timestamp) return -1;
@@ -673,8 +686,11 @@ export class ContextAssembler {
 
       const formattedItems = r.items.map((i) => {
         const score = i.relevance.toFixed(2);
-        const ctx = i.context ? ` [${i.context}]` : '';
         const enriched = this.buildCausalChain(i.content);
+        if (i.context === 'observation') {
+          return `[OBSERVATION, confidence: ${score}] ${enriched}`;
+        }
+        const ctx = i.context ? ` [${i.context}]` : '';
         return `[confidence: ${score}]${ctx} ${enriched}`;
       });
       return `${header}\n${confLine}\n${formattedItems.join('\n\n')}`;

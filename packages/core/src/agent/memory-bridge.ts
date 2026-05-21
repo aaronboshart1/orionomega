@@ -75,6 +75,9 @@ export class MemoryBridge {
   private activeProjectBank: string | null = null;
   private initialised = false;
 
+  private reflectCache = new Map<string, { result: string; ts: number }>();
+  private static readonly REFLECT_CACHE_TTL_MS = 120_000; // 2 minutes
+
   onMemoryEvent?: (op: MemoryOp, detail: string, bank?: string, meta?: Record<string, unknown>) => void;
 
   constructor(
@@ -165,6 +168,17 @@ export class MemoryBridge {
         if (!coreExists) {
           await this.hindsightClient.createBank('core', {
             name: 'OrionOmega Core — cross-session persistent memory',
+            retain_mission:
+              `Extract user preferences, communication style, technical expertise level, ` +
+              `cross-project decisions, lessons learned, infrastructure knowledge, and ` +
+              `system configuration details. Focus on information that persists across sessions.`,
+            observations_mission:
+              `Synthesize observations about the user's working patterns, preferred ` +
+              `technologies, recurring decisions, and cross-project architectural themes.`,
+            reflect_mission:
+              `You are OrionOmega's persistent memory. Answer questions about user preferences, ` +
+              `past decisions, project history, and system knowledge using stored facts and observations.`,
+            enable_observations: true,
           });
           log.info('Created persistent core bank');
         }
@@ -251,7 +265,7 @@ export class MemoryBridge {
     if (!this.bankManager) return null;
     try {
       this.activeProjectBank = await this.bankManager.ensureProjectBank(task);
-      this.onMemoryEvent?.('bootstrap', `Project bank ready: ${this.activeProjectBank}`, this.activeProjectBank);
+      this.onMemoryEvent?.('bootstrap', `Project bank ready: ${this.activeProjectBank}`, this.activeProjectBank ?? undefined);
       return this.activeProjectBank;
     } catch (err) {
       log.warn('Failed to ensure project bank', {
@@ -281,7 +295,11 @@ export class MemoryBridge {
     let totalTokensUsed = 0;
 
     try {
-      const result = await this.hindsightClient.recall('core', task, { maxTokens: 1024 });
+      const result = await this.hindsightClient.recall('core', task, {
+        maxTokens: 2048,
+        budget: 'high',
+        types: ['world', 'experience', 'observation'],
+      });
       totalResults += result.results.length;
       totalTokensUsed += result.tokens_used;
       if (result.results.length) {
@@ -298,7 +316,11 @@ export class MemoryBridge {
 
     if (this.activeProjectBank) {
       try {
-        const result = await this.hindsightClient.recall(this.activeProjectBank, task, { maxTokens: 2048 });
+        const result = await this.hindsightClient.recall(this.activeProjectBank, task, {
+          maxTokens: 3072,
+          budget: 'high',
+          types: ['world', 'experience', 'observation'],
+        });
         totalResults += result.results.length;
         totalTokensUsed += result.tokens_used;
         if (result.results.length) {
@@ -311,6 +333,31 @@ export class MemoryBridge {
           error: err instanceof Error ? err.message : String(err),
         });
       }
+    }
+
+    // Cross-project federation: query other project banks for cross-project learnings
+    try {
+      const allBanks = await this.hindsightClient.listBanksCached();
+      for (const bank of allBanks) {
+        if (bank.bank_id === 'core' || bank.bank_id === this.activeProjectBank) continue;
+        if (!bank.bank_id.startsWith('project-')) continue;
+        if ((bank.memory_count ?? 0) === 0) continue;
+        try {
+          const result = await this.hindsightClient.recall(bank.bank_id, task, {
+            maxTokens: 512,
+            budget: 'low',
+          });
+          totalResults += result.results.length;
+          totalTokensUsed += result.tokens_used;
+          if (result.results.length > 0) {
+            memories.push(result.results.map((m) => m.content).join('\n\n'));
+          }
+        } catch {
+          // Per-bank federation failures are non-fatal; skip silently
+        }
+      }
+    } catch {
+      // Federation list failure is non-fatal
     }
 
     // F12: Emit recall metrics for observability
@@ -369,6 +416,20 @@ export class MemoryBridge {
       } catch (err) {
         issues.push(`Project bank check failed: ${err instanceof Error ? err.message : String(err)}`);
       }
+    }
+
+    // Check core bank stats for pending consolidation backlog
+    try {
+      const stats = await this.hindsightClient.getBankStats('core');
+      if (stats.pending_consolidation > 100) {
+        issues.push(`Core bank has ${stats.pending_consolidation} pending consolidations`);
+      }
+    } catch (err) {
+      // getBankStats may not be available on all server versions — non-fatal
+      log.debug('Core bank stats check failed', {
+        endpoint: 'GET /v1/<ns>/banks/core/stats',
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
 
     // Force cache refresh to ensure consistency
@@ -449,7 +510,10 @@ export class MemoryBridge {
 
     if (this.activeProjectBank) {
       try {
-        const result = await this.hindsightClient.recall(this.activeProjectBank, archQuery, { maxTokens: 3072 });
+        const result = await this.hindsightClient.recall(this.activeProjectBank, archQuery, {
+          maxTokens: 3072,
+          types: ['world', 'experience', 'observation'],
+        });
         totalResults += result.results.length;
         if (result.results.length) {
           memories.push(...result.results.map((m) => m.content));
@@ -465,7 +529,10 @@ export class MemoryBridge {
 
     // Always also query core for cross-project architectural patterns.
     try {
-      const result = await this.hindsightClient.recall('core', archQuery, { maxTokens: 1024 });
+      const result = await this.hindsightClient.recall('core', archQuery, {
+        maxTokens: 1024,
+        types: ['world', 'experience', 'observation'],
+      });
       totalResults += result.results.length;
       if (result.results.length) {
         memories.push(...result.results.map((m) => m.content));
@@ -486,6 +553,131 @@ export class MemoryBridge {
     );
 
     return memories;
+  }
+
+  /**
+   * Use Hindsight's reflect API for complex decision-making queries.
+   * Reflect performs autonomous multi-step reasoning over stored memories,
+   * facts, and observations — significantly more powerful than plain recall.
+   *
+   * Results are cached for REFLECT_CACHE_TTL_MS (2 minutes) per bank+question pair
+   * to avoid redundant LLM calls within a session.
+   *
+   * Falls back to null on any error (reflect endpoint not available, etc.).
+   */
+  async reflectForDecision(
+    question: string,
+    bankId?: string,
+  ): Promise<string | null> {
+    if (!this.hindsightClient) return null;
+    if (isExternalAction(question)) return null;
+
+    const target = bankId ?? this.activeProjectBank ?? 'core';
+    const cacheKey = `${target}:${question}`;
+
+    const cached = this.reflectCache.get(cacheKey);
+    if (cached && Date.now() - cached.ts < MemoryBridge.REFLECT_CACHE_TTL_MS) {
+      return cached.result;
+    }
+
+    const start = Date.now();
+
+    try {
+      const result = await this.hindsightClient.reflect(target, question, {
+        budget: 'high',
+        maxTokens: 4096,
+        include: { facts: {} },
+      });
+
+      const durationMs = Date.now() - start;
+      this.onMemoryEvent?.(
+        'recall',
+        `Reflect: ${result.answer.length} chars in ${durationMs}ms`,
+        target,
+        {
+          mode: 'reflect',
+          durationMs,
+          answerLength: result.answer.length,
+          query: question.slice(0, 200),
+        },
+      );
+
+      const answer = result.answer || null;
+      if (answer) {
+        this.reflectCache.set(cacheKey, { result: answer, ts: Date.now() });
+      }
+      return answer;
+    } catch (err) {
+      log.debug('Reflect failed', {
+        bank: target,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
+  }
+
+  /**
+   * Set up default directives for a bank if they don't already exist.
+   * Directives are hard rules injected into all prompts for a bank, used to
+   * encode project conventions, style guides, and security rules.
+   *
+   * Fully error-handled — failures are logged at debug and never throw.
+   */
+  async ensureDirectives(
+    bankId: string,
+    directives: Array<{ name: string; content: string; priority?: number }>,
+  ): Promise<void> {
+    if (!this.hindsightClient) return;
+    try {
+      const existing = await this.hindsightClient.listDirectives(bankId);
+      const existingNames = new Set(existing.map((d) => d.name));
+
+      for (const directive of directives) {
+        if (!existingNames.has(directive.name)) {
+          await this.hindsightClient.createDirective(bankId, directive);
+          log.debug('Created directive', { bankId, name: directive.name });
+        }
+      }
+    } catch (err) {
+      log.debug('Directive setup failed', {
+        bankId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  /**
+   * Identify conversation banks older than maxAgeDays for potential cleanup.
+   * Logs banks that would be deleted — actual deletion requires a deleteBank
+   * method on the client (not yet implemented).
+   *
+   * Fully error-handled — failures are logged at debug and never throw.
+   */
+  async cleanupOldBanks(maxAgeDays = 30): Promise<void> {
+    if (!this.hindsightClient) return;
+    try {
+      const banks = await this.hindsightClient.listBanks();
+      const cutoff = new Date();
+      cutoff.setDate(cutoff.getDate() - maxAgeDays);
+
+      for (const bank of banks) {
+        if (bank.bank_id.startsWith('conversation-') && bank.updated_at) {
+          if (new Date(bank.updated_at) < cutoff) {
+            log.info('Old conversation bank eligible for deletion', {
+              bankId: bank.bank_id,
+              updatedAt: bank.updated_at,
+              maxAgeDays,
+            });
+            // Actual deletion would call: await this.hindsightClient.deleteBank(bank.bank_id);
+            // Not yet implemented on the client — this method logs candidates only.
+          }
+        }
+      }
+    } catch (err) {
+      log.debug('Bank cleanup scan failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   /**
@@ -601,7 +793,13 @@ export class MemoryBridge {
 
     try {
       const sessionTags = payload.sessionId ? [`session:${payload.sessionId}`] : undefined;
-      await this.hindsightClient.retainOne(bankId, lines.join('\n'), 'coding-run', sessionTags);
+      await this.hindsightClient.retain(bankId, [{
+        content: lines.join('\n'),
+        context: 'coding-run',
+        timestamp: new Date().toISOString(),
+        document_id: `coding-run-${Date.now()}`,
+        ...(sessionTags ? { tags: sessionTags } : {}),
+      }]);
       this.onMemoryEvent?.(
         'retain',
         `Persisted coding run (${payload.requirements.length} requirement(s), ${payload.verdicts.length} verdict(s))`,

@@ -70,6 +70,62 @@ export interface HindsightStatus {
   suppressedEndpoints: Array<{ key: string; status: number; until: string }>;
 }
 
+/** Options for reflect queries. */
+export interface ReflectOptions {
+  /** Search depth budget. Default: 'mid'. */
+  budget?: 'low' | 'mid' | 'high';
+  /** Maximum tokens for the response. Default: 4096. */
+  maxTokens?: number;
+  /** Filter memories by tags. */
+  tags?: string[];
+  /** How to match tags. */
+  tags_match?: 'any' | 'all' | 'any_strict' | 'all_strict';
+  /** JSON Schema for structured output. */
+  responseSchema?: Record<string, unknown>;
+  /** Include supporting data in response. */
+  include?: {
+    facts?: Record<string, never>;
+    tool_calls?: { output?: boolean };
+  };
+  /** Filter fact types. */
+  fact_types?: string[];
+  /** Exclude all mental models from reflect. */
+  excludeMentalModels?: boolean;
+}
+
+/** Result of a reflect query. */
+export interface ReflectResult {
+  /** The LLM-generated answer based on stored memories. */
+  answer: string;
+  /** Structured output if response_schema was provided. */
+  structured_output?: unknown;
+}
+
+/** Statistics about a memory bank. */
+export interface BankStats {
+  bank_id: string;
+  total_nodes: number;
+  total_links: number;
+  total_documents: number;
+  total_observations: number;
+  pending_consolidation: number;
+  pending_operations: number;
+  failed_operations: number;
+  last_consolidated_at: string | null;
+}
+
+/** A directive (hard rule) injected into prompts for a bank. */
+export interface Directive {
+  id: string;
+  name: string;
+  content: string;
+  priority: number;
+  is_active: boolean;
+  tags: string[];
+  created_at: string;
+  updated_at: string;
+}
+
 export class HindsightClient {
   private readonly baseUrl: string;
   private readonly namespace: string;
@@ -269,7 +325,16 @@ export class HindsightClient {
    * @param config - Bank configuration (name, tuning parameters).
    */
   async createBank(bankId: string, config: BankConfig): Promise<void> {
-    await this.request<unknown>('PUT', this.bankPath(bankId), config);
+    const body: Record<string, unknown> = { name: config.name };
+    if (config.skepticism !== undefined) body.disposition_skepticism = config.skepticism;
+    if (config.literalism !== undefined) body.disposition_literalism = config.literalism;
+    if (config.empathy !== undefined) body.disposition_empathy = config.empathy;
+    if (config.retain_mission) body.retain_mission = config.retain_mission;
+    if (config.observations_mission) body.observations_mission = config.observations_mission;
+    if (config.reflect_mission) body.reflect_mission = config.reflect_mission;
+    if (config.enable_observations !== undefined) body.enable_observations = config.enable_observations;
+    if (config.retain_extraction_mode) body.retain_extraction_mode = config.retain_extraction_mode;
+    await this.request<unknown>('PUT', this.bankPath(bankId), body);
     this.invalidateBanksCache();
   }
 
@@ -359,7 +424,7 @@ export class HindsightClient {
    * @param bankId - Target bank identifier.
    * @param items - Array of memory items to store.
    */
-  async retain(bankId: string, items: MemoryItem[]): Promise<RetainResult> {
+  async retain(bankId: string, items: MemoryItem[], opts?: { async?: boolean }): Promise<RetainResult> {
     const start = Date.now();
 
     // Compress content and compute token estimates before storage
@@ -378,10 +443,12 @@ export class HindsightClient {
       totalChars: processedItems.reduce((sum, i) => sum + (i.content?.length ?? 0), 0),
       totalTokens: processedItems.reduce((sum, i) => sum + (i.estimatedTokens ?? 0), 0),
     });
+    const retainBody: Record<string, unknown> = { items: processedItems };
+    if (opts?.async) retainBody.async = true;
     const result = await this.request<RetainResult>(
       'POST',
       `${this.bankPath(bankId)}/memories`,
-      { items: processedItems },
+      retainBody,
     );
     const durationMs = Date.now() - start;
     log.verbose(`Retain ← ${bankId}`, { durationMs });
@@ -485,6 +552,13 @@ export class HindsightClient {
     // The API expects `query_timestamp`, not `before`.
     if (opts?.before) {
       body.query_timestamp = opts.before;
+    }
+    if (opts?.types) {
+      body.types = opts.types;
+    }
+    if (opts?.tags) {
+      body.tags = opts.tags;
+      if (opts.tags_match) body.tags_match = opts.tags_match;
     }
 
     const raw = await this.request<{ results: Array<Record<string, unknown>> }>(
@@ -825,6 +899,133 @@ export class HindsightClient {
       'POST',
       `${this.bankPath(bankId)}/mental-models/${modelId}/refresh`,
     );
+  }
+
+  // ── Reflect ────────────────────────────────────────────────────────
+
+  /**
+   * Reflect on stored memories to generate a contextual answer.
+   *
+   * This is the most powerful query mode — it retrieves experience, world facts,
+   * and observations, then uses an LLM to formulate a contextual answer.
+   *
+   * @param bankId - Source bank identifier.
+   * @param query - Natural-language question to reflect on.
+   * @param opts - Optional reflect parameters.
+   */
+  async reflect(
+    bankId: string,
+    query: string,
+    opts?: ReflectOptions,
+  ): Promise<ReflectResult> {
+    const start = Date.now();
+    const body: Record<string, unknown> = {
+      query,
+      budget: opts?.budget ?? 'mid',
+      max_tokens: opts?.maxTokens ?? 4096,
+    };
+    if (opts?.tags) body.tags = opts.tags;
+    if (opts?.tags_match) body.tags_match = opts.tags_match;
+    if (opts?.responseSchema) body.response_schema = opts.responseSchema;
+    if (opts?.include) body.include = opts.include;
+    if (opts?.fact_types) body.fact_types = opts.fact_types;
+    if (opts?.excludeMentalModels) body.exclude_mental_models = true;
+
+    log.verbose(`Reflect → ${bankId}`, {
+      queryPreview: query.slice(0, 200),
+      budget: body.budget,
+      maxTokens: body.max_tokens,
+    });
+
+    const raw = await this.request<Record<string, unknown>>(
+      'POST',
+      `${this.bankPath(bankId)}/reflect`,
+      body,
+    );
+
+    const durationMs = Date.now() - start;
+    const answer = typeof raw.answer === 'string' ? raw.answer : '';
+
+    log.verbose(`Reflect ← ${bankId}`, {
+      durationMs,
+      answerLength: answer.length,
+      hasStructuredOutput: !!raw.structured_output,
+    });
+
+    this.onIO?.({
+      op: 'recall',
+      bank: bankId,
+      detail: `Reflect: ${answer.length} chars in ${durationMs}ms`,
+      meta: { query, durationMs, answerLength: answer.length, mode: 'reflect' },
+    });
+
+    return {
+      answer,
+      structured_output: raw.structured_output,
+    };
+  }
+
+  // ── Consolidate ────────────────────────────────────────────────────
+
+  /**
+   * Trigger memory consolidation for a bank.
+   * Creates/updates observations from recent memories.
+   * Useful after large batch retains.
+   *
+   * @param bankId - Target bank identifier.
+   */
+  async consolidate(bankId: string): Promise<void> {
+    log.verbose(`Consolidate → ${bankId}`);
+    await this.request<unknown>(
+      'POST',
+      `${this.bankPath(bankId)}/consolidate`,
+    );
+    log.verbose(`Consolidate ← ${bankId}`);
+  }
+
+  // ── Stats ──────────────────────────────────────────────────────────
+
+  /**
+   * Get statistics for a memory bank.
+   * Useful for health monitoring and capacity planning.
+   *
+   * @param bankId - Target bank identifier.
+   */
+  async getBankStats(bankId: string): Promise<BankStats> {
+    return this.request<BankStats>('GET', `${this.bankPath(bankId)}/stats`);
+  }
+
+  // ── Directives ─────────────────────────────────────────────────────
+
+  /**
+   * Create a directive (hard rule) for a bank.
+   * Directives are injected into prompts during reflect operations.
+   *
+   * @param bankId - Target bank identifier.
+   * @param directive - Directive definition.
+   */
+  async createDirective(
+    bankId: string,
+    directive: { name: string; content: string; priority?: number; is_active?: boolean; tags?: string[] },
+  ): Promise<Directive> {
+    return this.request<Directive>(
+      'POST',
+      `${this.bankPath(bankId)}/directives`,
+      directive,
+    );
+  }
+
+  /**
+   * List all directives for a bank.
+   *
+   * @param bankId - Target bank identifier.
+   */
+  async listDirectives(bankId: string): Promise<Directive[]> {
+    const result = await this.request<{ directives: Directive[] }>(
+      'GET',
+      `${this.bankPath(bankId)}/directives`,
+    );
+    return result.directives ?? [];
   }
 
   // ── Internals ──────────────────────────────────────────────────────

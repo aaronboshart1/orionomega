@@ -244,7 +244,13 @@ export class SessionSummarizer {
       // cross-session.
       const tags = sessionId ? [`session:${sessionId}`] : undefined;
       await withRetry(
-        () => this.hs.retainOne('core', summary, 'session_summary', tags),
+        () => this.hs.retain('core', [{
+          content: summary,
+          context: 'session_summary',
+          timestamp: new Date().toISOString(),
+          document_id: sessionId ? `session-summary-${sessionId}` : `session-summary-${Date.now()}`,
+          ...(tags ? { tags } : {}),
+        }]),
         'Session summary retain (core)',
       );
       log.info('Session summary retained to core', { sessionId });
@@ -253,7 +259,13 @@ export class SessionSummarizer {
       if (projectBank) {
         try {
           await withRetry(
-            () => this.hs.retainOne(projectBank, summary, 'project_update', tags),
+            () => this.hs.retain(projectBank, [{
+              content: summary,
+              context: 'project_update',
+              timestamp: new Date().toISOString(),
+              document_id: sessionId ? `project-update-${sessionId}` : `project-update-${Date.now()}`,
+              ...(tags ? { tags } : {}),
+            }]),
             `Session summary retain (${projectBank})`,
           );
           log.info('Session summary retained to project bank', { projectBank, sessionId });

@@ -394,6 +394,12 @@ export interface BuildCodingTaskPreambleInput {
    * {@link shouldUseMacroPlanning}.
    */
   useMacroPlanning?: boolean;
+  /**
+   * Change 2.10: Prior architecture decisions recalled from memory for
+   * this project. When non-empty, a "Prior Architecture Decisions" section
+   * is injected after the repository block so the planner respects them.
+   */
+  priorDecisions?: string[];
 }
 
 /**
@@ -418,6 +424,11 @@ export function buildCodingTaskPreamble(input: BuildCodingTaskPreambleInput): st
     ? renderSpecMacroPreambleBlock(specs)
     : renderSpecPreambleBlock(specs);
   const specSection = specBlock ? `\n\n${specBlock}\n` : '';
+  const decisions = input.priorDecisions ?? [];
+  const priorDecisionsSection =
+    decisions.length > 0
+      ? `\n\n## Prior Architecture Decisions\nThe following decisions were made in previous sessions for this project:\n\n${decisions.map((d) => `- ${d}`).join('\n')}\n\nHonor these decisions unless explicitly overridden by the current task.`
+      : '';
   return `## CODING MODE — Structured Software Engineering Workflow
 
 You are planning a **coding workflow**. The user wants code changes made to a repository.
@@ -427,7 +438,7 @@ The repository has already been cloned into a fresh per-run output folder for yo
 - Remote URL: ${remoteUrl}
 - Branch: ${branch}
 - Checkout path (cwd for every CODING_AGENT node): ${checkoutPath}
-- HEAD commit: ${head}
+- HEAD commit: ${head}${priorDecisionsSection}
 
 ### Required Workflow Structure
 

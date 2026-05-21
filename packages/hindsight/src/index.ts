@@ -1,5 +1,5 @@
 export { HindsightClient } from './client.js';
-export type { CircuitState, HindsightStatus } from './client.js';
+export type { CircuitState, HindsightStatus, ReflectOptions, ReflectResult, BankStats, Directive } from './client.js';
 export { HindsightError } from './errors.js';
 export type * from './types.js';
 

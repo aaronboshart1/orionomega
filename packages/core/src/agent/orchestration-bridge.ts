@@ -290,6 +290,14 @@ export class OrchestrationBridge {
        * orchestrate/direct dispatches leave it undefined.
        */
       commitSafety?: import('../orchestration/types.js').CommitSafetyReport;
+      /**
+       * Architecture/prior-decision context already recalled by the
+       * caller (e.g. `recallForArchitect` in `dispatchCodingWorkflow`).
+       * Merged with the memories returned by `recallForPlanning` so the
+       * planner sees both planning memories AND architect memories in one
+       * combined context block, without a second round-trip to Hindsight.
+       */
+      preRecalledContext?: string;
     } = {},
   ): Promise<void> {
     // Prepend the staged-attachments block to the task so the planner's
@@ -311,6 +319,7 @@ export class OrchestrationBridge {
       ...(opts.workflowId ? { workflowId: opts.workflowId } : {}),
       ...(opts.onPlanReady ? { onPlanReady: opts.onPlanReady } : {}),
       ...(opts.commitSafety ? { commitSafety: opts.commitSafety } : {}),
+      ...(opts.preRecalledContext ? { preRecalledContext: opts.preRecalledContext } : {}),
     });
   }
 
@@ -323,6 +332,8 @@ export class OrchestrationBridge {
       workflowId?: string;
       onPlanReady?: (plan: PlannerOutput) => Promise<{ postExecute?: (success: boolean) => Promise<void> } | void>;
       commitSafety?: import('../orchestration/types.js').CommitSafetyReport;
+      /** Architecture/prior-decision context pre-recalled by the caller; merged with recallForPlanning output. */
+      preRecalledContext?: string;
     } = {},
   ): Promise<void> {
     // Task #200: mint the workflowId BEFORE planning so we can scope
@@ -339,11 +350,13 @@ export class OrchestrationBridge {
 
     try {
       const memories = await this.memory.recallForPlanning(task);
-      this.emitStep('memory', 'Recalling memory', 'done', `${memories.length} source${memories.length !== 1 ? 's' : ''} found`);
+      // Merge any pre-recalled context (e.g. architect memories from coding workflow) with planning memories
+      const allMemories = opts.preRecalledContext ? [opts.preRecalledContext, ...memories] : memories;
+      this.emitStep('memory', 'Recalling memory', 'done', `${allMemories.length} source${allMemories.length !== 1 ? 's' : ''} found`);
       this.emitStep('planning', 'Generating plan', 'active');
-      const preRecalledContext = memories.length ? memories.join('\n') : undefined;
+      const preRecalledContext = allMemories.length ? allMemories.join('\n') : undefined;
       const plan = await this.planner.plan(task, {
-        ...(memories.length ? { memories } : {}),
+        ...(allMemories.length ? { memories: allMemories } : {}),
         ...(this.availableSkills.length ? { availableSkills: this.availableSkills } : {}),
       }, preRecalledContext, plannerEmit);
       const nodeCount = plan.graph?.nodes ? (plan.graph.nodes instanceof Map ? plan.graph.nodes.size : Object.keys(plan.graph.nodes).length) : 0;
@@ -686,19 +699,46 @@ export class OrchestrationBridge {
       }
     }
 
-    await this.dispatchFullDAG(prepared.codingTaskPreamble, pushHistory, {
+    // Change 1.1 + 2.10: recall architecture-specific context for coding tasks so
+    // the planner and CODING_AGENT nodes see prior architecture decisions.
+    let architectContext: string | undefined;
+    try {
+      const architectMemories = await this.memory.recallForArchitect(task);
+      if (architectMemories.length > 0) {
+        architectContext = architectMemories.join('\n\n');
+        this.emitStep('memory', 'Recalled architect context', 'done',
+          `${architectMemories.length} architecture decision${architectMemories.length !== 1 ? 's' : ''} found`);
+      }
+    } catch (err) {
+      log.warn('recallForArchitect failed (non-fatal)', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    // Change 2.10: inject prior architecture decisions into the coding task preamble
+    // so both the planner and every CODING_AGENT node that inherits the preamble
+    // see the relevant historical context inline.
+    const codingTaskPreamble = architectContext
+      ? `${prepared.codingTaskPreamble}\n\n## Prior Architecture Decisions\n\n${architectContext}`
+      : prepared.codingTaskPreamble;
+
+    await this.dispatchFullDAG(codingTaskPreamble, pushHistory, {
       executorOverrides: {
         codingRepoDir: prepared.checkoutPath,
         // Task #197: propagate the preamble so the executor can wire a
         // macroExpansionCallback that re-uses the same Repository
         // context for each per-phase sub-plan.
-        codingPreamble: prepared.codingTaskPreamble,
+        codingPreamble: codingTaskPreamble,
         ...(macroPhaseBodies.size > 0 ? { macroPhaseBodies } : {}),
       },
       workflowId: prepared.runId,
       commitSafety: prepared.commitSafety,
       ...(opts.stagedAttachments?.length ? { stagedAttachments: opts.stagedAttachments } : {}),
       ...(onPlanReady ? { onPlanReady } : {}),
+      // Change 1.1: pass architect memories as pre-recalled context so
+      // dispatchFullDAGInternal merges them with recallForPlanning output
+      // before handing the combined set to the planner.
+      ...(architectContext ? { preRecalledContext: architectContext } : {}),
     });
   }
 
@@ -1240,6 +1280,33 @@ ${userTask}`;
     try {
       const result = await executor.execute(startLayer);
       executeSucceeded = result.status === 'complete';
+
+      // Change 1.2: retain structured coding run data for DAG path.
+      // Only fires when this is a coding workflow (identified by the codingRepoDir override).
+      if (executorOverrides?.codingRepoDir) {
+        try {
+          const sessionId = this.memory.retention?.getWorkflowSession(workflowId);
+          const decisionSummary = result.decisions.length > 0
+            ? result.decisions.slice(0, 5).join('; ')
+            : 'DAG coding workflow completed';
+          await this.memory.retainCodingRun({
+            task: plan.summary,
+            requirements: [],
+            verdicts: [],
+            decision: decisionSummary,
+            ...(sessionId ? { sessionId } : {}),
+            plan: {
+              nodes: [...plan.graph.nodes.values()].map(n => ({ id: n.id, type: n.type, label: n.label })),
+            },
+          });
+        } catch (err) {
+          log.warn('retainCodingRun (DAG path) failed (non-fatal)', {
+            error: err instanceof Error ? err.message : String(err),
+            workflowId,
+          });
+        }
+      }
+
       await this.onExecutionComplete(result, workflowId, pushHistory);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

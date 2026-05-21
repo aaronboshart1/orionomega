@@ -52,6 +52,24 @@ export class BankManager {
       if (!exists) {
         await this.hs.createBank(bankId, {
           name: `Project: ${taskDescription.slice(0, 80)}`,
+          retain_mission: [
+            'Extract technical decisions, architecture choices, implementation patterns,',
+            'code conventions, error resolutions, API contracts, and configuration from',
+            'this software project. Capture the rationale behind decisions, not just the',
+            'outcome. Note file paths, technology choices, and dependency versions.',
+          ].join(' '),
+          observations_mission: [
+            'Synthesize observations about project architecture, code patterns,',
+            'active conventions, known issues, deployment topology, and current',
+            'implementation state. Prioritize observations useful for resuming work.',
+          ].join(' '),
+          reflect_mission: [
+            'You are a project memory for a software engineering assistant.',
+            'Answer questions about this project using stored decisions, code patterns,',
+            'and observations. Cite specific prior decisions when relevant.',
+            'If information is uncertain or missing, say so clearly.',
+          ].join(' '),
+          enable_observations: true,
         });
         log.info('Created project bank', { bankId });
       }
