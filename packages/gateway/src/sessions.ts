@@ -30,7 +30,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { readFileSync, writeFileSync, readdirSync, mkdirSync, unlinkSync, renameSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, readdirSync, mkdirSync, unlinkSync, renameSync, existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { createLogger } from '@orionomega/core';
@@ -343,6 +343,7 @@ export class SessionManager {
       this.persistence = persistenceService;
     }
     this.ensureSessionsDir();
+    this.cleanupHotWindowFiles();
     this.loadAllFromDisk();
     this.ensureDefaultSession();
     // INTENTIONALLY DISABLED: Automatic session cleanup is disabled.
@@ -1286,6 +1287,40 @@ export class SessionManager {
       mkdirSync(SESSIONS_DIR, { recursive: true });
     } catch (err) {
       log.error('Failed to create sessions directory', { error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  /**
+   * L3: Delete hot-window-*.json (and .bak) files older than HOT_WINDOW_MAX_AGE_DAYS days.
+   * Called at startup to prevent unbounded accumulation of stale hot-window snapshots.
+   */
+  private cleanupHotWindowFiles(): void {
+    const HOT_WINDOW_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+    const cutoff = Date.now() - HOT_WINDOW_MAX_AGE_MS;
+    try {
+      const files = readdirSync(SESSIONS_DIR).filter(
+        (f) => f.startsWith('hot-window-') && (f.endsWith('.json') || f.endsWith('.json.bak')),
+      );
+      let deleted = 0;
+      for (const file of files) {
+        const filePath = join(SESSIONS_DIR, file);
+        try {
+          const stat = statSync(filePath);
+          if (stat.mtimeMs < cutoff) {
+            unlinkSync(filePath);
+            deleted++;
+          }
+        } catch {
+          // Individual file errors are non-fatal
+        }
+      }
+      if (deleted > 0) {
+        log.info('[session:cleanup] Removed stale hot-window files', { deleted });
+      }
+    } catch (err) {
+      log.debug('[session:cleanup] Hot-window cleanup failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 

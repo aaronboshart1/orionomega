@@ -15,6 +15,7 @@ import { RetentionEngine } from '../memory/retention-engine.js';
 import { CompactionFlush } from '../memory/compaction-flush.js';
 import { isExternalAction } from '../memory/query-classifier.js';
 import { SessionSummarizer } from '../memory/session-summary.js';
+import * as memoryTelemetry from '../memory/memory-telemetry.js';
 import type { OrionOmegaConfig } from '../config/types.js';
 import type { MemoryEvent } from './main-agent.js';
 import { createLogger } from '../logging/logger.js';
@@ -74,9 +75,16 @@ export class MemoryBridge {
 
   private activeProjectBank: string | null = null;
   private initialised = false;
+  /** H4: Promise mutex — prevents concurrent init() calls from racing. */
+  private _initPromise: Promise<string | undefined> | null = null;
 
   private reflectCache = new Map<string, { result: string; ts: number }>();
   private static readonly REFLECT_CACHE_TTL_MS = 120_000; // 2 minutes
+
+  /** L1: Maximum cross-project banks queried during planning recall. */
+  private static readonly MAX_CROSS_PROJECT_BANKS = 5;
+  /** L1: Maximum tokens consumed from cross-project federation during planning recall. */
+  private static readonly MAX_CROSS_PROJECT_TOKENS = 4096;
 
   onMemoryEvent?: (op: MemoryOp, detail: string, bank?: string, meta?: Record<string, unknown>) => void;
 
@@ -123,11 +131,19 @@ export class MemoryBridge {
    *
    * Creates all memory components, bootstraps context, and starts retention.
    * Returns the bootstrap context block (if any) for injection into the system prompt.
-   * Safe to call multiple times — subsequent calls are no-ops.
+   * Safe to call multiple times — concurrent calls await the same promise (H4 mutex).
    */
-  async init(): Promise<string | undefined> {
-    if (this.initialised) return undefined;
+  init(): Promise<string | undefined> {
+    if (this.initialised) return Promise.resolve(undefined);
+    // H4: Return the in-flight promise if init is already running, preventing
+    // concurrent callers from racing through setup and double-initialising.
+    if (this._initPromise) return this._initPromise;
+    this._initPromise = this._doInit();
+    return this._initPromise;
+  }
 
+  /** Internal init implementation — called exactly once via the H4 promise mutex. */
+  private async _doInit(): Promise<string | undefined> {
     const hsCfg = this.config.hindsight;
     if (!hsCfg?.url) {
       log.info('Hindsight not configured — memory features disabled');
@@ -298,12 +314,15 @@ export class MemoryBridge {
     let totalResults = 0;
     let totalTokensUsed = 0;
 
+    const coreRecallStart = Date.now();
     try {
       const result = await this.hindsightClient.recall('core', task, {
         maxTokens: 2048,
         budget: 'high',
         types: ['world', 'experience', 'observation'],
+        queryTimestamp: new Date().toISOString(),
       });
+      memoryTelemetry.recordRecall('core', result.results.length, result.results.length, Date.now() - coreRecallStart, result.tokens_used);
       totalResults += result.results.length;
       totalTokensUsed += result.tokens_used;
       if (result.results.length) {
@@ -319,12 +338,15 @@ export class MemoryBridge {
     }
 
     if (this.activeProjectBank) {
+      const projRecallStart = Date.now();
       try {
         const result = await this.hindsightClient.recall(this.activeProjectBank, task, {
           maxTokens: 3072,
           budget: 'high',
           types: ['world', 'experience', 'observation'],
+          queryTimestamp: new Date().toISOString(),
         });
+        memoryTelemetry.recordRecall(this.activeProjectBank, result.results.length, result.results.length, Date.now() - projRecallStart, result.tokens_used);
         totalResults += result.results.length;
         totalTokensUsed += result.tokens_used;
         if (result.results.length) {
@@ -339,10 +361,15 @@ export class MemoryBridge {
       }
     }
 
-    // Cross-project federation: query other project banks for cross-project learnings
+    // Cross-project federation: query other project banks for cross-project learnings.
+    // L1: Cap at MAX_CROSS_PROJECT_BANKS banks and MAX_CROSS_PROJECT_TOKENS total tokens.
     try {
       const allBanks = await this.hindsightClient.listBanksCached();
+      let crossBanksQueried = 0;
+      let crossTokensUsed = 0;
       for (const bank of allBanks) {
+        if (crossBanksQueried >= MemoryBridge.MAX_CROSS_PROJECT_BANKS) break;
+        if (crossTokensUsed >= MemoryBridge.MAX_CROSS_PROJECT_TOKENS) break;
         if (bank.bank_id === 'core' || bank.bank_id === this.activeProjectBank) continue;
         if (!bank.bank_id.startsWith('project-')) continue;
         if ((bank.memory_count ?? 0) === 0) continue;
@@ -350,9 +377,12 @@ export class MemoryBridge {
           const result = await this.hindsightClient.recall(bank.bank_id, task, {
             maxTokens: 512,
             budget: 'low',
+            queryTimestamp: new Date().toISOString(),
           });
           totalResults += result.results.length;
           totalTokensUsed += result.tokens_used;
+          crossTokensUsed += result.tokens_used;
+          crossBanksQueried++;
           if (result.results.length > 0) {
             const prefixed = result.results.map((m) => `[Cross-project: ${bank.bank_id}] ${m.content}`);
             memories.push(prefixed.join('\n\n'));
@@ -518,6 +548,7 @@ export class MemoryBridge {
         const result = await this.hindsightClient.recall(this.activeProjectBank, archQuery, {
           maxTokens: 3072,
           types: ['world', 'experience', 'observation'],
+          queryTimestamp: new Date().toISOString(),
         });
         totalResults += result.results.length;
         if (result.results.length) {
@@ -537,6 +568,7 @@ export class MemoryBridge {
       const result = await this.hindsightClient.recall('core', archQuery, {
         maxTokens: 1024,
         types: ['world', 'experience', 'observation'],
+        queryTimestamp: new Date().toISOString(),
       });
       totalResults += result.results.length;
       if (result.results.length) {
@@ -652,11 +684,8 @@ export class MemoryBridge {
   }
 
   /**
-   * Identify conversation banks older than maxAgeDays for potential cleanup.
-   * Logs banks that would be deleted — actual deletion requires a deleteBank
-   * method on the client (not yet implemented).
-   *
-   * Fully error-handled — failures are logged at debug and never throw.
+   * Delete conversation banks older than maxAgeDays.
+   * Fully error-handled — per-bank failures are logged at warn and never throw.
    */
   async cleanupOldBanks(maxAgeDays = 30): Promise<void> {
     if (!this.hindsightClient) return;
@@ -668,15 +697,20 @@ export class MemoryBridge {
       for (const bank of banks) {
         if (bank.bank_id.startsWith('conversation-') && bank.updated_at) {
           if (new Date(bank.updated_at) < cutoff) {
-            log.info('Old conversation bank eligible for deletion', {
+            log.info('Deleting old conversation bank', {
               bankId: bank.bank_id,
               updatedAt: bank.updated_at,
               maxAgeDays,
             });
-            // TODO(spec 3.12): Wire actual deletion once HindsightClient.deleteBank() is added.
-            // client.ts currently has no deleteBank method — that must be implemented first
-            // (DELETE /v1/<ns>/banks/<bankId>), then this block should call:
-            //   await this.hindsightClient.deleteBank(bank.bank_id);
+            try {
+              await this.hindsightClient.deleteBank(bank.bank_id);
+              log.info('Deleted old conversation bank', { bankId: bank.bank_id });
+            } catch (err) {
+              log.warn('Failed to delete old conversation bank', {
+                bankId: bank.bank_id,
+                error: err instanceof Error ? err.message : String(err),
+              });
+            }
           }
         }
       }

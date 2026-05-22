@@ -4,6 +4,7 @@ export class HindsightError extends Error {
     message: string,
     public statusCode: number,
     public endpoint: string,
+    public retryAfterMs?: number,
   ) {
     super(`Hindsight API error (${statusCode}) at ${endpoint}: ${message}`);
     this.name = 'HindsightError';

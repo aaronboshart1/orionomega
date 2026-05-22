@@ -13,7 +13,7 @@
  * - Full confidence score propagation with per-section summaries
  */
 
-import { HindsightClient, estimateTokens, smartTruncate } from '@orionomega/hindsight';
+import { HindsightClient, estimateTokens, smartTruncate, trigramSimilarity } from '@orionomega/hindsight';
 import { createLogger } from '../logging/logger.js';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -103,14 +103,17 @@ export interface ContextAssemblerConfig {
 }
 
 const DEFAULT_HOT_WINDOW = 20;
-// F11: Aligned with API tier cap. The previous value of 30,000 exceeded
-// the 'high' tier cap (8192) by 4×, causing the HindsightClient to silently
-// clamp it down anyway. Using 8192 makes the budget explicit and prevents
-// over-requesting tokens that will be wasted.
-const DEFAULT_RECALL_BUDGET = 8_192;
-const DEFAULT_MAX_TURN_TOKENS = 60_000;
-const DEFAULT_SYSTEM_PROMPT_TOKENS = 4_000;
+// H1: Raised to match 'high' tier recall (16 384) and Claude's 128 k context window.
+const DEFAULT_RECALL_BUDGET = 16_384;
+const DEFAULT_MAX_TURN_TOKENS = 128_000;
+// C2: 15 000 is a safer default that accounts for long system prompts (tools,
+// mission blocks, etc.) without silently eating into the user context budget.
+const DEFAULT_SYSTEM_PROMPT_TOKENS = 15_000;
 const DEFAULT_OUTPUT_RESERVE = 4_096;
+// H2: Maximum tokens allowed in the hot window before oldest messages are evicted.
+const HOT_WINDOW_TOKEN_BUDGET = 30_000;
+// M3: Maximum tokens for the combined recall query sent to Hindsight.
+const MAX_QUERY_TOKENS = 450;
 
 // Token estimation now uses the shared estimateTokens from @orionomega/hindsight
 // which accounts for content type (code vs. natural language).
@@ -159,6 +162,18 @@ export class ContextAssembler {
   /** Track total messages seen (for logging). */
   private totalMessageCount = 0;
 
+  // C5: Retain buffer — batch messages before flushing to Hindsight
+  private retainBuffer: Array<{
+    content: string;
+    context: string;
+    timestamp: string;
+    document_id: string;
+    tags?: string[];
+  }> = [];
+  private retainFlushTimer: ReturnType<typeof setTimeout> | null = null;
+  private static readonly RETAIN_FLUSH_SIZE = 3;
+  private static readonly RETAIN_FLUSH_INTERVAL_MS = 5_000;
+
   onMemoryEvent?: (op: 'retain' | 'recall' | 'dedup' | 'quality' | 'bootstrap' | 'flush' | 'session_anchor' | 'summary' | 'self_knowledge', detail: string, bank?: string, meta?: Record<string, unknown>) => void;
 
   constructor(hs: HindsightClient | null, config: ContextAssemblerConfig = {}) {
@@ -170,7 +185,7 @@ export class ContextAssembler {
     this.outputReserve = config.outputReserveTokens ?? DEFAULT_OUTPUT_RESERVE;
     this.conversationBank = config.conversationBank ?? null;
     this.additionalBanks = config.additionalBanks ?? [];
-    this.recallBudget = config.recallBudget ?? 'mid';
+    this.recallBudget = config.recallBudget ?? 'high';
     this.persistPath = config.persistPath ?? null;
     this.sessionId = config.sessionId ?? null;
     this.federateBanks = config.federateBanks !== false;
@@ -212,6 +227,14 @@ export class ContextAssembler {
     this.hotWindow.push(msg);
     if (this.hotWindow.length > this.hotWindowSize) {
       this.hotWindow = this.hotWindow.slice(-this.hotWindowSize);
+    }
+    // H2: Token-aware eviction — keep hot window within token budget (min 2 messages)
+    while (this.hotWindow.length > 2) {
+      const totalTokens = this.hotWindow.reduce(
+        (sum, m) => sum + estimateTokens(contentToText(m.content)), 0,
+      );
+      if (totalTokens <= HOT_WINDOW_TOKEN_BUDGET) break;
+      this.hotWindow.shift();
     }
     this.totalMessageCount++;
 
@@ -276,9 +299,18 @@ export class ContextAssembler {
         this.onMemoryEvent?.('recall', `Assembling context (${queryType}, budget: ${recallTokens} tokens)`, undefined, { queryType, recallTokens, ...(this.sessionId ? { sessionId: this.sessionId } : {}) });
 
         const isShort = this.isShortReply(currentQuery);
-        const recallQuery = isShort
+        let recallQuery = isShort
           ? this.augmentQueryWithRecentContext(currentQuery)
           : currentQuery;
+
+        // M3: Clamp query to MAX_QUERY_TOKENS — prefer raw user query over augmented context
+        if (estimateTokens(recallQuery) > MAX_QUERY_TOKENS) {
+          if (isShort && estimateTokens(currentQuery) <= MAX_QUERY_TOKENS) {
+            recallQuery = currentQuery;
+          } else {
+            recallQuery = smartTruncate(recallQuery, MAX_QUERY_TOKENS);
+          }
+        }
 
         const recallResult = await this.recallFromBanks(
           recallQuery,
@@ -407,7 +439,10 @@ export class ContextAssembler {
   // ── Private ──────────────────────────────────────────────────
 
   /**
-   * Retain a single message to the conversation bank in Hindsight.
+   * Buffer a message for retention to the conversation bank.
+   * C5: Batches up to RETAIN_FLUSH_SIZE messages before calling Hindsight,
+   * eliminating per-message round-trips and the isDuplicateContent hot-path call.
+   * The buffer is auto-flushed after RETAIN_FLUSH_INTERVAL_MS as well.
    */
   private async retainMessage(msg: ConversationMessage): Promise<void> {
     if (!this.hs || !this.conversationBank) return;
@@ -415,39 +450,74 @@ export class ContextAssembler {
     const textContent = contentToText(msg.content);
     const formattedContent = `[${msg.role}] ${textContent}`;
 
-    const isDup = await this.hs.isDuplicateContent(
-      this.conversationBank,
-      formattedContent,
-      this.storageDeduplicationThreshold,
-    );
-    if (isDup) {
-      log.debug('Skipped duplicate message retention', {
-        bank: this.conversationBank,
-        role: msg.role,
-        contentLength: textContent.length,
-      });
-      this.onMemoryEvent?.('dedup', `Skipped duplicate ${msg.role} message (${textContent.length} chars)`, this.conversationBank, { role: msg.role, chars: textContent.length });
-      return;
-    }
-
     const tags: string[] = [];
     if (this.sessionId) tags.push(`session:${this.sessionId}`);
 
-    await this.hs.retain(this.conversationBank, [
-      {
-        content: formattedContent,
-        context: `conversation_${msg.role}`,
-        timestamp: msg.timestamp ?? new Date().toISOString(),
-        document_id: `conv-${this.sessionId ?? 'anon'}-${this.totalMessageCount}`,
-        ...(tags.length ? { tags } : {}),
-      },
-    ], { async: true });
+    this.retainBuffer.push({
+      content: formattedContent,
+      context: `conversation_${msg.role}`,
+      timestamp: msg.timestamp ?? new Date().toISOString(),
+      document_id: `conv-${this.sessionId ?? 'anon'}-${this.totalMessageCount}`,
+      ...(tags.length ? { tags } : {}),
+    });
 
-    this.onMemoryEvent?.('retain', `Retained ${msg.role} message (${textContent.length} chars)`, this.conversationBank, {
+    this.onMemoryEvent?.('retain', `Buffered ${msg.role} message (${textContent.length} chars)`, this.conversationBank, {
       role: msg.role,
       chars: textContent.length,
+      bufferSize: this.retainBuffer.length,
       ...(this.sessionId ? { sessionId: this.sessionId } : {}),
     });
+
+    if (this.retainBuffer.length >= ContextAssembler.RETAIN_FLUSH_SIZE) {
+      if (this.retainFlushTimer) {
+        clearTimeout(this.retainFlushTimer);
+        this.retainFlushTimer = null;
+      }
+      await this.flushRetainBuffer();
+    } else if (!this.retainFlushTimer) {
+      this.retainFlushTimer = setTimeout(() => {
+        this.retainFlushTimer = null;
+        this.flushRetainBuffer().catch((err) => {
+          log.debug('Timed retain flush failed', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
+      }, ContextAssembler.RETAIN_FLUSH_INTERVAL_MS);
+    }
+  }
+
+  /**
+   * Flush buffered messages to Hindsight in a single batch call.
+   * Safe to call at any time; no-ops if buffer is empty.
+   */
+  async flushRetainBuffer(): Promise<void> {
+    if (!this.hs || !this.conversationBank || this.retainBuffer.length === 0) return;
+    const items = this.retainBuffer.splice(0);
+    try {
+      await this.hs.retain(this.conversationBank, items, { async: true });
+      this.onMemoryEvent?.('flush', `Flushed ${items.length} buffered messages to memory`, this.conversationBank, {
+        count: items.length,
+        ...(this.sessionId ? { sessionId: this.sessionId } : {}),
+      });
+    } catch (err) {
+      log.debug('Retain buffer flush failed', {
+        bank: this.conversationBank,
+        count: items.length,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  /**
+   * Flush pending retain buffer and release timers.
+   * Call before discarding the assembler (e.g. on session end).
+   */
+  async destroy(): Promise<void> {
+    if (this.retainFlushTimer) {
+      clearTimeout(this.retainFlushTimer);
+      this.retainFlushTimer = null;
+    }
+    await this.flushRetainBuffer();
   }
 
   /**
@@ -669,6 +739,16 @@ export class ContextAssembler {
           if (!b.timestamp) return -1;
           return b.timestamp.localeCompare(a.timestamp);
         });
+      }
+    }
+
+    // H5: Filter recalled items that are too similar to hot window content
+    const hotWindowTexts = this.hotWindow.map((m) => contentToText(m.content));
+    if (hotWindowTexts.length > 0) {
+      for (const r of results) {
+        r.items = r.items.filter(
+          (item) => !hotWindowTexts.some((hwText) => trigramSimilarity(item.content, hwText) > 0.80),
+        );
       }
     }
 

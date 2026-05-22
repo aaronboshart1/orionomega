@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import { HindsightError } from './errors.js';
 import { createLogger } from './logger.js';
 import {
@@ -17,6 +18,15 @@ import type {
 } from './types.js';
 
 const log = createLogger('hindsight-client');
+
+const RawMemoryItemSchema = z.object({
+  text: z.string().optional(),
+  content: z.string().optional(),
+  context: z.string().optional(),
+  mentioned_at: z.string().optional(),
+  timestamp: z.string().optional(),
+  relevance: z.number().optional(),
+}).passthrough();
 
 /**
  * Client for the Hindsight temporal knowledge graph API.
@@ -188,6 +198,7 @@ export class HindsightClient {
   private static readonly SUPPRESSIBLE_STATUSES = new Set([404, 405, 501]);
   private static readonly SUPPRESS_AFTER_HITS = 2;
   private static readonly SUPPRESS_TTL_MS = 5 * 60_000;
+  static readonly DEFAULT_TIMEOUT_MS = 10_000;
   private _endpointHitCounts = new Map<string, { status: number; count: number; message: string }>();
   private _suppressedEndpoints = new Map<string, { status: number; until: number; message: string }>();
 
@@ -665,7 +676,10 @@ export class HindsightClient {
     }
     // F5: Fix temporal diversity parameter name to match API schema.
     // The API expects `query_timestamp`, not `before`.
-    if (opts?.before) {
+    // M1: queryTimestamp is the canonical field; `before` is kept for backward compat.
+    if (opts?.queryTimestamp) {
+      body.query_timestamp = opts.queryTimestamp;
+    } else if (opts?.before) {
       body.query_timestamp = opts.before;
     }
     if (opts?.types) {
@@ -676,10 +690,14 @@ export class HindsightClient {
       if (opts.tags_match) body.tags_match = opts.tags_match;
     }
 
-    const raw = await this.request<{ results: Array<Record<string, unknown>> }>(
-      'POST',
-      `${this.bankPath(bankId)}/memories/recall`,
-      body,
+    const raw = await this.withRetry(
+      `recall:${bankId}`,
+      () => this.request<{ results: Array<Record<string, unknown>> }>(
+        'POST',
+        `${this.bankPath(bankId)}/memories/recall`,
+        body,
+      ),
+      3,
     );
 
     // F4: Default threshold lowered from 0.3 → 0.15. The old 0.3 was calibrated
@@ -688,16 +706,23 @@ export class HindsightClient {
     const shouldDedup = opts?.deduplicate !== false;
     const dedupThreshold = opts?.deduplicationThreshold ?? 0.85;
 
-    let allResults: RecalledMemory[] = (raw.results ?? []).map((r) => {
-      const content = (r.text as string) ?? (r.content as string) ?? '';
-      return {
+    let allResults: RecalledMemory[] = [];
+    for (const r of (raw.results ?? [])) {
+      const parsed = RawMemoryItemSchema.safeParse(r);
+      if (!parsed.success) {
+        log.warn('Recall: skipping invalid memory item', { issues: parsed.error.issues });
+        continue;
+      }
+      const d = parsed.data;
+      const content = d.text ?? d.content ?? '';
+      allResults.push({
         content,
-        context: (r.context as string) ?? '',
-        timestamp: (r.mentioned_at as string) ?? (r.timestamp as string) ?? '',
-        relevance: (r.relevance as number) ?? 0,
+        context: d.context ?? '',
+        timestamp: d.mentioned_at ?? d.timestamp ?? '',
+        relevance: d.relevance ?? 0,
         estimatedTokens: estimateTokens(content),
-      };
-    });
+      });
+    }
 
     // Client-side relevance when API returns all zeros.
     // Hindsight v0.4.x without embedding backend returns relevance=0 always.
@@ -1262,13 +1287,26 @@ export class HindsightClient {
     this._activeOps++;
     this.emitActivity();
 
+    const controller = new AbortController();
+    const timeoutId = setTimeout(
+      () => controller.abort(),
+      HindsightClient.DEFAULT_TIMEOUT_MS,
+    );
+    init.signal = controller.signal;
     let res: Response;
     try {
       res = await fetch(url, init);
+      clearTimeout(timeoutId);
     } catch (err) {
+      clearTimeout(timeoutId);
       this._activeOps--;
       this._connected = false;
       this.emitActivity();
+      if (err instanceof Error && err.name === 'AbortError') {
+        log.warn(`Hindsight request timed out: ${method} ${path}`);
+        this.recordFailure(endpoint, 'TIMEOUT', /* transport */ true, /* status */ 0);
+        throw new HindsightError('TIMEOUT', 0, endpoint);
+      }
       const msg = err instanceof Error ? err.message : 'Network error';
       // Network failures are rare and important — keep these at warn so
       // they show up in default logs. The breaker handles repeat noise.
@@ -1306,12 +1344,14 @@ export class HindsightClient {
 
       // Tiered logging: most 4xx outcomes are not operator-actionable
       // from this layer (the bridge code logs domain context separately).
-      // Only auth/forbidden and 5xx need to surface at warn or higher.
+      // Only auth/forbidden, 429 rate-limit, and 5xx need to surface at warn.
       // 404/405/501 are the noisiest "endpoint not implemented" responses
       // and are also fed into the per-endpoint suppressor below so callers
       // stop hammering them.
       if (res.status === 401 || res.status === 403) {
         log.warn(`Hindsight auth error: ${method} ${path} → ${res.status}`, { message });
+      } else if (res.status === 429) {
+        log.warn(`Hindsight rate-limited: ${method} ${path} → 429`, { message });
       } else if (res.status >= 500) {
         log.warn(`Hindsight server error: ${method} ${path} → ${res.status}`, { message });
       } else {
@@ -1335,7 +1375,17 @@ export class HindsightClient {
         this._endpointHitCounts.delete(suppressKey);
       }
 
-      throw new HindsightError(message, res.status, endpoint);
+      // For 429, parse the Retry-After header so callers can back off correctly.
+      let retryAfterMs: number | undefined;
+      if (res.status === 429) {
+        const header = res.headers.get('Retry-After');
+        if (header) {
+          const secs = parseFloat(header);
+          if (!isNaN(secs)) retryAfterMs = secs * 1000;
+        }
+      }
+
+      throw new HindsightError(message, res.status, endpoint, retryAfterMs);
     }
 
     this._activeOps--;
@@ -1380,12 +1430,15 @@ export class HindsightClient {
       } catch (err) {
         lastErr = err;
         const status = err instanceof HindsightError ? err.statusCode : 0;
-        // Only retry on transient server-side errors; propagate everything else.
-        if (status !== 500 && status !== 502 && status !== 503) {
+        // Retry on transient server-side errors and rate-limit (429).
+        if (status !== 500 && status !== 502 && status !== 503 && status !== 429) {
           throw err;
         }
         if (attempt < maxAttempts) {
-          const delay = backoff[attempt - 1] ?? 4_000;
+          let delay = backoff[attempt - 1] ?? 4_000;
+          if (status === 429 && err instanceof HindsightError && err.retryAfterMs != null) {
+            delay = err.retryAfterMs;
+          }
           log.warn(
             `Hindsight ${label} returned ${status}, retrying in ${delay}ms (attempt ${attempt}/${maxAttempts})`,
             { error: err instanceof Error ? err.message : String(err) },

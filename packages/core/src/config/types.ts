@@ -33,6 +33,20 @@ export interface OrionOmegaConfig {
     retainOnError: boolean;
     /** Optional API key for authenticating with the Hindsight server. Falls back to HINDSIGHT_API_KEY env var. */
     apiKey?: string;
+    /** Number of recent messages to keep verbatim in the hot window. Default: 20. */
+    hotWindowSize?: number;
+    /** Max tokens to request from Hindsight recall per turn. Default: 16384. */
+    recallBudgetTokens?: number;
+    /** Max total input tokens per turn (hot window + recall + system). Default: 128000. */
+    maxTurnTokens?: number;
+    /** Minimum memory quality score to retain (0–1). Default: 0.3. */
+    qualityThreshold?: number;
+    /** Similarity threshold for storage-time deduplication (0–1). Default: 0.85. */
+    deduplicationThreshold?: number;
+    /** Number of consecutive failures before the circuit breaker opens. Default: 5. */
+    circuitBreakerThreshold?: number;
+    /** Milliseconds the circuit breaker stays open before attempting half-open. Default: 60000. */
+    circuitBreakerCooldown?: number;
   };
 
   models: {

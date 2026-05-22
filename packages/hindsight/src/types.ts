@@ -72,6 +72,8 @@ export interface RecallOptions {
   maxCandidates?: number;
   /** ISO 8601 timestamp — only return memories created before this date (for temporal diversity). */
   before?: string;
+  /** ISO 8601 timestamp representing when this query is being made. Enables server-side temporal weighting. */
+  queryTimestamp?: string;
   /** Fact types to recall: 'world', 'experience', 'observation'. Omit for server default (world + experience). */
   types?: string[];
   /** Filter memories by tags. */

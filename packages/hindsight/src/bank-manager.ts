@@ -70,6 +70,7 @@ export class BankManager {
             'If information is uncertain or missing, say so clearly.',
           ].join(' '),
           enable_observations: true,
+          retain_extraction_mode: 'verbose',
         });
         log.info('Created project bank', { bankId });
       }
