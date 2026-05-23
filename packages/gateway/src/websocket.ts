@@ -103,7 +103,23 @@ export class WebSocketHandler {
     private stateStore?: ServerSessionStore,
     private persistenceService?: PersistenceService,
   ) {
-    this.wss = new WebSocketServer({ noServer: true, maxPayload: 10 * 1024 * 1024 });
+    // WebSocket inbound payload cap. Defaults to 100 MiB so a typical
+    // chat message with one or more base64-encoded image / PDF
+    // attachments comfortably fits (base64 inflates by ~33%, so 100 MiB
+    // ≈ 75 MiB raw — covers normal photo / screenshot attachments
+    // without forcing an upload flow). Override with
+    // ORIONOMEGA_WS_MAX_PAYLOAD_MB if you need a different ceiling.
+    const maxPayloadMB = (() => {
+      const raw = process.env.ORIONOMEGA_WS_MAX_PAYLOAD_MB;
+      if (!raw) return 100;
+      const n = Number(raw);
+      return Number.isFinite(n) && n > 0 ? Math.floor(n) : 100;
+    })();
+    this.wss = new WebSocketServer({
+      noServer: true,
+      maxPayload: maxPayloadMB * 1024 * 1024,
+    });
+    log.info(`WebSocket server ready (maxPayload=${maxPayloadMB} MiB)`);
   }
 
   setHindsightStatusProvider(fn: () => { connected: boolean; busy: boolean }): void {
