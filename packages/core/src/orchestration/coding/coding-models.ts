@@ -10,6 +10,7 @@
  */
 
 import type { CodingRole, CodebaseScanOutput } from './coding-types.js';
+import type { WorkflowNode } from '../types.js';
 import type { DiscoveredModel } from '../../models/model-discovery.js';
 import { pickModelByTier } from '../../models/model-discovery.js';
 import { createLogger } from '../../logging/logger.js';
@@ -68,10 +69,28 @@ const CODING_MODE_MODEL_STRATEGY: Record<CodingRole, ModelStrategy> = {
     thinkingMode:  'disabled',
   },
   'reviewer': {
+    // Spec 4.4: "Reviewer always uses opus — research shows using a more
+    // capable model for review than implementation catches errors that
+    // self-review misses."
+    preferredTier: 'opus',
+    upgradeTier:   null,
+    downgradeTier: null,
+    thinkingMode:  'adaptive',
+  },
+  'debugger': {
+    // Spec 4.4: "Debugger gets xhigh thinking — debugging requires the
+    // deepest reasoning to diagnose root causes rather than surface symptoms."
+    // Starts at sonnet, upgrades to opus on retry #2+.
     preferredTier: 'sonnet',
     upgradeTier:   'opus',
     downgradeTier: null,
     thinkingMode:  'adaptive',
+  },
+  'review-gate': {
+    preferredTier: null,      // ROUTER node — deterministic logic, no model
+    upgradeTier:   null,
+    downgradeTier: null,
+    thinkingMode:  'disabled',
   },
   'reporter': {
     preferredTier: 'haiku',
@@ -90,6 +109,11 @@ export interface ModelResolutionContext {
   conflictCount?: number;
   /** Whether the code is security-relevant (triggers reviewer upgrade). */
   securityRelevant?: boolean;
+  /**
+   * Retry attempt number for the current node (0 = first attempt).
+   * Debugger upgrades to opus on attempt >= 1 (retry #2+).
+   */
+  retryAttempt?: number;
 }
 
 // ── Resolver ─────────────────────────────────────────────────────────────────
@@ -186,20 +210,21 @@ export class CodingModelResolver {
   // ── Private helpers ────────────────────────────────────────────────────────
 
   private shouldUpgrade(role: CodingRole, ctx: ModelResolutionContext): boolean {
-    const { profile, conflictCount = 0, securityRelevant = false } = ctx;
+    const { profile, conflictCount = 0, securityRelevant = false, retryAttempt = 0 } = ctx;
     const fileCount = profile.relevantFiles.length;
     const avgComplexity = this.avgComplexity(profile);
     const highComplexity = avgComplexity >= 2.5; // majority 'high'
 
     switch (role) {
       case 'architect':
-        return highComplexity || fileCount > 100;
+        return highComplexity || fileCount > 100 || securityRelevant;
       case 'implementer':
         return highComplexity && profile.relevantFiles.some((f) => f.linesOfCode > 500);
       case 'stitcher':
         return conflictCount > 3;
-      case 'reviewer':
-        return securityRelevant || highComplexity;
+      case 'debugger':
+        // Spec 4.3: "Debugger: sonnet, retry #2+ → opus"
+        return retryAttempt >= 1;
       case 'reporter':
         // Upgrade reporter when there are many findings to summarise
         return fileCount > 50;
@@ -229,5 +254,164 @@ export class CodingModelResolver {
       profile.relevantFiles.reduce((s, f) => s + map[f.complexity], 0) /
       profile.relevantFiles.length
     );
+  }
+}
+
+// ── Critical path computation ─────────────────────────────────────────────────
+
+/**
+ * Estimated wall-clock duration in seconds per coding role.
+ * Used by computeCriticalPath() for forward/backward pass calculations.
+ */
+const ROLE_DURATION_ESTIMATE_S: Partial<Record<CodingRole, number>> = {
+  'codebase-scanner': 60,
+  'architect':        120,
+  'implementer':      300,
+  'stitcher':         180,
+  'test-writer':      180,
+  'validator':        60,
+  'reviewer':         120,
+  'debugger':         180,
+  'review-gate':      5,
+  'reporter':         30,
+};
+
+/**
+ * Computes the critical path through a coding DAG using a forward/backward pass.
+ *
+ * The critical path is the sequence of dependent nodes whose combined duration
+ * equals the total session duration. Nodes on the critical path have zero slack
+ * (earliest start == latest start). These nodes should receive model upgrades
+ * because any delay cascades to the entire session.
+ *
+ * Algorithm:
+ *   1. Forward pass — compute earliest finish time (EFT) per node
+ *   2. Backward pass — compute latest start time (LST) per node
+ *   3. Slack = LST − (EFT − duration); critical when slack ≈ 0
+ *
+ * @param nodes - All nodes in the DAG (any ordering).
+ * @returns Array of nodes on the critical path, in topological order.
+ */
+export function computeCriticalPath(nodes: WorkflowNode[]): WorkflowNode[] {
+  if (nodes.length === 0) return [];
+
+  const nodeMap = new Map<string, WorkflowNode>();
+  for (const n of nodes) nodeMap.set(n.id, n);
+
+  const nodeDuration = (n: WorkflowNode): number => {
+    const role = n.codingConfig?.codingRole;
+    return (role && ROLE_DURATION_ESTIMATE_S[role]) ?? 60;
+  };
+
+  // Build adjacency structures
+  const successors = new Map<string, string[]>();
+  const inDegree = new Map<string, number>();
+  for (const n of nodes) {
+    inDegree.set(n.id, n.dependsOn.length);
+    successors.set(n.id, []);
+  }
+  for (const n of nodes) {
+    for (const dep of n.dependsOn) {
+      const s = successors.get(dep) ?? [];
+      s.push(n.id);
+      successors.set(dep, s);
+    }
+  }
+
+  // Kahn's topological sort
+  const queue: string[] = [];
+  for (const n of nodes) {
+    if ((inDegree.get(n.id) ?? 0) === 0) queue.push(n.id);
+  }
+  const topoOrder: string[] = [];
+  while (queue.length > 0) {
+    const id = queue.shift()!;
+    topoOrder.push(id);
+    for (const succId of successors.get(id) ?? []) {
+      const deg = (inDegree.get(succId) ?? 1) - 1;
+      inDegree.set(succId, deg);
+      if (deg === 0) queue.push(succId);
+    }
+  }
+
+  // Forward pass: earliest finish time
+  const eft = new Map<string, number>();
+  for (const id of topoOrder) {
+    const n = nodeMap.get(id)!;
+    const predMaxEFT = n.dependsOn.length === 0
+      ? 0
+      : Math.max(...n.dependsOn.map((dep) => eft.get(dep) ?? 0));
+    eft.set(id, predMaxEFT + nodeDuration(n));
+  }
+
+  const totalDuration = Math.max(...Array.from(eft.values()));
+
+  // Backward pass: latest start time
+  const lst = new Map<string, number>();
+  for (const id of [...topoOrder].reverse()) {
+    const n = nodeMap.get(id)!;
+    const succs = successors.get(id) ?? [];
+    if (succs.length === 0) {
+      lst.set(id, totalDuration - nodeDuration(n));
+    } else {
+      const minSuccLST = Math.min(...succs.map((s) => lst.get(s) ?? totalDuration));
+      lst.set(id, minSuccLST - nodeDuration(n));
+    }
+  }
+
+  // Collect nodes with zero slack
+  const criticalNodes: WorkflowNode[] = [];
+  for (const n of nodes) {
+    const est = (eft.get(n.id) ?? 0) - nodeDuration(n);
+    const slack = (lst.get(n.id) ?? 0) - est;
+    if (Math.abs(slack) < 0.001) criticalNodes.push(n);
+  }
+
+  // Return in topological order
+  const topoIndex = new Map(topoOrder.map((id, i) => [id, i]));
+  return criticalNodes.sort(
+    (a, b) => (topoIndex.get(a.id) ?? 0) - (topoIndex.get(b.id) ?? 0),
+  );
+}
+
+/**
+ * Applies critical-path model upgrades to nodes returned by computeCriticalPath().
+ *
+ * Critical-path haiku nodes are bumped to sonnet so a slow scan/report phase
+ * doesn't become the session bottleneck. TOOL and ROUTER nodes are skipped.
+ * Mutates the provided node array in-place (caller owns the array).
+ *
+ * @param criticalNodes - Output of computeCriticalPath().
+ * @param resolver - Active CodingModelResolver instance.
+ * @param context - Resolution context shared across the session.
+ */
+export function upgradeCriticalPathModels(
+  criticalNodes: WorkflowNode[],
+  resolver: CodingModelResolver,
+  context: ModelResolutionContext,
+): void {
+  for (const node of criticalNodes) {
+    const role = node.codingConfig?.codingRole;
+    if (!role) continue;
+    const strategy = CODING_MODE_MODEL_STRATEGY[role];
+    if (!strategy || strategy.preferredTier === null) continue; // TOOL / ROUTER
+
+    const currentModel = node.codingAgent?.model ?? node.agent?.model;
+    if (!currentModel) continue;
+
+    if (currentModel.toLowerCase().includes('haiku')) {
+      // Bump to sonnet by resolving with a context that triggers the upgrade
+      const upgraded = resolver.resolve(role, { ...context, retryAttempt: 2 });
+      const newModel = upgraded.model.toLowerCase().includes('haiku')
+        ? upgraded.model  // No sonnet available; keep haiku
+        : upgraded.model;
+
+      if (newModel !== currentModel) {
+        if (node.codingAgent) node.codingAgent.model = newModel;
+        if (node.agent) node.agent.model = newModel;
+        if (node.codingConfig) node.codingConfig.model = newModel;
+        log.debug(`Critical-path upgrade: ${node.id} ${currentModel} → ${newModel}`);
+      }
+    }
   }
 }

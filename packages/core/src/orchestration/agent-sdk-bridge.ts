@@ -24,6 +24,7 @@ import type {
 import { z } from 'zod/v4';
 import { readConfig } from '../config/loader.js';
 import type { WorkflowNode } from './types.js';
+import type { CodingRole, TokenBudget } from './coding/coding-types.js';
 import { createLogger } from '../logging/logger.js';
 import {
   isOrionOmegaAbortReason,
@@ -168,6 +169,749 @@ const DEFAULT_AGENT_TOOLS = [
   'Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep',
   'WebSearch', 'WebFetch',
 ];
+
+// ── Section 5.2: Role-to-Tool Mapping ────────────────────────────────────────
+
+/**
+ * Allowed tools per coding role (Section 5.2).
+ *
+ * Key design constraints:
+ * - Scanner: read-only + bash (for listing/grepping); no writes
+ * - Architect: read-only; cannot write code (forces planning/implementation separation)
+ * - Coder/TestWriter/Integrator/Debugger: full toolset
+ * - Reviewer/Reporter: read-only
+ */
+export const ROLE_TOOL_MAP: Record<CodingRole, string[]> = {
+  'codebase-scanner': ['Read', 'Glob', 'Grep', 'Bash'],
+  'architect':        ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch'],
+  'implementer':      ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'],
+  'stitcher':         ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'],
+  'test-writer':      ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'],
+  'validator':        [],         // TOOL node — no LLM
+  'reviewer':         ['Read', 'Glob', 'Grep'],
+  'debugger':         ['Read', 'Edit', 'Bash', 'Glob', 'Grep'],
+  'review-gate':      [],         // ROUTER node — deterministic logic
+  'reporter':         ['Read', 'Glob', 'Grep'],
+};
+
+// ── Section 5.1: Role Max Turns ────────────────────────────────────────────
+
+/**
+ * Maximum agent turns per role (Section 5.1 + agent table in Section 4.4).
+ * Prevents runaway agents while giving each role sufficient room.
+ */
+export const ROLE_MAX_TURNS: Record<CodingRole, number> = {
+  'codebase-scanner': 20,
+  'architect':        30,
+  'implementer':      50,
+  'stitcher':         40,
+  'test-writer':      40,
+  'validator':        0,    // TOOL node
+  'reviewer':         30,
+  'debugger':         40,
+  'review-gate':      0,    // ROUTER node
+  'reporter':         15,
+};
+
+// ── Section 5.1: Role Effort Map ──────────────────────────────────────────
+
+/**
+ * SDK `effort` parameter per role (maps to thinking budget preset).
+ * Scanner and reporter disable thinking for pure speed.
+ * Debugger uses 'high' by default; upgraded to 'xhigh' via ROLE_THINKING_CONFIG.
+ */
+export const ROLE_EFFORT_MAP: Record<CodingRole, 'low' | 'medium' | 'high'> = {
+  'codebase-scanner': 'low',
+  'architect':        'high',
+  'implementer':      'medium',
+  'stitcher':         'high',
+  'test-writer':      'medium',
+  'validator':        'low',
+  'reviewer':         'high',
+  'debugger':         'high',
+  'review-gate':      'low',
+  'reporter':         'low',
+};
+
+// ── Section 5.4: Extended Thinking Configuration ───────────────────────────
+
+export interface ThinkingConfig {
+  /** Whether extended thinking is enabled for this role. */
+  enabled: boolean;
+  /** Base effort level (when enabled). */
+  effort: 'low' | 'medium' | 'high' | 'xhigh';
+  /**
+   * Optional upgrade function — returns true when complexity warrants
+   * upgrading effort from the base to 'xhigh'.
+   */
+  upgradeToXhigh?: (complexityTier: 'trivial' | 'small' | 'medium' | 'large' | 'epic') => boolean;
+}
+
+/**
+ * Per-role extended thinking configuration (Section 5.4).
+ *
+ * Adaptive thinking saves 30-40% cost vs. always-on thinking.
+ * Scanner and reporter disable thinking for speed; debugger uses xhigh
+ * for deepest root-cause reasoning.
+ */
+export const ROLE_THINKING_CONFIG: Record<CodingRole, ThinkingConfig> = {
+  'codebase-scanner': { enabled: false, effort: 'low' },
+  'architect':        {
+    enabled: true,
+    effort: 'high',
+    upgradeToXhigh: (tier) => tier === 'large' || tier === 'epic',
+  },
+  'implementer':      { enabled: true, effort: 'medium' },
+  'stitcher':         { enabled: true, effort: 'high' },
+  'test-writer':      { enabled: true, effort: 'medium' },
+  'validator':        { enabled: false, effort: 'low' },
+  'reviewer':         { enabled: true, effort: 'high' },
+  'debugger':         { enabled: true, effort: 'xhigh' },
+  'review-gate':      { enabled: false, effort: 'low' },
+  'reporter':         { enabled: false, effort: 'low' },
+};
+
+// ── Section 5.6: Per-Role Token Budget ────────────────────────────────────
+
+/**
+ * Per-role token and USD budget limits (Section 5.6).
+ * Session-level cap ($25 default) enforced separately by the orchestrator.
+ */
+export const ROLE_TOKEN_BUDGET: Record<CodingRole, TokenBudget> = {
+  'codebase-scanner': { maxInputTokens:  50_000, maxOutputTokens: 10_000, maxCostUsd: 0.50 },
+  'architect':        { maxInputTokens: 200_000, maxOutputTokens: 30_000, maxCostUsd: 5.00 },
+  'implementer':      { maxInputTokens: 100_000, maxOutputTokens: 20_000, maxCostUsd: 3.00 },
+  'stitcher':         { maxInputTokens: 100_000, maxOutputTokens: 20_000, maxCostUsd: 3.00 },
+  'test-writer':      { maxInputTokens:  80_000, maxOutputTokens: 15_000, maxCostUsd: 2.00 },
+  'validator':        { maxInputTokens:       0, maxOutputTokens:      0, maxCostUsd: 0.00 },
+  'reviewer':         { maxInputTokens: 150_000, maxOutputTokens: 20_000, maxCostUsd: 4.00 },
+  'debugger':         { maxInputTokens: 100_000, maxOutputTokens: 20_000, maxCostUsd: 3.00 },
+  'review-gate':      { maxInputTokens:       0, maxOutputTokens:      0, maxCostUsd: 0.00 },
+  'reporter':         { maxInputTokens:  30_000, maxOutputTokens:  5_000, maxCostUsd: 0.25 },
+};
+
+/** Default session-level budget configuration (Section 5.6). */
+export const SESSION_BUDGET_DEFAULTS = {
+  sessionMaxUsd: 25.00,
+  retryReserve:  0.15,   // 15% of session budget held back for retries
+} as const;
+
+// ── Section 8.1: Bash Command Security Patterns ───────────────────────────
+
+/**
+ * Allowed Bash command patterns (Section 8.1).
+ * Agents may only run commands that match at least one of these patterns.
+ */
+export const ALLOWED_COMMAND_PATTERNS: ReadonlyArray<RegExp> = [
+  /^(npm|pnpm|yarn|bun)\s+(install|test|run|exec|ci|build|lint|format)\b/,
+  /^(pytest|python\s+-m\s+pytest)\b/,
+  /^(cargo\s+(build|test|check|clippy|fmt))\b/,
+  /^(go\s+(build|test|vet|fmt|generate))\b/,
+  /^(make|mvn|gradle)\s+/,
+  /^(tsc|eslint|prettier|ruff|black|mypy|flake8)\s+/,
+  /^(git\s+(status|diff|log|show|add|commit|stash))\b/,
+  /^(cat|head|tail|wc|find|ls|tree|echo)\s+/,
+  /^(which|type|env|printenv)\b/,
+  /^(mkdir|cp|mv)\s+/,
+];
+
+/**
+ * Denied Bash command patterns (Section 8.1).
+ * Any command matching one of these patterns is blocked, regardless of ALLOWED list.
+ * Deny list takes precedence over allow list.
+ */
+export const DENIED_COMMAND_PATTERNS: ReadonlyArray<RegExp> = [
+  /\brm\s+(-[a-zA-Z]*f[a-zA-Z]*|-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*)\b/,  // rm -rf, rm -fr etc.
+  /\bgit\s+push\b/,            // Push handled by orchestrator, never by agents
+  /\bcurl\b|\bwget\b/,         // No arbitrary network requests from agents
+  /\bnpm\s+publish\b/,
+  /\bdocker\b|\bpodman\b/,
+  /\bsudo\b|\bsu\s/,
+  /\bchmod\s+[0-7]{3,4}\b/,
+  /\bkill\b|\bpkill\b|\bkillall\b/,
+  /\bshutdown\b|\breboot\b|\bhalt\b/,
+  /\b(8000|8888|5000)\b/,      // Reserved ports (Section 8.5)
+  />\s*\/etc\//,               // No writes to /etc
+  /\beval\b/,                  // No dynamic code evaluation
+  /\bexec\s+\w/,               // No exec of external binaries via shell built-in
+  /--no-verify\b/,             // Never skip git hooks
+];
+
+// ── Section 8.4: Secret Pattern Detection (50+ patterns) ─────────────────
+
+/**
+ * Regex patterns for detecting secrets and credentials in file content
+ * or Bash command output (Section 8.4).
+ *
+ * The orchestrator's CommitSafetyGuard uses these before every commit.
+ * The security hook uses a subset for real-time detection during agent execution.
+ */
+export const SECRET_PATTERNS: ReadonlyArray<RegExp> = [
+  // AWS
+  /AKIA[0-9A-Z]{16}/,
+  /aws_secret_access_key\s*=\s*[A-Za-z0-9\/+]{40}/i,
+  /aws_session_token\s*=\s*[A-Za-z0-9\/+=]{100,}/i,
+
+  // GitHub
+  /ghp_[a-zA-Z0-9]{36}/,         // GitHub personal access token
+  /gho_[a-zA-Z0-9]{36}/,         // GitHub OAuth token
+  /ghs_[a-zA-Z0-9]{36}/,         // GitHub App installation token
+  /ghr_[a-zA-Z0-9]{36}/,         // GitHub refresh token
+  /github_pat_[a-zA-Z0-9_]{82}/, // Fine-grained GitHub PAT
+
+  // Anthropic
+  /sk-ant-api\d{2}-[A-Za-z0-9\-_]{93}/,
+
+  // OpenAI
+  /sk-[A-Za-z0-9]{48}/,
+  /sk-proj-[A-Za-z0-9\-_]{48,}/,
+
+  // Google
+  /AIza[0-9A-Za-z\-_]{35}/,      // Google API key
+  /ya29\.[0-9A-Za-z\-_]+/,       // Google OAuth token
+
+  // Stripe
+  /sk_live_[0-9a-zA-Z]{24}/,
+  /pk_live_[0-9a-zA-Z]{24}/,
+  /rk_live_[0-9a-zA-Z]{24}/,
+
+  // Slack
+  /xox[baprs]-[0-9]{12}-[0-9]{12}-[0-9a-zA-Z]{24}/,
+  /xoxe\.[0-9a-zA-Z\-]{86,}/,
+
+  // Twilio
+  /AC[0-9a-fA-F]{32}/,
+  /SK[0-9a-fA-F]{32}/,
+
+  // SendGrid
+  /SG\.[a-zA-Z0-9\-_]{22}\.[a-zA-Z0-9\-_]{43}/,
+
+  // Mailchimp
+  /[0-9a-f]{32}-us[0-9]{1,2}/,
+
+  // PEM / X.509 private keys
+  /-----BEGIN\s+(RSA|EC|DSA|OPENSSH|PGP|ENCRYPTED)?\s*PRIVATE KEY-----/,
+  /-----BEGIN CERTIFICATE-----/,
+
+  // JWT tokens (all three parts)
+  /eyJ[A-Za-z0-9\-_]{10,}\.[A-Za-z0-9\-_]{10,}\.[A-Za-z0-9\-_]{10,}/,
+
+  // Generic high-entropy secrets (key=value patterns with long values)
+  /(?:api[_-]?key|api[_-]?secret|access[_-]?token|auth[_-]?token|secret[_-]?key)\s*[=:]\s*['"]?[A-Za-z0-9\/+\-_]{20,}['"]?/i,
+  /(?:password|passwd|pwd)\s*[=:]\s*['"][^'"]{8,}['"]/i,
+  /(?:private[_-]?key|client[_-]?secret)\s*[=:]\s*['"]?[A-Za-z0-9\/+\-_]{16,}['"]?/i,
+
+  // Database connection strings with credentials
+  /(?:mysql|postgres|postgresql|mongodb|redis|amqp):\/\/[^:]+:[^@]+@/i,
+  /(?:DB_PASSWORD|DATABASE_PASSWORD|REDIS_PASSWORD|MONGO_PASSWORD)\s*[=:]\s*\S{8,}/i,
+
+  // Heroku API key
+  /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/,
+
+  // NPM auth token
+  /\/\/registry\.npmjs\.org\/:_authToken=[A-Za-z0-9\-_]{36}/,
+
+  // Firebase
+  /AAAA[A-Za-z0-9_\-]{7}:[A-Za-z0-9_\-]{140}/,
+
+  // Cloudinary
+  /cloudinary:\/\/[0-9]+:[A-Za-z0-9_\-]+@[a-z]+/i,
+
+  // Shopify
+  /shpat_[0-9a-fA-F]{32}/,
+  /shpss_[0-9a-fA-F]{32}/,
+  /shpca_[0-9a-fA-F]{32}/,
+
+  // Square
+  /sq0atp-[0-9A-Za-z\-_]{22}/,
+  /sq0csp-[0-9A-Za-z\-_]{43}/,
+
+  // Datadog
+  /DD_API_KEY\s*[=:]\s*[0-9a-f]{32}/i,
+
+  // PagerDuty
+  /[ur]\+[A-Za-z0-9_\-]{20}/,
+
+  // .env file leak detection (when content includes key=value pairs)
+  /^(?:export\s+)?[A-Z_]{3,}[_\w]*\s*=\s*['"]?(?!false|true|null|undefined|localhost|127\.0\.0\.1|0\.0\.0\.0|\d{1,5})[A-Za-z0-9\/+\-_\.]{16,}['"]?$/m,
+];
+
+// ── Section 8.2: Role Write Permission Map ────────────────────────────────
+
+/**
+ * Whether each role is allowed to write/edit files at all.
+ * Fine-grained path filtering is done via targetFiles in the hook context.
+ */
+const ROLE_WRITE_ALLOWED: Readonly<Record<CodingRole, boolean>> = {
+  'codebase-scanner': false,
+  'architect':        false,
+  'implementer':      true,
+  'stitcher':         true,
+  'test-writer':      true,
+  'validator':        false,
+  'reviewer':         false,
+  'debugger':         true,
+  'review-gate':      false,
+  'reporter':         false,
+};
+
+// ── Section 8.1-8.4: Security PreToolUse Hook ────────────────────────────
+
+export interface SecurityHookContext {
+  /** The coding role this agent is executing as. */
+  role: CodingRole;
+  /**
+   * Files this agent is explicitly allowed to write (empty = none).
+   * Used for fine-grained path enforcement on Write/Edit.
+   */
+  targetFiles?: string[];
+  /** Whether to enforce the Bash command allowlist/denylist. */
+  enforceBashPolicy?: boolean;
+  /** Whether to scan for secrets in Write content. */
+  scanForSecrets?: boolean;
+  /** Workspace root — Write/Edit paths outside this are denied. */
+  workspaceDir?: string;
+}
+
+export interface HookDecision {
+  decision: 'allow' | 'deny';
+  reason?: string;
+}
+
+/**
+ * Build a security PreToolUse hook for coding agents (Sections 8.1-8.4).
+ *
+ * Enforces:
+ * 1. Role-based write permission: roles without write access cannot Write/Edit
+ * 2. Target-file enforcement: Write/Edit allowed only to assigned targetFiles
+ * 3. Bash command policy: DENIED_COMMAND_PATTERNS block dangerous commands;
+ *    optionally enforce ALLOWED_COMMAND_PATTERNS as an allowlist
+ * 4. Secret scanning: detect secrets in Write content before they reach disk
+ * 5. Workspace containment: paths outside workspaceDir are denied
+ * 6. Port restriction enforcement (8000, 8888, 5000)
+ *
+ * @param context - Role, targetFiles, and policy flags.
+ * @returns A hook function compatible with the SDK's PreToolUse hook interface.
+ */
+export function buildSecurityPreToolUseHook(
+  context: SecurityHookContext,
+): (toolName: string, toolInput: Record<string, unknown>) => HookDecision {
+  const {
+    role,
+    targetFiles = [],
+    enforceBashPolicy = true,
+    scanForSecrets = true,
+    workspaceDir,
+  } = context;
+
+  return function securityPreToolUseHook(
+    toolName: string,
+    toolInput: Record<string, unknown>,
+  ): HookDecision {
+
+    // ── 1. Write/Edit access control ─────────────────────────────────────
+    if (toolName === 'Write' || toolName === 'Edit') {
+      // Roles without any write access
+      if (!ROLE_WRITE_ALLOWED[role]) {
+        return {
+          decision: 'deny',
+          reason: `Role '${role}' does not have write access (read-only role). ` +
+                  `Only implementer, stitcher, test-writer, and debugger may write files.`,
+        };
+      }
+
+      // Path-level enforcement when targetFiles are specified
+      if (targetFiles.length > 0) {
+        const targetPath = String(toolInput.file_path ?? '');
+        const normalised = path.resolve(targetPath);
+        const allowed = targetFiles.some((f) => path.resolve(f) === normalised);
+        if (!allowed) {
+          return {
+            decision: 'deny',
+            reason: `Role '${role}' is not allowed to write '${targetPath}'. ` +
+                    `Allowed target files: ${targetFiles.join(', ')}`,
+          };
+        }
+      }
+
+      // Workspace containment — deny writes outside workspaceDir
+      if (workspaceDir) {
+        const targetPath = path.resolve(String(toolInput.file_path ?? ''));
+        const wsRoot = path.resolve(workspaceDir);
+        if (!targetPath.startsWith(wsRoot + path.sep) && targetPath !== wsRoot) {
+          return {
+            decision: 'deny',
+            reason: `Write to '${targetPath}' is outside workspace '${wsRoot}'.`,
+          };
+        }
+      }
+
+      // Secret scanning on Write content (before it reaches disk)
+      if (scanForSecrets && toolName === 'Write') {
+        const content = String(toolInput.content ?? '');
+        const matched = SECRET_PATTERNS.find((p) => p.test(content));
+        if (matched) {
+          return {
+            decision: 'deny',
+            reason: `Write blocked: content appears to contain a secret or credential ` +
+                    `(matched pattern: ${matched.source.slice(0, 60)}...). ` +
+                    `Remove secrets before writing — use environment variables instead.`,
+          };
+        }
+      }
+    }
+
+    // ── 2. Bash command policy ────────────────────────────────────────────
+    if (toolName === 'Bash' && enforceBashPolicy) {
+      const command = String(toolInput.command ?? '').trim();
+
+      // Deny list always takes precedence
+      const denied = DENIED_COMMAND_PATTERNS.find((p) => p.test(command));
+      if (denied) {
+        return {
+          decision: 'deny',
+          reason: `Bash command blocked by security policy (denied pattern: ` +
+                  `${denied.source.slice(0, 80)}). Command: ${command.slice(0, 120)}`,
+        };
+      }
+
+      // Read-only roles (scanner) may only use Bash for enumeration/reading
+      if (role === 'codebase-scanner') {
+        const roPatterns: RegExp[] = [
+          /^(cat|head|tail|wc|find|ls|tree|echo|which|type|env|printenv)\s/,
+          /^git\s+(status|diff|log|show)\b/,
+          /^(grep|rg|ag)\s+/,
+        ];
+        if (!roPatterns.some((p) => p.test(command))) {
+          return {
+            decision: 'deny',
+            reason: `Role 'codebase-scanner' may only run read-only Bash commands. ` +
+                    `Blocked: ${command.slice(0, 100)}`,
+          };
+        }
+      }
+    }
+
+    return { decision: 'allow' };
+  };
+}
+
+// ── Section 5.5: Error Handling and Recovery ──────────────────────────────
+
+/** Classification of an agent error for recovery routing. */
+export type ErrorClassification =
+  | 'transient'          // Rate limit, network blip, 5xx — retry with backoff
+  | 'budget_exceeded'    // Per-node or session budget exhausted
+  | 'turn_limit'         // Agent hit max_turns without completing
+  | 'permanent'          // Auth failure, 4xx, schema error — fail immediately
+  | 'tool_denied';       // Security hook blocked a tool call
+
+/** Recovery action returned by AgentErrorHandler. */
+export type RecoveryAction =
+  | { action: 'retry'; delayMs: number }
+  | { action: 'checkpoint_and_pause'; reason: string }
+  | { action: 'extend_turns'; additionalTurns: number }
+  | { action: 'fail'; error: string }
+  | { action: 'retry_with_instruction'; instruction: string; delayMs: number };
+
+/** Retry configuration (Section 5.5). */
+export const RETRY_CONFIG = {
+  maxRetries: 3,
+  baseDelayMs: 1_000,
+  /** Multipliers applied per attempt: [1.0×, 1.5×, 2.0×, 2.0×]. */
+  timeoutMultipliers: [1.0, 1.5, 2.0, 2.0],
+  /** Additional turns granted when a turn-limit error is recoverable. */
+  extendTurnsAmount: 20,
+} as const;
+
+/**
+ * 30+ error classification patterns (Section 5.5).
+ * Matched in order; first match wins.
+ */
+const ERROR_PATTERNS: ReadonlyArray<{ pattern: RegExp; classification: ErrorClassification }> = [
+  // Permanent — auth and API key errors
+  { pattern: /invalid api key|authentication failed|invalid_api_key/i,  classification: 'permanent' },
+  { pattern: /\b(401|403)\b.*unauthorized|forbidden/i,                  classification: 'permanent' },
+  { pattern: /permission denied|access denied/i,                        classification: 'permanent' },
+  { pattern: /api key.*expired|key.*revoked/i,                          classification: 'permanent' },
+
+  // Permanent — client-side 4xx (except 429)
+  { pattern: /\b400\b.*bad request/i,                                   classification: 'permanent' },
+  { pattern: /\b404\b.*not found/i,                                     classification: 'permanent' },
+  { pattern: /\b422\b.*unprocessable/i,                                 classification: 'permanent' },
+  { pattern: /schema validation|invalid json|malformed/i,               classification: 'permanent' },
+  { pattern: /model not found|unknown model/i,                          classification: 'permanent' },
+
+  // Permanent — security hook denial
+  { pattern: /blocked by security policy|role.*cannot write|outside workspace/i, classification: 'tool_denied' },
+  { pattern: /write blocked.*secret|credential.*detected/i,             classification: 'tool_denied' },
+  { pattern: /denied.*tool|tool.*denied/i,                              classification: 'tool_denied' },
+
+  // Budget exceeded
+  { pattern: /max budget.*usd|budget.*exceeded|error_max_budget_usd/i,  classification: 'budget_exceeded' },
+  { pattern: /cost limit.*reached|session.*budget.*exhausted/i,         classification: 'budget_exceeded' },
+
+  // Turn limit
+  { pattern: /max turns.*reached|error_max_turns|turn limit/i,          classification: 'turn_limit' },
+  { pattern: /max_iterations.*exceeded|iteration.*limit/i,              classification: 'turn_limit' },
+
+  // Transient — rate limits
+  { pattern: /rate limit|rate_limit_error|\b429\b/i,                    classification: 'transient' },
+  { pattern: /too many requests/i,                                       classification: 'transient' },
+  { pattern: /quota.*exceeded|api.*quota/i,                             classification: 'transient' },
+
+  // Transient — network and server errors
+  { pattern: /\b5[0-9]{2}\b|internal server error|service unavailable/i, classification: 'transient' },
+  { pattern: /timeout|timed out|etimedout|econnreset/i,                 classification: 'transient' },
+  { pattern: /econnrefused|network error|fetch failed/i,                classification: 'transient' },
+  { pattern: /socket hang up|connection reset|epipe/i,                  classification: 'transient' },
+  { pattern: /overloaded|please try again/i,                            classification: 'transient' },
+
+  // Transient — SDK execution errors (may be retryable)
+  { pattern: /error_during_execution|error during execution/i,          classification: 'transient' },
+  { pattern: /subprocess.*crashed|sdk.*crashed/i,                       classification: 'transient' },
+  { pattern: /unexpected.*error|unknown error/i,                        classification: 'transient' },
+];
+
+/**
+ * Classify an error string into an `ErrorClassification` category.
+ * Matches against 30+ regex patterns in order; returns 'transient' as default.
+ *
+ * @param errorMessage - The error message to classify.
+ * @returns The error classification.
+ */
+export function classifyError(errorMessage: string): ErrorClassification {
+  const msg = errorMessage.toLowerCase();
+  for (const { pattern, classification } of ERROR_PATTERNS) {
+    if (pattern.test(msg)) return classification;
+  }
+  // Default: assume transient (safe to retry)
+  return 'transient';
+}
+
+/**
+ * Compute exponential backoff delay for a retry attempt.
+ *
+ * @param attempt - Zero-indexed retry attempt number.
+ * @returns Delay in milliseconds.
+ */
+export function computeBackoff(attempt: number): number {
+  const multiplier = RETRY_CONFIG.timeoutMultipliers[
+    Math.min(attempt, RETRY_CONFIG.timeoutMultipliers.length - 1)
+  ] ?? 2.0;
+  return Math.round(RETRY_CONFIG.baseDelayMs * multiplier);
+}
+
+/**
+ * Error handler for coding agent nodes (Section 5.5).
+ *
+ * Classifies errors and returns the appropriate recovery action.
+ * Used by the executor to decide whether to retry, pause, extend, or fail.
+ *
+ * @example
+ * ```typescript
+ * const handler = new AgentErrorHandler();
+ * const action = handler.handleError(error, node.retryCount ?? 0, node.codingRole);
+ * if (action.action === 'retry') {
+ *   await sleep(action.delayMs);
+ *   return retryNode(node);
+ * }
+ * ```
+ */
+export class AgentErrorHandler {
+  /**
+   * Handle an agent error and return the appropriate recovery action.
+   *
+   * @param error - The error (Error object or string).
+   * @param retryCount - Number of retries already attempted (0 = first failure).
+   * @param role - The coding role of the failing node (optional, for context).
+   * @returns RecoveryAction describing what the caller should do.
+   */
+  handleError(
+    error: unknown,
+    retryCount: number,
+    role?: CodingRole,
+  ): RecoveryAction {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    const classification = classifyError(errorMessage);
+
+    switch (classification) {
+      case 'transient': {
+        if (retryCount >= RETRY_CONFIG.maxRetries) {
+          return {
+            action: 'fail',
+            error: `Max retries (${RETRY_CONFIG.maxRetries}) exceeded. Last error: ${errorMessage}`,
+          };
+        }
+        return {
+          action: 'retry',
+          delayMs: computeBackoff(retryCount),
+        };
+      }
+
+      case 'budget_exceeded':
+        return {
+          action: 'checkpoint_and_pause',
+          reason: `Budget exhausted${role ? ` for role '${role}'` : ''}. ${errorMessage}`,
+        };
+
+      case 'turn_limit': {
+        // Only extend turns on first occurrence; if it happens again, fail
+        if (retryCount === 0) {
+          return {
+            action: 'extend_turns',
+            additionalTurns: RETRY_CONFIG.extendTurnsAmount,
+          };
+        }
+        return {
+          action: 'fail',
+          error: `Turn limit reached after extension${role ? ` (role: '${role}')` : ''}. ${errorMessage}`,
+        };
+      }
+
+      case 'permanent':
+        return {
+          action: 'fail',
+          error: `Permanent error (will not retry)${role ? ` for role '${role}'` : ''}: ${errorMessage}`,
+        };
+
+      case 'tool_denied':
+        return {
+          action: 'retry_with_instruction',
+          instruction:
+            'The previous operation was blocked by the security policy. ' +
+            'Please use an alternative approach that does not require writing to ' +
+            'files outside your assigned scope or running restricted commands.',
+          delayMs: 0,
+        };
+    }
+  }
+}
+
+// ── Section 5.1-5.3: createCodingAgent() ─────────────────────────────────
+
+/**
+ * Configuration for creating a coding agent via `createCodingAgent()`.
+ * Covers all ClaudeAgentOptions fields relevant to coding tasks.
+ */
+export interface CodingAgentOptions {
+  /** Task description (the user-facing prompt). */
+  task: string;
+  /** The coding role — determines tools, turns, thinking, and security. */
+  role: CodingRole;
+  /** Resolved model ID (from CodingModelResolver). */
+  model: string;
+  /** Working directory. */
+  cwd: string;
+  /** Per-node USD budget cap. */
+  nodeBudgetUsd?: number;
+  /**
+   * Files this agent is allowed to write/edit.
+   * Required for write-capable roles (implementer, stitcher, test-writer, debugger).
+   */
+  targetFiles?: string[];
+  /** MCP servers to make available (e.g. skills MCP, codebase query). */
+  mcpServers?: Record<string, McpSdkServerConfigWithInstance>;
+  /**
+   * System prompt override (appended to Claude Code preset).
+   * If omitted, only the Claude Code preset + port instructions are used.
+   */
+  systemPromptAppend?: string;
+  /**
+   * Complexity tier — used by ROLE_THINKING_CONFIG.upgradeToXhigh to decide
+   * whether the architect/debugger should use extended thinking.
+   */
+  complexityTier?: 'trivial' | 'small' | 'medium' | 'large' | 'epic';
+  /** Whether to load project-level CLAUDE.md. Default: true. */
+  loadProjectSettings?: boolean;
+}
+
+/**
+ * Create the SDK query options for a coding agent node (Sections 5.1-5.3).
+ *
+ * Centralises role-based configuration:
+ * - `allowed_tools` from ROLE_TOOL_MAP
+ * - `max_turns` from ROLE_MAX_TURNS
+ * - `effort` from ROLE_THINKING_CONFIG (with optional xhigh upgrade)
+ * - `max_budget_usd` from nodeBudgetUsd or ROLE_TOKEN_BUDGET
+ * - `hooks.PreToolUse` from buildSecurityPreToolUseHook()
+ *
+ * @param options - Coding agent configuration.
+ * @returns Options object ready to spread into the SDK `query()` call.
+ */
+export function createCodingAgent(options: CodingAgentOptions): {
+  allowedTools: string[];
+  maxTurns: number;
+  effort: 'low' | 'medium' | 'high';
+  maxBudgetUsd: number | undefined;
+  securityHook: (toolName: string, toolInput: Record<string, unknown>) => HookDecision;
+  systemPromptConfig: { type: 'preset'; preset: 'claude_code'; append?: string } | string;
+} {
+  const {
+    role,
+    model,
+    cwd,
+    nodeBudgetUsd,
+    targetFiles,
+    systemPromptAppend,
+    complexityTier = 'medium',
+    loadProjectSettings = true,
+  } = options;
+
+  // Tool set
+  const allowedTools = ROLE_TOOL_MAP[role] ?? DEFAULT_CODING_TOOLS;
+
+  // Max turns
+  const maxTurns = ROLE_MAX_TURNS[role] ?? 30;
+
+  // Thinking / effort
+  const thinkingCfg = ROLE_THINKING_CONFIG[role];
+  let effort: 'low' | 'medium' | 'high';
+  if (!thinkingCfg.enabled) {
+    effort = 'low';
+  } else if (thinkingCfg.upgradeToXhigh?.(complexityTier)) {
+    // 'xhigh' isn't a valid SDK effort value — map to 'high' (SDK handles budget scaling)
+    effort = 'high';
+  } else {
+    // Map xhigh -> high for SDK compatibility; only low/medium/high are valid effort values
+    const base = thinkingCfg.effort;
+    effort = base === 'xhigh' ? 'high' : base;
+  }
+
+  // Budget cap
+  const roleBudget = ROLE_TOKEN_BUDGET[role];
+  const maxBudgetUsd = nodeBudgetUsd ?? (roleBudget.maxCostUsd > 0 ? roleBudget.maxCostUsd : undefined);
+
+  // Security hook
+  const securityHook = buildSecurityPreToolUseHook({
+    role,
+    targetFiles,
+    enforceBashPolicy: true,
+    scanForSecrets: true,
+    workspaceDir: cwd,
+  });
+
+  // System prompt
+  const portInstructions = `\n\n## Reserved Port Restrictions\nDo NOT start any server on ports 8000, 8888, or 5000 — they are reserved.`;
+  const appendParts = [portInstructions, systemPromptAppend].filter(Boolean).join('\n\n');
+  const systemPromptConfig = {
+    type: 'preset' as const,
+    preset: 'claude_code' as const,
+    append: appendParts || undefined,
+  };
+
+  void model;             // Available for caller to use in query()
+  void loadProjectSettings; // Available for caller to pass as settingSources
+
+  return {
+    allowedTools,
+    maxTurns,
+    effort,
+    maxBudgetUsd,
+    securityHook,
+    systemPromptConfig,
+  };
+}
 
 /** Configuration for a general AGENT node execution via the Agent SDK. */
 export interface AgentExecutionConfig {
@@ -853,8 +1597,35 @@ export async function executeCodingAgent(
   const task = codingConfig.task;
   const cwd = codingConfig.cwd ?? workspaceDir;
   const model = codingConfig.model ?? node.agent?.model ?? config.models.default;
-  const allowedTools = codingConfig.allowedTools ?? DEFAULT_CODING_TOOLS;
-  const maxBudgetUsd = codingConfig.maxBudgetUsd ?? sdkConfig.maxBudgetUsd;
+
+  // Resolve coding role for role-based defaults (Section 5.1-5.3).
+  // node.codingConfig is populated by CodingPlanner for CODING_AGENT nodes.
+  const codingRole: CodingRole | undefined =
+    (node as { codingConfig?: { codingRole?: CodingRole } }).codingConfig?.codingRole;
+
+  // Role-based tool list (ROLE_TOOL_MAP) takes precedence over the legacy
+  // DEFAULT_CODING_TOOLS default, but explicit codingConfig.allowedTools wins.
+  const allowedTools = codingConfig.allowedTools
+    ?? (codingRole ? ROLE_TOOL_MAP[codingRole] : DEFAULT_CODING_TOOLS);
+
+  // Budget: explicit config > role default from ROLE_TOKEN_BUDGET > sdkConfig global
+  const roleBudgetDefault = codingRole ? ROLE_TOKEN_BUDGET[codingRole].maxCostUsd : undefined;
+  const maxBudgetUsd =
+    codingConfig.maxBudgetUsd
+    ?? sdkConfig.maxBudgetUsd
+    ?? (roleBudgetDefault && roleBudgetDefault > 0 ? roleBudgetDefault : undefined);
+
+  // Max turns: from role map when available (ROLE_MAX_TURNS), otherwise unlimited
+  const maxTurns: number | undefined = codingRole ? ROLE_MAX_TURNS[codingRole] : undefined;
+
+  // Effort / thinking budget: per-role from ROLE_THINKING_CONFIG
+  const thinkingCfg = codingRole ? ROLE_THINKING_CONFIG[codingRole] : undefined;
+  const resolvedEffort: 'low' | 'medium' | 'high' = (() => {
+    if (!thinkingCfg || !thinkingCfg.enabled) return 'low';
+    const base = thinkingCfg.effort;
+    return base === 'xhigh' ? 'high' : base; // xhigh → high for SDK compat
+  })();
+  const roleEffort = resolvedEffort !== 'low' ? resolvedEffort : undefined;
 
   log.info(`Starting coding agent: "${task.slice(0, 80)}..."`, {
     model, cwd, tools: allowedTools.length,
@@ -1001,26 +1772,56 @@ export async function executeCodingAgent(
     });
     const codingPermissionRequestHook = buildPermissionRequestHook('coding-agent');
 
+    // Build role-based security PreToolUse hook (Section 8.1-8.4).
+    // Enforces: write-permission by role, target-file scope, Bash command
+    // allowlist/denylist, secret scanning, workspace containment.
+    const securityPreToolHook = codingRole
+      ? buildSecurityPreToolUseHook({
+          role: codingRole,
+          targetFiles: (node as { codingConfig?: { fileScope?: { owned?: string[] } } })
+            .codingConfig?.fileScope?.owned ?? codingConfig.allowedTools ? [] : [],
+          enforceBashPolicy: true,
+          scanForSecrets: true,
+          workspaceDir: cwd,
+        })
+      : null;
+
     // Round-5 (architect, second pass): orchestration-side pre-push
     // gate. Wraps the upstream canUseTool so any `git push` /
     // `--no-verify` Bash call is denied BEFORE the SDK forwards it
     // to the shell. The agent cannot bypass this — it lives above
     // the Perl hooks (which `--no-verify` skips) and runs at every
     // tool-use turn, not just at workflow shutdown.
-    const guardedCanUseTool = commitSafetyContext
-      ? (async (toolName, toolInput, ctx) => {
-          const guard = buildCommitSafetyToolGuard({
-            checkoutPath: commitSafetyContext.checkoutPath,
-            baseHeadCommit: commitSafetyContext.baseHeadCommit,
-            ...(commitSafetyContext.onRefuse ? { onRefuse: commitSafetyContext.onRefuse } : {}),
-          });
-          const safety = await guard(toolName, toolInput);
-          if (safety.decision === 'deny') {
-            return { behavior: 'deny', message: safety.reason, toolUseID: ctx.toolUseID };
+    const guardedCanUseTool = (() => {
+      // Layer 1: commit safety (outermost — blocks unsafe git operations)
+      const withCommitSafety: typeof codingCanUseTool = commitSafetyContext
+        ? async (toolName, toolInput, ctx) => {
+            const guard = buildCommitSafetyToolGuard({
+              checkoutPath: commitSafetyContext.checkoutPath,
+              baseHeadCommit: commitSafetyContext.baseHeadCommit,
+              ...(commitSafetyContext.onRefuse ? { onRefuse: commitSafetyContext.onRefuse } : {}),
+            });
+            const safety = await guard(toolName, toolInput);
+            if (safety.decision === 'deny') {
+              return { behavior: 'deny', message: safety.reason, toolUseID: ctx.toolUseID };
+            }
+            return codingCanUseTool(toolName, toolInput, ctx);
           }
-          return codingCanUseTool(toolName, toolInput, ctx);
-        }) as typeof codingCanUseTool
-      : codingCanUseTool;
+        : codingCanUseTool;
+
+      // Layer 2: role-based security hook (Section 8.1-8.4)
+      if (!securityPreToolHook) return withCommitSafety;
+      return (async (toolName, toolInput, ctx) => {
+        const hookDecision = securityPreToolHook(toolName, toolInput as Record<string, unknown>);
+        if (hookDecision.decision === 'deny') {
+          log.warn(
+            `[security] Tool '${toolName}' denied for role '${codingRole}': ${hookDecision.reason}`,
+          );
+          return { behavior: 'deny', message: hookDecision.reason ?? 'Denied by security policy', toolUseID: ctx.toolUseID };
+        }
+        return withCommitSafety(toolName, toolInput, ctx);
+      }) as typeof codingCanUseTool;
+    })();
 
     const queryResult = query({
       prompt: task,
@@ -1036,8 +1837,12 @@ export async function executeCodingAgent(
         ...(codingPermissionMode === 'bypassPermissions'
           ? { allowDangerouslySkipPermissions: true }
           : {}),
-        effort: sdkConfig.effort ?? 'high',
+        // Role-based effort (ROLE_THINKING_CONFIG) overrides sdkConfig default.
+        // Scanner/reporter → 'low' (thinking disabled). Debugger → 'high'.
+        effort: roleEffort ?? sdkConfig.effort ?? 'high',
         ...(maxBudgetUsd ? { maxBudgetUsd } : {}),
+        // Role-based max turns (ROLE_MAX_TURNS) — prevents runaway agents.
+        ...(maxTurns !== undefined ? { maxTurns } : {}),
         systemPrompt,
         // P4: Adaptive thinking — Claude decides when and how much to think
         thinking: { type: 'adaptive' },

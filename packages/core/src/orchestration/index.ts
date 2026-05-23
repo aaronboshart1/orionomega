@@ -56,6 +56,33 @@ export { OrchestratorCommands } from './commands.js';
 export { executeCodingAgent } from "./agent-sdk-bridge.js";
 export type { CodingAgentResult, CodingAgentConfig } from "./agent-sdk-bridge.js";
 
+// Agent SDK Bridge — role-based config, security hooks, error handling (Sections 5 & 8)
+export {
+  createCodingAgent,
+  buildSecurityPreToolUseHook,
+  classifyError,
+  computeBackoff,
+  AgentErrorHandler,
+  ROLE_TOOL_MAP,
+  ROLE_MAX_TURNS,
+  ROLE_EFFORT_MAP,
+  ROLE_THINKING_CONFIG,
+  ROLE_TOKEN_BUDGET,
+  SESSION_BUDGET_DEFAULTS,
+  ALLOWED_COMMAND_PATTERNS,
+  DENIED_COMMAND_PATTERNS,
+  SECRET_PATTERNS,
+  RETRY_CONFIG,
+} from "./agent-sdk-bridge.js";
+export type {
+  CodingAgentOptions,
+  SecurityHookContext,
+  HookDecision,
+  ThinkingConfig,
+  ErrorClassification,
+  RecoveryAction,
+} from "./agent-sdk-bridge.js";
+
 // Checkpoint
 export { CheckpointManager } from './checkpoint.js';
 export type {

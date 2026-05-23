@@ -24,11 +24,13 @@ const log = createLogger('coding-budget');
 const ROLE_BUDGET_WEIGHTS: Record<CodingRole, number> = {
   'codebase-scanner': 0.05,
   'architect':        0.10,
-  'implementer':      0.35,  // Split evenly across N parallel chunks
-  'stitcher':         0.10,
-  'test-writer':      0.15,
+  'implementer':      0.30,  // Split evenly across N parallel chunks
+  'stitcher':         0.08,
+  'test-writer':      0.12,
   'validator':        0.00,  // TOOL node — no LLM cost
   'reviewer':         0.08,
+  'debugger':         0.10,  // Allocated from retry reserve; shared across fix iterations
+  'review-gate':      0.00,  // ROUTER node — deterministic, no LLM cost
   'reporter':         0.02,
 };
 
@@ -42,7 +44,8 @@ const MIN_PER_NODE_USD: Partial<Record<CodingRole, number>> = {
   'implementer':      0.20,
   'stitcher':         0.15,
   'test-writer':      0.15,
-  'reviewer':         0.10,
+  'reviewer':         0.25,  // Always opus — higher minimum
+  'debugger':         0.20,
   'reporter':         0.03,
 };
 
@@ -52,7 +55,8 @@ const MAX_PER_NODE_USD: Partial<Record<CodingRole, number>> = {
   'implementer':      3.00,
   'stitcher':         2.00,
   'test-writer':      2.50,
-  'reviewer':         1.50,
+  'reviewer':         4.00,  // Always opus — higher maximum
+  'debugger':         3.00,
   'reporter':         0.30,
 };
 
