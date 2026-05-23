@@ -350,8 +350,8 @@ export const DENIED_COMMAND_PATTERNS: ReadonlyArray<RegExp> = [
 export const SECRET_PATTERNS: ReadonlyArray<RegExp> = [
   // AWS
   /AKIA[0-9A-Z]{16}/,
-  /aws_secret_access_key\s*=\s*[A-Za-z0-9\/+]{40}/i,
-  /aws_session_token\s*=\s*[A-Za-z0-9\/+=]{100,}/i,
+  /aws_secret_access_key\s*=\s*[A-Za-z0-9/+]{40}/i,
+  /aws_session_token\s*=\s*[A-Za-z0-9/+=]{100,}/i,
 
   // GitHub
   /ghp_[a-zA-Z0-9]{36}/,         // GitHub personal access token
@@ -378,7 +378,7 @@ export const SECRET_PATTERNS: ReadonlyArray<RegExp> = [
 
   // Slack
   /xox[baprs]-[0-9]{12}-[0-9]{12}-[0-9a-zA-Z]{24}/,
-  /xoxe\.[0-9a-zA-Z\-]{86,}/,
+  /xoxe\.[0-9a-zA-Z-]{86,}/,
 
   // Twilio
   /AC[0-9a-fA-F]{32}/,
@@ -398,9 +398,9 @@ export const SECRET_PATTERNS: ReadonlyArray<RegExp> = [
   /eyJ[A-Za-z0-9\-_]{10,}\.[A-Za-z0-9\-_]{10,}\.[A-Za-z0-9\-_]{10,}/,
 
   // Generic high-entropy secrets (key=value patterns with long values)
-  /(?:api[_-]?key|api[_-]?secret|access[_-]?token|auth[_-]?token|secret[_-]?key)\s*[=:]\s*['"]?[A-Za-z0-9\/+\-_]{20,}['"]?/i,
+  /(?:api[_-]?key|api[_-]?secret|access[_-]?token|auth[_-]?token|secret[_-]?key)\s*[=:]\s*['"]?[A-Za-z0-9/+\-_]{20,}['"]?/i,
   /(?:password|passwd|pwd)\s*[=:]\s*['"][^'"]{8,}['"]/i,
-  /(?:private[_-]?key|client[_-]?secret)\s*[=:]\s*['"]?[A-Za-z0-9\/+\-_]{16,}['"]?/i,
+  /(?:private[_-]?key|client[_-]?secret)\s*[=:]\s*['"]?[A-Za-z0-9/+\-_]{16,}['"]?/i,
 
   // Database connection strings with credentials
   /(?:mysql|postgres|postgresql|mongodb|redis|amqp):\/\/[^:]+:[^@]+@/i,
@@ -413,10 +413,10 @@ export const SECRET_PATTERNS: ReadonlyArray<RegExp> = [
   /\/\/registry\.npmjs\.org\/:_authToken=[A-Za-z0-9\-_]{36}/,
 
   // Firebase
-  /AAAA[A-Za-z0-9_\-]{7}:[A-Za-z0-9_\-]{140}/,
+  /AAAA[A-Za-z0-9_-]{7}:[A-Za-z0-9_-]{140}/,
 
   // Cloudinary
-  /cloudinary:\/\/[0-9]+:[A-Za-z0-9_\-]+@[a-z]+/i,
+  /cloudinary:\/\/[0-9]+:[A-Za-z0-9_-]+@[a-z]+/i,
 
   // Shopify
   /shpat_[0-9a-fA-F]{32}/,
@@ -431,10 +431,10 @@ export const SECRET_PATTERNS: ReadonlyArray<RegExp> = [
   /DD_API_KEY\s*[=:]\s*[0-9a-f]{32}/i,
 
   // PagerDuty
-  /[ur]\+[A-Za-z0-9_\-]{20}/,
+  /[ur]\+[A-Za-z0-9_-]{20}/,
 
   // .env file leak detection (when content includes key=value pairs)
-  /^(?:export\s+)?[A-Z_]{3,}[_\w]*\s*=\s*['"]?(?!false|true|null|undefined|localhost|127\.0\.0\.1|0\.0\.0\.0|\d{1,5})[A-Za-z0-9\/+\-_\.]{16,}['"]?$/m,
+  /^(?:export\s+)?[A-Z_]{3,}[_\w]*\s*=\s*['"]?(?!false|true|null|undefined|localhost|127\.0\.0\.1|0\.0\.0\.0|\d{1,5})[A-Za-z0-9/+\-_.]{16,}['"]?$/m,
 ];
 
 // ── Section 8.2: Role Write Permission Map ────────────────────────────────

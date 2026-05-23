@@ -1214,11 +1214,11 @@ export class CodingOrchestrator {
       _emitters?.stepProgress({ nodeId: 'commit', message: 'Scanning for unsafe files…', percentage: 10 }, sessionId);
       try {
         const safetyResult = findUnsafeFiles(targetDir);
-        if (safetyResult.unsafeFiles.length > 0) {
-          const unsafeList = safetyResult.unsafeFiles.map(f => `${f.path} (${f.reason})`).join(', ');
-          log.warn('Unsafe files excluded from commit', { count: safetyResult.unsafeFiles.length, files: unsafeList });
-          progress?.onStepProgress('commit', `${safetyResult.unsafeFiles.length} unsafe file(s) excluded`, 15);
-          _emitters?.stepProgress({ nodeId: 'commit', message: `${safetyResult.unsafeFiles.length} unsafe file(s) excluded`, percentage: 15 }, sessionId);
+        if (safetyResult.unsafe.length > 0) {
+          const unsafeList = safetyResult.unsafe.map(f => `${f.path} (${f.reason})`).join(', ');
+          log.warn('Unsafe files excluded from commit', { count: safetyResult.unsafe.length, files: unsafeList });
+          progress?.onStepProgress('commit', `${safetyResult.unsafe.length} unsafe file(s) excluded`, 15);
+          _emitters?.stepProgress({ nodeId: 'commit', message: `${safetyResult.unsafe.length} unsafe file(s) excluded`, percentage: 15 }, sessionId);
         }
       } catch (safetyErr) {
         log.warn('Commit safety scan failed (non-blocking)', { error: safetyErr instanceof Error ? safetyErr.message : String(safetyErr) });

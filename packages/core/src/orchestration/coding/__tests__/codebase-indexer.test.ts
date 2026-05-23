@@ -64,7 +64,7 @@ import {
 
 // ── Test helpers ──────────────────────────────────────────────────────────────
 
-let tempDirs: string[] = [];
+const tempDirs: string[] = [];
 
 function mktemp(): string {
   const dir = mkdtempSync(join(tmpdir(), 'orion-index-test-'));

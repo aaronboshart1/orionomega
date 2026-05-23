@@ -245,8 +245,12 @@ export class CodingWorkerPool {
           resolved.add(node.id);
           inFlight.delete(node.id);
           resultMap.set(node.id, {
-            success: false,
+            nodeId: node.id,
             output: String(err instanceof Error ? err.message : err),
+            durationMs: 0,
+            toolCallCount: 0,
+            findings: [],
+            outputPaths: [],
           } as WorkerResult);
           pendingPromises.delete(node.id);
         });
