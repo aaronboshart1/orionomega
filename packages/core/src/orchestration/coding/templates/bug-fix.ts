@@ -8,6 +8,8 @@
 
 import type { WorkflowNode } from '../../types.js';
 import type { CodingNodeConfig } from '../coding-types.js';
+import { buildReviewGateNode } from '../review-gate.js';
+import type { ReviewGateNodeParams } from '../review-gate.js';
 
 export interface BugFixParams {
   /** Description of the bug, including error messages and reproduction steps. */
@@ -37,6 +39,11 @@ export interface BugFixParams {
    * editing template code. Defaults to 300_000 (5 min).
    */
   validationTimeoutMs?: number;
+  /**
+   * Optional review-gate configuration.  Defaults to small complexity
+   * (bug fixes are typically targeted changes).
+   */
+  reviewGate?: Pick<ReviewGateNodeParams, 'complexityTier' | 'filesChanged' | 'manualReviewRequired'>;
 }
 
 /**
@@ -51,6 +58,7 @@ export function buildBugFixTemplate(params: BugFixParams): WorkflowNode[] {
     validationCommands = [],
     validationMaxRetries = 2,
     validationTimeoutMs = 300_000,
+    reviewGate,
   } = params;
 
   // ── Layer 0: Reproduce & Analyze ──────────────────────────────────────────
@@ -200,7 +208,20 @@ export function buildBugFixTemplate(params: BugFixParams): WorkflowNode[] {
     },
   };
 
-  // ── Layer 5: Summary Report ───────────────────────────────────────────────
+  // ── Layer 5: Review Gate ──────────────────────────────────────────────────
+
+  const reviewGateNode = buildReviewGateNode({
+    cwd,
+    dependsOn: ['validation-loop'],
+    // Bug fixes are typically small/targeted; default to 'small' unless overridden
+    complexityTier: reviewGate?.complexityTier ?? 'small',
+    filesChanged: reviewGate?.filesChanged ?? [],
+    manualReviewRequired: reviewGate?.manualReviewRequired ?? false,
+    approvedNextNode: 'summary-report',
+    blockedNextNode: 'summary-report',
+  });
+
+  // ── Layer 6: Summary Report ───────────────────────────────────────────────
 
   const reportConfig: CodingNodeConfig = {
     task: `Write a concise bug fix report.\n\nBug: ${task}\n\nInclude: root cause, fix applied, regression test added, files changed.`,
@@ -216,11 +237,11 @@ export function buildBugFixTemplate(params: BugFixParams): WorkflowNode[] {
     id: 'summary-report',
     type: 'AGENT',
     label: 'Summary Report',
-    dependsOn: ['validation-loop'],
+    dependsOn: ['review-gate'],
     status: 'pending',
     agent: { model: models.reporter, task: reportConfig.task },
     codingConfig: reportConfig,
   };
 
-  return [reproduce, rootCause, fix, regressionTest, validationLoop, summaryReport];
+  return [reproduce, rootCause, fix, regressionTest, validationLoop, reviewGateNode, summaryReport];
 }

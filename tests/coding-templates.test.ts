@@ -89,7 +89,7 @@ section('1. feature-implementation template structure');
     budgets: DEFAULT_BUDGETS,
   });
 
-  assertEq(nodes.length, 7, '1.1 feature-implementation produces exactly 7 nodes');
+  assertEq(nodes.length, 8, '1.1 feature-implementation produces exactly 8 nodes (includes review-gate)');
 }
 
 {
@@ -107,6 +107,7 @@ section('1. feature-implementation template structure');
     'integration-stitch',
     'test-generation',
     'validation-loop',
+    'review-gate',
     'summary-report',
   ];
 
@@ -208,7 +209,7 @@ section('1. feature-implementation template structure');
   assertEq(loop.codingConfig?.validationConfig?.maxRetries, 3, '1.8 validationConfig.maxRetries set');
 
   const reporter = nodeById(nodes, 'summary-report')!;
-  assert(reporter.dependsOn.includes('validation-loop'), '1.8 summary-report depends on validation-loop');
+  assert(reporter.dependsOn.includes('review-gate'), '1.8 summary-report depends on review-gate');
   assertEq(reporter.codingConfig?.codingRole, 'reporter', '1.8 reporter role correct');
 }
 

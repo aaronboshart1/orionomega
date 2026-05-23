@@ -370,6 +370,139 @@ function partitionEvenly<T>(items: T[], n: number): T[][] {
   return out;
 }
 
+// ── Planning constraint validation ──────────────────────────────────────────
+
+/** A single violation found by {@link validatePlanningConstraints}. */
+export interface PlanningConstraintViolation {
+  type: 'duplicate_chunk_id' | 'unknown_dependency' | 'file_overlap' | 'empty_task' | 'excessive_parallelism';
+  chunkId?: string;
+  detail: string;
+}
+
+/** Result of {@link validatePlanningConstraints}. */
+export interface PlanningConstraintReport {
+  valid: boolean;
+  violations: PlanningConstraintViolation[];
+}
+
+/**
+ * Validate a {@link FanOutDecision} against planning constraints before
+ * fan-out expansion or dispatch.
+ *
+ * Checks:
+ *   1. No duplicate chunk IDs.
+ *   2. All intra-chunk `dependsOn` references resolve to known chunk IDs.
+ *   3. No two non-shared files appear in more than one chunk's `fileCluster`
+ *      (file overlap would cause write conflicts between parallel workers).
+ *   4. No chunk has an empty `task` string.
+ *   5. `maxParallelism` does not exceed 16 (sanity cap).
+ *
+ * This is a pure validation — it does not modify the decision.
+ */
+export function validatePlanningConstraints(decision: FanOutDecision): PlanningConstraintReport {
+  const violations: PlanningConstraintViolation[] = [];
+  const chunkIds = new Set<string>();
+
+  // 1. Duplicate chunk IDs
+  for (const chunk of decision.chunks) {
+    if (chunkIds.has(chunk.id)) {
+      violations.push({
+        type: 'duplicate_chunk_id',
+        chunkId: chunk.id,
+        detail: `Duplicate chunk id: "${chunk.id}"`,
+      });
+    }
+    chunkIds.add(chunk.id);
+  }
+
+  // 2. Unknown intra-chunk dependencies
+  for (const chunk of decision.chunks) {
+    for (const dep of chunk.dependsOn ?? []) {
+      if (!chunkIds.has(dep)) {
+        violations.push({
+          type: 'unknown_dependency',
+          chunkId: chunk.id,
+          detail: `Chunk "${chunk.id}" depends on unknown chunk id "${dep}"`,
+        });
+      }
+    }
+  }
+
+  // 3. File overlap across chunk fileClusters
+  const fileToChunk = new Map<string, string>();
+  for (const chunk of decision.chunks) {
+    for (const file of chunk.fileCluster) {
+      const first = fileToChunk.get(file);
+      if (first !== undefined && first !== chunk.id) {
+        violations.push({
+          type: 'file_overlap',
+          chunkId: chunk.id,
+          detail: `File "${file}" appears in both chunk "${first}" and chunk "${chunk.id}"`,
+        });
+      } else {
+        fileToChunk.set(file, chunk.id);
+      }
+    }
+  }
+
+  // 4. Empty task strings
+  for (const chunk of decision.chunks) {
+    if (!chunk.task || chunk.task.trim().length === 0) {
+      violations.push({
+        type: 'empty_task',
+        chunkId: chunk.id,
+        detail: `Chunk "${chunk.id}" has an empty task string`,
+      });
+    }
+  }
+
+  // 5. Excessive parallelism sanity cap
+  const MAX_PARALLELISM = 16;
+  if (decision.maxParallelism > MAX_PARALLELISM) {
+    violations.push({
+      type: 'excessive_parallelism',
+      detail: `maxParallelism ${decision.maxParallelism} exceeds sanity cap of ${MAX_PARALLELISM}`,
+    });
+  }
+
+  if (violations.length > 0) {
+    log.warn('validatePlanningConstraints: found violations', { count: violations.length, violations });
+  }
+
+  return { valid: violations.length === 0, violations };
+}
+
+// ── materializeFanOut ────────────────────────────────────────────────────────
+
+/**
+ * Validate and expand the placeholder node into N concrete chunk nodes.
+ *
+ * This is the recommended entry point for callers — it wraps
+ * {@link expandFanOut} with a {@link validatePlanningConstraints} pre-check
+ * so bad architect output is surfaced before any nodes are dispatched.
+ *
+ * @throws Error if `throwOnViolation` is true (default) and any planning
+ *   constraint violations are found. Set `throwOnViolation: false` to warn
+ *   and proceed despite violations (useful in degraded/recovery flows).
+ */
+export function materializeFanOut(
+  input: ExpandFanOutInput,
+  options: { throwOnViolation?: boolean } = {},
+): WorkflowNode[] {
+  const { throwOnViolation = true } = options;
+
+  const report = validatePlanningConstraints(input.decision);
+  if (!report.valid) {
+    const summary = report.violations.map((v) => v.detail).join('; ');
+    if (throwOnViolation) {
+      throw new Error(`materializeFanOut: planning constraint violations: ${summary}`);
+    }
+    log.warn('materializeFanOut: proceeding despite planning violations', { summary });
+  }
+
+  return expandFanOut(input);
+}
+
 /**
  * Inspect a {@link FanOutDecision} for oversized chunks, log each
  * chunk's complexity at dispatch (single structured log line — easy to

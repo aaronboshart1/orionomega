@@ -38,6 +38,7 @@ import {
   buildPermissionRequestHook,
 } from './permission-policy.js';
 import { buildCommitSafetyToolGuard } from './coding/safe-commit.js';
+import { AGENT_ROLE_SYSTEM_PROMPTS } from './coding/agent-role-prompts.js';
 import { SkillExecutor } from '@orionomega/skills-sdk';
 import { buildSkillToolset } from '../agent/skill-tools.js';
 import path from 'node:path';
@@ -891,9 +892,10 @@ export function createCodingAgent(options: CodingAgentOptions): {
     workspaceDir: cwd,
   });
 
-  // System prompt
+  // System prompt — inject role-specific instructions from AGENT_ROLE_SYSTEM_PROMPTS
+  const rolePrompt = AGENT_ROLE_SYSTEM_PROMPTS[role] ?? '';
   const portInstructions = `\n\n## Reserved Port Restrictions\nDo NOT start any server on ports 8000, 8888, or 5000 — they are reserved.`;
-  const appendParts = [portInstructions, systemPromptAppend].filter(Boolean).join('\n\n');
+  const appendParts = [rolePrompt, portInstructions, systemPromptAppend].filter(Boolean).join('\n\n');
   const systemPromptConfig = {
     type: 'preset' as const,
     preset: 'claude_code' as const,

@@ -39,6 +39,17 @@ export type {
   ReviewGateDecision,
   ChangeConfidence,
   CodingProgressEvent,
+  // Additional types needed by new modules
+  OrionOmegaCodingConfig,
+  Requirement,
+  RequirementVerdict,
+  TokenBudget,
+  SessionBudgetConfig,
+  FileLockRecord,
+  DagAdaptationTrigger,
+  DagAdaptation,
+  TokenUsage,
+  ModelUpgradeEvent,
 } from './coding-types.js';
 
 // ── Review Gate ───────────────────────────────────────────────────────────────
@@ -319,3 +330,140 @@ export type {
   PlanningViolation,
   PlanningValidationResult,
 } from './planning-schemas.js';
+
+// ── DAG Adaptation (Section 4.3) ──────────────────────────────────────────
+export {
+  insertDebugNode,
+  insertArchitectReviewNode,
+  escalateToReplan,
+} from './dag-adapter.js';
+export type {
+  InsertDebugNodeParams,
+  InsertArchitectReviewNodeParams,
+  EscalateToReplanParams,
+} from './dag-adapter.js';
+
+// ── Background Agents (Section 7.1) ──────────────────────────────────────
+export {
+  agentBranchName,
+  formatPRDescription,
+  createPullRequest,
+  watchCI,
+  DEFAULT_NOTIFICATION_CONFIG,
+} from './background-agents.js';
+export type {
+  NotificationConfig,
+  BackgroundCodingSession,
+  CIRunResult,
+  PRCreationParams,
+  PRCreationResult,
+  GitHubSkill,
+  WorkflowRun,
+  CIFixSessionParams,
+} from './background-agents.js';
+
+// ── Memory System (Section 6.6) ──────────────────────────────────────────
+export {
+  getArtifactData,
+  isFingerprintValid as isMemoryFingerprintValid,
+  serializeCheckpoint,
+  formatRecalledMemories,
+} from './memory-system.js';
+export type {
+  DAGArtifact,
+  MemoryLevel,
+  ProjectFingerprint as MemoryProjectFingerprint,
+  SessionMemory,
+  SessionCheckpointFile,
+  ProjectConventions,
+  RecentSessionOutcome,
+  ProjectMemory,
+  GlobalMemoryEntry,
+  MemoryRecallQuery,
+  MemoryRecallResult,
+} from './memory-system.js';
+
+// ── Intelligent Caching (Section 7.3) ────────────────────────────────────
+export {
+  bucketFileCount,
+  hashTaskKeywords,
+  buildTaskSignature,
+  computeSignatureSimilarity,
+  InMemoryDAGPatternCache,
+  formatCachedPatternsForPrompt,
+} from './caching.js';
+export type {
+  TaskSignature,
+  SessionOutcome,
+  CachedPattern,
+  DAGPatternCache,
+} from './caching.js';
+
+// ── Learning & Adaptation (Section 7.4) ──────────────────────────────────
+export {
+  computeAutoTuning,
+  learnConventions,
+  formatFeedbackMemory,
+  formatTelemetryMemory,
+} from './learning.js';
+export type {
+  FeedbackSignal,
+  CodingSessionTelemetry,
+  AutoTuningParams,
+} from './learning.js';
+
+// ── CI/CD Integration (Section 7.5) ──────────────────────────────────────
+export {
+  GitHubActionsCIIntegration,
+  automatedRollback,
+  CI_CONFIG_PATHS,
+} from './ci-integration.js';
+export type {
+  CIProvider,
+  CIPipeline,
+  CIResult,
+  CIFailure,
+  CodingSession as CICodingSession,
+  CIIntegration,
+  GitHubCISkill,
+  GHWorkflowRun,
+  GitOps,
+} from './ci-integration.js';
+
+// ── Multi-Service Orchestration (Section 7.2) ────────────────────────────
+export {
+  validateAPIContracts,
+  buildExecutionPlan,
+} from './multi-service.js';
+export type {
+  ServiceSpec,
+  APIContract,
+  MultiServiceTask,
+  TaskArtifact,
+  TypeDefinition,
+  ContractViolation,
+} from './multi-service.js';
+
+// ── User Experience Types (Section 9) ────────────────────────────────────
+export {
+  formatLevel1,
+  formatLevel2,
+} from './ux-types.js';
+export type {
+  ProgressDisclosureLevel,
+  IntentSummary,
+  AgentActivityEvent,
+  StreamEvent,
+  CodingStreamEventType,
+  CodingStreamEvent,
+  ApprovalGateEvent,
+  UserApprovalAction,
+  ApprovalWorkflow,
+  ApprovalResolvedEvent,
+  SessionCheckpoint,
+  RollbackSession,
+  RollbackRequestEvent,
+  RollbackCompleteEvent,
+  SessionCompleteEvent,
+  CodingErrorEvent,
+} from './ux-types.js';

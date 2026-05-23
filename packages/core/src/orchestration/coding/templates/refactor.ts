@@ -7,6 +7,8 @@
  */
 
 import type { WorkflowNode } from '../../types.js';
+import { buildReviewGateNode } from '../review-gate.js';
+import type { ReviewGateNodeParams } from '../review-gate.js';
 
 export interface RefactorParams {
   task: string;
@@ -37,6 +39,11 @@ export interface RefactorParams {
    * monorepo `pnpm -r` builds.
    */
   validationTimeoutMs?: number;
+  /**
+   * Optional review-gate configuration.  Refactors are medium risk by default
+   * since they often touch many files.
+   */
+  reviewGate?: Pick<ReviewGateNodeParams, 'complexityTier' | 'filesChanged' | 'manualReviewRequired'>;
 }
 
 export function buildRefactorTemplate(params: RefactorParams): WorkflowNode[] {
@@ -48,6 +55,7 @@ export function buildRefactorTemplate(params: RefactorParams): WorkflowNode[] {
     validationCommands = [],
     validationMaxRetries = 2,
     validationTimeoutMs = 300_000,
+    reviewGate,
   } = params;
 
   // ── Layer 0: Codebase Scanner ─────────────────────────────────────────────
@@ -208,13 +216,26 @@ export function buildRefactorTemplate(params: RefactorParams): WorkflowNode[] {
     },
   };
 
-  // ── Layer 6: Summary Report ───────────────────────────────────────────────
+  // ── Layer 6: Review Gate ──────────────────────────────────────────────────
+
+  const reviewGateNode = buildReviewGateNode({
+    cwd,
+    dependsOn: ['validation-loop'],
+    // Refactors touch many files; default to medium complexity
+    complexityTier: reviewGate?.complexityTier ?? 'medium',
+    filesChanged: reviewGate?.filesChanged ?? [],
+    manualReviewRequired: reviewGate?.manualReviewRequired ?? false,
+    approvedNextNode: 'summary-report',
+    blockedNextNode: 'summary-report',
+  });
+
+  // ── Layer 7: Summary Report ───────────────────────────────────────────────
 
   const summaryReport: WorkflowNode = {
     id: 'summary-report',
     type: 'AGENT',
     label: 'Summary Report',
-    dependsOn: ['validation-loop'],
+    dependsOn: ['review-gate'],
     status: 'pending',
     agent: {
       model: models.reporter,
@@ -231,5 +252,5 @@ export function buildRefactorTemplate(params: RefactorParams): WorkflowNode[] {
     },
   };
 
-  return [scanner, analyst, refactorPlaceholder, stitcher, testUpdate, validationLoop, summaryReport];
+  return [scanner, analyst, refactorPlaceholder, stitcher, testUpdate, validationLoop, reviewGateNode, summaryReport];
 }

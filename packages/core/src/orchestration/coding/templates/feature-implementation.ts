@@ -8,6 +8,8 @@
 
 import type { WorkflowNode } from '../../types.js';
 import type { CodingNodeConfig } from '../coding-types.js';
+import { buildReviewGateNode } from '../review-gate.js';
+import type { ReviewGateNodeParams } from '../review-gate.js';
 
 export interface FeatureImplementationParams {
   /** Natural language description of the feature to implement. */
@@ -48,6 +50,11 @@ export interface FeatureImplementationParams {
    * `orchestration.validationTimeout` in the user's config. Defaults to 5 min.
    */
   validationTimeoutMs?: number;
+  /**
+   * Optional review-gate configuration.  When omitted, the gate is built
+   * with conservative defaults (medium complexity, no forced manual review).
+   */
+  reviewGate?: Pick<ReviewGateNodeParams, 'complexityTier' | 'filesChanged' | 'manualReviewRequired'>;
 }
 
 /**
@@ -72,6 +79,7 @@ export function buildFeatureImplementationTemplate(
     validationMaxRetries = 2,
     validationTimeoutMs = 300_000,
     priorDecisions = [],
+    reviewGate,
   } = params;
 
   // Render prior decisions (if any) into a bounded markdown block to avoid
@@ -364,7 +372,19 @@ a retask if any is unmet — so be specific and observable.`;
     },
   };
 
-  // ── Layer 6: Summary Report ────────────────────────────────────────────────
+  // ── Layer 6: Review Gate ───────────────────────────────────────────────────
+
+  const reviewGateNode = buildReviewGateNode({
+    cwd,
+    dependsOn: ['validation-loop'],
+    complexityTier: reviewGate?.complexityTier ?? 'medium',
+    filesChanged: reviewGate?.filesChanged ?? [],
+    manualReviewRequired: reviewGate?.manualReviewRequired ?? false,
+    approvedNextNode: 'summary-report',
+    blockedNextNode: 'summary-report',
+  });
+
+  // ── Layer 7: Summary Report ────────────────────────────────────────────────
 
   const reporterCodingConfig: CodingNodeConfig = {
     task: `Generate a concise summary report of the implemented feature.\n\nFeature: ${task}\n\nInclude: files created/modified, what was implemented, test results, any known limitations.`,
@@ -384,7 +404,7 @@ a retask if any is unmet — so be specific and observable.`;
     id: 'summary-report',
     type: 'AGENT',
     label: 'Summary Report',
-    dependsOn: ['validation-loop'],
+    dependsOn: ['review-gate'],
     status: 'pending',
     agent: {
       model: models.reporter,
@@ -393,5 +413,5 @@ a retask if any is unmet — so be specific and observable.`;
     codingConfig: reporterCodingConfig,
   };
 
-  return [scanner, architect, implPlaceholder, stitcher, testGeneration, validationLoop, summaryReport];
+  return [scanner, architect, implPlaceholder, stitcher, testGeneration, validationLoop, reviewGateNode, summaryReport];
 }

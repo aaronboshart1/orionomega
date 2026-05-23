@@ -83,6 +83,19 @@ export class FileLockManager {
   }
 
   /**
+   * Alias for {@link acquire} — acquire exclusive locks on all requested files.
+   * Provided for call-site readability when acquiring a full set of files
+   * atomically ("acquire all or none").
+   */
+  async acquireAll(
+    workerId: string,
+    files: string[],
+    timeoutMs: number,
+  ): Promise<AcquireResult> {
+    return this.acquire(workerId, files, timeoutMs);
+  }
+
+  /**
    * Release all locks held by the given worker.
    * Safe to call even if the worker holds no locks (no-op).
    *
@@ -99,6 +112,14 @@ export class FileLockManager {
     if (released.length > 0) {
       log.debug(`Worker ${workerId} released ${released.length} lock(s): ${released.join(', ')}`);
     }
+  }
+
+  /**
+   * Alias for {@link release} — release all locks held by the given worker.
+   * Provided for call-site readability in worker-pool teardown paths.
+   */
+  releaseWorker(workerId: string): void {
+    this.release(workerId);
   }
 
   /**

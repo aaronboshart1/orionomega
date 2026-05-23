@@ -6,6 +6,8 @@
  */
 
 import type { WorkflowNode } from '../../types.js';
+import { buildReviewGateNode } from '../review-gate.js';
+import type { ReviewGateNodeParams } from '../review-gate.js';
 
 export interface TestSuiteParams {
   task: string;
@@ -34,6 +36,11 @@ export interface TestSuiteParams {
    * monorepo `pnpm -r` builds.
    */
   validationTimeoutMs?: number;
+  /**
+   * Optional review-gate configuration.  Test-suite additions are low risk
+   * by default since they only add/modify test files.
+   */
+  reviewGate?: Pick<ReviewGateNodeParams, 'complexityTier' | 'filesChanged' | 'manualReviewRequired'>;
 }
 
 export function buildTestSuiteTemplate(params: TestSuiteParams): WorkflowNode[] {
@@ -45,6 +52,7 @@ export function buildTestSuiteTemplate(params: TestSuiteParams): WorkflowNode[] 
     validationCommands = [],
     validationMaxRetries = 2,
     validationTimeoutMs = 300_000,
+    reviewGate,
   } = params;
 
   // ── Layer 0: Codebase Scanner ─────────────────────────────────────────────
@@ -179,13 +187,26 @@ export function buildTestSuiteTemplate(params: TestSuiteParams): WorkflowNode[] 
     },
   };
 
-  // ── Layer 5: Summary Report ───────────────────────────────────────────────
+  // ── Layer 5: Review Gate ──────────────────────────────────────────────────
+
+  const reviewGateNode = buildReviewGateNode({
+    cwd,
+    dependsOn: ['validation-loop'],
+    // Test-suite additions are low risk by default (only test files change)
+    complexityTier: reviewGate?.complexityTier ?? 'small',
+    filesChanged: reviewGate?.filesChanged ?? [],
+    manualReviewRequired: reviewGate?.manualReviewRequired ?? false,
+    approvedNextNode: 'summary-report',
+    blockedNextNode: 'summary-report',
+  });
+
+  // ── Layer 6: Summary Report ───────────────────────────────────────────────
 
   const summaryReport: WorkflowNode = {
     id: 'summary-report',
     type: 'AGENT',
     label: 'Summary Report',
-    dependsOn: ['validation-loop'],
+    dependsOn: ['review-gate'],
     status: 'pending',
     agent: {
       model: models.reporter,
@@ -202,5 +223,5 @@ export function buildTestSuiteTemplate(params: TestSuiteParams): WorkflowNode[] 
     },
   };
 
-  return [scanner, coverageAnalyst, testGenPlaceholder, integrator, validationLoop, summaryReport];
+  return [scanner, coverageAnalyst, testGenPlaceholder, integrator, validationLoop, reviewGateNode, summaryReport];
 }

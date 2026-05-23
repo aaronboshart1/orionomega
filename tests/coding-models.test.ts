@@ -363,7 +363,7 @@ section('8. Thinking mode per role');
   });
 
   const disabledRoles: CodingRole[] = ['codebase-scanner', 'validator', 'reporter'];
-  const adaptiveRoles: CodingRole[] = ['architect', 'implementer', 'stitcher', 'test-writer', 'reviewer'];
+  const adaptiveRoles: CodingRole[] = ['architect', 'implementer', 'stitcher', 'test-writer', 'reviewer', 'debugger'];
 
   for (const role of disabledRoles) {
     const r = resolver.resolve(role, medCtx);
@@ -374,6 +374,67 @@ section('8. Thinking mode per role');
     const r = resolver.resolve(role, medCtx);
     assertEq(r.thinking.type, 'adaptive', `8.2 ${role} thinking mode is adaptive`);
   }
+}
+
+// ── Section 9: Debugger role upgrade ─────────────────────────────────────────
+
+section('9. Debugger role upgrade on retry');
+
+{
+  const resolver = new CodingModelResolver({
+    discoveredModels: MOCK_MODELS,
+    fallbackModel: FALLBACK,
+  });
+
+  // debugger starts at sonnet (retryAttempt = 0)
+  const r0 = resolver.resolve('debugger', { profile: mediumProfile, retryAttempt: 0 });
+  assertEq(r0.model, 'claude-sonnet-4-6', '9.1 debugger uses sonnet on first attempt');
+}
+
+{
+  const resolver = new CodingModelResolver({
+    discoveredModels: MOCK_MODELS,
+    fallbackModel: FALLBACK,
+  });
+
+  // debugger upgrades to opus at retryAttempt >= 1
+  const r1 = resolver.resolve('debugger', { profile: mediumProfile, retryAttempt: 1 });
+  assertEq(r1.model, 'claude-opus-4-6', '9.2 debugger upgrades to opus at retry >= 1');
+}
+
+{
+  const resolver = new CodingModelResolver({
+    discoveredModels: MOCK_MODELS,
+    fallbackModel: FALLBACK,
+  });
+
+  const r2 = resolver.resolve('debugger', { profile: mediumProfile, retryAttempt: 2 });
+  assertEq(r2.model, 'claude-opus-4-6', '9.3 debugger stays at opus for retry >= 2');
+}
+
+// ── Section 10: Reviewer always-opus ─────────────────────────────────────────
+
+section('10. Reviewer always resolves to opus');
+
+{
+  const resolver = new CodingModelResolver({
+    discoveredModels: MOCK_MODELS,
+    fallbackModel: FALLBACK,
+  });
+
+  // reviewer always resolves to opus regardless of context
+  const r = resolver.resolve('reviewer', medCtx);
+  assertEq(r.model, 'claude-opus-4-6', '10.1 reviewer always resolves to opus (no context)');
+}
+
+{
+  const resolver = new CodingModelResolver({
+    discoveredModels: MOCK_MODELS,
+    fallbackModel: FALLBACK,
+  });
+
+  const r = resolver.resolve('reviewer', { profile: lowProfile });
+  assertEq(r.model, 'claude-opus-4-6', '10.2 reviewer always resolves to opus (low-complexity profile)');
 }
 
 // ── Summary ───────────────────────────────────────────────────────────────────

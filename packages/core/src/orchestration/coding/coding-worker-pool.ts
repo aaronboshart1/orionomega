@@ -18,7 +18,7 @@ const log = createLogger('coding-worker-pool');
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface CodingWorkerPoolConfig {
-  /** Maximum parallel coding agent workers. Default: 4. */
+  /** Maximum parallel coding agent workers. Default: 8 (Section 4.5). */
   maxConcurrency?: number;
   /** FileLockManager instance (shared across the workflow). */
   fileLockManager: FileLockManager;
@@ -70,7 +70,7 @@ export class CodingWorkerPool {
   private executor?: WorkerExecutorFn;
 
   constructor(config: CodingWorkerPoolConfig) {
-    this.maxConcurrency = config.maxConcurrency ?? 4;
+    this.maxConcurrency = config.maxConcurrency ?? 8;
     this.fileLockManager = config.fileLockManager;
     this.eventBus = config.eventBus;
     this.cwd = config.cwd ?? process.cwd();
@@ -184,6 +184,93 @@ export class CodingWorkerPool {
         ));
       }, DRAIN_TIMEOUT_MS);
     });
+  }
+
+  /**
+   * Execute a layer of nodes respecting intra-layer `dependsOn` ordering
+   * (Kahn's algorithm) while bounding concurrency to `maxConcurrency`.
+   *
+   * All nodes in `nodes` are expected to be in the same logical DAG layer,
+   * but the architect may impose intra-layer ordering via `dependsOn` (e.g.
+   * multi-phase spec chunks where phase 2 depends on phase 1). This method
+   * handles both the fully-parallel case (no intra-layer deps) and the
+   * partially-ordered case.
+   *
+   * Behaviour:
+   *   - Nodes with no unresolved `dependsOn` within the layer are dispatched
+   *     first (up to `maxConcurrency` at a time).
+   *   - As each node completes, its id is added to the resolved set and any
+   *     successor nodes become eligible for dispatch.
+   *   - If all remaining nodes still have unresolved deps after the first
+   *     batch completes, an error is thrown (cycle / unresolvable graph).
+   *   - Returns a parallel array of `WorkerResult` in the same order as
+   *     the input `nodes` array.
+   *
+   * @param nodes - Layer nodes to execute (may include intra-layer deps).
+   * @param context - Upstream context passed to each executor invocation.
+   */
+  async executeLayer(nodes: WorkflowNode[], context: string): Promise<WorkerResult[]> {
+    if (!this.executor) {
+      throw new Error('CodingWorkerPool: executor not set before executeLayer()');
+    }
+    if (nodes.length === 0) return [];
+
+    const layerIds = new Set(nodes.map((n) => n.id));
+    const resolved = new Set<string>();
+    const resultMap = new Map<string, WorkerResult>();
+    const inFlight = new Set<string>();
+
+    const isReady = (node: WorkflowNode): boolean => {
+      const intraDeps = (node.dependsOn ?? []).filter((d) => layerIds.has(d));
+      return intraDeps.every((d) => resolved.has(d)) && !inFlight.has(node.id) && !resolved.has(node.id);
+    };
+
+    // Keep dispatching until all nodes have results
+    const pendingPromises = new Map<string, Promise<void>>();
+
+    const dispatchReady = (): void => {
+      for (const node of nodes) {
+        if (inFlight.size >= this.maxConcurrency) break;
+        if (!isReady(node)) continue;
+        if (inFlight.has(node.id) || resolved.has(node.id)) continue;
+
+        inFlight.add(node.id);
+        const p = this.submit(node, context).then((result) => {
+          resolved.add(node.id);
+          inFlight.delete(node.id);
+          resultMap.set(node.id, result);
+          pendingPromises.delete(node.id);
+        }).catch((err: unknown) => {
+          // Surface the error but remove from inFlight so we don't stall
+          resolved.add(node.id);
+          inFlight.delete(node.id);
+          resultMap.set(node.id, {
+            success: false,
+            output: String(err instanceof Error ? err.message : err),
+          } as WorkerResult);
+          pendingPromises.delete(node.id);
+        });
+        pendingPromises.set(node.id, p);
+      }
+    };
+
+    while (resolved.size < nodes.length) {
+      dispatchReady();
+
+      if (pendingPromises.size === 0) {
+        // No work is in flight and we haven't resolved all nodes — cycle or missing dep
+        const unresolved = nodes.filter((n) => !resolved.has(n.id)).map((n) => n.id);
+        throw new Error(
+          `executeLayer: unresolvable intra-layer dependencies (possible cycle). ` +
+          `Unresolved: ${unresolved.join(', ')}`,
+        );
+      }
+
+      // Wait for any one promise to settle, then re-evaluate ready set
+      await Promise.race([...pendingPromises.values()]);
+    }
+
+    return nodes.map((n) => resultMap.get(n.id)!);
   }
 
   // ── Private ───────────────────────────────────────────────────────────────

@@ -23,7 +23,10 @@ import { getDb } from '../../db/client.js';
 import { codingSessions, workflowExecutions, workflowSteps, architectReviews } from '../../db/schema.js';
 import { eq } from 'drizzle-orm';
 import { CodingPlanner, matchCodingIntent } from './coding-planner.js';
-import { ValidationLoop, detectValidationCommands } from './validation-loop.js';
+import { ValidationLoop, detectValidationCommands, buildValidationChain } from './validation-loop.js';
+import { CodingModelResolver } from './coding-models.js';
+import { classifyCodeIntent } from './intent-classifier.js';
+import { findUnsafeFiles } from './safe-commit.js';
 import type {
   CodingModeConfig,
   CodebaseScanOutput,
@@ -181,6 +184,13 @@ export interface CodingOrchestratorConfig {
    * structured-output calls.
    */
   cheapModel?: string;
+  /**
+   * Optional pre-configured CodingModelResolver for dynamic model selection.
+   * When provided, the orchestrator uses role-based model resolution with
+   * adaptive upgrades (e.g. debugger → opus on retry) instead of the
+   * hardcoded `highPowerModel`. When omitted, `highPowerModel` is used.
+   */
+  modelResolver?: CodingModelResolver;
 }
 
 // ── DAG step definitions ──────────────────────────────────────────────────────
@@ -468,8 +478,19 @@ export class CodingOrchestrator {
       updatedAt: now(),
     });
 
-    // Select template
-    const template = matchCodingIntent(taskDescription) ?? 'feature-implementation';
+    // Select template — use enhanced intent classifier when available,
+    // falling back to the legacy matchCodingIntent for backward compat.
+    let template: string;
+    try {
+      const classification = await classifyCodeIntent(taskDescription, {
+        explicitCodeMode: true,
+        llmClient: this.cfg.anthropic ?? undefined,
+        haikuModel: this.cfg.cheapModel ?? this.cfg.highPowerModel,
+      });
+      template = classification.template ?? matchCodingIntent(taskDescription) ?? 'feature-implementation';
+    } catch {
+      template = matchCodingIntent(taskDescription) ?? 'feature-implementation';
+    }
 
     // Bind coding sessionId → conversation/gateway sessionId BEFORE emitting
     // any events so the downstream resolver can scope them correctly.
@@ -908,6 +929,12 @@ export class CodingOrchestrator {
       ];
       const fullTask = contextParts.join('\n');
 
+      // Resolve model dynamically via CodingModelResolver when available,
+      // falling back to the hardcoded highPowerModel.
+      const implModel = (this.cfg.modelResolver && codebaseScanOutput)
+        ? this.cfg.modelResolver.resolve('implementer', { profile: codebaseScanOutput, retryAttempt: 0 }).model
+        : this.cfg.highPowerModel;
+
       // Build a WorkflowNode to pass to executeCodingAgent
       const implNode = {
         id: 'implement',
@@ -917,7 +944,7 @@ export class CodingOrchestrator {
         status: 'running' as const,
         codingAgent: {
           task: fullTask,
-          model: this.cfg.highPowerModel,
+          model: implModel,
           cwd: targetDir,
           maxBudgetUsd: 2.0,
           allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'],
@@ -1181,6 +1208,22 @@ export class CodingOrchestrator {
     // FAILS the run with the verbatim git error so the user sees exactly
     // what credential/permission/branch problem to fix.
     await this._runStep(sessionId, executionId, 'commit', 'Commit and push', 'git', progress, async () => {
+      // Pre-commit safety: scan for secrets, oversized files, and binaries
+      // before staging. Unsafe files are logged and excluded from the commit.
+      progress?.onStepProgress('commit', 'Scanning for unsafe files…', 10);
+      _emitters?.stepProgress({ nodeId: 'commit', message: 'Scanning for unsafe files…', percentage: 10 }, sessionId);
+      try {
+        const safetyResult = findUnsafeFiles(targetDir);
+        if (safetyResult.unsafeFiles.length > 0) {
+          const unsafeList = safetyResult.unsafeFiles.map(f => `${f.path} (${f.reason})`).join(', ');
+          log.warn('Unsafe files excluded from commit', { count: safetyResult.unsafeFiles.length, files: unsafeList });
+          progress?.onStepProgress('commit', `${safetyResult.unsafeFiles.length} unsafe file(s) excluded`, 15);
+          _emitters?.stepProgress({ nodeId: 'commit', message: `${safetyResult.unsafeFiles.length} unsafe file(s) excluded`, percentage: 15 }, sessionId);
+        }
+      } catch (safetyErr) {
+        log.warn('Commit safety scan failed (non-blocking)', { error: safetyErr instanceof Error ? safetyErr.message : String(safetyErr) });
+      }
+
       progress?.onStepProgress('commit', 'Staging changes…', 20);
       _emitters?.stepProgress({ nodeId: 'commit', message: 'Staging changes…', percentage: 20 }, sessionId);
       await stageChanges(targetDir);

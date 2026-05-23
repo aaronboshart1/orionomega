@@ -118,6 +118,14 @@ export interface CodingStepProgressPayload {
   message: string;
   /** 0–100 completion percentage. */
   percentage: number;
+  /** Number of agents currently executing in this DAG layer (Spec §4.5). */
+  activeAgents?: number;
+  /** Total agents in the current DAG layer (Spec §4.5). */
+  totalAgents?: number;
+  /** Cumulative tokens used in this session (input + output). */
+  tokensUsed?: number;
+  /** Cumulative cost in USD for this session so far. */
+  costUsd?: number;
 }
 
 /** Payload for `coding:step:completed` — emitted when a step finishes successfully. */

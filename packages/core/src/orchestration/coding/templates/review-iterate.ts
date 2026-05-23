@@ -7,6 +7,8 @@
  */
 
 import type { WorkflowNode } from '../../types.js';
+import { buildReviewGateNode } from '../review-gate.js';
+import type { ReviewGateNodeParams } from '../review-gate.js';
 
 export interface ReviewIterateParams {
   task: string;
@@ -30,6 +32,11 @@ export interface ReviewIterateParams {
    * `orchestration.validationTimeout` in the user's config. Defaults to 5 min.
    */
   validationTimeoutMs?: number;
+  /**
+   * Optional review-gate configuration.  Review-iterate sessions are medium
+   * risk by default — they may touch many files across the codebase.
+   */
+  reviewGate?: Pick<ReviewGateNodeParams, 'complexityTier' | 'filesChanged' | 'manualReviewRequired'>;
 }
 
 export function buildReviewIterateTemplate(params: ReviewIterateParams): WorkflowNode[] {
@@ -41,6 +48,7 @@ export function buildReviewIterateTemplate(params: ReviewIterateParams): Workflo
     validationCommands = [],
     validationMaxRetries = 2,
     validationTimeoutMs = 300_000,
+    reviewGate,
   } = params;
 
   // ── Layer 0: Diff Analysis ────────────────────────────────────────────────
@@ -174,13 +182,26 @@ export function buildReviewIterateTemplate(params: ReviewIterateParams): Workflo
     },
   };
 
-  // ── Layer 5: Summary Report ───────────────────────────────────────────────
+  // ── Layer 5: Review Gate ──────────────────────────────────────────────────
+
+  const reviewGateNode = buildReviewGateNode({
+    cwd,
+    dependsOn: ['validation-loop'],
+    // Review-iterate sessions are medium risk — may touch many files
+    complexityTier: reviewGate?.complexityTier ?? 'medium',
+    filesChanged: reviewGate?.filesChanged ?? [],
+    manualReviewRequired: reviewGate?.manualReviewRequired ?? false,
+    approvedNextNode: 'summary-report',
+    blockedNextNode: 'summary-report',
+  });
+
+  // ── Layer 6: Summary Report ───────────────────────────────────────────────
 
   const summaryReport: WorkflowNode = {
     id: 'summary-report',
     type: 'AGENT',
     label: 'Summary Report',
-    dependsOn: ['validation-loop'],
+    dependsOn: ['review-gate'],
     status: 'pending',
     agent: {
       model: models.reporter,
@@ -197,5 +218,5 @@ export function buildReviewIterateTemplate(params: ReviewIterateParams): Workflo
     },
   };
 
-  return [diffAnalysis, codeReview, fixPlaceholder, reReview, validationLoop, summaryReport];
+  return [diffAnalysis, codeReview, fixPlaceholder, reReview, validationLoop, reviewGateNode, summaryReport];
 }
