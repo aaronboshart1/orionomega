@@ -1115,6 +1115,23 @@ export class MainAgent {
         return;
       }
 
+      // 2c. Orchestration mode — user explicitly selected the planner DAG.
+      // This MUST short-circuit before steps 4/4b/5/6 so we don't run the
+      // coding-intent classifier (4b) and accidentally dispatch the coding
+      // workflow when the prompt happens to look code-ish. Explicit user
+      // selection wins over heuristic intent classification.
+      if (agentMode === 'orchestrate') {
+        const guarded = isGuardedRequest(trimmed);
+        log.verbose('Route: ORCHESTRATE (orchestration mode — explicit user selection)', { guarded });
+        this.emitStep('route', 'Routing request', 'done', 'Orchestration mode');
+        await this.orchestration.dispatchFullDAG(
+          userContent,
+          (e) => this.pushHistory(sid, e as HistoryEntry),
+          { requireConfirmation: guarded, ...stagedOpts },
+        );
+        return;
+      }
+
       // 3. Skill-match shortcut — route through orchestration so skill MCP tools are available
       if (this.matchesAvailableSkill(trimmed)) {
         log.verbose('Route: ORCHESTRATE (skill match)', { guarded: isGuardedRequest(trimmed) });
