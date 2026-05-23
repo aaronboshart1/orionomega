@@ -8,6 +8,27 @@
 
 import type { CodingAgentNodeConfig, WorkflowNode } from '../types.js';
 
+// Import test-result types for local use and re-export for consumers.
+import type {
+  TestFramework,
+  FailureCategory,
+  FailureClassification,
+  TestFailure,
+  TestResults,
+  TestFrameworkConfig,
+  ProjectProfile,
+} from './test-result-parser.js';
+
+export type {
+  TestFramework,
+  FailureCategory,
+  FailureClassification,
+  TestFailure,
+  TestResults,
+  TestFrameworkConfig,
+  ProjectProfile,
+};
+
 // ── Coding Roles ─────────────────────────────────────────────────────────────
 
 /**
@@ -22,6 +43,8 @@ export type CodingRole =
   | 'test-writer'         // Test generation
   | 'validator'           // Build/test/lint execution (TOOL node, no LLM)
   | 'reviewer'            // Code review analysis
+  | 'debugger'            // Error diagnosis and targeted fix (xhigh thinking)
+  | 'review-gate'         // Risk-tiered approval gate ROUTER node (no LLM)
   | 'reporter';           // Summary generation
 
 // ── DAG Templates ────────────────────────────────────────────────────────────
@@ -86,7 +109,7 @@ export interface CodingNodeConfig extends CodingAgentNodeConfig {
 export interface CodingModeConfig {
   /** Whether Coding Mode is active. Defaults to true. */
   enabled: boolean;
-  /** Maximum parallel coding agent workers. Default: 4. */
+  /** Maximum parallel coding agent workers. Default: 8. */
   maxParallelAgents: number;
   /** Enable/disable individual templates. */
   templates: Record<CodingDAGTemplate, boolean>;
@@ -103,6 +126,63 @@ export interface CodingModeConfig {
   };
   /** Multiply all budget allocations by this factor. Default: 1.0. */
   budgetMultiplier: number;
+}
+
+/**
+ * Full Coding Mode configuration (Appendix A of the system spec).
+ * Supersedes CodingModeConfig with richer fields for all features.
+ */
+export interface OrionOmegaCodingConfig {
+  /** Model overrides per role. */
+  models: Partial<Record<CodingRole, string>>;
+
+  /** Validation configuration. */
+  validation: {
+    /** Override auto-detected validation commands. */
+    commands?: string[];
+    /** Run validation automatically after implementation. Default: true. */
+    autoRun: boolean;
+    /** Max fix-retry iterations. Default: 3. */
+    maxRetries: number;
+  };
+
+  /** Maximum parallel coding agent workers. Default: 8. */
+  maxParallelAgents: number;
+  /** Scale all USD caps by this factor. Default: 1.0. */
+  budgetMultiplier: number;
+  /** Hard USD cap per session. Default: 25.0. */
+  sessionMaxUsd: number;
+  /** Max session duration in seconds. Default: 7200. */
+  maxDuration: number;
+
+  /** Feature flags. */
+  features: {
+    /** Enable AST + dependency graph codebase indexing. Default: true. */
+    codebaseIndexing: boolean;
+    /** Enable embedding-based semantic search. Default: false. */
+    embeddingSearch: boolean;
+    /** Enable background (async) coding sessions. Default: false. */
+    backgroundSessions: boolean;
+    /** Enable speculative parallel branching. Default: false. */
+    speculativeBranching: boolean;
+    /** Enable CI/CD integration. Default: false. */
+    ciIntegration: boolean;
+  };
+
+  /** Approval gate configuration. */
+  approvalGate: {
+    /** Auto-approve up to this risk level (inclusive). Default: 'low'. */
+    autoApproveRiskLevel: 'low' | 'medium' | 'high' | 'none';
+    /** Always require human review regardless of risk level. */
+    requireHumanReview: boolean;
+  };
+
+  /** Workspace root directory. */
+  workspaceDir: string;
+  /** Directory for session checkpoint files. */
+  checkpointDir: string;
+  /** Directory for codebase index (SQLite). */
+  indexDir: string;
 }
 
 // ── Node Output Types ─────────────────────────────────────────────────────────
@@ -260,6 +340,21 @@ export interface ValidatorOutput {
 
 // ── Budget Types ──────────────────────────────────────────────────────────────
 
+/** Per-role token and USD budget limits for coding agents (Section 5.6). */
+export interface TokenBudget {
+  maxInputTokens: number;
+  maxOutputTokens: number;
+  maxCostUsd: number;
+}
+
+/** Session-level budget configuration. */
+export interface SessionBudgetConfig {
+  /** Hard cap for total session cost in USD. Default: 25.00. */
+  sessionMaxUsd: number;
+  /** Fraction of session budget reserved for retries (0–1). Default: 0.15. */
+  retryReserve: number;
+}
+
 /** Per-node budget allocation. */
 export interface NodeBudget {
   /** Maximum spend for this node in USD. */
@@ -339,4 +434,232 @@ export interface CodingPlannerOutput {
   fanOutPending: boolean;
   /** Pre-built workflow nodes for the selected template. */
   nodes: WorkflowNode[];
+}
+
+// ── Quality Assurance Types ───────────────────────────────────────────────────
+
+/** Risk tier for the approval gate ROUTER node. */
+export type RiskTier = 'low' | 'medium' | 'high' | 'critical';
+
+/** A single file change in the diff-based approval package. */
+export interface FileChange {
+  path: string;
+  action: 'created' | 'modified' | 'deleted';
+  linesAdded: number;
+  linesRemoved: number;
+  diff: string;
+  rationale: string;
+}
+
+/** A single issue identified during code review (Section 4.4). */
+export interface ReviewIssue {
+  severity: 'critical' | 'major' | 'minor' | 'nit';
+  file: string;
+  line: number;
+  description: string;
+  suggestedFix?: string;
+}
+
+/** Output produced by the reviewer node (code review verdict, Section 4.4). */
+export interface ReviewResult {
+  verdict: 'approve' | 'request_changes' | 'reject';
+  issues: ReviewIssue[];
+  suggestions: string[];
+  securityConcerns: string[];
+  performanceConcerns: string[];
+}
+
+/** A single SAST finding from the security scan step. */
+export interface SecurityFinding {
+  severity: 'critical' | 'high' | 'medium' | 'low';
+  rule: string;
+  file: string;
+  line: number;
+  description: string;
+}
+
+/** Output from the security scan validation step (Step 6 of the QA pipeline). */
+export interface SecurityResults {
+  passed: boolean;
+  issues: SecurityFinding[];
+}
+
+/** Full diff + metadata package presented at the review gate (Section 4.7). */
+export interface ApprovalPackage {
+  /** 1-line intent summary. */
+  summary: string;
+  riskLevel: RiskTier;
+  filesChanged: FileChange[];
+  testResults: TestResults;
+  securityScanResults: SecurityResults;
+  /** Why this approach was chosen (from the architect's output). */
+  architectDecision: string;
+  /** How to undo all changes. */
+  rollbackPlan: string;
+  estimatedImpact: string;
+}
+
+/**
+ * Escalation signal emitted by the debugger when a fix requires
+ * architectural changes beyond its assigned files.
+ */
+export interface EscalationSignal {
+  type: 'replan_required';
+  reason: string;
+  affectedFiles: string[];
+  suggestedApproach: string;
+}
+
+// ── Dynamic DAG Adaptation Types ──────────────────────────────────────────────
+
+/** Trigger conditions for dynamic DAG adaptation. */
+export type DagAdaptationTrigger =
+  | 'task_failure'          // Node returned error status → insert debugger
+  | 'scope_expansion'       // Implementer reported additional_file_needed
+  | 'validation_escalation' // Validation failed 2+ times → replan
+  | 'review_override';      // User provided direct feedback
+
+/** Describes a pending DAG adaptation to be applied by the orchestrator. */
+export interface DagAdaptation {
+  trigger: DagAdaptationTrigger;
+  failedNodeId: string;
+  /** The node(s) to insert into the live DAG. */
+  insertNodes: WorkflowNode[];
+  /** Existing node IDs whose dependsOn should be updated. */
+  rewireDependencies: Array<{ nodeId: string; addDeps: string[] }>;
+  /** Human-readable explanation for the UI / logs. */
+  description: string;
+}
+
+// ── Review Gate Types ──────────────────────────────────────────────────────────
+
+/**
+ * Input context used to classify the risk tier of a coding session's changes.
+ * Assembled by the orchestrator from DAG artifacts before the review-gate node runs.
+ */
+export interface ReviewGateInput {
+  /** Complexity tier from the original intent classification. */
+  complexityTier: 'trivial' | 'small' | 'medium' | 'large' | 'epic';
+  /** All files modified by the session (relative paths). */
+  filesChanged: string[];
+  /**
+   * Whether the architect flagged this change as requiring human review.
+   * Maps to `FanOutDecision.risks.manualReviewRequired`.
+   */
+  manualReviewRequired: boolean;
+  /** True when any changed file matches security-relevant patterns. */
+  hasSecurityRelevantChanges: boolean;
+  /** True when any changed file is a database migration. */
+  hasDatabaseMigrations: boolean;
+  /** True when any changed file is auth/session-related. */
+  hasAuthChanges: boolean;
+  /** True when any changed file is a deployment/infra config. */
+  hasDeploymentConfigChanges: boolean;
+  /** Whether the validation loop passed on its last iteration. */
+  validationPassed: boolean;
+}
+
+/**
+ * Decision produced by the review-gate risk classifier.
+ * Determines whether execution auto-proceeds or blocks for human approval.
+ */
+export interface ReviewGateDecision {
+  riskTier: RiskTier;
+  /**
+   * - `auto-approve`: proceed immediately (low risk)
+   * - `notify-and-approve`: proceed but send notification (medium risk)
+   * - `block-for-review`: pause and emit ApprovalPackage, require 1 approval (high)
+   * - `block-require-2-approvals`: pause and require 2 separate approvals (critical)
+   */
+  action: 'auto-approve' | 'notify-and-approve' | 'block-for-review' | 'block-require-2-approvals';
+  /** Human-readable rationale for this decision. */
+  reason: string;
+  /** Present when action is block-for-review or block-require-2-approvals. */
+  approvalPackage?: ApprovalPackage;
+}
+
+// ── Confidence Indicator Types ─────────────────────────────────────────────────
+
+/**
+ * Per-change confidence score displayed in the diff viewer (Section 9.5).
+ * Color-coded: green (>0.8), yellow (0.5–0.8), red (<0.5).
+ */
+export interface ChangeConfidence {
+  /** Composite score 0–1. Higher means more confident the change is correct. */
+  overall: number;
+  factors: {
+    /** Fraction of changed lines covered by tests (0–1). */
+    testsCovering: number;
+    /** Whether the reviewer agent approved the change. */
+    reviewerApproval: boolean;
+    /** Whether the security scan found no issues. */
+    securityClean: boolean;
+    /** How well the change matches existing project conventions (0–1). */
+    stylisticMatch: number;
+    /** Risk contribution from change complexity (0–1; lower is better). */
+    complexityRisk: number;
+  };
+  /** Human-readable explanation of the score rationale. */
+  explanation: string;
+}
+
+// ── Progress Event Types ───────────────────────────────────────────────────────
+
+/**
+ * Real-time progress event emitted via WebSocket during a coding session
+ * (Section 4.5). Carries phase, status, and optional telemetry fields.
+ */
+export interface CodingProgressEvent {
+  sessionId: string;
+  phase:
+    | 'repo-setup'
+    | 'scanning'
+    | 'designing'
+    | 'implementing'
+    | 'testing'
+    | 'reviewing'
+    | 'review-gate'
+    | 'committing';
+  status: 'started' | 'in-progress' | 'completed' | 'failed';
+  nodeId?: string;
+  message: string;
+  /** 0–100 completion percentage. */
+  progress?: number;
+  /** Number of agents currently executing in this layer. */
+  activeAgents?: number;
+  /** Total agents in the current DAG layer. */
+  totalAgents?: number;
+  /** Cumulative input + output tokens used so far in this session. */
+  tokensUsed?: TokenUsage;
+  /** Cumulative cost in USD for this session so far. */
+  costUsd?: number;
+  /** Session budget ceiling in USD. */
+  budgetUsd?: number;
+  /** Short preview of the architect's plan (present during 'designing' phase). */
+  planPreview?: string;
+  /** Populated when phase='review-gate'; triggers the approval modal. */
+  approvalPackage?: ApprovalPackage;
+  /** Progressive disclosure level requested by this event (1–4). */
+  disclosureLevel?: 1 | 2 | 3 | 4;
+}
+
+// ── Token & Cost Types ────────────────────────────────────────────────────────
+
+/** Structured token counts returned by the Anthropic API for a single node. */
+export interface TokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  thinkingTokens: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+}
+
+/** Record of a model tier upgrade event during DAG execution. */
+export interface ModelUpgradeEvent {
+  nodeId: string;
+  role: CodingRole;
+  fromModel: string;
+  toModel: string;
+  reason: string;
+  timestamp: Date;
 }

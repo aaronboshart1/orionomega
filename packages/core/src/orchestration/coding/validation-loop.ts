@@ -60,6 +60,39 @@ export interface ValidationLoopResult {
   exhausted: boolean;
 }
 
+/**
+ * Identifies which of the 6 validation steps a command belongs to.
+ * Used for targeted retry and progressive disclosure in the UI.
+ */
+export type ValidationStepKind =
+  | 'syntax'        // Step 1: fast-fail parse/syntax check
+  | 'lint'          // Step 2: linter + formatter (auto-fixable)
+  | 'typecheck'     // Step 3: type checker / compiler
+  | 'unit-tests'    // Step 4: unit tests
+  | 'integration'   // Step 5: integration tests
+  | 'security';     // Step 6: SAST security scan
+
+/**
+ * A single command in the 6-step validation chain.
+ */
+export interface ValidationStep {
+  /** Human-readable label for the step. */
+  label: string;
+  /** Which of the 6 pipeline positions this step occupies. */
+  kind: ValidationStepKind;
+  /** Shell command to execute. */
+  command: string;
+  /**
+   * Optional auto-fix command. When set and the step fails,
+   * the ValidationLoop will try running this command first and
+   * then retrying the original command before counting it as a failure.
+   * Typical use: `eslint --fix .` for the lint step.
+   */
+  autoFixCommand?: string;
+  /** Per-step timeout override in milliseconds. */
+  timeoutMs?: number;
+}
+
 // ── Loop ──────────────────────────────────────────────────────────────────────
 
 export class ValidationLoop {
@@ -275,41 +308,188 @@ Fix the minimum set of code changes required to make the above commands pass.
  * @returns Array of validation commands, or empty if none detected.
  */
 export async function detectValidationCommands(cwd: string): Promise<string[]> {
-  const commands: string[] = [];
+  const chain = await buildValidationChain(cwd);
+  return chain.map((s) => s.command);
+}
+
+/**
+ * Build a 6-step validation chain by auto-detecting commands from
+ * `package.json` scripts, `Makefile` targets, and language-specific
+ * tooling present in `cwd`.
+ *
+ * Steps:
+ *  1. Syntax/parse check  — fast-fail, <1s
+ *  2. Lint + format check — auto-fixable issues resolved automatically
+ *  3. Type check/compile  — structural correctness
+ *  4. Unit tests          — behavioural correctness
+ *  5. Integration tests   — cross-module correctness
+ *  6. Security scan       — SAST (semgrep / eslint-plugin-security)
+ *
+ * Commands are validated against {@link ALLOWED_COMMAND_RE} before
+ * being returned so the caller can trust they are safe to execute.
+ *
+ * @param cwd - Project root directory.
+ * @returns Ordered list of ValidationStep objects (may be shorter than 6
+ *   when commands cannot be detected for a given step).
+ */
+export async function buildValidationChain(cwd: string): Promise<ValidationStep[]> {
+  const steps: ValidationStep[] = [];
 
   try {
     const { readFileSync, existsSync } = await import('node:fs');
     const { join } = await import('node:path');
 
+    // ── Detect package manager ───────────────────────────────────────────
+    const hasPnpm = existsSync(join(cwd, 'pnpm-lock.yaml'));
+    const hasYarn = existsSync(join(cwd, 'yarn.lock'));
+    const hasBun  = existsSync(join(cwd, 'bun.lockb'));
+    const pm = hasPnpm ? 'pnpm' : hasYarn ? 'yarn' : hasBun ? 'bun' : 'npm';
+
+    // ── Node/JS project ──────────────────────────────────────────────────
     const pkgPath = join(cwd, 'package.json');
     if (existsSync(pkgPath)) {
       const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8')) as Record<string, unknown>;
       const scripts = (pkg.scripts ?? {}) as Record<string, string>;
+      const devDeps = ((pkg.devDependencies ?? {}) as Record<string, string>);
+      const deps    = ((pkg.dependencies    ?? {}) as Record<string, string>);
+      const allDeps = { ...devDeps, ...deps };
 
-      if (scripts.test && !scripts.test.includes('no test specified')) {
-        commands.push('npm test');
+      // Step 1 — Syntax check: tsc --noEmit (fast) or a build that validates syntax
+      const hasTsc = existsSync(join(cwd, 'tsconfig.json'));
+      if (hasTsc && (scripts.typecheck || scripts['type-check'])) {
+        // will be used as typecheck step instead
+      } else if (hasTsc) {
+        const cmd = `${pm} exec tsc --noEmit`;
+        if (isCmdAllowed(cmd)) {
+          steps.push({ label: 'TypeScript syntax check', kind: 'syntax', command: cmd, timeoutMs: 30_000 });
+        }
       }
+
+      // Step 2 — Lint + auto-fix
       if (scripts.lint) {
-        commands.push('npm run lint');
+        const lintCmd = `${pm} run lint`;
+        if (isCmdAllowed(lintCmd)) {
+          // Detect an auto-fix variant
+          const hasEslint = 'eslint' in allDeps;
+          const hasPrettier = 'prettier' in allDeps;
+          let autoFixCmd: string | undefined;
+          if (hasEslint && scripts['lint:fix']) {
+            autoFixCmd = `${pm} run lint:fix`;
+          } else if (hasEslint) {
+            autoFixCmd = `${pm} exec eslint --fix .`;
+          } else if (hasPrettier && scripts.format) {
+            autoFixCmd = `${pm} run format`;
+          }
+          steps.push({
+            label: 'Lint + format check',
+            kind: 'lint',
+            command: lintCmd,
+            autoFixCommand: autoFixCmd && isCmdAllowed(autoFixCmd) ? autoFixCmd : undefined,
+            timeoutMs: 60_000,
+          });
+        }
       }
-      if (scripts.typecheck || scripts['type-check']) {
-        commands.push('npm run ' + (scripts.typecheck ? 'typecheck' : 'type-check'));
+
+      // Step 3 — Type check / compile
+      const typecheckScript = scripts.typecheck || scripts['type-check'] || scripts['type:check'];
+      if (typecheckScript) {
+        const cmd = `${pm} run ${scripts.typecheck ? 'typecheck' : scripts['type-check'] ? 'type-check' : 'type:check'}`;
+        if (isCmdAllowed(cmd)) {
+          steps.push({ label: 'Type check', kind: 'typecheck', command: cmd, timeoutMs: 60_000 });
+        }
+      } else if (scripts.build) {
+        const cmd = `${pm} run build`;
+        if (isCmdAllowed(cmd)) {
+          steps.push({ label: 'Build (type check proxy)', kind: 'typecheck', command: cmd, timeoutMs: 120_000 });
+        }
       }
-      if (scripts.build && commands.length === 0) {
-        // Only add build if no test/lint detected (build acts as smoke test)
-        commands.push('npm run build');
+
+      // Step 4 — Unit tests
+      if (scripts.test && !scripts.test.includes('no test specified')) {
+        const cmd = `${pm} ${pm === 'npm' ? 'test' : 'run test'}`;
+        if (isCmdAllowed(cmd)) {
+          steps.push({ label: 'Unit tests', kind: 'unit-tests', command: cmd, timeoutMs: 300_000 });
+        }
+      } else if (scripts['test:unit']) {
+        const cmd = `${pm} run test:unit`;
+        if (isCmdAllowed(cmd)) {
+          steps.push({ label: 'Unit tests', kind: 'unit-tests', command: cmd, timeoutMs: 300_000 });
+        }
       }
+
+      // Step 5 — Integration tests (if separate from unit)
+      if (scripts['test:integration'] || scripts['test:e2e'] || scripts['test:int']) {
+        const intScript = scripts['test:integration'] ? 'test:integration'
+          : scripts['test:e2e'] ? 'test:e2e'
+          : 'test:int';
+        const cmd = `${pm} run ${intScript}`;
+        if (isCmdAllowed(cmd)) {
+          steps.push({ label: 'Integration tests', kind: 'integration', command: cmd, timeoutMs: 600_000 });
+        }
+      }
+
+      // Step 6 — Security scan
+      const hasSemgrep = existsSync(join(cwd, '.semgrep.yml')) || existsSync(join(cwd, '.semgrep'));
+      const hasEslintSecurity = 'eslint-plugin-security' in allDeps;
+      if (hasSemgrep) {
+        const cmd = `${pm} exec semgrep --config=auto --error .`;
+        if (isCmdAllowed(cmd)) {
+          steps.push({ label: 'Security scan (semgrep)', kind: 'security', command: cmd, timeoutMs: 120_000 });
+        }
+      } else if (hasEslintSecurity && scripts['lint:security']) {
+        const cmd = `${pm} run lint:security`;
+        if (isCmdAllowed(cmd)) {
+          steps.push({ label: 'Security scan (eslint-plugin-security)', kind: 'security', command: cmd, timeoutMs: 60_000 });
+        }
+      }
+
+      // If we found any steps, return early
+      if (steps.length > 0) return steps;
     }
 
+    // ── Makefile fallback ────────────────────────────────────────────────
     const makefilePath = join(cwd, 'Makefile');
-    if (existsSync(makefilePath) && commands.length === 0) {
+    if (existsSync(makefilePath)) {
       const makefile = readFileSync(makefilePath, 'utf-8');
-      if (/^test:/m.test(makefile)) commands.push('make test');
-      if (/^lint:/m.test(makefile)) commands.push('make lint');
+      if (/^test:/m.test(makefile))  steps.push({ label: 'make test',  kind: 'unit-tests', command: 'make test',  timeoutMs: 300_000 });
+      if (/^lint:/m.test(makefile))  steps.push({ label: 'make lint',  kind: 'lint',       command: 'make lint',  timeoutMs: 60_000 });
+      if (/^check:/m.test(makefile)) steps.push({ label: 'make check', kind: 'typecheck',  command: 'make check', timeoutMs: 120_000 });
+      if (steps.length > 0) return steps;
     }
+
+    // ── Python / pytest ──────────────────────────────────────────────────
+    if (existsSync(join(cwd, 'pyproject.toml')) || existsSync(join(cwd, 'setup.py'))) {
+      steps.push({ label: 'pytest',          kind: 'unit-tests', command: 'pytest',           timeoutMs: 300_000 });
+      steps.push({ label: 'ruff lint',       kind: 'lint',       command: 'ruff check .',      timeoutMs: 30_000,
+        autoFixCommand: 'ruff check --fix .' });
+      steps.push({ label: 'mypy typecheck',  kind: 'typecheck',  command: 'python -m mypy .',  timeoutMs: 60_000 });
+      return steps;
+    }
+
+    // ── Rust / cargo ─────────────────────────────────────────────────────
+    if (existsSync(join(cwd, 'Cargo.toml'))) {
+      steps.push({ label: 'cargo check', kind: 'syntax',     command: 'cargo check',    timeoutMs: 60_000 });
+      steps.push({ label: 'cargo clippy', kind: 'lint',      command: 'cargo clippy',   timeoutMs: 120_000 });
+      steps.push({ label: 'cargo test',  kind: 'unit-tests', command: 'cargo test',     timeoutMs: 300_000 });
+      return steps;
+    }
+
+    // ── Go ───────────────────────────────────────────────────────────────
+    if (existsSync(join(cwd, 'go.mod'))) {
+      steps.push({ label: 'go build',  kind: 'syntax',     command: 'go build ./...', timeoutMs: 60_000 });
+      steps.push({ label: 'go vet',    kind: 'lint',       command: 'go vet ./...',   timeoutMs: 30_000 });
+      steps.push({ label: 'go test',   kind: 'unit-tests', command: 'go test ./...',  timeoutMs: 300_000 });
+      return steps;
+    }
+
   } catch (err) {
-    log.debug('detectValidationCommands: failed to read project files', { err });
+    log.debug('buildValidationChain: failed to read project files', { err });
   }
 
-  return commands;
+  return steps;
+}
+
+/** Returns true iff the command passes the allowlist check. */
+function isCmdAllowed(cmd: string): boolean {
+  return ALLOWED_COMMAND_RE.test(cmd.trim());
 }

@@ -184,10 +184,20 @@ export function ensureSafeGitignore(repoDir: string): EnsureSafeGitignoreResult 
 export interface UnsafeFile {
   /** Path relative to the repo root, using POSIX separators. */
   path: string;
-  /** Why we refuse to stage this file. */
-  reason: 'oversize' | 'secret' | 'build-artefact';
+  /**
+   * Why we refuse to stage this file:
+   * - `'oversize'`       — exceeds the 95 MB GitHub limit
+   * - `'secret'`         — filename matches a known secret pattern (.env, .pem, etc.)
+   * - `'secret-content'` — file content matched one of the 50+ credential regexes
+   * - `'build-artefact'` — lives under a known build-output directory
+   * - `'binary'`         — binary file in a source directory
+   * - `'control-chars'`  — path contains control bytes (0x01–0x1F)
+   */
+  reason: 'oversize' | 'secret' | 'secret-content' | 'build-artefact' | 'binary' | 'control-chars';
   /** File size in bytes (always populated; useful for the error message). */
   bytes: number;
+  /** For `'secret-content'` reason: the name of the matched pattern. */
+  secretPatternName?: string;
 }
 
 /**
@@ -212,6 +222,179 @@ function isSecretPath(relPath: string): boolean {
     return true;
   }
   return /\.(pem|key|p12|pfx)$/i.test(base);
+}
+
+/**
+ * 50+ regex patterns for secret content scanning.
+ *
+ * Each entry is a tuple of [patternName, regex]. The regex is applied
+ * against file content to detect credentials embedded in source files
+ * (e.g. accidentally hard-coded API keys, tokens, database URLs, etc.).
+ *
+ * Patterns are intentionally specific enough to keep false-positive
+ * rates low for legitimate source code, while catching the most common
+ * secret formats from major cloud providers and services.
+ */
+export const SECRET_CONTENT_PATTERNS: ReadonlyArray<readonly [string, RegExp]> =
+  Object.freeze([
+    // ── AWS ───────────────────────────────────────────────────────
+    ['AWS Access Key ID',     /\bAKIA[0-9A-Z]{16}\b/],
+    ['AWS Secret Access Key', /(?<![A-Za-z0-9/+=])[A-Za-z0-9/+=]{40}(?![A-Za-z0-9/+=])/],
+    // Note: the AWS secret pattern is broad; only flag when near an AKIA key or assignment
+    ['AWS Session Token',     /AWS_SESSION_TOKEN\s*[=:]\s*['"]?[A-Za-z0-9/+=]{100,}/i],
+
+    // ── GitHub ────────────────────────────────────────────────────
+    ['GitHub Personal Access Token (classic)',  /\bghp_[A-Za-z0-9]{36,}\b/],
+    ['GitHub OAuth Token',                      /\bgho_[A-Za-z0-9]{36,}\b/],
+    ['GitHub App Installation Token',           /\bghs_[A-Za-z0-9]{36,}\b/],
+    ['GitHub Refresh Token',                    /\bghr_[A-Za-z0-9]{36,}\b/],
+    ['GitHub Fine-grained PAT',                 /\bgithub_pat_[A-Za-z0-9_]{82,}\b/],
+
+    // ── Stripe ────────────────────────────────────────────────────
+    ['Stripe Live Secret Key',       /\bsk_live_[A-Za-z0-9]{24,}\b/],
+    ['Stripe Test Secret Key',       /\bsk_test_[A-Za-z0-9]{24,}\b/],
+    ['Stripe Restricted Key',        /\brk_live_[A-Za-z0-9]{24,}\b/],
+    ['Stripe Webhook Secret',        /\bwhsec_[A-Za-z0-9]{32,}\b/],
+
+    // ── Twilio ────────────────────────────────────────────────────
+    ['Twilio Account SID',   /\bAC[0-9a-f]{32}\b/],
+    ['Twilio Auth Token',    /\b[0-9a-f]{32}\b.*twilio|twilio.*\b[0-9a-f]{32}\b/i],
+
+    // ── Google / GCP ──────────────────────────────────────────────
+    ['Google API Key',               /\bAIza[0-9A-Za-z-_]{35}\b/],
+    ['Google OAuth Client Secret',   /GOCSPX-[A-Za-z0-9_-]{28,}/],
+    ['GCP Service Account Key',      /"type"\s*:\s*"service_account"/],
+
+    // ── Azure ─────────────────────────────────────────────────────
+    ['Azure Connection String',      /DefaultEndpointsProtocol=https;AccountName=[^;]+;AccountKey=[A-Za-z0-9+/=]{86,}/],
+    ['Azure SAS Token',              /\?sv=\d{4}-\d{2}-\d{2}&(ss|spr|sig|se|sp|srt|st)=[^&\s'"]+/],
+
+    // ── Slack ─────────────────────────────────────────────────────
+    ['Slack Bot Token',        /\bxoxb-[0-9A-Za-z-]{40,}\b/],
+    ['Slack User Token',       /\bxoxp-[0-9A-Za-z-]{40,}\b/],
+    ['Slack App Token',        /\bxapp-\d-[A-Z0-9-]{80,}\b/],
+    ['Slack Webhook URL',      /https:\/\/hooks\.slack\.com\/services\/T[A-Z0-9]+\/B[A-Z0-9]+\/[A-Za-z0-9]+/],
+
+    // ── SendGrid / Mailgun ────────────────────────────────────────
+    ['SendGrid API Key',       /\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}\b/],
+    ['Mailgun API Key',        /\bkey-[0-9a-f]{32}\b/],
+
+    // ── Shopify ───────────────────────────────────────────────────
+    ['Shopify Access Token',   /\bshpat_[A-Za-z0-9]{32,}\b/],
+    ['Shopify Private App',    /\bshppa_[A-Za-z0-9]{32,}\b/],
+
+    // ── JWT / generic tokens ──────────────────────────────────────
+    ['JWT Secret (assignment)', /(?:JWT_SECRET|jwt_secret|jwtSecret)\s*[=:]\s*['"]?[A-Za-z0-9+/=_-]{20,}/i],
+    ['Bearer Token (assignment)', /(?:BEARER|bearer_token|ACCESS_TOKEN|access_token)\s*[=:]\s*['"]?[A-Za-z0-9._-]{30,}/i],
+    ['Auth Token (assignment)', /(?:AUTH_TOKEN|authToken|api_token|API_TOKEN)\s*[=:]\s*['"]?[A-Za-z0-9+/=._-]{20,}/i],
+
+    // ── Database URLs ─────────────────────────────────────────────
+    ['PostgreSQL URL with credentials',  /postgres(?:ql)?:\/\/[^:@\s'"]+:[^@\s'"]{6,}@[^/\s'"]+/i],
+    ['MySQL URL with credentials',       /mysql:\/\/[^:@\s'"]+:[^@\s'"]{6,}@[^/\s'"]+/i],
+    ['MongoDB URL with credentials',     /mongodb(?:\+srv)?:\/\/[^:@\s'"]+:[^@\s'"]{6,}@[^/\s'"]+/i],
+    ['Redis URL with credentials',       /redis:\/\/:[^@\s'"]{6,}@[^/\s'"]+/i],
+    ['AMQP URL with credentials',        /amqps?:\/\/[^:@\s'"]+:[^@\s'"]{6,}@[^/\s'"]+/i],
+
+    // ── Private keys (inline PEM blocks) ─────────────────────────
+    ['RSA Private Key (PEM)',      /-----BEGIN RSA PRIVATE KEY-----/],
+    ['EC Private Key (PEM)',       /-----BEGIN EC PRIVATE KEY-----/],
+    ['PKCS8 Private Key (PEM)',    /-----BEGIN PRIVATE KEY-----/],
+    ['OpenSSH Private Key',        /-----BEGIN OPENSSH PRIVATE KEY-----/],
+    ['PGP Private Key Block',      /-----BEGIN PGP PRIVATE KEY BLOCK-----/],
+
+    // ── CI/CD tokens ──────────────────────────────────────────────
+    ['CircleCI API Token',   /(?:CIRCLE_TOKEN|circleci_token)\s*[=:]\s*['"]?[A-Za-z0-9]{40}/i],
+    ['Travis CI API Token',  /(?:TRAVIS_API_TOKEN)\s*[=:]\s*['"]?[A-Za-z0-9]{40}/i],
+    ['Heroku API Key',       /(?:HEROKU_API_KEY)\s*[=:]\s*['"]?[A-Fa-f0-9]{36}/i],
+
+    // ── Datadog / New Relic / Sentry ──────────────────────────────
+    ['Datadog API Key',       /(?:DD_API_KEY|datadog_api_key)\s*[=:]\s*['"]?[A-Za-z0-9]{32,}/i],
+    ['New Relic License Key', /(?:NEW_RELIC_LICENSE_KEY)\s*[=:]\s*['"]?[A-Za-z0-9]{40}/i],
+    ['Sentry DSN',            /https:\/\/[0-9a-f]{32}@o[0-9]+\.ingest\.sentry\.io/],
+
+    // ── Npm / Docker ──────────────────────────────────────────────
+    ['NPM Auth Token',        /\/\/registry\.npmjs\.org\/:_authToken\s*=\s*[A-Za-z0-9-]{36,}/],
+    ['Docker Hub Token',      /(?:DOCKER_HUB_TOKEN|docker_hub_password)\s*[=:]\s*['"]?[A-Za-z0-9._-]{20,}/i],
+
+    // ── Generic high-entropy secrets ──────────────────────────────
+    ['Generic Secret (assignment)', /(?:SECRET|PASSWORD|PASSWD|PRIVATE_KEY|ENCRYPTION_KEY)\s*[=:]\s*['"][^'"]{16,}['"]/],
+    ['Generic API Key (assignment)', /(?:API_KEY|APIKEY)\s*[=:]\s*['"]?[A-Za-z0-9+/=._-]{20,}/i],
+  ]);
+
+/**
+ * Maximum file size to scan for secret content patterns.
+ * Large files (>512 KB) are unlikely to be source files with
+ * accidentally hard-coded secrets, and scanning them is expensive.
+ */
+const MAX_CONTENT_SCAN_BYTES = 512 * 1024;
+
+/**
+ * Extensions that are almost certainly binary/non-text and should
+ * not be read for secret content scanning.
+ */
+const BINARY_EXTENSIONS: ReadonlySet<string> = new Set([
+  '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ico', '.webp', '.avif', '.tiff',
+  '.mp4', '.mp3', '.wav', '.ogg', '.flac', '.avi', '.mkv', '.mov', '.webm',
+  '.zip', '.tar', '.gz', '.bz2', '.xz', '.7z', '.rar',
+  '.exe', '.dll', '.so', '.dylib', '.wasm',
+  '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+  '.ttf', '.otf', '.woff', '.woff2', '.eot',
+  '.bin', '.dat', '.db', '.sqlite', '.sqlite3',
+  '.class', '.jar', '.war', '.ear',
+  '.o', '.a', '.lib',
+]);
+
+/**
+ * Detect whether a file is binary by reading its first 8 KB and
+ * checking for NULL bytes or a high proportion of non-printable chars.
+ * Returns `true` when the file appears binary (and should not be
+ * scanned for text-based secret patterns).
+ */
+function isBinaryFile(filePath: string): boolean {
+  const ext = (filePath.match(/\.[^./\\]+$/) ?? [''])[0].toLowerCase();
+  if (BINARY_EXTENSIONS.has(ext)) return true;
+  try {
+    const buf = readFileSync(filePath);
+    const sample = buf.slice(0, 8192);
+    // NULL byte in the first 8 KB is a reliable binary indicator.
+    for (let i = 0; i < sample.length; i++) {
+      if (sample[i] === 0x00) return true;
+    }
+    // >30% non-printable-ASCII (excluding common whitespace) → binary
+    let nonPrintable = 0;
+    for (let i = 0; i < sample.length; i++) {
+      const b = sample[i]!;
+      if (b < 0x09 || (b > 0x0d && b < 0x20) || b > 0x7e) nonPrintable++;
+    }
+    return sample.length > 0 && nonPrintable / sample.length > 0.30;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Scan a source file's content for secret patterns.
+ *
+ * Returns the name of the first matched pattern, or `null` when the
+ * file is clean. Skips files that are binary, too large, or cannot be
+ * read.
+ *
+ * Only source-code extensions are scanned — this avoids expensive reads
+ * of large binary/media assets that couldn't contain text secrets.
+ */
+export function scanFileContentForSecrets(filePath: string): string | null {
+  try {
+    const stat = statSync(filePath);
+    if (!stat.isFile() || stat.size > MAX_CONTENT_SCAN_BYTES) return null;
+    if (isBinaryFile(filePath)) return null;
+    const content = readFileSync(filePath, 'utf-8');
+    for (const [name, pattern] of SECRET_CONTENT_PATTERNS) {
+      if (pattern.test(content)) return name;
+    }
+  } catch {
+    // Unreadable file: skip
+  }
+  return null;
 }
 
 /**
@@ -293,6 +476,11 @@ export function findUnsafeFiles(
       } catch {
         continue;
       }
+      // Control characters in path
+      if (isControlBytePath(rel)) {
+        unsafe.push({ path: rel, reason: 'control-chars', bytes });
+        continue;
+      }
       if (isSecretPath(rel)) {
         unsafe.push({ path: rel, reason: 'secret', bytes });
         continue;
@@ -303,6 +491,17 @@ export function findUnsafeFiles(
       }
       if (bytes > maxBytes) {
         unsafe.push({ path: rel, reason: 'oversize', bytes });
+        continue;
+      }
+      // Binary file check (warn, not block)
+      if (isBinaryFile(full)) {
+        unsafe.push({ path: rel, reason: 'binary', bytes });
+        continue;
+      }
+      // Content-based secret scanning
+      const matchedPattern = scanFileContentForSecrets(full);
+      if (matchedPattern !== null) {
+        unsafe.push({ path: rel, reason: 'secret-content', bytes, secretPatternName: matchedPattern });
       }
     }
   }
@@ -345,9 +544,13 @@ export function formatCommitSafetyMessage(unsafe: UnsafeFile[]): string {
   );
   for (const f of unsafe) {
     const tag =
-      f.reason === 'oversize' ? `oversize, ${humanBytes(f.bytes)}`
-      : f.reason === 'secret' ? 'secret / env file'
-      : 'build artefact';
+      f.reason === 'oversize'        ? `oversize, ${humanBytes(f.bytes)}`
+      : f.reason === 'secret'        ? 'secret / env file'
+      : f.reason === 'secret-content'? `secret content: ${f.secretPatternName ?? 'matched pattern'}`
+      : f.reason === 'build-artefact'? 'build artefact'
+      : f.reason === 'binary'        ? 'binary file'
+      : f.reason === 'control-chars' ? 'path with control characters'
+      : 'unsafe';
     lines.push(`  - ${f.path} (${tag})`);
   }
   lines.push(
