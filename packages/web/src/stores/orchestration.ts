@@ -22,7 +22,8 @@ export type WorkerEventType =
   | 'macro_expansion_failed'
   | 'planner_started'
   | 'planner_complete'
-  | 'planner_failed';
+  | 'planner_failed'
+  | 'context_updated';
 
 /** Task #199: macro-expansion progress payload mirrored from `@orionomega/core`. */
 export interface MacroEventPayload {
@@ -122,7 +123,7 @@ export interface PlanData {
   graph: { nodes: Record<string, GraphNode> };
 }
 
-export type InlineDAGStatus = 'dispatched' | 'running' | 'complete' | 'error' | 'stopped' | 'paused' | 'interrupted';
+export type InlineDAGStatus = 'dispatched' | 'running' | 'complete' | 'error' | 'stopped' | 'paused' | 'interrupted' | 'superseded';
 
 export interface InlineDAGNode {
   id: string;
@@ -162,6 +163,8 @@ export interface InlineDAG {
   nodeOutputPaths?: Record<string, string[]>;
   /** True when this entry represents a Direct-mode conversation turn (not a multi-node DAG). */
   isDirect?: boolean;
+  /** When superseded, the ID of the run that replaced this one. */
+  supersededBy?: string;
 }
 
 export interface MemoryEvent {
@@ -281,7 +284,7 @@ interface OrchestrationStore {
   selectWorker: (id: string | null) => void;
   upsertInlineDAG: (dag: InlineDAG) => void;
   updateDAGNode: (dagId: string, nodeId: string, update: Partial<InlineDAGNode>) => void;
-  completeDAG: (dagId: string, result?: string, error?: string, stats?: { durationSec?: number; workerCount?: number; totalCostUsd?: number; toolCallCount?: number; modelUsage?: ModelUsageEntry[]; nodeOutputPaths?: Record<string, string[]>; stopped?: boolean }) => void;
+  completeDAG: (dagId: string, result?: string, error?: string, stats?: { durationSec?: number; workerCount?: number; totalCostUsd?: number; toolCallCount?: number; modelUsage?: ModelUsageEntry[]; nodeOutputPaths?: Record<string, string[]>; stopped?: boolean; supersededBy?: string }) => void;
   removeInlineDAG: (dagId: string) => void;
   setPendingConfirmation: (c: DAGConfirmation | null) => void;
   setPendingGate: (gate: PendingGate) => void;
@@ -472,7 +475,13 @@ export const useOrchestrationStore = create<OrchestrationStore>()((set) => ({
     set((s) => {
       const dag = s.inlineDAGs[dagId];
       if (!dag) return s;
-      const terminalStatus: InlineDAGStatus = error ? 'error' : (stats?.stopped ? 'stopped' : 'complete');
+      const terminalStatus: InlineDAGStatus = stats?.supersededBy
+        ? 'superseded'
+        : error
+          ? 'error'
+          : stats?.stopped
+            ? 'stopped'
+            : 'complete';
       return {
         inlineDAGs: {
           ...s.inlineDAGs,
@@ -488,6 +497,7 @@ export const useOrchestrationStore = create<OrchestrationStore>()((set) => ({
             toolCallCount: stats?.toolCallCount,
             modelUsage: stats?.modelUsage,
             nodeOutputPaths: stats?.nodeOutputPaths,
+            supersededBy: stats?.supersededBy,
           },
         },
       };

@@ -97,6 +97,7 @@ const typeLabels: Record<WorkerEventType, string> = {
   planner_started: 'Plan Start',
   planner_complete: 'Plan Done',
   planner_failed: 'Plan Failed',
+  context_updated: 'Context Updated',
 };
 
 const defaultIcon = <BarChart3 size={12} aria-hidden className="text-zinc-400" />;
@@ -328,7 +329,7 @@ const ALL_EVENT_TYPES: WorkerEventType[] = [
   'error', 'done', 'loop_iteration', 'replan', 'fileLock',
   'planning', 'warning', 'agent_start', 'agent_complete', 'info',
   'macro_expansion_started', 'macro_expansion_complete', 'macro_expansion_failed',
-  'planner_started', 'planner_complete', 'planner_failed',
+  'planner_started', 'planner_complete', 'planner_failed', 'context_updated',
 ];
 
 function FilterBar({

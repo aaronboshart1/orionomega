@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { CheckCircle2, XCircle, Circle, FileText, ChevronRight } from 'lucide-react';
+import { CheckCircle2, XCircle, Circle, FileText, ChevronRight, SkipForward } from 'lucide-react';
 import type { InlineDAG, ModelUsageEntry } from '@/stores/orchestration';
 import { useOrchestrationStore } from '@/stores/orchestration';
 import { useFileViewerStore } from '@/stores/file-viewer';
@@ -25,6 +25,7 @@ export function RunSummaryCard({ dag }: RunSummaryCardProps) {
   const isDone = dag.status === 'complete';
   const isError = dag.status === 'error';
   const isStopped = dag.status === 'stopped';
+  const isSuperseded = dag.status === 'superseded';
   const hasModels = dag.modelUsage && dag.modelUsage.length > 0;
   const hasResult = dag.result != null && dag.result.trim().length > 0;
 
@@ -52,7 +53,9 @@ export function RunSummaryCard({ dag }: RunSummaryCardProps) {
         {isDone && <CheckCircle2 size={14} className="text-green-400" />}
         {isError && <XCircle size={14} className="text-red-400" />}
         {isStopped && <Circle size={14} className="text-zinc-400" />}
+        {isSuperseded && <SkipForward size={14} className="text-zinc-500" />}
         <span className="text-xs font-semibold text-zinc-200">Run Summary</span>
+        {isSuperseded && <span className="text-xs text-zinc-500">Superseded</span>}
       </div>
 
       <div className="flex items-center gap-3 text-xs text-zinc-500">

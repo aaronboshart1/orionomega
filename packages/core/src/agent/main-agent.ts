@@ -335,6 +335,10 @@ export class MainAgent {
     startedAt: number;
     userMessage: string;
   }>();
+  /** Per-run queue of supplementary messages to inject at next tool boundary. */
+  private readonly pendingSupplementary = new Map<string, string[]>();
+  private backgroundWatchdogInterval: ReturnType<typeof setInterval> | null = null;
+  private readonly BACKGROUND_MAX_DURATION_MS = 10 * 60 * 1000; // 10 minutes
   private commandFileLoader: CommandFileLoader | null = null;
 
   constructor(config: MainAgentConfig, callbacks: MainAgentCallbacks) {
@@ -792,6 +796,8 @@ export class MainAgent {
         );
       }
     }
+
+    this.startBackgroundWatchdog();
   }
 
   // ── Public API ─────────────────────────────────────────────────────────
@@ -943,18 +949,79 @@ export class MainAgent {
     }
 
     if (this.foregroundRunId && this.activeAbort && !this.activeAbort.signal.aborted && this.isActiveConversation) {
-      const detachedId = this.foregroundRunId;
+      const activeRunId = this.foregroundRunId;
+      const activeMessage = this.foregroundUserMessage;
 
-      this.callbacks.onText('', true, true);
+      // Classify: is this new message supplementary to the active run or a new task?
+      const { classifyContextRelationFast, classifyContextRelation } = await import('./context-equivalence.js');
+      let relation = classifyContextRelationFast(trimmed, activeMessage);
+      if (relation === null) {
+        // Ambiguous -- use LLM classifier (fast, uses cheap model)
+        relation = await classifyContextRelation(
+          this.anthropic,
+          this.config.cheapModel || this.config.model,
+          trimmed,
+          activeMessage,
+        );
+      }
 
-      this.backgroundConversations.set(detachedId, {
-        id: detachedId,
-        abortController: this.activeAbort,
-        startedAt: Date.now(),
-        userMessage: this.foregroundUserMessage,
+      if (relation === 'SUPPLEMENTARY') {
+        // MERGE PATH: Inject context into active run without detaching
+        log.info('Supplementary context: merging into active run', {
+          runId: activeRunId,
+          newMessage: trimmed.slice(0, 80),
+        });
+
+        // Queue the supplementary context for injection at next tool boundary
+        this.queueSupplementary(activeRunId, userContent);
+
+        // Push to history so it appears in the chat
+        this.pushHistory(sid, { role: 'user', content: userContent });
+
+        // Notify UI
+        this.callbacks.onText(
+          `Context added to active run (${activeRunId.slice(0, 12)}). The agent will incorporate this information shortly.`,
+          false,
+          true,
+        );
+
+        return; // Don't create a new run
+      }
+
+      // NEW_TASK PATH: Supersede the active run
+      log.info('New task detected: superseding active run', {
+        supersededRunId: activeRunId,
+        newMessage: trimmed.slice(0, 80),
       });
-      log.info('Detached foreground conversation to background', { runId: detachedId });
-      this.callbacks.onText(`[Background: previous conversation continues as ${detachedId.slice(0, 12)}]`, false, true);
+
+      // Abort the active run
+      this.activeAbort.abort();
+
+      // Emit completion for the superseded run so it doesn't stay stuck as RUNNING
+      const directWorkflowId = `direct-${activeRunId}`;
+      const shortModel = this.config.model.replace(/^claude-/, '').replace(/-\d{8}$/, '');
+      this.callbacks.onDirectComplete?.({
+        runId: directWorkflowId,
+        model: this.config.model,
+        durationSec: 0,
+        modelUsage: [{
+          model: shortModel,
+          inputTokens: 0,
+          outputTokens: 0,
+          cacheReadTokens: 0,
+          cacheCreationTokens: 0,
+          workerCount: 1,
+          costUsd: 0,
+        }],
+        totalCostUsd: 0,
+      });
+
+      this.callbacks.onText('', true, true); // Close the streaming text for the old run
+      this.callbacks.onText('Previous run superseded. Starting new task...', false, true);
+
+      // Clean up (don't move to background -- it's been aborted)
+      this.backgroundConversations.delete(activeRunId);
+      this.pendingSupplementary.delete(activeRunId);
     }
 
     // `runId` is the per-turn lifecycle handle (foregroundRunId,
@@ -1770,6 +1837,66 @@ export class MainAgent {
     this.callbacks.onThinkingStep?.(step);
   }
 
+  /**
+   * Queue supplementary context for injection into an active run.
+   */
+  private queueSupplementary(runId: string, message: string): void {
+    const queue = this.pendingSupplementary.get(runId) ?? [];
+    queue.push(message);
+    this.pendingSupplementary.set(runId, queue);
+    log.info('Queued supplementary context for active run', {
+      runId,
+      queueLength: queue.length,
+      messagePreview: message.slice(0, 80),
+    });
+  }
+
+  /**
+   * Drain pending supplementary context for a run. Returns null if empty.
+   * Truncates combined output to 2000 chars to stay within token budget.
+   */
+  private drainSupplementary(runId: string): string | null {
+    const queue = this.pendingSupplementary.get(runId);
+    if (!queue || queue.length === 0) return null;
+    this.pendingSupplementary.delete(runId);
+    const combined = queue.join('\n\n');
+    const truncated = combined.length > 2000
+      ? combined.slice(0, 2000) + '\n[...truncated]'
+      : combined;
+    return `[SUPPLEMENTARY CONTEXT FROM USER]\nThe user provided additional information while you were working:\n\n${truncated}\n\nIncorporate this into your current task.`;
+  }
+
+  /**
+   * Start the background conversation watchdog.
+   * Checks every 60s and aborts conversations exceeding BACKGROUND_MAX_DURATION_MS.
+   */
+  private startBackgroundWatchdog(): void {
+    this.backgroundWatchdogInterval = setInterval(() => {
+      const now = Date.now();
+      for (const [runId, bg] of this.backgroundConversations) {
+        if (now - bg.startedAt > this.BACKGROUND_MAX_DURATION_MS) {
+          log.warn('Background watchdog: aborting long-running background conversation', {
+            runId,
+            durationMs: now - bg.startedAt,
+            userMessage: bg.userMessage.slice(0, 80),
+          });
+          bg.abortController.abort();
+          // The finally block in respondConversationally will clean up
+        }
+      }
+    }, 60_000);
+  }
+
+  /**
+   * Stop the background conversation watchdog.
+   */
+  private stopBackgroundWatchdog(): void {
+    if (this.backgroundWatchdogInterval) {
+      clearInterval(this.backgroundWatchdogInterval);
+      this.backgroundWatchdogInterval = null;
+    }
+  }
+
   private async respondConversationally(userMessage: string, abortSignal?: AbortSignal, runId?: string, convOutputId?: string): Promise<void> {
     const effectiveRunId = runId || `run-${Date.now().toString(36)}`;
     // Per-session conversation output ID. Falls back to a freshly
@@ -2098,6 +2225,7 @@ export class MainAgent {
         maxInputTokens: 100_000,
         abortSignal,
         skillTools,
+        drainSupplementaryContext: () => this.drainSupplementary(effectiveRunId),
       });
       if (!checkDetached()) {
         this.emitStep('llm', 'Generating response', 'done');
@@ -2146,39 +2274,40 @@ export class MainAgent {
       log.error('Conversational response error', { error: msg, runId: effectiveRunId, isBackground: wasDetached });
       const fallback = 'I seem to be having trouble reaching my language centre. Give me a moment.';
       wrappedOnText(fallback, false, true);
-      if (!wasDetached) {
-        this.pushHistory(sid, { role: 'assistant', content: fallback });
-        // Surface direct-mode failures through the orchestration event
-        // stream + completion callback so the Workflow tab tab transitions
-        // to an "error" terminal state rather than appearing stuck mid-run.
-        this.callbacks.onEvent({
-          workflowId: _directWorkflowId,
-          workerId: 'direct',
-          nodeId: 'direct',
-          timestamp: new Date().toISOString(),
-          type: 'error',
-          error: msg,
-          message: msg,
-        });
-        const failureDurationSec = (Date.now() - turnStartTime) / 1000;
-        const shortModel = this.config.model.replace(/^claude-/, '').replace(/-\d{8}$/, '');
-        this.callbacks.onDirectComplete?.({
-          runId: _directWorkflowId,
-          model: this.config.model,
-          durationSec: Math.round(failureDurationSec * 10) / 10,
-          modelUsage: [{
-            model: shortModel,
-            inputTokens: 0,
-            outputTokens: 0,
-            cacheReadTokens: 0,
-            cacheCreationTokens: 0,
-            workerCount: 1,
-            costUsd: 0,
-          }],
-          totalCostUsd: 0,
-          error: msg,
-        });
-      }
+      const historyContent = wasDetached
+        ? `[Background ${effectiveRunId.slice(0, 12)} error]: ${fallback}`
+        : fallback;
+      this.pushHistory(sid, { role: 'assistant', content: historyContent });
+      // Surface direct-mode failures through the orchestration event
+      // stream + completion callback so the Workflow tab transitions
+      // to an "error" terminal state rather than appearing stuck mid-run.
+      this.callbacks.onEvent({
+        workflowId: _directWorkflowId,
+        workerId: 'direct',
+        nodeId: 'direct',
+        timestamp: new Date().toISOString(),
+        type: 'error',
+        error: msg,
+        message: msg,
+      });
+      const failureDurationSec = (Date.now() - turnStartTime) / 1000;
+      const shortModel = this.config.model.replace(/^claude-/, '').replace(/-\d{8}$/, '');
+      this.callbacks.onDirectComplete?.({
+        runId: _directWorkflowId,
+        model: this.config.model,
+        durationSec: Math.round(failureDurationSec * 10) / 10,
+        modelUsage: [{
+          model: shortModel,
+          inputTokens: 0,
+          outputTokens: 0,
+          cacheReadTokens: 0,
+          cacheCreationTokens: 0,
+          workerCount: 1,
+          costUsd: 0,
+        }],
+        totalCostUsd: 0,
+        error: msg,
+      });
     } finally {
       if (runId) {
         this.backgroundConversations.delete(runId);
@@ -2193,6 +2322,7 @@ export class MainAgent {
       this.workflowSessions.delete(_directWorkflowIdForBinding);
       this.memory.retention?.unregisterWorkflowSession(effectiveRunId);
       this.memory.retention?.unregisterWorkflowSession(_directWorkflowIdForBinding);
+      this.pendingSupplementary?.delete(effectiveRunId);
     }
   }
 

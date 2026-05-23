@@ -468,6 +468,12 @@ export async function streamConversation(opts: {
   maxToolRounds?: number;
   maxInputTokens?: number;
   abortSignal?: AbortSignal;
+  /**
+   * Called at each tool-use round boundary to drain any pending supplementary
+   * context that should be injected into the conversation. Returns null if
+   * no supplementary context is pending.
+   */
+  drainSupplementaryContext?: () => string | null;
 }): Promise<{ text: string; inputTokens: number; outputTokens: number; cacheCreationTokens: number; cacheReadTokens: number }> {
   const { client, model, systemPrompt, workspaceDir, runDir, onText, onThinking, onThinkingStep, onToolStart, onToolEnd, abortSignal } = opts;
   const skillTools = opts.skillTools ?? [];
@@ -639,6 +645,11 @@ export async function streamConversation(opts: {
       continuationCount++;
       log.verbose(`Output hit max_tokens — auto-continuing (${continuationCount}/${MAX_CONTINUATIONS})`);
 
+      if (!roundText.trim()) {
+        log.warn('Auto-continuation skipped: partial response is empty');
+        break;
+      }
+
       // Append the partial assistant response and ask to continue
       messages = [
         ...messages,
@@ -776,6 +787,22 @@ export async function streamConversation(opts: {
       toolResults.push({ type: 'tool_result', tool_use_id: tc.id, content: result });
     }
     messages = [...messages, { role: 'user', content: toolResults as unknown as string }];
+
+    // Inject any pending supplementary context from the user at this tool boundary
+    if (opts.drainSupplementaryContext) {
+      const supplementary = opts.drainSupplementaryContext();
+      if (supplementary) {
+        log.info('Injecting supplementary context into conversation round');
+        const lastContent = messages[messages.length - 1].content;
+        if (Array.isArray(lastContent)) {
+          (lastContent as unknown[]).push({
+            type: 'tool_result',
+            tool_use_id: `supplementary-${Date.now().toString(36)}`,
+            content: supplementary,
+          });
+        }
+      }
+    }
   }
 
   onText('', true, true);

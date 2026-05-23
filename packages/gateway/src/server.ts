@@ -642,6 +642,7 @@ async function initMainAgent(): Promise<void> {
             workerCount: 1,
             costUsd: m.costUsd,
           })),
+          supersededBy: info.supersededBy,
         },
       );
 

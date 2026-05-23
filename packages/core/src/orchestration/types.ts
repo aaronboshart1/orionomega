@@ -591,6 +591,10 @@ export interface DirectCompleteInfo {
   totalCostUsd: number;
   /** Set when the run terminated abnormally; UI should show error state. */
   error?: string;
+  /** Explicit terminal status; defaults to 'error' when error is set, otherwise 'complete'. */
+  status?: 'complete' | 'error' | 'superseded';
+  /** ID of the run that superseded this one, if applicable. */
+  supersededBy?: string;
 }
 /** Info emitted when a guarded DAG needs user confirmation. */
 export interface DAGConfirmInfo {

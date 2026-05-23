@@ -134,7 +134,8 @@ export interface RunSummary {
 export interface InlineDAGData {
   dagId: string;
   summary: string;
-  status: 'dispatched' | 'running' | 'complete' | 'error' | 'stopped' | 'paused' | 'interrupted';
+  status: 'dispatched' | 'running' | 'complete' | 'error' | 'stopped' | 'paused' | 'interrupted' | 'superseded';
+  supersededBy?: string;
   nodes: Array<{
     id: string;
     label: string;
@@ -807,13 +808,15 @@ export class SessionManager {
       modelUsage?: InlineDAGData['modelUsage'];
       nodeOutputPaths?: Record<string, string[]>;
       stopped?: boolean;
+      supersededBy?: string;
     },
   ): void {
     const session = this.sessions.get(sessionId);
     if (!session) return;
     const dag = session.inlineDAGs[dagId];
     if (!dag) return;
-    dag.status = error ? 'error' : stats?.stopped ? 'stopped' : 'complete';
+    dag.status = stats?.supersededBy ? 'superseded' : error ? 'error' : stats?.stopped ? 'stopped' : 'complete';
+    if (stats?.supersededBy) dag.supersededBy = stats.supersededBy;
     dag.result = result;
     dag.error = error;
     dag.completedCount = dag.totalCount;
@@ -833,6 +836,55 @@ export class SessionManager {
     if (existingTimer) clearTimeout(existingTimer);
     this.writeQueue.delete(sessionId);
     this.persistToDisk(sessionId);
+  }
+
+  /**
+   * On startup, mark any inline DAG entries still in 'running' or 'dispatched'
+   * state as 'error', since the server restart means their processes are gone.
+   * Adds a terminal dag-complete message for each so the UI renders the card.
+   * Returns the count of orphaned runs found.
+   */
+  sweepOrphanedRuns(): number {
+    let count = 0;
+    for (const [sessionId, session] of this.sessions) {
+      for (const [dagId, dag] of Object.entries(session.inlineDAGs)) {
+        if (dag.status !== 'running' && dag.status !== 'dispatched') continue;
+
+        dag.status = 'error';
+        dag.error = 'Run was interrupted by a server restart and could not be recovered.';
+        dag.completedCount = dag.totalCount;
+        count++;
+
+        log.warn(`[session:orphan] Marking interrupted run as error: session=${sessionId} dag=${dagId}`);
+
+        const msgId = `orphan-${dagId}-${Date.now().toString(36)}`;
+        this.addMessage(sessionId, {
+          id: msgId,
+          role: 'assistant',
+          content: '',
+          timestamp: new Date().toISOString(),
+          type: 'dag-complete',
+          metadata: {
+            workflowId: dagId,
+            runId: dagId,
+            isDirect: dag.isDirect ?? false,
+            dagComplete: {
+              workflowId: dagId,
+              status: 'error',
+              summary: 'Run was interrupted by a server restart.',
+              output: undefined,
+              durationSec: dag.durationSec,
+              workerCount: dag.workerCount ?? 1,
+              totalCostUsd: dag.totalCostUsd,
+              modelUsage: dag.modelUsage,
+            },
+          },
+        });
+
+        this.schedulePersist(sessionId);
+      }
+    }
+    return count;
   }
 
   /**
@@ -1501,6 +1553,11 @@ export class SessionManager {
       log.info(`[session:startup] Loaded ${this.sessions.size} session(s) from disk`, {
         diskReadFailures: this._diskReadFailures,
       });
+
+      const orphaned = this.sweepOrphanedRuns();
+      if (orphaned > 0) {
+        log.warn(`[session:startup] Swept ${orphaned} orphaned run(s) interrupted by previous server restart`);
+      }
 
       // One-time idempotent migration: import JSON sessions into SQLite
       if (this.sqliteEnabled && this.sessions.size > 0) {

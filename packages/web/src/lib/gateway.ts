@@ -317,7 +317,7 @@ function processHistoryWhenHydrated(history: HistoryMessage[]): void {
       } else if (m.type === 'dag-complete' && m.metadata?.dagComplete) {
         const c = m.metadata.dagComplete;
         const existingDag = useOrchestrationStore.getState().inlineDAGs[c.workflowId];
-        if (existingDag && (existingDag.status === 'complete' || existingDag.status === 'error' || existingDag.status === 'stopped')) {
+        if (existingDag && (existingDag.status === 'complete' || existingDag.status === 'error' || existingDag.status === 'stopped' || existingDag.status === 'superseded')) {
           // eslint-disable-next-line no-continue
           continue;
         }
@@ -414,7 +414,7 @@ function rehydrateFromSnapshot(snapshot: any, bufferedEvents?: unknown[]): void 
           const dag = dagData as any;
           const existing = orch.inlineDAGs[dagId];
           // Only overwrite if server has newer/more complete data
-          if (!existing || (existing.status !== 'complete' && existing.status !== 'error' && existing.status !== 'stopped')) {
+          if (!existing || (existing.status !== 'complete' && existing.status !== 'error' && existing.status !== 'stopped' && existing.status !== 'superseded')) {
             orch.upsertInlineDAG({
               dagId: dag.dagId,
               summary: dag.summary,
@@ -429,7 +429,7 @@ function rehydrateFromSnapshot(snapshot: any, bufferedEvents?: unknown[]): void 
               isDirect: dag.isDirect,
             });
             // If the server says it's complete, apply completion stats
-            if (dag.status === 'complete' || dag.status === 'error' || dag.status === 'stopped') {
+            if (dag.status === 'complete' || dag.status === 'error' || dag.status === 'stopped' || dag.status === 'superseded') {
               orch.completeDAG(dagId, dag.result, dag.error, {
                 durationSec: dag.durationSec,
                 workerCount: dag.workerCount,
@@ -438,6 +438,7 @@ function rehydrateFromSnapshot(snapshot: any, bufferedEvents?: unknown[]): void 
                 modelUsage: dag.modelUsage,
                 nodeOutputPaths: dag.nodeOutputPaths,
                 stopped: dag.status === 'stopped',
+                supersededBy: dag.supersededBy,
               });
             }
           }
@@ -1341,6 +1342,8 @@ function bindListeners(ws: ReconnectingWebSocket): void {
             chat.setStreamingStatus(evt.message || 'Starting agent\u2026');
           } else if (evt.type === 'warning') {
             chat.setStreamingStatus(evt.message || 'Warning');
+          } else if (evt.type === 'context_updated') {
+            chat.setStreamingStatus('Context updated\u2026');
           }
         }
         if (msg.graphState) orch.setGraphState(msg.graphState);
@@ -1512,6 +1515,7 @@ function bindListeners(ws: ReconnectingWebSocket): void {
             workerCount: m.workerCount,
             costUsd: m.costUsd,
           })),
+          supersededBy: dc.supersededBy,
         });
         // Add a chat message that renders as RunSummaryCard
         chat.addMessage({
