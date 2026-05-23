@@ -272,6 +272,19 @@ export const ROLE_THINKING_CONFIG: Record<CodingRole, ThinkingConfig> = {
   'reporter':         { enabled: false, effort: 'low' },
 };
 
+/**
+ * Maps ThinkingEffort levels to extended-thinking budget_tokens values.
+ * Used to set explicit token budgets in the SDK thinking config so that
+ * 'xhigh' roles (debugger) get deeper reasoning than the 'high' preset alone.
+ *
+ * medium=8000, high=16000, xhigh=32000 (disabled → no budget_tokens set).
+ */
+export const EFFORT_TO_BUDGET_TOKENS: Record<'medium' | 'high' | 'xhigh', number> = {
+  medium:  8_000,
+  high:   16_000,
+  xhigh:  32_000,
+} as const;
+
 // ── Section 5.6: Per-Role Token Budget ────────────────────────────────────
 
 /**
@@ -1628,6 +1641,15 @@ export async function executeCodingAgent(
     return base === 'xhigh' ? 'high' : base; // xhigh → high for SDK compat
   })();
   const roleEffort = resolvedEffort !== 'low' ? resolvedEffort : undefined;
+  // Budget tokens: derived from effort level (medium=8000, high=16000, xhigh=32000).
+  // Provides fine-grained thinking depth beyond what the effort preset alone expresses.
+  const thinkingBudgetTokens: number | undefined = (() => {
+    if (!thinkingCfg?.enabled) return undefined;
+    const e = thinkingCfg.effort;
+    return e in EFFORT_TO_BUDGET_TOKENS
+      ? EFFORT_TO_BUDGET_TOKENS[e as keyof typeof EFFORT_TO_BUDGET_TOKENS]
+      : undefined;
+  })();
 
   log.info(`Starting coding agent: "${task.slice(0, 80)}..."`, {
     model, cwd, tools: allowedTools.length,
@@ -1846,8 +1868,12 @@ export async function executeCodingAgent(
         // Role-based max turns (ROLE_MAX_TURNS) — prevents runaway agents.
         ...(maxTurns !== undefined ? { maxTurns } : {}),
         systemPrompt,
-        // P4: Adaptive thinking — Claude decides when and how much to think
-        thinking: { type: 'adaptive' },
+        // P4: Adaptive thinking — Claude decides when and how much to think.
+        // budget_tokens sets the per-role ceiling: medium=8000, high=16000, xhigh=32000.
+        thinking: {
+          type: 'adaptive',
+          ...(thinkingBudgetTokens !== undefined ? { budget_tokens: thinkingBudgetTokens } : {}),
+        },
         // P2: AbortController for cooperative cancellation
         abortController,
         env: {

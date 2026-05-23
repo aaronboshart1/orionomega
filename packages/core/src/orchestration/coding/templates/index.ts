@@ -119,7 +119,8 @@ export function loadCodingTemplate(
         models: {
           scanner:     models.scanner  ?? models.default ?? '',
           rootCause:   models.architect ?? models.default ?? '',
-          fixer:       models.implementer ?? models.default ?? '',
+          // Spec: bug-fix fixer/debugger MUST always use opus
+          fixer:       models.debugger ?? models.reviewer ?? models.default ?? '',
           testWriter:  models.testWriter ?? models.default ?? '',
           reporter:    models.reporter ?? models.default ?? '',
         },
@@ -189,7 +190,8 @@ export function loadCodingTemplate(
         cwd,
         models: {
           scanner:  models.scanner   ?? models.default ?? '',
-          reviewer: models.reviewer  ?? models.architect ?? models.default ?? '',
+          // Spec: reviewer MUST always use opus — do not fall back to architect (sonnet)
+          reviewer: models.reviewer  ?? models.default ?? '',
           fixer:    models.implementer ?? models.default ?? '',
           reporter: models.reporter  ?? models.default ?? '',
         },

@@ -19,6 +19,13 @@ const log = createLogger('coding-models');
 
 type ModelTier = 'haiku' | 'sonnet' | 'opus';
 
+/**
+ * Granular effort level for extended thinking.
+ * Maps to budget_tokens in the SDK bridge: medium=8000, high=16000, xhigh=32000.
+ * 'disabled' means thinking is off for this role.
+ */
+export type ThinkingEffort = 'medium' | 'high' | 'xhigh' | 'disabled';
+
 interface ModelStrategy {
   /** Preferred model tier for normal conditions. */
   preferredTier: ModelTier | null;
@@ -28,6 +35,17 @@ interface ModelStrategy {
   downgradeTier: ModelTier | null;
   /** Whether to enable adaptive thinking mode (extended thinking). */
   thinkingMode: 'adaptive' | 'disabled';
+  /**
+   * Token budget for extended thinking when thinkingMode is 'adaptive'.
+   * Higher values allow deeper reasoning at higher cost.
+   * Undefined = let the model choose its own budget (API default).
+   */
+  thinkingBudgetTokens?: number;
+  /**
+   * Granular effort level surfaced in resolve() output and used by the
+   * agent-sdk-bridge to set budget_tokens: medium=8000, high=16000, xhigh=32000.
+   */
+  thinkingEffort: ThinkingEffort;
 }
 
 /** Role-based model strategy map. */
@@ -37,36 +55,46 @@ const CODING_MODE_MODEL_STRATEGY: Record<CodingRole, ModelStrategy> = {
     upgradeTier:   'sonnet',
     downgradeTier: null,
     thinkingMode:  'disabled',  // Read-only enumeration; speed over quality
+    thinkingEffort: 'disabled',
   },
   'architect': {
     preferredTier: 'sonnet',
     upgradeTier:   'opus',
     downgradeTier: null,
     thinkingMode:  'adaptive',  // May need deep reasoning for design decisions
+    thinkingBudgetTokens: 16_000,
+    thinkingEffort: 'high',
   },
   'implementer': {
     preferredTier: 'sonnet',
     upgradeTier:   'opus',
     downgradeTier: null,
     thinkingMode:  'adaptive',
+    thinkingBudgetTokens: 10_000,
+    thinkingEffort: 'high',
   },
   'stitcher': {
     preferredTier: 'sonnet',
     upgradeTier:   'opus',
     downgradeTier: null,
     thinkingMode:  'adaptive',
+    thinkingBudgetTokens: 8_000,
+    thinkingEffort: 'medium',
   },
   'test-writer': {
     preferredTier: 'sonnet',
     upgradeTier:   null,
     downgradeTier: 'haiku',   // Downgrade for simple unit tests
     thinkingMode:  'adaptive',
+    thinkingBudgetTokens: 6_000,
+    thinkingEffort: 'medium',
   },
   'validator': {
     preferredTier: null,      // TOOL node — no model needed
     upgradeTier:   null,
     downgradeTier: null,
     thinkingMode:  'disabled',
+    thinkingEffort: 'disabled',
   },
   'reviewer': {
     // Spec 4.4: "Reviewer always uses opus — research shows using a more
@@ -76,27 +104,33 @@ const CODING_MODE_MODEL_STRATEGY: Record<CodingRole, ModelStrategy> = {
     upgradeTier:   null,
     downgradeTier: null,
     thinkingMode:  'adaptive',
+    thinkingBudgetTokens: 12_000,
+    thinkingEffort: 'high',
   },
   'debugger': {
     // Spec 4.4: "Debugger gets xhigh thinking — debugging requires the
     // deepest reasoning to diagnose root causes rather than surface symptoms."
-    // Starts at sonnet, upgrades to opus on retry #2+.
-    preferredTier: 'sonnet',
-    upgradeTier:   'opus',
+    // Always uses opus — bug diagnosis demands the most capable model.
+    preferredTier: 'opus',
+    upgradeTier:   null,
     downgradeTier: null,
     thinkingMode:  'adaptive',
+    thinkingBudgetTokens: 20_000,  // Highest budget: root cause requires deepest reasoning
+    thinkingEffort: 'xhigh',
   },
   'review-gate': {
     preferredTier: null,      // ROUTER node — deterministic logic, no model
     upgradeTier:   null,
     downgradeTier: null,
     thinkingMode:  'disabled',
+    thinkingEffort: 'disabled',
   },
   'reporter': {
     preferredTier: 'haiku',
     upgradeTier:   'sonnet',
     downgradeTier: null,
     thinkingMode:  'disabled', // Summary is simple; minimize cost
+    thinkingEffort: 'disabled',
   },
 };
 
@@ -149,22 +183,27 @@ export class CodingModelResolver {
   resolve(
     role: CodingRole,
     context: ModelResolutionContext,
-  ): { model: string; thinking: { type: string } } {
+  ): { model: string; thinking: { type: string; budgetTokens?: number }; effort: ThinkingEffort } {
     // 1. Check config override
     const override = this.overrides[role];
     if (override) {
       log.debug(`Role ${role}: using config override → ${override}`);
+      const s = CODING_MODE_MODEL_STRATEGY[role];
       return {
         model: override,
-        thinking: { type: CODING_MODE_MODEL_STRATEGY[role].thinkingMode },
+        thinking: {
+          type: s.thinkingMode,
+          ...(s.thinkingBudgetTokens !== undefined ? { budgetTokens: s.thinkingBudgetTokens } : {}),
+        },
+        effort: s.thinkingEffort,
       };
     }
 
     const strategy = CODING_MODE_MODEL_STRATEGY[role];
 
-    // TOOL node (validator) — no model
+    // TOOL node (validator) or ROUTER node — no model
     if (strategy.preferredTier === null) {
-      return { model: '', thinking: { type: 'disabled' } };
+      return { model: '', thinking: { type: 'disabled' }, effort: 'disabled' };
     }
 
     // 2. Determine effective tier (with upgrade/downgrade)
@@ -185,7 +224,11 @@ export class CodingModelResolver {
     log.debug(`Role ${role}: resolved to ${model} (tier: ${tier})`);
     return {
       model,
-      thinking: { type: strategy.thinkingMode },
+      thinking: {
+        type: strategy.thinkingMode,
+        ...(strategy.thinkingBudgetTokens !== undefined ? { budgetTokens: strategy.thinkingBudgetTokens } : {}),
+      },
+      effort: strategy.thinkingEffort,
     };
   }
 
@@ -216,15 +259,16 @@ export class CodingModelResolver {
     const highComplexity = avgComplexity >= 2.5; // majority 'high'
 
     switch (role) {
+      case 'codebase-scanner':
+        // Upgrade from haiku → sonnet for large codebases where enumeration
+        // requires semantic understanding rather than just file listing.
+        return fileCount > 100;
       case 'architect':
         return highComplexity || fileCount > 100 || securityRelevant;
       case 'implementer':
         return highComplexity && profile.relevantFiles.some((f) => f.linesOfCode > 500);
       case 'stitcher':
         return conflictCount > 3;
-      case 'debugger':
-        // Spec 4.3: "Debugger: sonnet, retry #2+ → opus"
-        return retryAttempt >= 1;
       case 'reporter':
         // Upgrade reporter when there are many findings to summarise
         return fileCount > 50;

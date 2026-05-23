@@ -37,6 +37,7 @@ import {
   classifyIntent,
   streamConversation,
 } from './conversation.js';
+import { classifyCodeIntent } from '../orchestration/coding/intent-classifier.js';
 import { MemoryBridge } from './memory-bridge.js';
 import { OrchestrationBridge } from './orchestration-bridge.js';
 import { stageAttachments, AttachmentStagingError, type StagedAttachment } from './attachment-staging.js';
@@ -1132,6 +1133,27 @@ export class MainAgent {
         this.callbacks.onThinking('Thinking…', true, false);
         await this.respondConversationally(userContent, signal, runId, convOutputId);
         return;
+      }
+
+      // 4b. CODING fast-path — 3-level classifier (L1 explicit already handled above;
+      //     L2 regex sub-10ms; L3 haiku LLM for ambiguous requests).
+      //     classifyCodeIntent() is additive: explicit agentMode='code' at 2b wins first.
+      {
+        const codingIntent = await classifyCodeIntent(trimmed, {
+          llmClient: this.anthropic,
+          haikuModel: this.config.cheapModel,
+        });
+        if (codingIntent.isCoding) {
+          log.verbose('Route: CODE (coding intent detected)', { classifiedBy: codingIntent.classifiedBy });
+          this.emitStep('route', 'Routing request', 'done', 'Coding fast-path');
+          const sessionRepo = this.config.getSessionRepo?.(sid) ?? undefined;
+          await this.orchestration.dispatchCodingWorkflow(
+            userContent,
+            (e) => this.pushHistory(sid, e as HistoryEntry),
+            { ...stagedOpts, ...(sessionRepo ? { sessionRepo } : {}) },
+          );
+          return;
+        }
       }
 
       // 5. ORCHESTRATE fast-path — full planner DAG

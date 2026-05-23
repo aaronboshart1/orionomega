@@ -122,7 +122,7 @@ export function buildBugFixTemplate(params: BugFixParams): WorkflowNode[] {
     cwd,
     maxBudgetUsd: budgets.fixer,
     allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'],
-    codingRole: 'implementer',
+    codingRole: 'debugger',
     fileScope: {
       owned: [],   // Populated from root-cause output
       readable: [],
@@ -134,7 +134,7 @@ export function buildBugFixTemplate(params: BugFixParams): WorkflowNode[] {
     id: 'fix-implementation',
     type: 'CODING_AGENT',
     label: 'Fix Implementation',
-    dependsOn: ['root-cause-search'],
+    dependsOn: ['regression-test'],
     status: 'pending',
     codingAgent: {
       task: fixConfig.task,
@@ -162,7 +162,7 @@ export function buildBugFixTemplate(params: BugFixParams): WorkflowNode[] {
     id: 'regression-test',
     type: 'CODING_AGENT',
     label: 'Regression Test',
-    dependsOn: ['fix-implementation'],
+    dependsOn: ['root-cause-search'],
     status: 'pending',
     codingAgent: {
       task: regressionConfig.task,
@@ -180,7 +180,7 @@ export function buildBugFixTemplate(params: BugFixParams): WorkflowNode[] {
     id: 'validation-loop',
     type: 'LOOP',
     label: 'Validation Loop',
-    dependsOn: ['regression-test'],
+    dependsOn: ['fix-implementation'],
     status: 'pending',
     loop: {
       body: [
@@ -191,6 +191,29 @@ export function buildBugFixTemplate(params: BugFixParams): WorkflowNode[] {
           dependsOn: [],
           status: 'pending',
           tool: { name: 'SHELL_SEQUENCE', params: { commands: validationCommands, cwd } },
+        },
+        {
+          id: 'debugger',
+          type: 'CODING_AGENT',
+          label: 'Debug Failures',
+          dependsOn: ['validator'],
+          status: 'pending',
+          codingAgent: {
+            task: `Fix the failing tests and build errors identified by the validator.\n\nBug: ${task}\n\nAnalyze the error output, identify root causes, and make the minimal changes needed to make the validation pass.`,
+            model: models.fixer,
+            cwd,
+            maxBudgetUsd: budgets.fixer,
+            allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'],
+          },
+          codingConfig: {
+            task: `Fix validation failures: ${task}`,
+            model: models.fixer,
+            cwd,
+            maxBudgetUsd: budgets.fixer,
+            allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'],
+            codingRole: 'debugger',
+            fileScope: { owned: [], readable: [], lockRequired: true },
+          },
         },
       ],
       maxIterations: validationMaxRetries + 1,
@@ -243,5 +266,5 @@ export function buildBugFixTemplate(params: BugFixParams): WorkflowNode[] {
     codingConfig: reportConfig,
   };
 
-  return [reproduce, rootCause, fix, regressionTest, validationLoop, reviewGateNode, summaryReport];
+  return [reproduce, rootCause, regressionTest, fix, validationLoop, reviewGateNode, summaryReport];
 }

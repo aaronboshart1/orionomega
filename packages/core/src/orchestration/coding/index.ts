@@ -35,6 +35,7 @@ export type {
   FileChange,
   ApprovalPackage,
   EscalationSignal,
+  RouterDecision,
   ReviewGateInput,
   ReviewGateDecision,
   ChangeConfidence,
@@ -88,7 +89,37 @@ export type { NodeDescriptor, ModelCostRate } from './coding-budget.js';
 
 // ── Model Resolver ────────────────────────────────────────────────────────────
 export { CodingModelResolver } from './coding-models.js';
-export type { ModelResolutionContext } from './coding-models.js';
+export type {
+  ModelResolutionContext,
+  ThinkingEffort,
+} from './coding-models.js';
+
+// ── Architect Reviewer ────────────────────────────────────────────────────────
+// NOTE: `ReviewResult` and `ReviewIssue` from this module conflict with the
+// same names in coding-types.js (which represent the lightweight reviewer-node
+// output).  The coding-types versions are already exported above.  Here we
+// export the architect-reviewer's full run-output types under distinct names:
+//   ReviewReport  = deprecated alias for the full ArchitectReviewer output
+//   ReviewDecision, CommandCheckResult, CodeQualityMetrics, ReviewOptions,
+//   GoalVerificationResult — all new, no conflicts.
+export {
+  generateReviewReport,
+  extractDecision,
+  reviewAndDecide,
+  runBuildCheck,
+  runTestSuite,
+  evaluateCodeQuality,
+  verifyRequirements,
+} from './architect-reviewer.js';
+export type {
+  /** @deprecated Use the ReviewResult returned by generateReviewReport directly. */
+  ReviewReport,
+  ReviewDecision,
+  CommandCheckResult,
+  CodeQualityMetrics,
+  ReviewOptions,
+  GoalVerificationResult,
+} from './architect-reviewer.js';
 
 // ── Validation Loop ───────────────────────────────────────────────────────────
 export {
@@ -158,6 +189,8 @@ export {
   removeWorktree,
   mergeBranchInto,
   repoNameFromRemoteUrl,
+  commitAll,
+  rollback,
 } from './repo-manager.js';
 export { getLastCommit } from './repo-manager.js';
 export type {

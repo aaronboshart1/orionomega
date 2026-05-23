@@ -68,8 +68,13 @@ export interface CodeQualityMetrics {
   changedFileCount: number;
 }
 
-/** Structured output from the architect review. */
-export interface ReviewReport {
+/**
+ * Structured output from the architect review (spec §4.4 ReviewResult).
+ *
+ * Renamed from ReviewReport → ReviewResult to match spec §4.4 naming.
+ * `ReviewReport` is kept as a backward-compatible type alias below.
+ */
+export interface ReviewResult {
   /** Unique review ID. */
   reviewId: string;
   /** ISO timestamp. */
@@ -106,7 +111,31 @@ export interface ReviewReport {
    * requirements were supplied or no Anthropic client was available.
    */
   goalVerdicts?: RequirementVerdict[];
+
+  // ── Spec §4.4 additive fields ─────────────────────────────────────────────
+  /**
+   * Flat list of all review issues (both blockers and suggestions).
+   * Convenience alias: `[...blockers, ...suggestions]`.
+   */
+  issues?: ReviewIssue[];
+  /** Security-specific concerns surfaced during the review. */
+  securityConcerns?: string[];
+  /** Performance-specific concerns surfaced during the review. */
+  performanceConcerns?: string[];
+  /**
+   * Top-level verdict aligned with the DAG ReviewResult shape.
+   *   'approve'          — ready to merge, no blocking issues
+   *   'request_changes'  — blockers must be fixed before re-review
+   *   'reject'           — fundamental approach issues; requires replan
+   */
+  verdict?: 'approve' | 'request_changes' | 'reject';
 }
+
+/**
+ * Backward-compatible alias — callers that imported `ReviewReport` continue
+ * to compile without change.
+ */
+export type ReviewReport = ReviewResult;
 
 /** A single issue identified during review. */
 export interface ReviewIssue {
@@ -116,8 +145,15 @@ export interface ReviewIssue {
   description: string;
   /** Affected file (if applicable). */
   file?: string;
-  /** Severity level. */
-  severity: 'error' | 'warning' | 'info';
+  /**
+   * Severity level — spec §4.4 values.
+   * Legacy values 'error'/'warning'/'info' accepted for backward compat.
+   */
+  severity: 'critical' | 'major' | 'minor' | 'nit' | 'error' | 'warning' | 'info';
+  /** Line number in `file` where the issue was detected (1-based). */
+  line?: number;
+  /** Concrete fix suggestion for the implementer (plain text or code snippet). */
+  suggestedFix?: string;
 }
 
 /** The review decision. */

@@ -501,6 +501,43 @@ export async function stageCommitPush(
 }
 
 /**
+ * Convenience alias for `stageCommitPush` — stages all changes, creates a
+ * commit with the given message, and pushes to the remote.
+ *
+ * @param repoDir - Absolute path to the local repository.
+ * @param message - Commit message.
+ * @param pushOpts - Optional push configuration.
+ */
+export const commitAll = stageCommitPush;
+
+/**
+ * Roll back the working tree to a known-good state by resetting to the
+ * specified commit (or HEAD if omitted) and cleaning untracked files.
+ *
+ * ⚠️  This is a destructive operation — uncommitted changes are discarded.
+ *
+ * @param repoDir - Absolute path to the local repository.
+ * @param toRef - Git ref to reset to. Defaults to 'HEAD'.
+ */
+export async function rollback(repoDir: string, toRef = 'HEAD'): Promise<void> {
+  assertValidGitRefName(toRef, 'rollback ref');
+
+  // Hard reset to the target ref (stages + working-tree)
+  const resetResult = await runGit(`reset --hard ${toRef}`, repoDir);
+  if (!resetResult.success) {
+    throw new Error(`rollback: git reset failed — ${resetResult.stderr ?? resetResult.stdout}`);
+  }
+
+  // Remove untracked files and directories
+  const cleanResult = await runGit('clean -fd', repoDir);
+  if (!cleanResult.success) {
+    log.warn('rollback: git clean failed (non-fatal)', { stderr: cleanResult.stderr });
+  }
+
+  log.info('rollback completed', { repoDir, toRef });
+}
+
+/**
  * Check if a directory is a git repository.
  *
  * @param dir - Path to check.

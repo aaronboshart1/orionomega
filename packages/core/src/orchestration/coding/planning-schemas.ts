@@ -75,6 +75,47 @@ export interface CodingTask {
    * Checked by the architect-reviewer after implementation.
    */
   acceptanceCriteria: string[];
+
+  // ── Spec §4.3 additive fields (9-field spec shape) ─────────────────────────
+  /**
+   * Short human-readable label shown in the DAG visualiser.
+   * Synonym for `title`; use whichever is most convenient.
+   */
+  label?: string;
+  /**
+   * Broad task type used by the planner for scheduling and budget decisions.
+   *   'implementation' — code change or new feature
+   *   'test'           — test generation or coverage expansion
+   *   'refactor'       — structural improvement without behaviour change
+   *   'debug'          — fix a specific known failure
+   *   'review'         — code review or architectural analysis
+   */
+  type?: 'implementation' | 'test' | 'refactor' | 'debug' | 'review';
+  /**
+   * Resolved Anthropic model ID for the agent executing this task.
+   * Set by CodingModelResolver; absent means "use the role default".
+   */
+  model?: string;
+  /**
+   * Task IDs that must complete before this task starts.
+   * Mirrors the per-chunk `dependsOn` field in FanOutDecision.chunks.
+   */
+  dependsOn?: string[];
+  /**
+   * Full agent prompt injected as the user turn for the executing agent.
+   * When present, overrides the planner-generated default prompt.
+   */
+  prompt?: string;
+  /**
+   * Canonical list of files this task touches (union of targetFiles and contextFiles).
+   * Convenience field for callers that don't need the read/write distinction.
+   */
+  files?: string[];
+  /**
+   * Arbitrary per-task configuration forwarded to the executor.
+   * Example: `{ thinkingBudgetTokens: 20000, maxTurns: 8 }`.
+   */
+  config?: Record<string, unknown>;
 }
 
 // ── PlanningDecision ──────────────────────────────────────────────────────────

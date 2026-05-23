@@ -81,26 +81,26 @@ export function buildTestSuiteTemplate(params: TestSuiteParams): WorkflowNode[] 
     },
   };
 
-  // ── Layer 1: Coverage Analysis ────────────────────────────────────────────
+  // ── Layer 1: Coverage Analysis (TOOL — runs jest --coverage --json) ───────
 
   const coverageAnalyst: WorkflowNode = {
     id: 'coverage-analysis',
-    type: 'AGENT',
+    type: 'TOOL',
     label: 'Coverage Analysis',
     dependsOn: ['codebase-scan'],
     status: 'pending',
-    agent: {
-      model: models.coverageAnalyst,
-      task: `Identify untested code paths and prioritize them by risk.\n\nTest task: ${task}\n\nOutput a FanOutDecision JSON where each chunk targets a specific module/area for test generation.`,
+    tool: {
+      name: 'SHELL_SEQUENCE',
+      params: {
+        commands: ['npx jest --coverage --json --outputFile=coverage-report.json 2>/dev/null || true'],
+        cwd,
+      },
     },
     codingConfig: {
-      task: `Coverage analysis: ${task}`,
-      model: models.coverageAnalyst,
-      cwd,
-      maxBudgetUsd: budgets.coverageAnalyst,
-      allowedTools: ['Read', 'Glob', 'Grep'],
-      codingRole: 'architect',
+      task: `Run coverage analysis: ${task}`,
+      codingRole: 'validator',
       fileScope: { owned: [], readable: [], lockRequired: false },
+      validationConfig: { commands: ['npx jest --coverage --json'], maxRetries: 0, timeout: validationTimeoutMs },
     },
   };
 
@@ -173,6 +173,29 @@ export function buildTestSuiteTemplate(params: TestSuiteParams): WorkflowNode[] 
           dependsOn: [],
           status: 'pending',
           tool: { name: 'SHELL_SEQUENCE', params: { commands: validationCommands, cwd } },
+        },
+        {
+          id: 'debugger',
+          type: 'CODING_AGENT',
+          label: 'Debug Failures',
+          dependsOn: ['validator'],
+          status: 'pending',
+          codingAgent: {
+            task: `Fix the failing tests identified by the validator.\n\nTest task: ${task}\n\nAnalyze the error output, identify root causes, and make the minimal changes needed to make the tests pass.`,
+            model: models.integrator,
+            cwd,
+            maxBudgetUsd: budgets.integrator,
+            allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'],
+          },
+          codingConfig: {
+            task: `Fix failing tests: ${task}`,
+            model: models.integrator,
+            cwd,
+            maxBudgetUsd: budgets.integrator,
+            allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'],
+            codingRole: 'debugger',
+            fileScope: { owned: [], readable: [], lockRequired: true },
+          },
         },
       ],
       maxIterations: validationMaxRetries + 1,

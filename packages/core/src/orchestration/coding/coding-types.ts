@@ -240,6 +240,32 @@ export interface FanOutDecision {
   }>;
   /** Effective parallelism, capped by worker pool maxConcurrency. */
   maxParallelism: number;
+
+  // ── Spec §4.3 additive fields ─────────────────────────────────────────────
+  /** High-level prose explaining why this decomposition was chosen. */
+  approach?: string;
+  /**
+   * Inter-chunk dependency map: key = chunk ID, value = IDs of chunks that
+   * must complete before this chunk starts (additive to per-chunk dependsOn).
+   */
+  taskDependencies?: Record<string, string[]>;
+  /** Shared state / context injected into every chunk's prompt. */
+  sharedContext?: Record<string, unknown>;
+  /** High-level test strategy for the whole feature (e.g. "TDD", "integration-first"). */
+  testStrategy?: string;
+  /** Known risks or blockers the architect flagged for human awareness. */
+  risks?: string[];
+  /**
+   * Number of human approvals required before execution proceeds.
+   * 0 = auto-approve, 1 = standard review, 2 = critical-path double-sign-off.
+   */
+  requiredApprovals?: number;
+  /**
+   * Target level of parallelism requested by the architect.
+   * Distinct from maxParallelism (which is the worker-pool cap).
+   * The executor uses min(estimatedParallelism, maxParallelism).
+   */
+  estimatedParallelism?: number;
 }
 
 /**
@@ -449,6 +475,19 @@ export interface FileChange {
   linesRemoved: number;
   diff: string;
   rationale: string;
+
+  // ── Spec §4.7 additive fields ─────────────────────────────────────────────
+  /**
+   * Spec-aligned operation name (create|modify|delete|rename).
+   * Mirrors `action` but uses the canonical spec vocabulary.
+   */
+  operation?: 'create' | 'modify' | 'delete' | 'rename';
+  /** Full previous file contents before the change (for 3-way merge). */
+  oldContent?: string;
+  /** Full new file contents after the change. */
+  newContent?: string;
+  /** Detected programming language of the file (e.g. 'typescript', 'python'). */
+  language?: string;
 }
 
 /** A single issue identified during code review (Section 4.4). */
@@ -497,6 +536,68 @@ export interface ApprovalPackage {
   /** How to undo all changes. */
   rollbackPlan: string;
   estimatedImpact: string;
+
+  // ── Spec §4.7 additive fields ─────────────────────────────────────────────
+  /**
+   * Spec-aligned file-change list (synonym for filesChanged).
+   * Use `changes` in new code; `filesChanged` retained for backward compat.
+   */
+  changes?: FileChange[];
+  /** Structured code-review verdict from the reviewer node. */
+  reviewResult?: ReviewResult;
+  /**
+   * Overall confidence score (0–1) that the changes are correct and safe.
+   * Aggregated from test coverage, reviewer approval, and security scan.
+   */
+  confidence?: number;
+  /**
+   * When true the approval gate must block and wait for human sign-off
+   * before the commit step may proceed, regardless of risk tier.
+   */
+  requiresHumanReview?: boolean;
+}
+
+/**
+ * Decision output from a ROUTER node (review-gate or DAG routing node).
+ * Carries the selected route ID plus a rationale for traceability.
+ *
+ * Also doubles as the ROUTER node configuration when used as a node-level
+ * config (spec §4.5): `condition` + `routes` + `defaultRoute` + `evaluator`
+ * define how the router resolves; `selectedRoute` + `rationale` carry the
+ * runtime result back to the orchestrator.
+ */
+export interface RouterDecision {
+  /** The ID of the next node to execute (must match a key in router.routes). */
+  selectedRoute: string;
+  /** Human-readable rationale for the routing decision. */
+  rationale: string;
+  /** Optional metadata from the routing evaluation (e.g. risk score, flags). */
+  metadata?: Record<string, unknown>;
+
+  // ── Spec §4.5 router-node configuration fields (additive) ─────────────────
+  /**
+   * JSONata / simple expression evaluated against the DAG context to produce
+   * a route key.  Example: `"riskTier"` evaluates the `riskTier` field of the
+   * upstream node's output artifact.
+   */
+  condition?: string;
+  /**
+   * Map of condition-result value → target node ID.
+   * Example: `{ low: 'auto-commit', high: 'human-review' }`.
+   */
+  routes?: Record<string, string>;
+  /**
+   * Node ID to route to when `condition` evaluates to a value not present
+   * in `routes`, or when the evaluator throws.
+   */
+  defaultRoute?: string;
+  /**
+   * Strategy used to evaluate `condition`.
+   *   'expression' — simple field lookup / comparison (default)
+   *   'llm'        — delegate evaluation to an LLM call
+   *   'fn'         — call a registered custom evaluator function
+   */
+  evaluator?: 'expression' | 'llm' | 'fn';
 }
 
 /**
@@ -641,6 +742,17 @@ export interface CodingProgressEvent {
   approvalPackage?: ApprovalPackage;
   /** Progressive disclosure level requested by this event (1–4). */
   disclosureLevel?: 1 | 2 | 3 | 4;
+
+  // ── Spec §4.5 additive fields ─────────────────────────────────────────────
+  /** The coding role of the node that emitted this event. */
+  role?: CodingRole;
+  /** ISO-8601 timestamp when this event was emitted. */
+  timestamp?: string;
+  /**
+   * Snapshot of DAG artifacts available at the time of this event.
+   * Keyed by node ID; values are opaque artifact payloads.
+   */
+  artifacts?: Record<string, unknown>;
 }
 
 // ── Token & Cost Types ────────────────────────────────────────────────────────

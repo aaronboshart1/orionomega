@@ -1,9 +1,9 @@
 /**
  * @module orchestration/coding/templates/review-iterate
- * DAG template: diff-analysis → code-review → fix(N) → re-review → validate → report
+ * DAG template: diff-analysis → review-loop(max=3)[code-review → fix(N) → re-review → validate] → report
  *
  * Use case: PR review, code quality improvement, addressing review feedback.
- * The re-review node can loop back to Layer 2 if issues persist (max 2 outer iterations).
+ * The outer review loop iterates up to 3 times until all review findings are addressed.
  */
 
 import type { WorkflowNode } from '../../types.js';
@@ -77,85 +77,18 @@ export function buildReviewIterateTemplate(params: ReviewIterateParams): Workflo
     },
   };
 
-  // ── Layer 1: Code Review ──────────────────────────────────────────────────
+  // ── Layers 1-4: Outer Review Loop (max 3 iterations) ─────────────────────
+  //
+  // The review loop wraps code-review → fix(fan-out) → re-review → validation
+  // into a repeating cycle. After each iteration an LLM judge evaluates the
+  // re-review output to decide whether all findings are resolved or another
+  // iteration is needed. Exits early when all issues are addressed (max 3).
 
-  const codeReview: WorkflowNode = {
-    id: 'code-review',
-    type: 'AGENT',
-    label: 'Code Review',
-    dependsOn: ['diff-analysis'],
-    status: 'pending',
-    agent: {
-      model: models.reviewer,
-      task: `Perform a thorough code review.\n\nContext: ${task}\n\nReview for:\n- Correctness and logic errors\n- Security vulnerabilities\n- Performance issues\n- Code style and maintainability\n- Missing tests\n\nOutput a FanOutDecision JSON where each chunk represents an independent set of review findings to fix in parallel.`,
-    },
-    codingConfig: {
-      task: `Code review: ${task}`,
-      model: models.reviewer,
-      cwd,
-      maxBudgetUsd: budgets.reviewer,
-      allowedTools: ['Read', 'Glob', 'Grep'],
-      codingRole: 'reviewer',
-      fileScope: { owned: [], readable: [], lockRequired: false },
-    },
-  };
-
-  // ── Layer 2: Fix Placeholder (fans out) ───────────────────────────────────
-
-  const fixPlaceholder: WorkflowNode = {
-    id: 'impl-placeholder',
-    type: 'CODING_AGENT',
-    label: 'Fix Review Findings (fan-out pending)',
-    dependsOn: ['code-review'],
-    status: 'pending',
-    codingAgent: {
-      task: `Fix the assigned review findings for: ${task}`,
-      model: models.fixer,
-      cwd,
-      maxBudgetUsd: budgets.fixer,
-      allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'],
-    },
-    codingConfig: {
-      task: `Fix review findings: ${task}`,
-      model: models.fixer,
-      cwd,
-      maxBudgetUsd: budgets.fixer,
-      allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'],
-      codingRole: 'implementer',
-      fileScope: { owned: [], readable: [], lockRequired: true },
-    },
-  };
-
-  // ── Layer 3: Re-Review ────────────────────────────────────────────────────
-
-  const reReview: WorkflowNode = {
-    id: 're-review',
-    type: 'AGENT',
-    label: 'Re-Review',
-    dependsOn: ['impl-placeholder'],
-    status: 'pending',
-    agent: {
-      model: models.reviewer,
-      task: `Verify that all review findings from the previous code review have been properly addressed.\n\nOriginal task: ${task}\n\nCheck each finding was fixed. Note any remaining issues or regressions introduced by the fixes.`,
-    },
-    codingConfig: {
-      task: `Re-review: ${task}`,
-      model: models.reviewer,
-      cwd,
-      maxBudgetUsd: budgets.reviewer,
-      allowedTools: ['Read', 'Glob', 'Grep'],
-      codingRole: 'reviewer',
-      fileScope: { owned: [], readable: [], lockRequired: false },
-    },
-  };
-
-  // ── Layer 4: Validation Loop ──────────────────────────────────────────────
-
-  const validationLoop: WorkflowNode = {
+  const innerValidationLoop: WorkflowNode = {
     id: 'validation-loop',
     type: 'LOOP',
     label: 'Validation Loop',
-    dependsOn: ['re-review'],
+    dependsOn: [],   // Sequential within outer loop body
     status: 'pending',
     loop: {
       body: [
@@ -167,6 +100,29 @@ export function buildReviewIterateTemplate(params: ReviewIterateParams): Workflo
           status: 'pending',
           tool: { name: 'SHELL_SEQUENCE', params: { commands: validationCommands, cwd } },
         },
+        {
+          id: 'debugger',
+          type: 'CODING_AGENT',
+          label: 'Debug Failures',
+          dependsOn: ['validator'],
+          status: 'pending',
+          codingAgent: {
+            task: `Fix the failing tests and build errors identified by the validator.\n\nReview task: ${task}\n\nAnalyze the error output, identify root causes, and make the minimal changes needed to make the validation pass.`,
+            model: models.fixer,
+            cwd,
+            maxBudgetUsd: budgets.fixer,
+            allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'],
+          },
+          codingConfig: {
+            task: `Fix validation failures: ${task}`,
+            model: models.fixer,
+            cwd,
+            maxBudgetUsd: budgets.fixer,
+            allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'],
+            codingRole: 'debugger',
+            fileScope: { owned: [], readable: [], lockRequired: true },
+          },
+        },
       ],
       maxIterations: validationMaxRetries + 1,
       exitCondition: { type: 'all_pass' },
@@ -176,9 +132,95 @@ export function buildReviewIterateTemplate(params: ReviewIterateParams): Workflo
       task: 'Validate review fixes',
       codingRole: 'validator',
       fileScope: { owned: [], readable: [], lockRequired: false },
-      // 5-minute per-command budget for build/test/lint — the previous 2 min
-      // was insufficient for multi-package monorepo builds.
       validationConfig: { commands: validationCommands, maxRetries: validationMaxRetries, timeout: validationTimeoutMs },
+    },
+  };
+
+  const reviewLoop: WorkflowNode = {
+    id: 'review-loop',
+    type: 'LOOP',
+    label: 'Review Iteration Loop',
+    dependsOn: ['diff-analysis'],
+    status: 'pending',
+    loop: {
+      // Body executes sequentially in order: review → fix → re-review → validate
+      body: [
+        {
+          id: 'code-review',
+          type: 'AGENT',
+          label: 'Code Review',
+          dependsOn: [],
+          status: 'pending',
+          agent: {
+            model: models.reviewer,
+            task: `Perform a thorough code review.\n\nContext: ${task}\n\nReview for:\n- Correctness and logic errors\n- Security vulnerabilities\n- Performance issues\n- Code style and maintainability\n- Missing tests\n\nOutput a FanOutDecision JSON where each chunk represents an independent set of review findings to fix in parallel.`,
+          },
+          codingConfig: {
+            task: `Code review: ${task}`,
+            model: models.reviewer,
+            cwd,
+            maxBudgetUsd: budgets.reviewer,
+            allowedTools: ['Read', 'Glob', 'Grep'],
+            codingRole: 'reviewer',
+            fileScope: { owned: [], readable: [], lockRequired: false },
+          },
+        },
+        {
+          id: 'impl-placeholder',
+          type: 'CODING_AGENT',
+          label: 'Fix Review Findings (fan-out pending)',
+          dependsOn: [],
+          status: 'pending',
+          codingAgent: {
+            task: `Fix the assigned review findings for: ${task}`,
+            model: models.fixer,
+            cwd,
+            maxBudgetUsd: budgets.fixer,
+            allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'],
+          },
+          codingConfig: {
+            task: `Fix review findings: ${task}`,
+            model: models.fixer,
+            cwd,
+            maxBudgetUsd: budgets.fixer,
+            allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'],
+            codingRole: 'implementer',
+            fileScope: { owned: [], readable: [], lockRequired: true },
+          },
+        },
+        {
+          id: 're-review',
+          type: 'AGENT',
+          label: 'Re-Review',
+          dependsOn: [],
+          status: 'pending',
+          agent: {
+            model: models.reviewer,
+            task: `Verify that all review findings from the previous code review have been properly addressed.\n\nOriginal task: ${task}\n\nCheck each finding was fixed. Note any remaining issues or regressions introduced by the fixes. If all issues are resolved, state "EXIT: all findings addressed".`,
+          },
+          codingConfig: {
+            task: `Re-review: ${task}`,
+            model: models.reviewer,
+            cwd,
+            maxBudgetUsd: budgets.reviewer,
+            allowedTools: ['Read', 'Glob', 'Grep'],
+            codingRole: 'reviewer',
+            fileScope: { owned: [], readable: [], lockRequired: false },
+          },
+        },
+        innerValidationLoop,
+      ],
+      maxIterations: 3,
+      exitCondition: {
+        type: 'llm_judge',
+        judgePrompt: 'Have all code review findings been properly addressed and do all tests pass? If yes, answer EXIT. If there are remaining issues or test failures, answer CONTINUE.',
+      },
+      carryForward: true,
+    },
+    codingConfig: {
+      task: `Review iteration cycle: ${task}`,
+      codingRole: 'reviewer',
+      fileScope: { owned: [], readable: [], lockRequired: false },
     },
   };
 
@@ -186,7 +228,7 @@ export function buildReviewIterateTemplate(params: ReviewIterateParams): Workflo
 
   const reviewGateNode = buildReviewGateNode({
     cwd,
-    dependsOn: ['validation-loop'],
+    dependsOn: ['review-loop'],
     // Review-iterate sessions are medium risk — may touch many files
     complexityTier: reviewGate?.complexityTier ?? 'medium',
     filesChanged: reviewGate?.filesChanged ?? [],
@@ -218,5 +260,5 @@ export function buildReviewIterateTemplate(params: ReviewIterateParams): Workflo
     },
   };
 
-  return [diffAnalysis, codeReview, fixPlaceholder, reReview, validationLoop, reviewGateNode, summaryReport];
+  return [diffAnalysis, reviewLoop, reviewGateNode, summaryReport];
 }

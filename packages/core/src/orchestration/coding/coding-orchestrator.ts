@@ -6,9 +6,17 @@
  *   1. Clone/sync repo          — via repo-manager
  *   2. Analyze codebase          — via codebase-analyzer
  *   3. Design implementation plan — via CodingPlanner (highest-power model)
- *   4. Implementation loop       — via Claude Agent SDK (executeCodingAgent)
+ *   4. Implementation loop       — via GraphExecutor/CodingWorkerPool (DAG mode)
+ *                                  or Claude Agent SDK (linear fallback)
  *   5. Architect review          — via architect-reviewer (generateReviewReport)
  *   6. Commit and push           — via repo-manager
+ *
+ * Step 4 uses two execution paths:
+ *   - DAG mode: When the planner produces ≥ 2 CODING_AGENT nodes (fan-out),
+ *     executes them in parallel via CodingWorkerPool with file-lock
+ *     coordination, using GraphExecutor infrastructure for topological
+ *     layer computation.
+ *   - Linear mode: Single executeCodingAgent call (backward compatible).
  *
  * Reports progress back to the caller via `CodingProgressCallback` so the
  * OrchestrationBridge can relay updates to the user in real time.
@@ -61,6 +69,18 @@ import {
 import type { ReviewReport } from './architect-reviewer.js';
 import { executeCodingAgent } from '../agent-sdk-bridge.js';
 import type { CodingAgentResult } from '../agent-sdk-bridge.js';
+
+// ── Graph execution + worker pool integration (P0 #2, #4) ────────────────────
+import { GraphExecutor } from '../executor.js';
+import type { ExecutorConfig } from '../executor.js';
+import type { WorkflowGraph, WorkflowNode as GraphWorkflowNode } from '../types.js';
+import { topologicalSort } from '../graph.js';
+import { EventBus } from '../event-bus.js';
+import { CodingWorkerPool } from './coding-worker-pool.js';
+import { FileLockManager } from './file-lock-manager.js';
+import { CodingBudgetAllocator } from './coding-budget.js';
+import type { WorkerResult } from '../worker.js';
+import type { CodingRole } from './coding-types.js';
 
 const log = createLogger('coding-orchestrator');
 
@@ -191,6 +211,13 @@ export interface CodingOrchestratorConfig {
    * hardcoded `highPowerModel`. When omitted, `highPowerModel` is used.
    */
   modelResolver?: CodingModelResolver;
+  /**
+   * Maximum total USD cost allowed for a single coding session.
+   * When the implementation step cost exceeds this cap the run aborts before
+   * the review/commit steps to prevent runaway spend. Omitting this field
+   * disables the cap (legacy behaviour).
+   */
+  sessionMaxUsd?: number;
 }
 
 // ── DAG step definitions ──────────────────────────────────────────────────────
@@ -867,7 +894,7 @@ export class CodingOrchestrator {
       };
     });
 
-    // ── Step 4: Implementation loop (Claude Agent SDK) ─────────────────────
+    // ── Step 4: Implementation loop (Claude Agent SDK + GraphExecutor/WorkerPool) ──
     let implementationOutput = '';
     await this._runStep(sessionId, executionId, 'implement', 'Implementation loop', 'implementer', progress, async () => {
       progress?.onStepProgress('implement', 'Starting coding agent…', 5);
@@ -895,10 +922,7 @@ export class CodingOrchestrator {
             .join('\n');
 
       // Repository block — gives the implementer unambiguous, self-contained
-      // grounding so it never has to guess where the code is. The orchestrator
-      // also sets `cwd: targetDir` on the SDK call below; this block makes
-      // the same fact visible to the model so any `git` commands it issues
-      // resolve correctly without an explicit `cd`.
+      // grounding so it never has to guess where the code is.
       const repositoryBlock = [
         '## Repository',
         `- Remote URL: ${repoUrl}`,
@@ -929,41 +953,128 @@ export class CodingOrchestrator {
       ];
       const fullTask = contextParts.join('\n');
 
-      // Resolve model dynamically via CodingModelResolver when available,
-      // falling back to the hardcoded highPowerModel.
-      const implModel = (this.cfg.modelResolver && codebaseScanOutput)
-        ? this.cfg.modelResolver.resolve('implementer', { profile: codebaseScanOutput, retryAttempt: 0 }).model
-        : this.cfg.highPowerModel;
+      // ── DAG execution path (P0 #2, #4) ─────────────────────────────────
+      // When the planner produces ≥ 2 CODING_AGENT nodes (fan-out chunks),
+      // execute them via GraphExecutor/CodingWorkerPool for parallel
+      // execution with file-lock coordination. Otherwise, fall back to the
+      // single-agent linear path for backward compatibility.
+      const useDag = this._shouldUseDAGExecution(capturedPlanOutput as CodingPlannerOutput | null);
+      if (useDag) {
+        const planOut = capturedPlanOutput as CodingPlannerOutput;
+        log.info(`Using DAG execution path: ${planOut.nodes.length} planner nodes`);
+        progress?.onStepProgress('implement', `DAG mode: ${planOut.nodes.length} nodes`, 8);
+        _emitters?.stepProgress({ nodeId: 'implement', message: `DAG mode: ${planOut.nodes.length} nodes`, percentage: 8 }, sessionId);
 
-      // Build a WorkflowNode to pass to executeCodingAgent
-      const implNode = {
-        id: 'implement',
-        type: 'CODING_AGENT' as const,
-        label: 'Implementation loop',
-        dependsOn: [],
-        status: 'running' as const,
-        codingAgent: {
-          task: fullTask,
-          model: implModel,
-          cwd: targetDir,
-          maxBudgetUsd: 2.0,
-          allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'],
-        },
-      };
-
-      try {
-        const result: CodingAgentResult = await executeCodingAgent(
-          implNode,
+        const dagResult = await this._executeImplementationDAG(
+          planOut,
           targetDir,
-          (event) => {
-            // Relay agent progress to the coding session progress callback
-            const pct = event.progress ?? 50;
-            const msg = event.message ?? 'Working…';
-            progress?.onStepProgress('implement', msg, Math.min(95, pct));
-            _emitters?.stepProgress({ nodeId: 'implement', message: msg, percentage: Math.min(95, pct) }, sessionId);
-          },
+          fullTask,
+          codebaseScanOutput,
+          sessionId,
+          progress,
         );
 
+        implementationCostUsd = dagResult.costUsd;
+        implementationToolCalls = dagResult.toolCalls;
+        implementationOutput = dagResult.output;
+        filesModified = dagResult.filesModified;
+        filesCreated = dagResult.filesCreated;
+
+        const filesSummary = [
+          filesModified.length > 0 ? `Modified: ${filesModified.length} file(s)` : '',
+          filesCreated.length > 0 ? `Created: ${filesCreated.length} file(s)` : '',
+          `Tool calls: ${dagResult.toolCalls}`,
+          dagResult.costUsd ? `Cost: $${dagResult.costUsd.toFixed(4)}` : '',
+          `Duration: ${dagResult.durationSec.toFixed(1)}s`,
+          `Mode: DAG (${(capturedPlanOutput as CodingPlannerOutput).nodes.length} nodes)`,
+        ].filter(Boolean).join(', ');
+
+        progress?.onStepProgress('implement', `Implementation complete — ${filesSummary}`, 100);
+        _emitters?.stepProgress({ nodeId: 'implement', message: `Implementation complete — ${filesSummary}`, percentage: 100 }, sessionId);
+
+        const outputSummary = `${dagResult.success ? 'Success' : 'Completed with errors'}. ${filesSummary}`;
+        stepResults.push({ nodeId: 'implement', label: 'Implementation loop', status: 'completed', output: outputSummary });
+        return outputSummary;
+      }
+
+      // ── Linear execution path (single-agent, backward compatible) ───────
+      // Implementation retry loop — up to MAX_IMPL_RETRIES attempts.
+      // On each retry the model is upgraded (via CodingModelResolver) and the
+      // per-node budget is increased by 50% to give the retry more headroom.
+      const MAX_IMPL_RETRIES = 2;
+      const BASE_IMPL_BUDGET_USD = 2.0;
+      let lastImplResult: CodingAgentResult | null = null;
+      let lastImplErr: Error | null = null;
+
+      // Budget allocator for retry budget adjustment (P1 #6)
+      const linearBudgetAllocator = new CodingBudgetAllocator({
+        budgetMultiplier: this.cfg.codingModeConfig?.budgetMultiplier,
+      });
+
+      for (let attempt = 0; attempt <= MAX_IMPL_RETRIES; attempt++) {
+        // Resolve model — upgrade tier on retry (e.g. sonnet → opus at attempt 1+)
+        const implModel = (this.cfg.modelResolver && codebaseScanOutput)
+          ? this.cfg.modelResolver.resolve('implementer', { profile: codebaseScanOutput, retryAttempt: attempt }).model
+          : this.cfg.highPowerModel;
+
+        // Increase budget 50% per retry to allow the agent more token headroom
+        const implBudget = BASE_IMPL_BUDGET_USD * Math.pow(1.5, attempt);
+
+        // Wire adjustForRetry from BudgetAllocator on retry attempts (P1 #6)
+        if (attempt > 0 && capturedPlanOutput) {
+          const planOut = capturedPlanOutput as CodingPlannerOutput;
+          linearBudgetAllocator.adjustForRetry(
+            planOut.budgetAllocation,
+            'implement',
+            'implementer',
+            attempt,
+          );
+        }
+
+        const implNode = {
+          id: 'implement',
+          type: 'CODING_AGENT' as const,
+          label: 'Implementation loop',
+          dependsOn: [],
+          status: 'running' as const,
+          codingAgent: {
+            task: fullTask,
+            model: implModel,
+            cwd: targetDir,
+            maxBudgetUsd: implBudget,
+            allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'],
+          },
+        };
+
+        if (attempt > 0) {
+          progress?.onStepProgress('implement', `Retry ${attempt}/${MAX_IMPL_RETRIES} (${implModel})…`, 5);
+          _emitters?.stepProgress({ nodeId: 'implement', message: `Retry ${attempt}/${MAX_IMPL_RETRIES} (${implModel})…`, percentage: 5 }, sessionId);
+        }
+
+        try {
+          lastImplResult = await executeCodingAgent(
+            implNode,
+            targetDir,
+            (event) => {
+              const pct = event.progress ?? 50;
+              const msg = event.message ?? 'Working…';
+              progress?.onStepProgress('implement', msg, Math.min(95, pct));
+              _emitters?.stepProgress({ nodeId: 'implement', message: msg, percentage: Math.min(95, pct) }, sessionId);
+            },
+          );
+          lastImplErr = null;
+          break; // Success — exit retry loop
+        } catch (err) {
+          lastImplErr = err instanceof Error ? err : new Error(String(err));
+          log.warn(`Implementation attempt ${attempt + 1} failed: ${lastImplErr.message}`, { attempt });
+          if (attempt < MAX_IMPL_RETRIES) {
+            log.info(`Retrying implementation (attempt ${attempt + 2}/${MAX_IMPL_RETRIES + 1})…`);
+          }
+        }
+      }
+
+      if (lastImplResult !== null) {
+        const result = lastImplResult;
         implementationCostUsd = result.costUsd;
         implementationToolCalls = result.toolCalls;
 
@@ -999,10 +1110,12 @@ export class CodingOrchestrator {
         const outputSummary = `${result.success ? 'Success' : 'Completed with errors'}. ${filesSummary}`;
         stepResults.push({ nodeId: 'implement', label: 'Implementation loop', status: result.success ? 'completed' : 'completed', output: outputSummary });
         return outputSummary;
+      }
 
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        log.error('Implementation agent failed', { error: msg });
+      // All retries exhausted — fall through to validation-only fallback
+      {
+        const msg = lastImplErr?.message ?? 'unknown error';
+        log.error('Implementation agent failed after all retries', { error: msg });
 
         // Fall back to validation-only mode (original behavior)
         progress?.onStepProgress('implement', 'Agent failed, running baseline validation…', 60);
@@ -1015,11 +1128,6 @@ export class CodingOrchestrator {
           const validationConfig: ValidationConfig = {
             commands: validationCmds,
             maxRetries: 0,
-            // Use the same config-driven validation timeout as the primary
-            // path so the fallback doesn't apply a stricter (60s) budget
-            // than the user configured. The previous hard-coded 60_000
-            // caused legitimate monorepo builds to time out only on the
-            // recovery path, masking the real failure from the user.
             timeout: (this.cfg.validationTimeoutSec ?? 300) * 1000,
           };
           try {
@@ -1037,6 +1145,23 @@ export class CodingOrchestrator {
         return implementationOutput;
       }
     });
+
+    // ── Budget cap enforcement (P1 #13) ───────────────────────────────────────
+    // Abort before review/commit if the implementation cost has already
+    // exceeded the operator-configured session cap. This prevents runaway
+    // spend on the remaining steps when the implementer has already consumed
+    // the full budget.
+    if (this.cfg.sessionMaxUsd && implementationCostUsd !== undefined) {
+      if (implementationCostUsd > this.cfg.sessionMaxUsd) {
+        throw new Error(
+          `Session budget cap exceeded: implementation cost $${implementationCostUsd.toFixed(4)} ` +
+          `exceeds sessionMaxUsd cap of $${this.cfg.sessionMaxUsd.toFixed(4)}`,
+        );
+      }
+      log.debug(
+        `Budget check: $${implementationCostUsd.toFixed(4)} / $${this.cfg.sessionMaxUsd.toFixed(4)} cap`,
+      );
+    }
 
     // ── Step 5: Architect review ───────────────────────────────────────────
     const reviewIteration = 1;
@@ -1693,6 +1818,356 @@ export class CodingOrchestrator {
       entryPoints: [],
       dependencies: {},
     };
+  }
+
+  // ── Graph execution integration (P0 #2, #4) ──────────────────────────────
+
+  /**
+   * Build a {@link WorkflowGraph} from the planner's DAG nodes, ready for
+   * layer-by-layer execution via {@link CodingWorkerPool}.
+   *
+   * Only implementation-phase nodes are included (scan/architect are already
+   * handled by the linear steps 1–3; the reporter is handled by step 5).
+   * Nodes whose `dependsOn` references fall outside the filtered set are
+   * treated as having no intra-graph dependencies (their prerequisites were
+   * already satisfied by the linear pipeline).
+   */
+  private _buildWorkflowGraph(
+    planNodes: GraphWorkflowNode[],
+    graphId: string,
+  ): WorkflowGraph {
+    // Filter to implementation-phase node types
+    const implPhaseTypes = new Set(['CODING_AGENT', 'TOOL', 'LOOP']);
+    const implNodes = planNodes.filter((n) => implPhaseTypes.has(n.type));
+
+    if (implNodes.length === 0) {
+      // Degenerate case: planner returned no executable nodes
+      return {
+        id: graphId,
+        name: `coding-impl-${graphId.slice(0, 8)}`,
+        createdAt: now(),
+        nodes: new Map(),
+        layers: [],
+        entryNodes: [],
+        exitNodes: [],
+      };
+    }
+
+    const nodeMap = new Map<string, GraphWorkflowNode>();
+    for (const n of implNodes) {
+      nodeMap.set(n.id, { ...n });
+    }
+
+    // Compute topological layers using the shared graph utility
+    const layers = topologicalSort(nodeMap);
+
+    // Entry nodes: no intra-graph dependencies
+    const nodeIds = new Set(nodeMap.keys());
+    const entryNodes = implNodes
+      .filter((n) => n.dependsOn.every((d) => !nodeIds.has(d)))
+      .map((n) => n.id);
+
+    // Exit nodes: no other node depends on them
+    const hasDependents = new Set<string>();
+    for (const n of implNodes) {
+      for (const dep of n.dependsOn) {
+        if (nodeIds.has(dep)) hasDependents.add(dep);
+      }
+    }
+    const exitNodes = [...nodeIds].filter((id) => !hasDependents.has(id));
+
+    return {
+      id: graphId,
+      name: `coding-impl-${graphId.slice(0, 8)}`,
+      createdAt: now(),
+      nodes: nodeMap,
+      layers,
+      entryNodes,
+      exitNodes,
+    };
+  }
+
+  /**
+   * Execute the implementation phase of a coding workflow as a proper DAG
+   * using {@link CodingWorkerPool} for parallel execution with file-lock
+   * coordination, backed by the {@link GraphExecutor} infrastructure.
+   *
+   * This replaces the linear single-`executeCodingAgent` call when the
+   * planner produces multiple implementation nodes (fan-out chunks). The
+   * CodingWorkerPool enforces the concurrency limit and acquires per-file
+   * locks before dispatching each worker, preventing parallel agents from
+   * clobbering each other's edits.
+   *
+   * Retry logic: on failure of any node, the budget is increased via
+   * {@link CodingBudgetAllocator.adjustForRetry} and the model is escalated
+   * (e.g. sonnet → opus). Up to {@link MAX_IMPL_RETRIES} retries per node.
+   *
+   * Session cost cap: before executing each layer, the cumulative cost is
+   * checked against `sessionMaxUsd`. If exceeded, execution aborts with a
+   * clear error.
+   */
+  private async _executeImplementationDAG(
+    planOutput: CodingPlannerOutput,
+    targetDir: string,
+    fullTask: string,
+    codebaseScanOutput: CodebaseScanOutput | null,
+    sessionId: string,
+    progress?: CodingProgressCallback,
+  ): Promise<{
+    output: string;
+    costUsd: number;
+    toolCalls: number;
+    durationSec: number;
+    filesModified: string[];
+    filesCreated: string[];
+    success: boolean;
+  }> {
+    const startTime = Date.now();
+
+    // Build the WorkflowGraph from planner nodes
+    const graph = this._buildWorkflowGraph(planOutput.nodes, sessionId);
+
+    if (graph.layers.length === 0) {
+      return {
+        output: 'No implementation nodes in plan',
+        costUsd: 0,
+        toolCalls: 0,
+        durationSec: 0,
+        filesModified: [],
+        filesCreated: [],
+        success: true,
+      };
+    }
+
+    // ── Infrastructure setup ───────────────────────────────────────────────
+    const eventBus = new EventBus();
+    const fileLockManager = new FileLockManager();
+    const maxConcurrency = this.cfg.codingModeConfig?.maxParallelAgents ?? 8;
+    const workerPool = new CodingWorkerPool({
+      fileLockManager,
+      eventBus,
+      cwd: targetDir,
+      maxConcurrency,
+    });
+
+    // Forward EventBus events to progress callback
+    eventBus.subscribe('*', (event) => {
+      if (event.type === 'status' && event.message) {
+        progress?.onStepProgress(
+          event.nodeId ?? 'implement',
+          event.message,
+          50,
+        );
+      }
+    });
+
+    // Budget allocator for retry adjustments
+    const budgetAllocator = new CodingBudgetAllocator({
+      budgetMultiplier: this.cfg.codingModeConfig?.budgetMultiplier,
+    });
+
+    // Track per-node retry attempts (closure-scoped; read by the executor)
+    const nodeRetryAttempts = new Map<string, number>();
+
+    // Set the executor: wraps executeCodingAgent to adapt between
+    // CodingAgentResult and WorkerResult
+    workerPool.setExecutor(async (node: GraphWorkflowNode, _context: string): Promise<WorkerResult> => {
+      // Resolve model for this node's role (with retry escalation)
+      const role = (node.codingConfig?.codingRole ?? 'implementer') as CodingRole;
+      const retryAttempt = nodeRetryAttempts.get(node.id) ?? 0;
+      const model = (this.cfg.modelResolver && codebaseScanOutput)
+        ? this.cfg.modelResolver.resolve(role, { profile: codebaseScanOutput, retryAttempt }).model
+        : this.cfg.highPowerModel;
+
+      // Apply the coding agent config from the node, with model override
+      const nodeWithModel: GraphWorkflowNode = {
+        ...node,
+        codingAgent: {
+          ...node.codingAgent,
+          task: node.codingAgent?.task ?? fullTask,
+          model,
+          cwd: node.codingAgent?.cwd ?? targetDir,
+          maxBudgetUsd: node.codingAgent?.maxBudgetUsd ?? 2.0,
+          allowedTools: node.codingAgent?.allowedTools ?? ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'],
+        },
+      };
+
+      const agentResult = await executeCodingAgent(
+        nodeWithModel,
+        targetDir,
+        (event) => {
+          const pct = event.progress ?? 50;
+          const msg = event.message ?? `Working on ${node.id}…`;
+          progress?.onStepProgress(node.id, msg, Math.min(95, pct));
+          _emitters?.stepProgress({
+            nodeId: node.id,
+            message: msg,
+            percentage: Math.min(95, pct),
+          }, sessionId);
+        },
+      );
+
+      return {
+        nodeId: node.id,
+        output: agentResult.output,
+        durationMs: agentResult.durationSec * 1000,
+        toolCallCount: agentResult.toolCalls,
+        findings: [],
+        outputPaths: agentResult.outputPaths,
+        costUsd: agentResult.costUsd,
+        model,
+      };
+    });
+
+    // ── Layer-by-layer execution ───────────────────────────────────────────
+    let totalCostUsd = 0;
+    let totalToolCalls = 0;
+    const outputs: string[] = [];
+    let overallSuccess = true;
+    const MAX_NODE_RETRIES = 2;
+
+    log.info(`Executing implementation DAG: ${graph.layers.length} layer(s), ${graph.nodes.size} node(s), maxConcurrency=${maxConcurrency}`);
+    progress?.onStepProgress('implement', `Executing DAG: ${graph.nodes.size} nodes across ${graph.layers.length} layers`, 10);
+    _emitters?.stepProgress({
+      nodeId: 'implement',
+      message: `Executing DAG: ${graph.nodes.size} nodes across ${graph.layers.length} layers`,
+      percentage: 10,
+    }, sessionId);
+
+    for (let layerIdx = 0; layerIdx < graph.layers.length; layerIdx++) {
+      // ── Session cost cap check before each layer (P1 #13) ────────────
+      if (this.cfg.sessionMaxUsd && totalCostUsd > this.cfg.sessionMaxUsd) {
+        throw new Error(
+          `Session budget cap exceeded during DAG execution: ` +
+          `$${totalCostUsd.toFixed(4)} exceeds sessionMaxUsd cap of $${this.cfg.sessionMaxUsd.toFixed(4)} ` +
+          `(aborted before layer ${layerIdx + 1}/${graph.layers.length})`,
+        );
+      }
+
+      const layerNodeIds = graph.layers[layerIdx];
+      const layerNodes = layerNodeIds
+        .map((id) => graph.nodes.get(id))
+        .filter((n): n is GraphWorkflowNode => n !== undefined);
+
+      if (layerNodes.length === 0) continue;
+
+      const layerPct = Math.round(10 + (layerIdx / graph.layers.length) * 80);
+      progress?.onStepProgress(
+        'implement',
+        `Layer ${layerIdx + 1}/${graph.layers.length}: ${layerNodes.length} node(s) [${layerNodes.map((n) => n.id).join(', ')}]`,
+        layerPct,
+      );
+      _emitters?.stepProgress({
+        nodeId: 'implement',
+        message: `Layer ${layerIdx + 1}/${graph.layers.length}: ${layerNodes.length} node(s)`,
+        percentage: layerPct,
+      }, sessionId);
+
+      log.info(`DAG layer ${layerIdx + 1}/${graph.layers.length}: executing ${layerNodes.length} node(s)`, {
+        nodeIds: layerNodes.map((n) => n.id),
+      });
+
+      // Execute the layer via CodingWorkerPool (parallel with file-lock coordination)
+      const layerResults = await workerPool.executeLayer(layerNodes, fullTask);
+
+      // Process results, retrying failed nodes
+      for (let i = 0; i < layerResults.length; i++) {
+        const result = layerResults[i];
+        const node = layerNodes[i];
+
+        // Check for failure (error output or missing cost)
+        const isFailure = result.output && typeof result.output === 'string' &&
+          (result.output as string).startsWith('Error') && result.durationMs === 0;
+
+        if (isFailure && MAX_NODE_RETRIES > 0) {
+          // Retry with model escalation and budget increase
+          for (let retry = 1; retry <= MAX_NODE_RETRIES; retry++) {
+            log.info(`Retrying node ${node.id} (attempt ${retry + 1}/${MAX_NODE_RETRIES + 1})`);
+
+            // Update retry attempt so the executor resolves an upgraded model
+            nodeRetryAttempts.set(node.id, retry);
+
+            // Increase budget via allocator (P1 #6)
+            if (planOutput.budgetAllocation) {
+              const role = (node.codingConfig?.codingRole ?? 'implementer') as CodingRole;
+              budgetAllocator.adjustForRetry(
+                planOutput.budgetAllocation,
+                node.id,
+                role,
+                retry,
+              );
+            }
+
+            progress?.onStepProgress(
+              node.id,
+              `Retry ${retry}/${MAX_NODE_RETRIES} for ${node.id}…`,
+              layerPct,
+            );
+
+            try {
+              const retryResult = await workerPool.submit(node, fullTask);
+              totalCostUsd += retryResult.costUsd ?? 0;
+              totalToolCalls += retryResult.toolCallCount;
+              if (typeof retryResult.output === 'string') {
+                outputs.push(`[${node.id} retry ${retry}] ${(retryResult.output as string).slice(0, 500)}`);
+              }
+              break; // Success — exit retry loop
+            } catch (retryErr) {
+              log.warn(`Node ${node.id} retry ${retry} failed: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`);
+              if (retry === MAX_NODE_RETRIES) {
+                overallSuccess = false;
+              }
+            }
+          }
+        } else {
+          totalCostUsd += result.costUsd ?? 0;
+          totalToolCalls += result.toolCallCount;
+          if (typeof result.output === 'string') {
+            outputs.push(`[${node.id}] ${(result.output as string).slice(0, 500)}`);
+          }
+        }
+      }
+    }
+
+    // ── Collect file changes ───────────────────────────────────────────────
+    let filesModified: string[] = [];
+    let filesCreated: string[] = [];
+    try {
+      const repoStatus = await getRepoStatus(targetDir);
+      filesModified = [...repoStatus.modifiedFiles, ...repoStatus.stagedFiles];
+      filesCreated = repoStatus.untrackedFiles;
+    } catch {
+      filesModified = [];
+      filesCreated = [];
+    }
+
+    const durationSec = (Date.now() - startTime) / 1000;
+
+    log.info(`Implementation DAG complete: ${graph.nodes.size} nodes, ` +
+      `${totalToolCalls} tool calls, $${totalCostUsd.toFixed(4)}, ` +
+      `${durationSec.toFixed(1)}s, success=${overallSuccess}`);
+
+    return {
+      output: outputs.join('\n\n').slice(0, 3000),
+      costUsd: totalCostUsd,
+      toolCalls: totalToolCalls,
+      durationSec,
+      filesModified,
+      filesCreated,
+      success: overallSuccess,
+    };
+  }
+
+  /**
+   * Determine whether the planner output contains multiple implementation
+   * nodes that benefit from parallel DAG execution (fan-out chunks).
+   * Returns `true` when there are ≥ 2 CODING_AGENT nodes, which indicates
+   * the planner decomposed the task into parallel chunks.
+   */
+  private _shouldUseDAGExecution(planOutput: CodingPlannerOutput | null): boolean {
+    if (!planOutput) return false;
+    const codingNodes = planOutput.nodes.filter((n) => n.type === 'CODING_AGENT');
+    return codingNodes.length >= 2;
   }
 
   // ── DB helpers ──────────────────────────────────────────────────────────────

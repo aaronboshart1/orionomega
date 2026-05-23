@@ -20,6 +20,7 @@ import type {
   ReviewResult,
   FileLockRecord,
   CodingDAGTemplate,
+  TestResults,
 } from './coding-types.js';
 
 // ── DAGArtifact — typed cross-agent context sharing (Section 6.5) ─────────────
@@ -35,7 +36,34 @@ export type DAGArtifact =
   | { kind: 'implementer'; data: ImplementerOutput }
   | { kind: 'stitcher'; data: StitcherOutput }
   | { kind: 'validator'; data: ValidatorOutput }
-  | { kind: 'review'; data: ReviewResult };
+  | { kind: 'review'; data: ReviewResult }
+  // ── Spec §6.5 additional variants ───────────────────────────────────────────
+  /** Output from the test-writer node: generated test results and file paths. */
+  | { kind: 'test-results'; data: TestResults }
+  /** Output from the debugger node: fix description and modified files. */
+  | {
+      kind: 'debug';
+      data: {
+        /** Summary of the root-cause diagnosis and fix applied. */
+        fixDescription: string;
+        /** Files modified by the debugger agent. */
+        modifiedFiles: string[];
+        /** Which retry attempt produced this fix (0 = first try). */
+        retryAttempt: number;
+      };
+    }
+  /** Output from the reporter node: human-readable session summary. */
+  | {
+      kind: 'report';
+      data: {
+        /** Prose summary of what was implemented in this session. */
+        summary: string;
+        /** Session ID this report belongs to. */
+        sessionId: string;
+        /** Wall-clock duration of the full coding session in milliseconds. */
+        durationMs: number;
+      };
+    };
 
 /** Extract the data payload from a DAGArtifact, returning undefined if the kind doesn't match. */
 export function getArtifactData(artifact: DAGArtifact, kind: 'codebase-scan'): CodebaseScanOutput | undefined;
@@ -44,6 +72,9 @@ export function getArtifactData(artifact: DAGArtifact, kind: 'implementer'): Imp
 export function getArtifactData(artifact: DAGArtifact, kind: 'stitcher'): StitcherOutput | undefined;
 export function getArtifactData(artifact: DAGArtifact, kind: 'validator'): ValidatorOutput | undefined;
 export function getArtifactData(artifact: DAGArtifact, kind: 'review'): ReviewResult | undefined;
+export function getArtifactData(artifact: DAGArtifact, kind: 'test-results'): TestResults | undefined;
+export function getArtifactData(artifact: DAGArtifact, kind: 'debug'): Extract<DAGArtifact, { kind: 'debug' }>['data'] | undefined;
+export function getArtifactData(artifact: DAGArtifact, kind: 'report'): Extract<DAGArtifact, { kind: 'report' }>['data'] | undefined;
 export function getArtifactData(artifact: DAGArtifact, kind: DAGArtifact['kind']): unknown {
   if (artifact.kind === kind) return artifact.data;
   return undefined;
