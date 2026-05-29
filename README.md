@@ -6,7 +6,7 @@
   </p>
   <p align="center">
     <img src="https://img.shields.io/badge/version-0.1.0-blue" alt="version 0.1.0" />
-    <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License" />
+    <img src="https://img.shields.io/badge/license-AGPLv3%20%7C%20Commercial-blue" alt="Dual Licensed: AGPLv3 or Commercial" />
     <img src="https://img.shields.io/badge/TypeScript-5.7+-3178c6?logo=typescript&logoColor=white" alt="TypeScript" />
     <img src="https://img.shields.io/badge/Node.js-%3E%3D22-339933?logo=nodedotjs&logoColor=white" alt="Node >= 22" />
     <img src="https://img.shields.io/badge/Claude-native-d97706?logo=anthropic&logoColor=white" alt="Anthropic Claude" />
@@ -666,4 +666,15 @@ Read [`docs/architecture.md`](docs/architecture.md) before diving into the orche
 
 ## License
 
-MIT — see [LICENSE](LICENSE) for details.
+OrionOmega is **dual-licensed**:
+
+- **GNU Affero General Public License v3.0 (AGPLv3)** — for open-source and
+  community use. See [LICENSE](LICENSE). Note that the AGPLv3 requires you to
+  release the corresponding source code of any modified version you run as a
+  network service.
+- **Commercial Enterprise License** — for proprietary/closed-source deployments
+  that cannot meet the AGPLv3's source-disclosure obligations. See
+  [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md).
+
+Choose AGPLv3 for free community use, or contact the copyright holder for a
+commercial license.

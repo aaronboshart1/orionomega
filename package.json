@@ -9,7 +9,7 @@
     "url": "https://github.com/aaronboshart1/orionomega.git"
   },
   "author": "Aaron Boshart",
-  "license": "MIT",
+  "license": "AGPL-3.0-only OR LicenseRef-OrionOmega-Commercial",
   "type": "module",
   "engines": {
     "node": ">=22.0.0"

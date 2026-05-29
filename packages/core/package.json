@@ -15,7 +15,7 @@
     "url": "https://github.com/aaronboshart1/orionomega.git",
     "directory": "packages/core"
   },
-  "license": "MIT",
+  "license": "AGPL-3.0-only OR LicenseRef-OrionOmega-Commercial",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

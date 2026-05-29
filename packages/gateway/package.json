@@ -13,7 +13,7 @@
     "url": "https://github.com/aaronboshart1/orionomega.git",
     "directory": "packages/gateway"
   },
-  "license": "MIT",
+  "license": "AGPL-3.0-only OR LicenseRef-OrionOmega-Commercial",
   "type": "module",
   "main": "dist/server.js",
   "types": "dist/server.d.ts",
