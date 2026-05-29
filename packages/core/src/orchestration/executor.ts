@@ -153,7 +153,9 @@ function scanForUntrackedFiles(outputDir: string, knownPaths: string[]): string[
  * surfaced as "Claude Code process aborted by user" — confusing every
  * downstream operator. Floors below catch that class of bug at execution time.
  *
- * - AGENT:        600s  — research/analysis tasks need real headroom.
+ * - AGENT:        900s  — research/analysis tasks need real headroom;
+ *                         bumped from 600s after observing repeated timeouts
+ *                         on GitHub-heavy research nodes (MCS Legal 2 run).
  * - CODING_AGENT: 1800s — multi-turn coding loops are long-running by design.
  * - TOOL:         60s   — short-lived shell invocations.
  */
@@ -163,7 +165,7 @@ function scanForUntrackedFiles(outputDir: string, knownPaths: string[]): string[
 // would helpfully emit, say, timeout:120 and the runtime would happily honor
 // it, guaranteeing an abort before the SDK had any chance to make progress.
 const TIMEOUT_FLOOR_SEC = {
-  AGENT: 600,
+  AGENT: 900,
   CODING_AGENT: 1800,
   TOOL: 60,
 } as const;
@@ -1243,6 +1245,12 @@ export class GraphExecutor {
           // Forward the bridge's retryable verdict so classifyError honors it
           // instead of guessing from the message string.
           if (!codingResult.success && codingResult.error) {
+            // Save partial output before throwing so the node's output dir
+            // isn't empty on timeout/failure — operators can still inspect
+            // whatever the coding agent produced before it was killed.
+            if (typeof codingResult.output === 'string' && codingResult.output.trim()) {
+              saveTextOutputIfEmpty(codingOutputDir, codingResult.output, 'partial-output.md');
+            }
             throw new TaggedRetryError(`Coding agent failed: ${codingResult.error}`, {
               retryable: codingResult.retryable ?? true,
               errorSubtype: codingResult.errorSubtype,

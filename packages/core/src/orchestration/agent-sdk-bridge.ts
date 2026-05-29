@@ -59,6 +59,10 @@ const log = createLogger('agent-sdk-bridge');
 function isRetryableSdkError(err: unknown): boolean {
   if (err instanceof AbortError) return false;
   const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  // "Request was aborted" is thrown by the Anthropic HTTP client when
+  // AbortController.abort() fires mid-stream. It's not an AbortError instance
+  // but semantically equivalent — treat as non-retryable abort.
+  if (msg.includes('request was aborted') || msg.includes('aborted')) return false;
   if (
     msg.includes('invalid api key') ||
     msg.includes('unauthorized') ||
@@ -70,6 +74,22 @@ function isRetryableSdkError(err: unknown): boolean {
     return false;
   }
   return true;
+}
+
+/**
+ * Detect whether an error is semantically an abort, even when the SDK throws
+ * a plain Error instead of AbortError. The Anthropic HTTP client throws
+ * `Error("Request was aborted")` when AbortController.abort() fires during
+ * a live API stream — this is functionally identical to AbortError.
+ */
+function isAbortLikeError(err: unknown): boolean {
+  if (err instanceof AbortError) return true;
+  if (err instanceof Error) {
+    const msg = err.message.toLowerCase();
+    return msg.includes('request was aborted') ||
+           msg.includes('abort') && msg.includes('signal');
+  }
+  return false;
 }
 
 /**
@@ -1507,7 +1527,10 @@ export async function executeAgent(
     };
   } catch (err) {
     const durationSec = (Date.now() - startTime) / 1000;
-    const aborted = err instanceof AbortError;
+    // Use isAbortLikeError to also catch "Request was aborted" errors from
+    // the Anthropic HTTP client — these are functionally identical to
+    // AbortError but thrown as plain Error instances.
+    const aborted = isAbortLikeError(err);
 
     // Disambiguate aborts: if the executor cancelled us with a typed reason,
     // surface that instead of the SDK's stock "process aborted by user"
@@ -2047,7 +2070,9 @@ export async function executeCodingAgent(
     };
   } catch (err) {
     const durationSec = (Date.now() - startTime) / 1000;
-    const aborted = err instanceof AbortError;
+    // Use isAbortLikeError to also catch "Request was aborted" errors from
+    // the Anthropic HTTP client — see executeAgent's catch for rationale.
+    const aborted = isAbortLikeError(err);
 
     // Disambiguate aborts using the typed reason on the abort signal — see
     // executeAgent above for the rationale. Without this, every cancel

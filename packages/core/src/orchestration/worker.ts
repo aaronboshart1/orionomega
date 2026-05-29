@@ -512,6 +512,12 @@ export class WorkerProcess {
     // forward the bridge's `retryable` decision via TaggedRetryError so the
     // executor doesn't have to guess whether to back off and try again.
     if (!result.success && result.error) {
+      // Save partial output to disk before throwing so the node's output dir
+      // isn't empty on timeout — downstream nodes and operators can still
+      // inspect whatever the agent produced before it was killed.
+      if (typeof result.output === 'string' && result.output.trim()) {
+        saveTextOutputIfEmpty(this.workspaceDir, result.output, 'partial-output.md');
+      }
       throw new TaggedRetryError(`Agent failed: ${result.error}`, {
         retryable: result.retryable ?? true,
         errorSubtype: result.errorSubtype,
