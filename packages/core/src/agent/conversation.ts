@@ -15,6 +15,7 @@ import { exec as execCb } from 'node:child_process';
 import { promisify } from 'node:util';
 import { detectInstallDirWrites, getProtectedOrionOmegaRoots } from '../utils/install-dir.js';
 import { executeSkillToolEntry, type SkillToolEntry } from './skill-tools.js';
+import { matchesImminentWriteIntent, impliesWrittenDeliverable } from '../orchestration/deliverable-intent.js';
 
 const execAsync = promisify(execCb);
 const log = createLogger('conversation');
@@ -524,6 +525,24 @@ export async function streamConversation(opts: {
   const MAX_CONTINUATIONS = 3;
   let continuationCount = 0;
 
+  // Task #221: recover from the "I'll write the file now" stall — the model
+  // announces an imminent write, ends its turn with no tool call, and the
+  // promised file never appears. Capped separately from MAX_CONTINUATIONS.
+  const MAX_STALL_RECOVERIES = 2;
+  let stallRecoveryCount = 0;
+  // Whether the *user* clearly asked for a written deliverable this turn.
+  // Gate the recovery on this so benign "I'll write X" phrasing in ordinary
+  // chat (where no file was ever expected) doesn't trigger spurious retries.
+  const lastUserText = (() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role !== 'user') continue;
+      const c = messages[i].content;
+      return typeof c === 'string' ? c : JSON.stringify(c);
+    }
+    return '';
+  })();
+  const userWantsDeliverable = impliesWrittenDeliverable(lastUserText);
+
   // Circuit breaker: track consecutive failures by signature and category
   const failuresBySignature = new Map<string, number>();
   const failuresByCategory = new Map<string, number>();
@@ -655,6 +674,35 @@ export async function streamConversation(opts: {
         ...messages,
         { role: 'assistant', content: roundText },
         { role: 'user', content: 'Continue where you left off.' },
+      ];
+      continue;
+    }
+
+    // Task #221: "intent without action" recovery. The model ended its turn
+    // (end_turn) with no tool call, but its text announced an imminent write
+    // and the user actually asked for a written deliverable. The promised file
+    // was never produced — nudge the model to call write_file and continue.
+    if (
+      stopReason === 'end_turn' &&
+      toolCalls.length === 0 &&
+      userWantsDeliverable &&
+      matchesImminentWriteIntent(roundText) &&
+      stallRecoveryCount < MAX_STALL_RECOVERIES
+    ) {
+      stallRecoveryCount++;
+      log.warn(
+        `Detected "announced write but no tool call" stall — injecting corrective ` +
+        `prompt (${stallRecoveryCount}/${MAX_STALL_RECOVERIES})`,
+      );
+      messages = [
+        ...messages,
+        { role: 'assistant', content: roundText },
+        {
+          role: 'user',
+          content:
+            'You announced you would write the file but never called `write_file`. ' +
+            'Call `write_file` now with the full contents — no preamble, just the tool call.',
+        },
       ];
       continue;
     }

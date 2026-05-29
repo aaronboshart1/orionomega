@@ -15,6 +15,7 @@ import type { WorkflowNode, WorkerEvent } from './types.js';
 import type { EventBus } from './event-bus.js';
 import { executeAgent } from './agent-sdk-bridge.js';
 import { TaggedRetryError } from './retry-error.js';
+import { impliesWrittenDeliverable } from './deliverable-intent.js';
 import type { OrionOmegaAbortReason } from './abort-reason.js';
 import { readConfig } from '../config/loader.js';
 import { SkillLoader } from '@orionomega/skills-sdk';
@@ -522,6 +523,40 @@ export class WorkerProcess {
       (result.costUsd ? ` (cost: $${result.costUsd.toFixed(4)})` : ''),
     );
 
+    // Task #221: Deliverable-write verification. The SDK reports success even
+    // when the agent narrates "I'll write the spec now" and then ends the turn
+    // without ever calling Write/Edit. The stdout-to-output.md autosave below
+    // would then mask the miss — a file "exists", so no failure surfaces. Catch
+    // it here: if the task clearly asked for a written deliverable but the agent
+    // produced ZERO real files (only prose), fail the node so the executor
+    // retries or surfaces the error instead of silently reporting success.
+    if (impliesWrittenDeliverable(agentConfig.task, this.node.label)) {
+      // Scan the per-node dir BEFORE the output.md autosave runs, so the
+      // narration prose doesn't count as a deliverable. Empty knownPaths →
+      // every real file the agent wrote (via Write/Edit or Bash) is returned.
+      const realFiles = [
+        ...new Set([
+          ...result.outputPaths,
+          ...scanForUntrackedFiles(this.workspaceDir, []),
+        ]),
+      ];
+      const hasProse =
+        (typeof result.output === 'string' && result.output.trim().length > 0) ||
+        (typeof result.finalResult === 'string' && result.finalResult.trim().length > 0);
+      if (realFiles.length === 0 && hasProse) {
+        log.warn(
+          `Worker ${this.node.id} finished without writing its declared deliverable ` +
+          `(task implies a written file, but zero files were produced)`,
+        );
+        throw new TaggedRetryError(
+          'Node finished without writing its declared deliverable. The task asked for a ' +
+          'written file (spec/report/etc.) but the agent produced only prose and never called ' +
+          'the Write tool. Retry and ensure the first action is a Write of the deliverable file.',
+          { retryable: true },
+        );
+      }
+    }
+
     const allOutputPaths = [...result.outputPaths];
 
     if (typeof result.output === 'string' && result.output.trim()) {
@@ -659,7 +694,19 @@ File-write rules (STRICT):
    not. Even if your task description mentions an absolute output path,
    ignore that path and write to a relative filename instead — the system
    will route it to the correct artifact location.
-3. Do not duplicate outputs. Pick one filename and write to it once.${skillDocs}`;
+3. Do not duplicate outputs. Pick one filename and write to it once.
+
+## Deliverable Files (STRICT)
+When your task asks for a written deliverable (a spec, report, synthesis,
+analysis document, plan, brief, etc.), your FIRST tool call MUST be \`Write\`
+with a complete first draft of the file. Use \`Edit\` afterwards to refine it.
+- Do NOT narrate the write ("I'll write the spec now") and then end your turn —
+  that produces nothing and is treated as a FAILURE.
+- Do NOT treat your in-chat prose as "the deliverable". The deliverable is the
+  file on disk. If you describe the contents in chat, you must ALSO write them
+  to a file with \`Write\`.
+- Ending a turn having announced a write but without calling \`Write\` is a
+  hard failure and the node will be retried.${skillDocs}`;
   }
 
   /**
