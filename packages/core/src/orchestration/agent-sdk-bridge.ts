@@ -1673,7 +1673,8 @@ export async function executeCodingAgent(
   const thinkingCfg = codingRole ? ROLE_THINKING_CONFIG[codingRole] : undefined;
   const resolvedEffort: 'low' | 'medium' | 'high' | 'xhigh' = (() => {
     if (!thinkingCfg || !thinkingCfg.enabled) return 'low';
-    return thinkingCfg.effort;
+    // The SDK bridge tops out at 'xhigh'; map the model-side 'max' effort down.
+    return thinkingCfg.effort === 'max' ? 'xhigh' : thinkingCfg.effort;
   })();
   const roleEffort = resolvedEffort !== 'low' ? resolvedEffort : undefined;
 

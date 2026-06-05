@@ -60,7 +60,29 @@ export interface CreateMessageOptions {
   maxTokens?: number;
   temperature?: number;
   stream?: boolean;
-  thinking?: { type: 'enabled'; budget_tokens: number } | { type: 'adaptive' };
+  thinking?:
+    | { type: 'enabled'; budget_tokens: number }
+    | {
+        type: 'adaptive';
+        /** Ceiling on thinking tokens. Omit to let the model self-regulate. */
+        budget_tokens?: number;
+        /**
+         * How thinking is surfaced in the response.
+         * 'omitted' (default on opus-4-8) hides the thinking blocks entirely.
+         * 'summarized' returns a brief summary instead of the raw thinking.
+         */
+        display?: 'omitted' | 'summarized';
+      };
+  /**
+   * Output configuration. Currently supports the `effort` preset for opus-4-8.
+   * When `effort` is 'xhigh' or 'max', max_tokens is auto-raised to at least 64k.
+   */
+  outputConfig?: { effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' };
+  /**
+   * Enable fast-mode for claude-opus-4-8. Requires the model to be opus-4-8;
+   * silently ignored for all other models.
+   */
+  speed?: 'fast';
   /**
    * Optional assistant prefill. When set, an extra
    * `{ role: 'assistant', content: <prefill> }` message is appended to the
@@ -161,11 +183,6 @@ function parseRetryAfterMs(headerValue: string | null): number | null {
   const seconds = Number(headerValue.trim());
   if (!Number.isFinite(seconds) || seconds <= 0) return null;
   return Math.ceil(seconds * 1000);
-}
-
-/** Returns true when the model is claude-opus-4-8 (or a sub-version like 4-8-1). */
-function isOpus48(model: string): boolean {
-  return /claude-opus-4-8/i.test(model);
 }
 
 /**
