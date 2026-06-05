@@ -59,6 +59,10 @@ const log = createLogger('agent-sdk-bridge');
 function isRetryableSdkError(err: unknown): boolean {
   if (err instanceof AbortError) return false;
   const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  // "Request was aborted" is thrown by the Anthropic HTTP client when
+  // AbortController.abort() fires mid-stream. It's not an AbortError instance
+  // but semantically equivalent — treat as non-retryable abort.
+  if (msg.includes('request was aborted') || msg.includes('aborted')) return false;
   if (
     msg.includes('invalid api key') ||
     msg.includes('unauthorized') ||
@@ -70,6 +74,22 @@ function isRetryableSdkError(err: unknown): boolean {
     return false;
   }
   return true;
+}
+
+/**
+ * Detect whether an error is semantically an abort, even when the SDK throws
+ * a plain Error instead of AbortError. The Anthropic HTTP client throws
+ * `Error("Request was aborted")` when AbortController.abort() fires during
+ * a live API stream — this is functionally identical to AbortError.
+ */
+function isAbortLikeError(err: unknown): boolean {
+  if (err instanceof AbortError) return true;
+  if (err instanceof Error) {
+    const msg = err.message.toLowerCase();
+    return msg.includes('request was aborted') ||
+           msg.includes('abort') && msg.includes('signal');
+  }
+  return false;
 }
 
 /**
@@ -221,7 +241,7 @@ export const ROLE_MAX_TURNS: Record<CodingRole, number> = {
  * Scanner and reporter disable thinking for pure speed.
  * Debugger uses 'high' by default; upgraded to 'xhigh' via ROLE_THINKING_CONFIG.
  */
-export const ROLE_EFFORT_MAP: Record<CodingRole, 'low' | 'medium' | 'high'> = {
+export const ROLE_EFFORT_MAP: Record<CodingRole, 'low' | 'medium' | 'high' | 'xhigh' | 'max'> = {
   'codebase-scanner': 'low',
   'architect':        'high',
   'implementer':      'medium',
@@ -240,7 +260,7 @@ export interface ThinkingConfig {
   /** Whether extended thinking is enabled for this role. */
   enabled: boolean;
   /** Base effort level (when enabled). */
-  effort: 'low' | 'medium' | 'high' | 'xhigh';
+  effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   /**
    * Optional upgrade function — returns true when complexity warrants
    * upgrading effort from the base to 'xhigh'.
@@ -284,11 +304,15 @@ export const ROLE_THINKING_CONFIG: Record<CodingRole, ThinkingConfig> = {
  *
  * medium=8000, high=16000, xhigh=32000.
  */
-export const EFFORT_TO_BUDGET_TOKENS: Record<'medium' | 'high' | 'xhigh', number> = {
-  medium:  8_000,
-  high:   16_000,
-  xhigh:  32_000,
+export const EFFORT_TO_BUDGET_TOKENS: Record<'medium' | 'high' | 'xhigh' | 'max', number> = {
+  medium:   8_000,
+  high:    16_000,
+  xhigh:   32_000,
+  max:     64_000,
 } as const;
+
+// REMOVED: EFFORT_TO_BUDGET_TOKENS_OPUS_48 — Opus 4.8 uses adaptive thinking only.
+// Adaptive thinking is self-regulating; budget_tokens must NOT be sent for opus-4-8.
 
 // ── Section 5.6: Per-Role Token Budget ────────────────────────────────────
 
@@ -892,9 +916,9 @@ export function createCodingAgent(options: CodingAgentOptions): {
     // 'xhigh' isn't a valid SDK effort value — map to 'high' (SDK handles budget scaling)
     effort = 'high';
   } else {
-    // Map xhigh -> high for SDK compatibility; only low/medium/high are valid effort values
+    // Map xhigh/max -> high for SDK compatibility; only low/medium/high are valid effort values
     const base = thinkingCfg.effort;
-    effort = base === 'xhigh' ? 'high' : base;
+    effort = (base === 'xhigh' || base === 'max') ? 'high' : base as 'low' | 'medium' | 'high';
   }
 
   // Budget cap
@@ -1408,7 +1432,7 @@ export async function executeAgent(
               output += block.text + '\n';
               onProgress?.({
                 type: 'status',
-                message: block.text.trim().slice(0, 100),
+                message: block.text.trim().slice(0, 500),
                 progress: Math.min(progressEstimate, 90),
               });
             }
@@ -1512,7 +1536,10 @@ export async function executeAgent(
     };
   } catch (err) {
     const durationSec = (Date.now() - startTime) / 1000;
-    const aborted = err instanceof AbortError;
+    // Use isAbortLikeError to also catch "Request was aborted" errors from
+    // the Anthropic HTTP client — these are functionally identical to
+    // AbortError but thrown as plain Error instances.
+    const aborted = isAbortLikeError(err);
 
     // Disambiguate aborts: if the executor cancelled us with a typed reason,
     // surface that instead of the SDK's stock "process aborted by user"
@@ -1923,7 +1950,7 @@ export async function executeCodingAgent(
               const thinkingText = (block as { thinking: string }).thinking;
               onProgress?.({
                 type: 'thinking',
-                message: thinkingText.slice(0, 100),
+                message: thinkingText.slice(0, 1000),
                 thinking: thinkingText,
               });
             }
@@ -2045,7 +2072,9 @@ export async function executeCodingAgent(
     };
   } catch (err) {
     const durationSec = (Date.now() - startTime) / 1000;
-    const aborted = err instanceof AbortError;
+    // Use isAbortLikeError to also catch "Request was aborted" errors from
+    // the Anthropic HTTP client — see executeAgent's catch for rationale.
+    const aborted = isAbortLikeError(err);
 
     // Disambiguate aborts using the typed reason on the abort signal — see
     // executeAgent above for the rationale. Without this, every cancel

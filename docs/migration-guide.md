@@ -4,6 +4,22 @@
 
 ---
 
+## Claude Opus 4.8 Support
+
+OrionOmega now recognises `claude-opus-4-8` as a valid opus-tier model alongside `claude-opus-4-6`.
+
+**No configuration changes required.** Model discovery is dynamic — once `claude-opus-4-8` appears in the Anthropic `/v1/models` API response, it is automatically selected as the preferred opus model (newest-first ordering). `claude-opus-4-6` remains available as a fallback when `claude-opus-4-8` is not yet on your account.
+
+**Key constraints for opus-4-8 (and all opus-tier models):**
+
+- Uses **adaptive thinking only** — do not set `temperature`, `top_p`, or `top_k` for any opus worker. The orchestrator already omits these parameters for Claude 4+ paths.
+- Planner prompts now include explicit guidance: "Opus-tier models use adaptive thinking only — NEVER set temperature, top_p, or top_k for opus workers."
+- If you have hardcoded `claude-opus-4-6` in `config.yaml` or a worker override, it will continue to work. To opt into `claude-opus-4-8`, either remove the override (dynamic discovery picks the newest) or set the value explicitly.
+
+**For planner hallucination prevention:** The `coerceModel` pipeline treats `claude-opus-4-8` as a valid discovered model. If a sub-planner hallucinates `claude-opus-4-9` (or any non-existent ID), it is coerced to the best available opus model as before.
+
+---
+
 ## Overview
 
 v0.1.1 is a backward-compatible patch release. Existing deployments running v0.1.0 will work without any configuration changes. However, **three default values have changed** that affect behavior. Review each one to determine whether your deployment needs adjustment.

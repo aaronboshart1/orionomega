@@ -7,6 +7,7 @@ import { execFileSync } from 'node:child_process';
 
 const MAX_OUTPUT = 30_000; // chars
 const GH_TIMEOUT = 25_000; // ms
+const MAX_RESPONSE_BYTES = 5 * 1024 * 1024; // 5MB — reject oversized API responses
 
 /**
  * Run a `gh` CLI command and return parsed JSON or text output.
@@ -17,6 +18,7 @@ const GH_TIMEOUT = 25_000; // ms
  * @param {string} opts.jq - jq filter for JSON output.
  * @param {Record<string, string>} opts.env - Extra environment variables.
  * @param {string} opts.input - stdin input.
+ * @param {number} opts.timeout - Per-call timeout override (ms). Defaults to GH_TIMEOUT.
  * @returns {{ ok: boolean, data?: any, text?: string, error?: string }}
  */
 export function gh(args, opts = {}) {
@@ -30,11 +32,20 @@ export function gh(args, opts = {}) {
   try {
     const result = execFileSync('gh', fullArgs, {
       encoding: 'utf-8',
-      timeout: GH_TIMEOUT,
+      timeout: opts.timeout ?? GH_TIMEOUT,
       maxBuffer: 10 * 1024 * 1024, // 10MB
       env: { ...process.env, ...opts.env, GH_FORCE_TTY: '0', NO_COLOR: '1' },
       input: opts.input,
     }).trim();
+
+    // Guard: reject oversized responses to prevent memory-buffering stalls
+    // when agents iteratively fetch large repo trees or paginated content.
+    if (result.length > MAX_RESPONSE_BYTES) {
+      return {
+        ok: false,
+        error: `Response too large (${(result.length / 1024 / 1024).toFixed(1)}MB exceeds ${MAX_RESPONSE_BYTES / 1024 / 1024}MB limit). Use a more specific endpoint or --jq filter to reduce response size.`,
+      };
+    }
 
     // Try to parse as JSON
     if (opts.json || result.startsWith('[') || result.startsWith('{')) {

@@ -22,6 +22,9 @@ import type {
 import { maxOutputTokensForModel } from './client.js';
 import type { BuiltInTool, ToolContext } from './tools.js';
 import { auditToolInvocation } from '../logging/audit.js';
+import { createLogger } from '../logging/logger.js';
+
+const log = createLogger('agent-loop');
 
 /** Options for running the agent loop. */
 export interface AgentLoopOptions {
@@ -225,6 +228,12 @@ export async function runAgentLoop(
         });
         continue;
       }
+    }
+
+    // Refusal stop: model declined to complete the request. Log and terminate.
+    if (stopReason === 'refusal') {
+      log.warn('Model returned stop_reason=refusal — terminating agent loop', { turn });
+      break;
     }
 
     // If no tool use, we're done

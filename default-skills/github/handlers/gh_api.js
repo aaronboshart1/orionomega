@@ -43,9 +43,20 @@ async function main() {
   }
 
   if (p.jq) args.push('--jq', p.jq);
-  if (p.paginate) args.push('--paginate');
+  if (p.paginate) {
+    args.push('--paginate');
+    // Cap paginated requests to prevent unbounded fetches on large repos.
+    // The gh CLI's --paginate can download hundreds of pages of data from
+    // endpoints like /repos/{owner}/{repo}/git/trees/{sha}?recursive=1 on
+    // large repos, causing the 25s per-call timeout to fire mid-stream or
+    // the response to exceed the buffer. Use --limit if the caller didn't
+    // already specify one, and bump the per-call timeout for paginated ops.
+    if (!args.includes('--limit')) {
+      args.push('--limit', '500');
+    }
+  }
 
-  const res = gh(args);
+  const res = gh(args, { timeout: p.paginate ? 60_000 : undefined });
   if (!res.ok) return respond({ error: res.error });
 
   const text = res.text ?? '';

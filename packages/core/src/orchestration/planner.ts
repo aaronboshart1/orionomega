@@ -95,10 +95,11 @@ export class Planner {
       : appConfig.models.default;
 
     // Coerce planner-supplied model names to real, discoverable models. The
-    // planner LLM occasionally hallucinates IDs (e.g. "claude-opus-4-7" when
-    // only "claude-opus-4-6" exists). Passing a fake model to Claude Code makes
-    // the spawned process exit immediately with code 1, which surfaces to the
-    // user as "Coding agent error: Claude Code process exited with code 1".
+    // planner LLM occasionally hallucinates IDs (e.g. "claude-opus-4-9" when
+    // only "claude-opus-4-6" or "claude-opus-4-8" exist). Passing a fake model
+    // to Claude Code makes the spawned process exit immediately with code 1,
+    // which surfaces to the user as "Coding agent error: Claude Code process
+    // exited with code 1".
     const coerceModel = (raw: unknown): string => {
       const id = raw == null ? '' : String(raw).trim();
       if (!id) return defaultWorkerModel;
@@ -180,7 +181,7 @@ export class Planner {
       // caused the model to either return markdown prose describing a DAG
       // (cascading into fallbackPlan) or return near-empty output. An
       // assistant-prefill of `{` mitigated some of that but is rejected
-      // outright by some models (e.g. claude-opus-4-6).
+      // outright by some models (e.g. claude-opus-4-6, claude-opus-4-8).
       //
       // Forcing the model to call a `submit_plan` tool with a strict
       // input schema makes prose output structurally impossible — the API
@@ -977,7 +978,7 @@ Do NOT attempt to plan or execute the coding work yourself. Do NOT clone, write 
     // Task #197: reuse the same model-discovery + coercion pipeline as
     // `plan()` so sub-DAG node model ids are validated/coerced
     // identically. Without this the sub-planner could hallucinate a
-    // bogus model (e.g. "claude-opus-4-7") and the spawned Claude Code
+    // bogus model (e.g. "claude-opus-4-9") and the spawned Claude Code
     // process would exit immediately with code 1.
     let discoveredModels: DiscoveredModel[] = [];
     try {

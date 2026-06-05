@@ -350,9 +350,9 @@
     },
     {
       "name": "gh_api",
-      "description": "Make raw GitHub API requests. Use for any GitHub API endpoint not covered by other tools. Supports REST and GraphQL.",
+      "description": "Make raw GitHub API requests. Use for any GitHub API endpoint not covered by other tools. Supports REST and GraphQL. IMPORTANT: Avoid recursive tree fetches (git/trees?recursive=1) on repos larger than 10MB — use targeted path-based content requests instead. When using paginate:true, responses are capped at 500 items to prevent timeouts. Use a jq filter to reduce response size for large endpoints.",
       "handler": "handlers/gh_api.js",
-      "timeout": 30000,
+      "timeout": 60000,
       "inputSchema": {
         "type": "object",
         "properties": {

@@ -21,10 +21,11 @@ type ModelTier = 'haiku' | 'sonnet' | 'opus';
 
 /**
  * Granular effort level for extended thinking.
- * Maps to budget_tokens in the SDK bridge: medium=8000, high=16000, xhigh=32000.
+ * Maps to budget_tokens in the SDK bridge: medium=8000, high=16000, xhigh=32000, max=64000.
+ * 'max' is supported by Opus 4.8 and enables the deepest reasoning chains.
  * 'disabled' means thinking is off for this role.
  */
-export type ThinkingEffort = 'medium' | 'high' | 'xhigh' | 'disabled';
+export type ThinkingEffort = 'medium' | 'high' | 'xhigh' | 'max' | 'disabled';
 
 interface ModelStrategy {
   /** Preferred model tier for normal conditions. */

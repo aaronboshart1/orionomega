@@ -75,11 +75,16 @@ export interface ModelCostRate {
 /**
  * Accurate per-model-tier pricing (as of 2026 Anthropic pricing).
  * Separate input/output rates for precise cost calculation.
+ *
+ * 'opus-4-8' is listed explicitly because it has dramatically different pricing
+ * from earlier opus models ($5/$25 vs $15/$75 per MTok). resolveModelTier()
+ * detects the model ID and returns 'opus-4-8' for claude-opus-4-8 variants.
  */
 export const MODEL_COST_RATES: Record<string, ModelCostRate> = {
-  haiku:  { input: 0.80,  output: 4.00,  cacheRead: 0.08,  cacheWrite: 1.00  },
-  sonnet: { input: 3.00,  output: 15.00, cacheRead: 0.30,  cacheWrite: 3.75  },
-  opus:   { input: 15.00, output: 75.00, cacheRead: 1.50,  cacheWrite: 18.75 },
+  haiku:      { input: 0.80,  output: 4.00,  cacheRead: 0.08,  cacheWrite: 1.00  },
+  sonnet:     { input: 3.00,  output: 15.00, cacheRead: 0.30,  cacheWrite: 3.75  },
+  opus:       { input: 15.00, output: 75.00, cacheRead: 1.50,  cacheWrite: 18.75 },
+  'opus-4-8': { input: 5.00,  output: 25.00, cacheRead: 0.50,  cacheWrite: 6.25  },
 };
 
 /**
@@ -302,9 +307,11 @@ export function estimateTokenBudget(
   return Math.floor((budgetUsd / rates.input) * 1_000_000 * 0.6);
 }
 
-function resolveModelTier(modelId: string): 'haiku' | 'sonnet' | 'opus' {
+function resolveModelTier(modelId: string): 'haiku' | 'sonnet' | 'opus' | 'opus-4-8' {
   const lower = modelId.toLowerCase();
   if (lower.includes('haiku')) return 'haiku';
+  // opus-4-8 has distinct pricing — check before generic opus
+  if (lower.includes('opus-4-8')) return 'opus-4-8';
   if (lower.includes('opus')) return 'opus';
   return 'sonnet';
 }
