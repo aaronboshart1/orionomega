@@ -2499,7 +2499,7 @@ export class GraphExecutor {
     };
   }
 
-  /** Estimate cost in USD based on Anthropic pricing (June 2025). */
+  /** Estimate cost in USD based on Anthropic pricing (June 2026). */
   private estimateCost(
     model: string,
     inputTokens: number,
@@ -2513,7 +2513,11 @@ export class GraphExecutor {
     let cacheReadPricePerM: number;
     let cacheWritePricePerM: number;
 
-    if (model.includes('opus')) {
+    if (model.includes('opus-4-8')) {
+      // Opus 4.8: $5/$25 per MTok (distinct from older opus models)
+      inputPricePerM = 5; outputPricePerM = 25;
+      cacheReadPricePerM = 0.5; cacheWritePricePerM = 6.25;
+    } else if (model.includes('opus')) {
       inputPricePerM = 15; outputPricePerM = 75;
       cacheReadPricePerM = 1.5; cacheWritePricePerM = 18.75;
     } else if (model.includes('haiku')) {

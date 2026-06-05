@@ -166,7 +166,7 @@ export function buildModelGuide(models: DiscoveredModel[], mainModel: string): s
 
   const opusBest = preferredForTier('opus');
   if (opusBest) {
-    lines.push(`  - ${opusBest.id} (${opusBest.displayName}) — HEAVYWEIGHT: complex reasoning, planning, creative writing. Use sparingly.`);
+    lines.push(`  - ${opusBest.id} (${opusBest.displayName}) — HEAVYWEIGHT: superior complex reasoning, planning, creative writing, agentic coding. Adaptive thinking only. No temperature/top_p/top_k.`);
   }
   const sonnetBest = preferredForTier('sonnet');
   if (sonnetBest) {
@@ -182,6 +182,8 @@ export function buildModelGuide(models: DiscoveredModel[], mainModel: string): s
   lines.push('  - Default to the midweight model (sonnet-tier) for most workers.');
   lines.push('  - Use lightweight (haiku-tier) for retrieval, data fetching, and simple transforms.');
   lines.push('  - Use heavyweight (opus-tier) only when the task genuinely requires deep reasoning.');
+  lines.push('  - Opus-tier models (e.g. opus-4-8, opus-4-6) use adaptive thinking only — NEVER set temperature, top_p, or top_k for opus workers.');
+  lines.push('  - If multiple opus models are listed, prefer the newest (opus-4-8 over opus-4-6); opus-4-6 is the fallback when opus-4-8 is unavailable.');
   lines.push(`  - The main agent model is "${mainModel}" — use this as the fallback if unsure.`);
   lines.push('  - Pick model IDs ONLY from the list above. Do not invent newer or older variants.');
 

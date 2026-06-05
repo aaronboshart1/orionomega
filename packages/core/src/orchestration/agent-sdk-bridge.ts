@@ -241,7 +241,7 @@ export const ROLE_MAX_TURNS: Record<CodingRole, number> = {
  * Scanner and reporter disable thinking for pure speed.
  * Debugger uses 'high' by default; upgraded to 'xhigh' via ROLE_THINKING_CONFIG.
  */
-export const ROLE_EFFORT_MAP: Record<CodingRole, 'low' | 'medium' | 'high'> = {
+export const ROLE_EFFORT_MAP: Record<CodingRole, 'low' | 'medium' | 'high' | 'xhigh' | 'max'> = {
   'codebase-scanner': 'low',
   'architect':        'high',
   'implementer':      'medium',
@@ -260,7 +260,7 @@ export interface ThinkingConfig {
   /** Whether extended thinking is enabled for this role. */
   enabled: boolean;
   /** Base effort level (when enabled). */
-  effort: 'low' | 'medium' | 'high' | 'xhigh';
+  effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   /**
    * Optional upgrade function — returns true when complexity warrants
    * upgrading effort from the base to 'xhigh'.
@@ -295,14 +295,28 @@ export const ROLE_THINKING_CONFIG: Record<CodingRole, ThinkingConfig> = {
 /**
  * Maps ThinkingEffort levels to extended-thinking budget_tokens values.
  * Used to set explicit token budgets in the SDK thinking config so that
- * 'xhigh' roles (debugger) get deeper reasoning than the 'high' preset alone.
+ * 'xhigh'/'max' roles get deeper reasoning than the 'high' preset alone.
  *
- * medium=8000, high=16000, xhigh=32000 (disabled → no budget_tokens set).
+ * medium=8000, high=16000, xhigh=32000, max=64000 (disabled → no budget_tokens set).
+ * Opus 4.8 supports up to 128K output tokens, allowing much deeper thinking chains.
  */
-export const EFFORT_TO_BUDGET_TOKENS: Record<'medium' | 'high' | 'xhigh', number> = {
-  medium:  8_000,
-  high:   16_000,
-  xhigh:  32_000,
+export const EFFORT_TO_BUDGET_TOKENS: Record<'medium' | 'high' | 'xhigh' | 'max', number> = {
+  medium:   8_000,
+  high:    16_000,
+  xhigh:   32_000,
+  max:     64_000,
+} as const;
+
+/**
+ * Scaled budget_tokens map for claude-opus-4-8.
+ * Opus 4.8's 128K output capacity allows far deeper thinking chains than earlier models.
+ * medium=16000, high=32000, xhigh=80000, max=128000.
+ */
+export const EFFORT_TO_BUDGET_TOKENS_OPUS_48: Record<'medium' | 'high' | 'xhigh' | 'max', number> = {
+  medium:  16_000,
+  high:    32_000,
+  xhigh:   80_000,
+  max:    128_000,
 } as const;
 
 // ── Section 5.6: Per-Role Token Budget ────────────────────────────────────
@@ -907,9 +921,9 @@ export function createCodingAgent(options: CodingAgentOptions): {
     // 'xhigh' isn't a valid SDK effort value — map to 'high' (SDK handles budget scaling)
     effort = 'high';
   } else {
-    // Map xhigh -> high for SDK compatibility; only low/medium/high are valid effort values
+    // Map xhigh/max -> high for SDK compatibility; only low/medium/high are valid effort values
     const base = thinkingCfg.effort;
-    effort = base === 'xhigh' ? 'high' : base;
+    effort = (base === 'xhigh' || base === 'max') ? 'high' : base as 'low' | 'medium' | 'high';
   }
 
   // Budget cap
@@ -1661,16 +1675,21 @@ export async function executeCodingAgent(
   const resolvedEffort: 'low' | 'medium' | 'high' = (() => {
     if (!thinkingCfg || !thinkingCfg.enabled) return 'low';
     const base = thinkingCfg.effort;
-    return base === 'xhigh' ? 'high' : base; // xhigh → high for SDK compat
+    // xhigh/max → high for SDK effort param compat; budget_tokens carries the extra depth
+    if (base === 'xhigh' || base === 'max') return 'high';
+    return base;
   })();
   const roleEffort = resolvedEffort !== 'low' ? resolvedEffort : undefined;
-  // Budget tokens: derived from effort level (medium=8000, high=16000, xhigh=32000).
-  // Provides fine-grained thinking depth beyond what the effort preset alone expresses.
+  // Budget tokens: derived from effort level using a model-aware map.
+  // Opus 4.8 uses a scaled-up table (up to 128K) to exploit its larger output capacity.
   const thinkingBudgetTokens: number | undefined = (() => {
     if (!thinkingCfg?.enabled) return undefined;
     const e = thinkingCfg.effort;
-    return e in EFFORT_TO_BUDGET_TOKENS
-      ? EFFORT_TO_BUDGET_TOKENS[e as keyof typeof EFFORT_TO_BUDGET_TOKENS]
+    const budgetMap = /claude-opus-4-8/i.test(model)
+      ? EFFORT_TO_BUDGET_TOKENS_OPUS_48
+      : EFFORT_TO_BUDGET_TOKENS;
+    return e in budgetMap
+      ? budgetMap[e as keyof typeof budgetMap]
       : undefined;
   })();
 

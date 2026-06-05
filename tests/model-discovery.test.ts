@@ -20,6 +20,7 @@ function makeModel(id: string, tier: DiscoveredModel['tier'], createdAt = '2025-
 }
 
 const sampleModels: DiscoveredModel[] = [
+  makeModel('claude-opus-4-8', 'opus', '2025-09-01'),
   makeModel('claude-opus-4-6', 'opus', '2025-05-01'),
   makeModel('claude-sonnet-4-6', 'sonnet', '2025-05-01'),
   makeModel('claude-sonnet-4-5-20250514', 'sonnet', '2025-04-01'),
@@ -36,7 +37,7 @@ suite('Model Discovery — pickModelByTier, buildModelGuide');
 section('pickModelByTier — exact tier match');
 {
   const result = pickModelByTier(sampleModels, 'opus');
-  assertEq(result?.id, 'claude-opus-4-6', 'finds opus model');
+  assertEq(result?.id, 'claude-opus-4-8', 'finds newest opus model');
 }
 
 section('pickModelByTier — sonnet returns first sonnet');
@@ -76,12 +77,14 @@ section('buildModelGuide — empty models');
 section('buildModelGuide — with full model list');
 {
   const guide = buildModelGuide(sampleModels, 'claude-sonnet-4-6');
-  assert(guide.includes('claude-opus-4-6'), 'includes opus model');
+  assert(guide.includes('claude-opus-4-8'), 'includes newest opus model');
   assert(guide.includes('claude-sonnet-4-6'), 'includes sonnet model');
   assert(guide.includes('claude-haiku-4-5-20251001'), 'includes haiku model');
   assert(guide.includes('HEAVYWEIGHT'), 'labels opus as heavyweight');
   assert(guide.includes('MIDWEIGHT'), 'labels sonnet as midweight');
   assert(guide.includes('LIGHTWEIGHT'), 'labels haiku as lightweight');
+  assert(guide.includes('opus-4-8'), 'mentions opus-4-8 in selection rules');
+  assert(guide.includes('opus-4-6'), 'mentions opus-4-6 as fallback in selection rules');
 }
 
 section('buildModelGuide — model selection rules');

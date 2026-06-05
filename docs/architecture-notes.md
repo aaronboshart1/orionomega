@@ -16,7 +16,7 @@ This file holds the in-depth architecture-decision and task-history notes that u
 
 **Sub-planning** (`Planner.subPlan` in `packages/core/src/orchestration/planner.ts`):
 - Accepts `(macroNode, repoPreamble, phaseBody)` — the body is resolved at expansion time from the trusted preloaded `SpecReference` list, NOT from planner output.
-- Reuses `plan()`'s `discoverModels` + `coerceModel` pipeline so sub-DAG node model ids are validated/coerced identically (prevents "claude-opus-4-7" hallucinations from crashing Claude Code processes).
+- Reuses `plan()`'s `discoverModels` + `coerceModel` pipeline so sub-DAG node model ids are validated/coerced identically (prevents hallucinated model IDs like "claude-opus-4-9" from crashing Claude Code processes; both "claude-opus-4-6" and "claude-opus-4-8" are valid and will be coerced to the correct discovered ID).
 - Refuses external dependencies, duplicate sub-DAG ids, and nested `MACRO_NODE` (anti-recursion).
 - Prefixes every sub-node id with `<phaseId>__` so splices remain unique across phases.
 

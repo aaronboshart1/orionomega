@@ -57,6 +57,7 @@ function makeModel(id: string): DiscoveredModel {
 }
 
 const MOCK_MODELS: DiscoveredModel[] = [
+  makeModel('claude-opus-4-8'),
   makeModel('claude-opus-4-6'),
   makeModel('claude-sonnet-4-6'),
   makeModel('claude-haiku-4-5'),
@@ -185,7 +186,7 @@ section('4. Upgrade conditions');
   // architect upgrades when fileCount > 100 OR avgComplexity >= 2.5 (majority 'high')
   // highProfile has 120 files → upgrades
   const result = resolver.resolve('architect', highCtx);
-  assertEq(result.model, 'claude-opus-4-6', '4.1 architect upgrades to opus with >100 files');
+  assertEq(result.model, 'claude-opus-4-8', '4.1 architect upgrades to opus with >100 files');
 }
 
 {
@@ -196,7 +197,7 @@ section('4. Upgrade conditions');
 
   // implementer upgrades when high complexity AND some files > 500 LOC
   const result = resolver.resolve('implementer', highCtx);
-  assertEq(result.model, 'claude-opus-4-6', '4.2 implementer upgrades to opus with high complexity + large files');
+  assertEq(result.model, 'claude-opus-4-8', '4.2 implementer upgrades to opus with high complexity + large files');
 }
 
 {
@@ -208,7 +209,7 @@ section('4. Upgrade conditions');
   // stitcher upgrades when conflictCount > 3
   const conflictCtx = { profile: mediumProfile, conflictCount: 5 };
   const result = resolver.resolve('stitcher', conflictCtx);
-  assertEq(result.model, 'claude-opus-4-6', '4.3 stitcher upgrades to opus with >3 conflicts');
+  assertEq(result.model, 'claude-opus-4-8', '4.3 stitcher upgrades to opus with >3 conflicts');
 }
 
 {
@@ -232,7 +233,7 @@ section('4. Upgrade conditions');
   // reviewer upgrades when securityRelevant=true
   const securityCtx = { profile: mediumProfile, securityRelevant: true };
   const result = resolver.resolve('reviewer', securityCtx);
-  assertEq(result.model, 'claude-opus-4-6', '4.5 reviewer upgrades to opus for security-relevant code');
+  assertEq(result.model, 'claude-opus-4-8', '4.5 reviewer upgrades to opus for security-relevant code');
 }
 
 {
@@ -399,7 +400,7 @@ section('9. Debugger role upgrade on retry');
 
   // debugger upgrades to opus at retryAttempt >= 1
   const r1 = resolver.resolve('debugger', { profile: mediumProfile, retryAttempt: 1 });
-  assertEq(r1.model, 'claude-opus-4-6', '9.2 debugger upgrades to opus at retry >= 1');
+  assertEq(r1.model, 'claude-opus-4-8', '9.2 debugger upgrades to opus at retry >= 1');
 }
 
 {
@@ -409,7 +410,7 @@ section('9. Debugger role upgrade on retry');
   });
 
   const r2 = resolver.resolve('debugger', { profile: mediumProfile, retryAttempt: 2 });
-  assertEq(r2.model, 'claude-opus-4-6', '9.3 debugger stays at opus for retry >= 2');
+  assertEq(r2.model, 'claude-opus-4-8', '9.3 debugger stays at opus for retry >= 2');
 }
 
 // ── Section 10: Reviewer always-opus ─────────────────────────────────────────
@@ -424,7 +425,7 @@ section('10. Reviewer always resolves to opus');
 
   // reviewer always resolves to opus regardless of context
   const r = resolver.resolve('reviewer', medCtx);
-  assertEq(r.model, 'claude-opus-4-6', '10.1 reviewer always resolves to opus (no context)');
+  assertEq(r.model, 'claude-opus-4-8', '10.1 reviewer always resolves to opus (no context)');
 }
 
 {
@@ -434,7 +435,7 @@ section('10. Reviewer always resolves to opus');
   });
 
   const r = resolver.resolve('reviewer', { profile: lowProfile });
-  assertEq(r.model, 'claude-opus-4-6', '10.2 reviewer always resolves to opus (low-complexity profile)');
+  assertEq(r.model, 'claude-opus-4-8', '10.2 reviewer always resolves to opus (low-complexity profile)');
 }
 
 // ── Summary ───────────────────────────────────────────────────────────────────

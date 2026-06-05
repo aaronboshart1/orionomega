@@ -9,7 +9,11 @@
 
 /** A message in the Anthropic conversation format. */
 export interface AnthropicMessage {
-  role: 'user' | 'assistant';
+  /**
+   * 'system' mid-conversation messages are only valid for claude-opus-4-8+.
+   * They must follow a user turn and may not appear consecutively.
+   */
+  role: 'user' | 'assistant' | 'system';
   content: string | ContentBlock[];
 }
 
@@ -56,7 +60,29 @@ export interface CreateMessageOptions {
   maxTokens?: number;
   temperature?: number;
   stream?: boolean;
-  thinking?: { type: 'enabled'; budget_tokens: number };
+  thinking?:
+    | { type: 'enabled'; budget_tokens: number }
+    | {
+        type: 'adaptive';
+        /** Ceiling on thinking tokens. Omit to let the model self-regulate. */
+        budget_tokens?: number;
+        /**
+         * How thinking is surfaced in the response.
+         * 'omitted' (default on opus-4-8) hides the thinking blocks entirely.
+         * 'summarized' returns a brief summary instead of the raw thinking.
+         */
+        display?: 'omitted' | 'summarized';
+      };
+  /**
+   * Output configuration. Currently supports the `effort` preset for opus-4-8.
+   * When `effort` is 'xhigh' or 'max', max_tokens is auto-raised to at least 64k.
+   */
+  outputConfig?: { effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' };
+  /**
+   * Enable fast-mode for claude-opus-4-8. Requires the model to be opus-4-8;
+   * silently ignored for all other models.
+   */
+  speed?: 'fast';
   /**
    * Optional assistant prefill. When set, an extra
    * `{ role: 'assistant', content: <prefill> }` message is appended to the
@@ -93,7 +119,7 @@ export interface MessageResponse {
   model: string;
   role: 'assistant';
   content: ContentBlock[];
-  stop_reason: 'end_turn' | 'tool_use' | 'max_tokens';
+  stop_reason: 'end_turn' | 'tool_use' | 'max_tokens' | 'refusal';
   usage: TokenUsage;
 }
 
@@ -112,6 +138,8 @@ const log = createLogger('anthropic-api');
  */
 export function maxOutputTokensForModel(model: string): number {
   const lower = model.toLowerCase();
+  // Opus 4.8 supports 128K output tokens
+  if (lower.includes('opus-4-8')) return 131_072;
   // Opus and Sonnet 4+ support 16K output tokens
   if (lower.includes('opus') || lower.includes('sonnet')) return 16_384;
   // Haiku and unknown models — 8K
@@ -137,6 +165,38 @@ function parseRetryAfterMs(headerValue: string | null): number | null {
   const seconds = Number(headerValue.trim());
   if (!Number.isFinite(seconds) || seconds <= 0) return null;
   return Math.ceil(seconds * 1000);
+}
+
+/** Returns true when the model is claude-opus-4-8 (or a sub-version like 4-8-1). */
+function isOpus48(model: string): boolean {
+  return /claude-opus-4-8/i.test(model);
+}
+
+/**
+ * Validates mid-conversation system messages for opus-4-8.
+ * Rules:
+ *   - Must follow a user turn (not the first message, not after assistant)
+ *   - No consecutive system messages
+ * Throws a descriptive Error if any rule is violated.
+ */
+function validateMidConversationSystemMessages(messages: AnthropicMessage[]): void {
+  let prevRole: string | null = null;
+  for (let i = 0; i < messages.length; i++) {
+    const { role } = messages[i];
+    if (role !== 'system') {
+      prevRole = role;
+      continue;
+    }
+    if (prevRole === null) {
+      throw new Error('Mid-conversation system message cannot be the first message in the array');
+    }
+    if (prevRole !== 'user') {
+      throw new Error(
+        `Mid-conversation system message at index ${i} must follow a user turn (previous role: ${prevRole})`,
+      );
+    }
+    prevRole = 'system';
+  }
 }
 
 /**
@@ -170,7 +230,7 @@ export class AnthropicClient {
     });
 
     const body = this.buildRequestBody(options, false);
-    const response = await this.fetchWithRetry(body);
+    const response = await this.fetchWithRetry(body, this.buildBetaHeaders(options));
     const data = await response.json();
 
     if (!response.ok) {
@@ -215,7 +275,7 @@ export class AnthropicClient {
     });
 
     const body = this.buildRequestBody(options, true);
-    const response = await this.fetchWithRetry(body);
+    const response = await this.fetchWithRetry(body, this.buildBetaHeaders(options));
 
     if (!response.ok) {
       let errorMsg: string;
@@ -300,21 +360,44 @@ export class AnthropicClient {
     options: CreateMessageOptions,
     stream: boolean,
   ): Record<string, unknown> {
+    const opus48 = isOpus48(options.model);
+
+    // Mid-conversation system messages: validate for opus-4-8, strip for older models.
+    let rawMessages = options.messages;
+    if (rawMessages.some((m) => m.role === 'system')) {
+      if (opus48) {
+        validateMidConversationSystemMessages(rawMessages);
+      } else {
+        log.warn(
+          'Mid-conversation system messages are only supported on claude-opus-4-8; stripping them',
+        );
+        rawMessages = rawMessages.filter((m) => m.role !== 'system');
+      }
+    }
+
     // When an assistant prefill is supplied, append a final assistant
     // message — Anthropic constrains the response to start with that text.
     const messages = options.assistantPrefill
       ? [
-          ...options.messages,
+          ...rawMessages,
           {
             role: 'assistant' as const,
             content: options.assistantPrefill,
           },
         ]
-      : options.messages;
+      : rawMessages;
+
+    // Effort config — auto-raise max_tokens for xhigh/max effort.
+    const effort = options.outputConfig?.effort;
+    let maxTokens = options.maxTokens ?? 8192;
+    if ((effort === 'xhigh' || effort === 'max') && maxTokens < 64_000) {
+      maxTokens = 64_000;
+    }
+
     const body: Record<string, unknown> = {
       model: options.model,
       messages,
-      max_tokens: options.maxTokens ?? 8192,
+      max_tokens: maxTokens,
       stream,
     };
 
@@ -369,10 +452,47 @@ export class AnthropicClient {
       body.messages = msgs;
     }
 
-    if (options.temperature !== undefined) body.temperature = options.temperature;
-    if (options.thinking) body.thinking = options.thinking;
+    // Sampling parameters: not valid for opus-4-8 (returns 400).
+    if (options.temperature !== undefined) {
+      if (opus48) {
+        log.warn('Ignoring temperature — not supported by claude-opus-4-8');
+      } else {
+        body.temperature = options.temperature;
+      }
+    }
+
+    // Thinking config: opus-4-8 only accepts adaptive mode.
+    if (options.thinking) {
+      if (opus48) {
+        const t = options.thinking;
+        body.thinking = {
+          type: 'adaptive',
+          ...(t.budget_tokens !== undefined ? { budget_tokens: t.budget_tokens } : {}),
+          ...('display' in t && t.display ? { display: t.display } : {}),
+        };
+      } else {
+        body.thinking = options.thinking;
+      }
+    }
+
+    // Output configuration (opus-4-8 effort preset).
+    if (options.outputConfig?.effort) {
+      body.output_config = { effort: options.outputConfig.effort };
+    }
 
     return body;
+  }
+
+  /**
+   * Returns the list of `anthropic-beta` header values required for this request.
+   * An empty array means no beta header should be sent.
+   */
+  private buildBetaHeaders(options: CreateMessageOptions): string[] {
+    const headers: string[] = [];
+    if (options.speed === 'fast' && isOpus48(options.model)) {
+      headers.push('fast-mode-2026-02-01');
+    }
+    return headers;
   }
 
   /**
@@ -382,22 +502,29 @@ export class AnthropicClient {
    * a positive integer of seconds) is honoured by sleeping for at least that
    * long. The fixed `RETRY_DELAYS` schedule remains the floor — we take the
    * max of the two so a server hint never *shortens* our backoff.
+   *
+   * @param betaHeaders - Extra anthropic-beta feature names to include. Empty = no beta header.
    */
   private async fetchWithRetry(
     body: Record<string, unknown>,
+    betaHeaders: string[] = [],
   ): Promise<Response> {
     let lastError: Error | undefined;
+
+    const headers: Record<string, string> = {
+      'x-api-key': this.apiKey,
+      'anthropic-version': API_VERSION,
+      'content-type': 'application/json',
+    };
+    if (betaHeaders.length > 0) {
+      headers['anthropic-beta'] = betaHeaders.join(',');
+    }
 
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       try {
         const response = await fetch(API_URL, {
           method: 'POST',
-          headers: {
-            'x-api-key': this.apiKey,
-            'anthropic-version': API_VERSION,
-            'anthropic-beta': 'prompt-caching-2024-07-31',
-            'content-type': 'application/json',
-          },
+          headers,
           body: JSON.stringify(body),
         });
 
