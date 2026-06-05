@@ -56,7 +56,7 @@ export interface CreateMessageOptions {
   maxTokens?: number;
   temperature?: number;
   stream?: boolean;
-  thinking?: { type: 'enabled'; budget_tokens: number };
+  thinking?: { type: 'enabled'; budget_tokens: number } | { type: 'adaptive' };
   /**
    * Optional assistant prefill. When set, an extra
    * `{ role: 'assistant', content: <prefill> }` message is appended to the
@@ -93,7 +93,7 @@ export interface MessageResponse {
   model: string;
   role: 'assistant';
   content: ContentBlock[];
-  stop_reason: 'end_turn' | 'tool_use' | 'max_tokens';
+  stop_reason: 'end_turn' | 'tool_use' | 'max_tokens' | 'refusal';
   usage: TokenUsage;
 }
 
@@ -115,6 +115,24 @@ export function maxOutputTokensForModel(model: string): number {
   // Opus and Sonnet 4+ support 16K output tokens
   if (lower.includes('opus') || lower.includes('sonnet')) return 16_384;
   // Haiku and unknown models — 8K
+  return 8_192;
+}
+
+/** True for Claude Opus 4.8 (e.g. `claude-opus-4-8`, dated variants). */
+export function isOpus48(model: string): boolean {
+  return /opus-4-8/i.test(model);
+}
+
+/**
+ * Hard per-model output-token ceiling enforced by the Anthropic API. Requests
+ * that exceed this return a 400. Opus 4.8 accepts up to 128 000 (NOT 131 072 —
+ * that exact value is what produced the observed `max_tokens > 128000` 400).
+ * Other Opus/Sonnet 4.x cap at 64 000; everything else at 8 192.
+ */
+export function modelMaxOutputCeiling(model: string): number {
+  const lower = model.toLowerCase();
+  if (isOpus48(model)) return 128_000;
+  if (lower.includes('opus') || lower.includes('sonnet')) return 64_000;
   return 8_192;
 }
 
@@ -314,7 +332,12 @@ export class AnthropicClient {
     const body: Record<string, unknown> = {
       model: options.model,
       messages,
-      max_tokens: options.maxTokens ?? 8192,
+      // Clamp to the model's hard ceiling — Opus 4.8 returns 400 for any
+      // max_tokens above 128 000 (see modelMaxOutputCeiling).
+      max_tokens: Math.min(
+        options.maxTokens ?? 8192,
+        modelMaxOutputCeiling(options.model),
+      ),
       stream,
     };
 
@@ -369,8 +392,17 @@ export class AnthropicClient {
       body.messages = msgs;
     }
 
-    if (options.temperature !== undefined) body.temperature = options.temperature;
-    if (options.thinking) body.thinking = options.thinking;
+    // Opus 4.8 rejects sampling params (temperature/top_p/top_k → 400) and only
+    // supports adaptive thinking (manual budget_tokens → 400). Sanitise both so
+    // callers can keep passing their usual options regardless of model.
+    if (options.temperature !== undefined && !isOpus48(options.model)) {
+      body.temperature = options.temperature;
+    }
+    if (options.thinking) {
+      body.thinking = isOpus48(options.model)
+        ? { type: 'adaptive' }
+        : options.thinking;
+    }
 
     return body;
   }

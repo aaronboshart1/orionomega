@@ -274,10 +274,15 @@ export const ROLE_THINKING_CONFIG: Record<CodingRole, ThinkingConfig> = {
 
 /**
  * Maps ThinkingEffort levels to extended-thinking budget_tokens values.
- * Used to set explicit token budgets in the SDK thinking config so that
- * 'xhigh' roles (debugger) get deeper reasoning than the 'high' preset alone.
  *
- * medium=8000, high=16000, xhigh=32000 (disabled → no budget_tokens set).
+ * @deprecated No longer wired into the coding query options. The claude-agent-sdk
+ * (0.3.x) drives thinking depth through `effort` and adaptive thinking
+ * (`thinking: { type: 'adaptive' }`), which takes NO budget field — Opus 4.8
+ * returns a 400 if a manual budget is sent alongside adaptive thinking. Do not
+ * reintroduce these values into the SDK thinking config. Retained only as a
+ * reference table for effort↔budget intent.
+ *
+ * medium=8000, high=16000, xhigh=32000.
  */
 export const EFFORT_TO_BUDGET_TOKENS: Record<'medium' | 'high' | 'xhigh', number> = {
   medium:  8_000,
@@ -1389,7 +1394,7 @@ export async function executeAgent(
       // Assistant message — collect text and tool use
       if (message.type === 'assistant') {
         const assistantMsg = message as SDKAssistantMessage;
-        const usage = (assistantMsg.message as Record<string, unknown>)?.usage as
+        const usage = (assistantMsg.message as unknown as Record<string, unknown>)?.usage as
           { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number } | undefined;
         if (usage) {
           totalInputTokens += usage.input_tokens ?? 0;
@@ -1633,23 +1638,17 @@ export async function executeCodingAgent(
   // Max turns: from role map when available (ROLE_MAX_TURNS), otherwise unlimited
   const maxTurns: number | undefined = codingRole ? ROLE_MAX_TURNS[codingRole] : undefined;
 
-  // Effort / thinking budget: per-role from ROLE_THINKING_CONFIG
+  // Effort: per-role from ROLE_THINKING_CONFIG. The claude-agent-sdk (0.3.x)
+  // accepts 'low'|'medium'|'high'|'xhigh'|'max' and silently downgrades any
+  // level the selected model doesn't support — so we pass the role's true
+  // effort through (xhigh is no longer collapsed to high) to honour deep
+  // reasoning roles like the debugger on Opus 4.7+/4.8.
   const thinkingCfg = codingRole ? ROLE_THINKING_CONFIG[codingRole] : undefined;
-  const resolvedEffort: 'low' | 'medium' | 'high' = (() => {
+  const resolvedEffort: 'low' | 'medium' | 'high' | 'xhigh' = (() => {
     if (!thinkingCfg || !thinkingCfg.enabled) return 'low';
-    const base = thinkingCfg.effort;
-    return base === 'xhigh' ? 'high' : base; // xhigh → high for SDK compat
+    return thinkingCfg.effort;
   })();
   const roleEffort = resolvedEffort !== 'low' ? resolvedEffort : undefined;
-  // Budget tokens: derived from effort level (medium=8000, high=16000, xhigh=32000).
-  // Provides fine-grained thinking depth beyond what the effort preset alone expresses.
-  const thinkingBudgetTokens: number | undefined = (() => {
-    if (!thinkingCfg?.enabled) return undefined;
-    const e = thinkingCfg.effort;
-    return e in EFFORT_TO_BUDGET_TOKENS
-      ? EFFORT_TO_BUDGET_TOKENS[e as keyof typeof EFFORT_TO_BUDGET_TOKENS]
-      : undefined;
-  })();
 
   log.info(`Starting coding agent: "${task.slice(0, 80)}..."`, {
     model, cwd, tools: allowedTools.length,
@@ -1869,11 +1868,10 @@ export async function executeCodingAgent(
         ...(maxTurns !== undefined ? { maxTurns } : {}),
         systemPrompt,
         // P4: Adaptive thinking — Claude decides when and how much to think.
-        // budget_tokens sets the per-role ceiling: medium=8000, high=16000, xhigh=32000.
-        thinking: {
-          type: 'adaptive',
-          ...(thinkingBudgetTokens !== undefined ? { budget_tokens: thinkingBudgetTokens } : {}),
-        },
+        // Depth is governed by `effort` (above); adaptive thinking takes no
+        // budget field. Opus 4.8 (and the SDK's ThinkingAdaptive type) reject a
+        // manual budget alongside `type: 'adaptive'`, so none is sent.
+        thinking: { type: 'adaptive' },
         // P2: AbortController for cooperative cancellation
         abortController,
         env: {
@@ -1911,7 +1909,7 @@ export async function executeCodingAgent(
       if (message.type === 'assistant') {
         const assistantMsg = message as SDKAssistantMessage;
         // Fix: extract per-turn token usage so we can report total costs for CODING_AGENT nodes.
-        const usage = (assistantMsg.message as Record<string, unknown>)?.usage as
+        const usage = (assistantMsg.message as unknown as Record<string, unknown>)?.usage as
           { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number } | undefined;
         if (usage) {
           totalInputTokens += usage.input_tokens ?? 0;

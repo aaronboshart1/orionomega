@@ -1,0 +1,2 @@
+- [Claude Opus 4.8 API constraints](opus-4-8-constraints.md) — 4.8 rejects temperature/top_p/top_k, manual thinking budget, and max_tokens>128000; adaptive thinking only.
+- [claude-agent-sdk thinking & effort](claude-agent-sdk-thinking.md) — SDK 0.3.x: adaptive thinking takes NO budget field; effort accepts xhigh/max and downgrades per-model.
