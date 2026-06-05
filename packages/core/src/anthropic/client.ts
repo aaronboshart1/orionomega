@@ -139,7 +139,7 @@ const log = createLogger('anthropic-api');
 export function maxOutputTokensForModel(model: string): number {
   const lower = model.toLowerCase();
   // Opus 4.8 supports 128K output tokens
-  if (lower.includes('opus-4-8')) return 131_072;
+  if (lower.includes('opus-4-8')) return 128_000;
   // Opus and Sonnet 4+ support 16K output tokens
   if (lower.includes('opus') || lower.includes('sonnet')) return 16_384;
   // Haiku and unknown models — 8K

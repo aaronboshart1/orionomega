@@ -4,7 +4,7 @@
  * Opus 4.8 compatibility tests for the Anthropic client module.
  *
  * Covers:
- * - maxOutputTokensForModel() returns 131072 (128K) for claude-opus-4-8
+ * - maxOutputTokensForModel() returns 128000 (128K) for claude-opus-4-8
  * - maxOutputTokensForModel() backward compatibility for opus-4-6, sonnet-4-6, haiku-4-5
  * - MessageResponse.stop_reason accepts 'refusal' (new Opus 4.8 stop reason)
  * - CreateMessageOptions.thinking accepts { type: 'adaptive' } (Opus 4.8 thinking style)
@@ -19,17 +19,17 @@ import type { MessageResponse, CreateMessageOptions } from '../client.js';
 // ── maxOutputTokensForModel ────────────────────────────────────────────────────
 
 describe('maxOutputTokensForModel — Opus 4.8 (128K output)', () => {
-  it('returns 131072 for claude-opus-4-8', () => {
-    expect(maxOutputTokensForModel('claude-opus-4-8')).toBe(131_072);
+  it('returns 128000 for claude-opus-4-8', () => {
+    expect(maxOutputTokensForModel('claude-opus-4-8')).toBe(128_000);
   });
 
-  it('returns 131072 for a timestamped claude-opus-4-8 variant', () => {
+  it('returns 128000 for a timestamped claude-opus-4-8 variant', () => {
     // Anthropic appends a date suffix to model IDs; the check must still match.
-    expect(maxOutputTokensForModel('claude-opus-4-8-20260601')).toBe(131_072);
+    expect(maxOutputTokensForModel('claude-opus-4-8-20260601')).toBe(128_000);
   });
 
   it('is case-insensitive for the opus-4-8 check', () => {
-    expect(maxOutputTokensForModel('Claude-Opus-4-8')).toBe(131_072);
+    expect(maxOutputTokensForModel('Claude-Opus-4-8')).toBe(128_000);
   });
 });
 

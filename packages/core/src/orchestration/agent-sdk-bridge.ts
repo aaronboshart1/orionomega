@@ -307,17 +307,8 @@ export const EFFORT_TO_BUDGET_TOKENS: Record<'medium' | 'high' | 'xhigh' | 'max'
   max:     64_000,
 } as const;
 
-/**
- * Scaled budget_tokens map for claude-opus-4-8.
- * Opus 4.8's 128K output capacity allows far deeper thinking chains than earlier models.
- * medium=16000, high=32000, xhigh=80000, max=128000.
- */
-export const EFFORT_TO_BUDGET_TOKENS_OPUS_48: Record<'medium' | 'high' | 'xhigh' | 'max', number> = {
-  medium:  16_000,
-  high:    32_000,
-  xhigh:   80_000,
-  max:    128_000,
-} as const;
+// REMOVED: EFFORT_TO_BUDGET_TOKENS_OPUS_48 — Opus 4.8 uses adaptive thinking only.
+// Adaptive thinking is self-regulating; budget_tokens must NOT be sent for opus-4-8.
 
 // ── Section 5.6: Per-Role Token Budget ────────────────────────────────────
 
@@ -1437,7 +1428,7 @@ export async function executeAgent(
               output += block.text + '\n';
               onProgress?.({
                 type: 'status',
-                message: block.text.trim().slice(0, 100),
+                message: block.text.trim().slice(0, 500),
                 progress: Math.min(progressEstimate, 90),
               });
             }
@@ -1680,16 +1671,14 @@ export async function executeCodingAgent(
     return base;
   })();
   const roleEffort = resolvedEffort !== 'low' ? resolvedEffort : undefined;
-  // Budget tokens: derived from effort level using a model-aware map.
-  // Opus 4.8 uses a scaled-up table (up to 128K) to exploit its larger output capacity.
+  // Budget tokens: derived from effort level using the standard map.
+  // Opus 4.8 uses adaptive thinking only — budget_tokens must NOT be set for that model.
   const thinkingBudgetTokens: number | undefined = (() => {
     if (!thinkingCfg?.enabled) return undefined;
+    if (/claude-opus-4-8/i.test(model)) return undefined;
     const e = thinkingCfg.effort;
-    const budgetMap = /claude-opus-4-8/i.test(model)
-      ? EFFORT_TO_BUDGET_TOKENS_OPUS_48
-      : EFFORT_TO_BUDGET_TOKENS;
-    return e in budgetMap
-      ? budgetMap[e as keyof typeof budgetMap]
+    return e in EFFORT_TO_BUDGET_TOKENS
+      ? EFFORT_TO_BUDGET_TOKENS[e as keyof typeof EFFORT_TO_BUDGET_TOKENS]
       : undefined;
   })();
 
@@ -1911,7 +1900,8 @@ export async function executeCodingAgent(
         ...(maxTurns !== undefined ? { maxTurns } : {}),
         systemPrompt,
         // P4: Adaptive thinking — Claude decides when and how much to think.
-        // budget_tokens sets the per-role ceiling: medium=8000, high=16000, xhigh=32000.
+        // budget_tokens is only included for non-opus-4-8 models; opus-4-8 requires
+        // { type: 'adaptive' } with NO budget_tokens (adaptive thinking is self-regulating).
         thinking: {
           type: 'adaptive',
           ...(thinkingBudgetTokens !== undefined ? { budget_tokens: thinkingBudgetTokens } : {}),
@@ -1967,7 +1957,7 @@ export async function executeCodingAgent(
               const thinkingText = (block as { thinking: string }).thinking;
               onProgress?.({
                 type: 'thinking',
-                message: thinkingText.slice(0, 100),
+                message: thinkingText.slice(0, 1000),
                 thinking: thinkingText,
               });
             }
