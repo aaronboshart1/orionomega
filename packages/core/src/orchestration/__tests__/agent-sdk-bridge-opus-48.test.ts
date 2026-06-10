@@ -22,6 +22,9 @@ import {
   classifyError,
   computeBackoff,
   RETRY_CONFIG,
+  resolveThinkingEffort,
+  createCodingAgent,
+  type ThinkingConfig,
 } from '../agent-sdk-bridge.js';
 
 // ── EFFORT_TO_BUDGET_TOKENS ───────────────────────────────────────────────────
@@ -263,5 +266,82 @@ describe('computeBackoff', () => {
     for (let i = 0; i < 5; i++) {
       expect(computeBackoff(i)).toBeGreaterThanOrEqual(RETRY_CONFIG.baseDelayMs);
     }
+  });
+});
+
+// ── resolveThinkingEffort ─────────────────────────────────────────────────────
+
+describe('resolveThinkingEffort', () => {
+  it("maps 'max' down to 'xhigh' (the SDK ceiling)", () => {
+    const cfg: ThinkingConfig = { enabled: true, effort: 'max' };
+    expect(resolveThinkingEffort(cfg)).toBe('xhigh');
+  });
+
+  it("preserves 'xhigh' (never collapses to 'high')", () => {
+    const cfg: ThinkingConfig = { enabled: true, effort: 'xhigh' };
+    expect(resolveThinkingEffort(cfg)).toBe('xhigh');
+  });
+
+  it("passes 'high' and 'medium' through unchanged", () => {
+    expect(resolveThinkingEffort({ enabled: true, effort: 'high' })).toBe('high');
+    expect(resolveThinkingEffort({ enabled: true, effort: 'medium' })).toBe('medium');
+  });
+
+  it("resolves disabled thinking to 'low'", () => {
+    expect(resolveThinkingEffort({ enabled: false, effort: 'xhigh' })).toBe('low');
+  });
+
+  it("resolves missing config to 'low'", () => {
+    expect(resolveThinkingEffort(undefined)).toBe('low');
+  });
+
+  it("upgrades to 'xhigh' when upgradeToXhigh matches the complexity tier", () => {
+    const cfg: ThinkingConfig = {
+      enabled: true,
+      effort: 'high',
+      upgradeToXhigh: (tier) => tier === 'epic',
+    };
+    expect(resolveThinkingEffort(cfg, 'epic')).toBe('xhigh');
+    expect(resolveThinkingEffort(cfg, 'small')).toBe('high');
+    // No tier supplied → no upgrade.
+    expect(resolveThinkingEffort(cfg)).toBe('high');
+  });
+});
+
+// ── createCodingAgent — effort resolution ─────────────────────────────────────
+
+describe('createCodingAgent — thinking effort (Task #226)', () => {
+  const baseOptions = {
+    task: 'fix the bug',
+    model: 'claude-opus-4-8',
+    cwd: '/tmp/ws',
+  };
+
+  it("preserves 'xhigh' for the debugger role (no longer collapsed to 'high')", () => {
+    const agent = createCodingAgent({ ...baseOptions, role: 'debugger' });
+    expect(agent.effort).toBe('xhigh');
+  });
+
+  it("upgrades the architect to 'xhigh' for epic-tier complexity", () => {
+    const agent = createCodingAgent({
+      ...baseOptions,
+      role: 'architect',
+      complexityTier: 'epic',
+    });
+    expect(agent.effort).toBe('xhigh');
+  });
+
+  it("keeps the architect at 'high' for medium-tier complexity", () => {
+    const agent = createCodingAgent({
+      ...baseOptions,
+      role: 'architect',
+      complexityTier: 'medium',
+    });
+    expect(agent.effort).toBe('high');
+  });
+
+  it("resolves a thinking-disabled role (codebase-scanner) to 'low'", () => {
+    const agent = createCodingAgent({ ...baseOptions, role: 'codebase-scanner' });
+    expect(agent.effort).toBe('low');
   });
 });

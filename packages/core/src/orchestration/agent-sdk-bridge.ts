@@ -293,6 +293,34 @@ export const ROLE_THINKING_CONFIG: Record<CodingRole, ThinkingConfig> = {
 };
 
 /**
+ * Resolve the `effort` level to pass to the claude-agent-sdk for a coding role.
+ *
+ * Shared by both {@link createCodingAgent} and {@link executeCodingAgent} so the
+ * two effort-resolution paths cannot drift. The SDK bridge tops out at 'xhigh':
+ * the model-side 'max' effort is mapped down to 'xhigh' (the SDK ceiling), and
+ * 'xhigh' is preserved (never collapsed to 'high') so deep-reasoning roles like
+ * the debugger reason as deeply as configured on Opus 4.7+/4.8. Disabled or
+ * missing thinking config resolves to 'low'.
+ *
+ * @param thinkingCfg - Role thinking config from {@link ROLE_THINKING_CONFIG}.
+ * @param complexityTier - Optional codebase complexity tier. When the config
+ *   defines an `upgradeToXhigh` predicate and it matches the tier, the effort is
+ *   upgraded to 'xhigh' regardless of the base level.
+ * @returns The SDK-compatible effort level.
+ */
+export function resolveThinkingEffort(
+  thinkingCfg: ThinkingConfig | undefined,
+  complexityTier?: 'trivial' | 'small' | 'medium' | 'large' | 'epic',
+): 'low' | 'medium' | 'high' | 'xhigh' {
+  if (!thinkingCfg || !thinkingCfg.enabled) return 'low';
+  if (complexityTier !== undefined && thinkingCfg.upgradeToXhigh?.(complexityTier)) {
+    return 'xhigh';
+  }
+  // The SDK bridge tops out at 'xhigh'; map the model-side 'max' effort down.
+  return thinkingCfg.effort === 'max' ? 'xhigh' : thinkingCfg.effort;
+}
+
+/**
  * Maps ThinkingEffort levels to extended-thinking budget_tokens values.
  *
  * @deprecated No longer wired into the coding query options. The claude-agent-sdk
@@ -885,7 +913,7 @@ export interface CodingAgentOptions {
 export function createCodingAgent(options: CodingAgentOptions): {
   allowedTools: string[];
   maxTurns: number;
-  effort: 'low' | 'medium' | 'high';
+  effort: 'low' | 'medium' | 'high' | 'xhigh';
   maxBudgetUsd: number | undefined;
   securityHook: (toolName: string, toolInput: Record<string, unknown>) => HookDecision;
   systemPromptConfig: { type: 'preset'; preset: 'claude_code'; append?: string } | string;
@@ -907,19 +935,11 @@ export function createCodingAgent(options: CodingAgentOptions): {
   // Max turns
   const maxTurns = ROLE_MAX_TURNS[role] ?? 30;
 
-  // Thinking / effort
+  // Thinking / effort — shared with executeCodingAgent via resolveThinkingEffort
+  // so the two paths can't drift: 'xhigh' is preserved and 'max' maps down to
+  // 'xhigh' (the SDK ceiling) instead of collapsing both to 'high'.
   const thinkingCfg = ROLE_THINKING_CONFIG[role];
-  let effort: 'low' | 'medium' | 'high';
-  if (!thinkingCfg.enabled) {
-    effort = 'low';
-  } else if (thinkingCfg.upgradeToXhigh?.(complexityTier)) {
-    // 'xhigh' isn't a valid SDK effort value — map to 'high' (SDK handles budget scaling)
-    effort = 'high';
-  } else {
-    // Map xhigh/max -> high for SDK compatibility; only low/medium/high are valid effort values
-    const base = thinkingCfg.effort;
-    effort = (base === 'xhigh' || base === 'max') ? 'high' : base as 'low' | 'medium' | 'high';
-  }
+  const effort = resolveThinkingEffort(thinkingCfg, complexityTier);
 
   // Budget cap
   const roleBudget = ROLE_TOKEN_BUDGET[role];
@@ -1671,11 +1691,7 @@ export async function executeCodingAgent(
   // effort through (xhigh is no longer collapsed to high) to honour deep
   // reasoning roles like the debugger on Opus 4.7+/4.8.
   const thinkingCfg = codingRole ? ROLE_THINKING_CONFIG[codingRole] : undefined;
-  const resolvedEffort: 'low' | 'medium' | 'high' | 'xhigh' = (() => {
-    if (!thinkingCfg || !thinkingCfg.enabled) return 'low';
-    // The SDK bridge tops out at 'xhigh'; map the model-side 'max' effort down.
-    return thinkingCfg.effort === 'max' ? 'xhigh' : thinkingCfg.effort;
-  })();
+  const resolvedEffort = resolveThinkingEffort(thinkingCfg);
   const roleEffort = resolvedEffort !== 'low' ? resolvedEffort : undefined;
 
   log.info(`Starting coding agent: "${task.slice(0, 80)}..."`, {
