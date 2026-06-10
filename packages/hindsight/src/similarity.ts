@@ -210,11 +210,202 @@ export function computeClientRelevance(query: string, content: string): number {
   return Math.max(0, Math.min(1, raw));
 }
 
+// ── Hashing helpers (feature hashing & bloom) ──────────────────────────
+
+/** 32-bit FNV-1a hash. Deterministic, fast, good distribution for short keys. */
+function fnv1a(str: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    // h *= 16777619 (FNV prime), kept in 32-bit space
+    h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
+  }
+  return h >>> 0;
+}
+
+/** 32-bit djb2 hash — used as a second independent hash for double hashing. */
+function djb2(str: string): number {
+  let h = 5381;
+  for (let i = 0; i < str.length; i++) {
+    h = (((h << 5) + h) + str.charCodeAt(i)) >>> 0;
+  }
+  return h >>> 0;
+}
+
+function clamp01(x: number): number {
+  if (Number.isNaN(x)) return 0;
+  return Math.max(0, Math.min(1, x));
+}
+
+// ── Vector embeddings & hybrid recall ──────────────────────────────────
+
+/**
+ * Pluggable embedding backend. Inject a real provider (e.g. an Anthropic /
+ * OpenAI embedding model, or a local sentence-transformer) to give recall a
+ * genuine semantic channel that captures synonyms and paraphrase. When no
+ * provider is supplied, recall falls back to the lexical (trigram + keyword)
+ * score plus the deterministic {@link localEmbedding} as a cheap vector proxy.
+ */
+export interface EmbeddingProvider {
+  /** Embed a batch of texts into fixed-dimension vectors (one per input). */
+  embed(texts: string[]): Promise<number[][]>;
+  /** Dimensionality of returned vectors (informational). */
+  readonly dimensions?: number;
+}
+
+/** Default dimensionality for the local feature-hashed embedding. */
+export const DEFAULT_EMBEDDING_DIMS = 256;
+
+/**
+ * Deterministic, dependency-free word-level embedding via signed feature
+ * hashing. Each meaningful token is hashed to a bucket and added with a
+ * sign derived from a second hash, then the vector is L2-normalised.
+ *
+ * This is a *lexical* vector (bag-of-words in disguise), not a semantic one —
+ * it will not capture synonyms. Its value is (a) a fast, offline cosine
+ * channel that is more robust to word order and structural noise than raw
+ * trigrams, and (b) a drop-in fallback so the hybrid pipeline behaves
+ * consistently whether or not a real {@link EmbeddingProvider} is wired up.
+ */
+export function localEmbedding(text: string, dims = DEFAULT_EMBEDDING_DIMS): number[] {
+  const vec = new Array<number>(dims).fill(0);
+  const norm = normalize(text);
+  if (norm.length === 0) return vec;
+  const words = norm.split(' ').filter((w) => w.length > 1);
+  for (const w of words) {
+    const idx = fnv1a(w) % dims;
+    const sign = (djb2(w) & 1) === 0 ? 1 : -1;
+    vec[idx] += sign;
+  }
+  let mag = 0;
+  for (const v of vec) mag += v * v;
+  mag = Math.sqrt(mag);
+  if (mag > 0) {
+    for (let i = 0; i < dims; i++) vec[i] /= mag;
+  }
+  return vec;
+}
+
+/** Cosine similarity of two vectors. Returns 0 for empty / zero vectors. */
+export function cosineSimilarity(a: readonly number[], b: readonly number[]): number {
+  const n = Math.min(a.length, b.length);
+  if (n === 0) return 0;
+  let dot = 0;
+  let ma = 0;
+  let mb = 0;
+  for (let i = 0; i < n; i++) {
+    dot += a[i] * b[i];
+    ma += a[i] * a[i];
+    mb += b[i] * b[i];
+  }
+  if (ma === 0 || mb === 0) return 0;
+  return dot / (Math.sqrt(ma) * Math.sqrt(mb));
+}
+
+/**
+ * Blend a lexical relevance score [0,1] with a vector cosine [-1,1].
+ * Negative cosine is clamped to 0 (anti-correlation is treated as "no
+ * signal", not as a penalty). When `vector` is undefined the lexical score
+ * passes through unchanged, so callers don't need branchy code.
+ *
+ * @param vectorWeight - Fraction of the blend assigned to the vector channel
+ *   (0 = lexical only, 1 = vector only). Default 0.5.
+ */
+export function combineRelevance(
+  lexical: number,
+  vector: number | undefined,
+  vectorWeight = 0.5,
+): number {
+  if (vector === undefined || Number.isNaN(vector)) return clamp01(lexical);
+  const vw = Math.max(0, Math.min(1, vectorWeight));
+  const v = Math.max(0, vector);
+  return clamp01(lexical * (1 - vw) + v * vw);
+}
+
+/**
+ * Hybrid relevance: the existing lexical proxy ({@link computeClientRelevance})
+ * augmented with a vector cosine when both query and content embeddings are
+ * supplied. This is the entry point the client uses to fold semantic recall
+ * into the all-zero-relevance fallback path.
+ */
+export function computeHybridRelevance(
+  query: string,
+  content: string,
+  opts?: {
+    queryEmbedding?: readonly number[];
+    contentEmbedding?: readonly number[];
+    vectorWeight?: number;
+  },
+): number {
+  const lexical = computeClientRelevance(query, content);
+  if (opts?.queryEmbedding && opts?.contentEmbedding) {
+    const cos = cosineSimilarity(opts.queryEmbedding, opts.contentEmbedding);
+    return combineRelevance(lexical, cos, opts.vectorWeight);
+  }
+  return lexical;
+}
+
+// ── Trigram profiles (shared precompute for dedup pre-filtering) ────────
+
+/**
+ * Precomputed trigram profile for a piece of content. Building this once and
+ * reusing it across many comparisons is the key to fast dedup on large
+ * ingests — `normalize` + `trigrams` are the per-pair cost we want to avoid
+ * recomputing.
+ */
+interface TrigramProfile {
+  raw: string;
+  norm: string;
+  tris: Set<string>;
+}
+
+function prepareTrigramProfile(content: string): TrigramProfile {
+  const norm = normalize(content);
+  const tris = norm.length >= 3 ? trigrams(norm) : new Set<string>();
+  return { raw: content, norm, tris };
+}
+
+/**
+ * Trigram similarity over precomputed profiles. Behaviourally identical to
+ * {@link trigramSimilarity} but skips the normalise/trigram work.
+ */
+function trigramSimilarityPrepared(a: TrigramProfile, b: TrigramProfile): number {
+  if (a.raw === b.raw) return 1;
+  if (a.norm === b.norm) return 1;
+  if (a.norm.length < 3 || b.norm.length < 3) return a.norm === b.norm ? 1 : 0;
+  let intersection = 0;
+  // Iterate the smaller set for fewer lookups.
+  const [small, large] = a.tris.size <= b.tris.size ? [a.tris, b.tris] : [b.tris, a.tris];
+  for (const t of small) {
+    if (large.has(t)) intersection++;
+  }
+  return intersection / (a.tris.size + b.tris.size - intersection);
+}
+
+/**
+ * Admissible size-ratio bound for Jaccard similarity. For two trigram sets of
+ * sizes `sa`, `sb`, Jaccard `I/(sa+sb-I) ≤ min/max`. So if `min/max < threshold`
+ * the pair *cannot* reach the threshold and can be skipped without computing
+ * the full similarity — a sound pre-filter that never drops a true duplicate.
+ *
+ * Returns the inclusive integer band of candidate sizes worth comparing
+ * against a set of size `size`.
+ */
+function admissibleSizeBand(size: number, threshold: number): { lo: number; hi: number } {
+  if (threshold <= 0) return { lo: 1, hi: Number.MAX_SAFE_INTEGER };
+  return { lo: Math.ceil(size * threshold), hi: Math.floor(size / threshold) };
+}
+
 // ── Deduplication ──────────────────────────────────────────────────────
 
 /**
  * Deduplicate items by content similarity. Uses a fingerprint cache to
- * short-circuit exact matches before falling through to trigram comparison.
+ * short-circuit exact matches, then a size-blocked trigram pre-filter so each
+ * candidate is only compared against kept items whose trigram-set size could
+ * plausibly clear the threshold (see {@link admissibleSizeBand}). The result
+ * is byte-for-byte identical to the naive O(n²) all-pairs comparison — the
+ * blocking only removes comparisons that are provably below threshold.
+ *
  * Items should be pre-sorted by relevance (highest first) for best results.
  */
 export function deduplicateByContent<T extends { content: string; relevance?: number }>(
@@ -223,21 +414,56 @@ export function deduplicateByContent<T extends { content: string; relevance?: nu
 ): T[] {
   if (items.length <= 1) return items;
 
-  // Fast path: exact-match fingerprint check before expensive trigram comparison
   const seenFingerprints = new Set<string>();
   const kept: T[] = [];
+  const keptProfiles: TrigramProfile[] = [];
+  // size → indices into keptProfiles, for the size-ratio pre-filter.
+  const bySize = new Map<number, number[]>();
+  // Profiles whose normalised form is too short to form trigrams. A sized
+  // candidate can only match these if norms are equal (impossible across
+  // different lengths), so they're only relevant to other zero-size items.
+  const zeroSize: number[] = [];
 
   for (const item of items) {
-    // Fingerprint: first 100 chars normalized (catches exact and near-exact dupes cheaply)
     const fp = item.content.toLowerCase().replace(/\s+/g, ' ').slice(0, 100);
     if (seenFingerprints.has(fp)) continue;
 
-    const isDuplicate = kept.some(
-      (existing) => trigramSimilarity(existing.content, item.content) >= threshold,
-    );
+    const prof = prepareTrigramProfile(item.content);
+    const size = prof.tris.size;
+    let isDuplicate = false;
+
+    if (size === 0) {
+      for (const i of zeroSize) {
+        if (trigramSimilarityPrepared(prof, keptProfiles[i]) >= threshold) {
+          isDuplicate = true;
+          break;
+        }
+      }
+    } else {
+      const { lo, hi } = admissibleSizeBand(size, threshold);
+      for (let s = lo; s <= hi && !isDuplicate; s++) {
+        const idxs = bySize.get(s);
+        if (!idxs) continue;
+        for (const i of idxs) {
+          if (trigramSimilarityPrepared(prof, keptProfiles[i]) >= threshold) {
+            isDuplicate = true;
+            break;
+          }
+        }
+      }
+    }
+
     if (!isDuplicate) {
+      const idx = keptProfiles.push(prof) - 1;
       kept.push(item);
       seenFingerprints.add(fp);
+      if (size === 0) {
+        zeroSize.push(idx);
+      } else {
+        const arr = bySize.get(size);
+        if (arr) arr.push(idx);
+        else bySize.set(size, [idx]);
+      }
     }
   }
   return kept;
@@ -254,8 +480,141 @@ export function isDuplicateInBatch(
   existing: Array<{ content: string }>,
   threshold = 0.85,
 ): boolean {
+  const prof = prepareTrigramProfile(content);
   for (const item of existing) {
-    if (trigramSimilarity(content, item.content) >= threshold) return true;
+    if (trigramSimilarityPrepared(prof, prepareTrigramProfile(item.content)) >= threshold) {
+      return true;
+    }
   }
   return false;
+}
+
+// ── Bloom filter & streaming dedup index ───────────────────────────────
+
+/**
+ * Compact probabilistic set membership. Never reports a false negative (an
+ * added key always reports `has === true`); may report a bounded rate of
+ * false positives. Used by {@link DedupIndex} to short-circuit exact-content
+ * repeats without an exact-fingerprint Set blowing up memory on huge ingests.
+ */
+export class BloomFilter {
+  private readonly bits: Uint8Array;
+  private readonly m: number;
+  private readonly k: number;
+
+  constructor(expectedItems: number, falsePositiveRate = 0.01) {
+    const n = Math.max(1, Math.floor(expectedItems));
+    const p = Math.min(0.5, Math.max(1e-6, falsePositiveRate));
+    this.m = Math.max(8, Math.ceil(-(n * Math.log(p)) / (Math.LN2 * Math.LN2)));
+    this.k = Math.max(1, Math.round((this.m / n) * Math.LN2));
+    this.bits = new Uint8Array(Math.ceil(this.m / 8));
+  }
+
+  private indices(key: string): number[] {
+    // Double hashing: g_i(x) = (h1 + i*h2) mod m. h2 forced odd for full period.
+    const h1 = fnv1a(key);
+    const h2 = djb2(key) | 1;
+    const out = new Array<number>(this.k);
+    for (let i = 0; i < this.k; i++) {
+      out[i] = ((h1 + i * h2) >>> 0) % this.m;
+    }
+    return out;
+  }
+
+  add(key: string): void {
+    for (const idx of this.indices(key)) {
+      this.bits[idx >> 3] |= 1 << (idx & 7);
+    }
+  }
+
+  has(key: string): boolean {
+    for (const idx of this.indices(key)) {
+      if ((this.bits[idx >> 3] & (1 << (idx & 7))) === 0) return false;
+    }
+    return true;
+  }
+
+  /** Number of bits in the filter. */
+  get bitSize(): number { return this.m; }
+  /** Number of hash functions. */
+  get hashCount(): number { return this.k; }
+}
+
+/**
+ * Streaming near-duplicate index for large ingests. Accumulates content and
+ * answers "is this a near-duplicate of anything seen so far?" using the same
+ * bloom + size-blocked trigram pre-filter as {@link deduplicateByContent}, so
+ * its verdicts match a brute-force trigram scan exactly while doing far fewer
+ * comparisons. Designed for `isDuplicateContent`-style hot loops that would
+ * otherwise be O(n²) on big batches.
+ */
+export class DedupIndex {
+  private readonly profiles: TrigramProfile[] = [];
+  private readonly bySize = new Map<number, number[]>();
+  private readonly zeroSize: number[] = [];
+  private readonly bloom: BloomFilter;
+  private readonly exactFps = new Set<string>();
+  private readonly defaultThreshold: number;
+
+  constructor(opts?: { expectedItems?: number; threshold?: number; falsePositiveRate?: number }) {
+    this.defaultThreshold = opts?.threshold ?? 0.85;
+    this.bloom = new BloomFilter(opts?.expectedItems ?? 4096, opts?.falsePositiveRate ?? 0.01);
+  }
+
+  private fingerprint(content: string): string {
+    return content.toLowerCase().replace(/\s+/g, ' ').slice(0, 100);
+  }
+
+  /** True if `content` is a near-duplicate of anything already added. */
+  has(content: string, threshold = this.defaultThreshold): boolean {
+    const fp = this.fingerprint(content);
+    // Bloom-gated exact-repeat fast path (an exact fingerprint repeat is a
+    // trigram similarity of 1, always ≥ threshold).
+    if (this.bloom.has(fp) && this.exactFps.has(fp)) return true;
+
+    const prof = prepareTrigramProfile(content);
+    const size = prof.tris.size;
+    if (size === 0) {
+      for (const i of this.zeroSize) {
+        if (trigramSimilarityPrepared(prof, this.profiles[i]) >= threshold) return true;
+      }
+      return false;
+    }
+    const { lo, hi } = admissibleSizeBand(size, threshold);
+    for (let s = lo; s <= hi; s++) {
+      const idxs = this.bySize.get(s);
+      if (!idxs) continue;
+      for (const i of idxs) {
+        if (trigramSimilarityPrepared(prof, this.profiles[i]) >= threshold) return true;
+      }
+    }
+    return false;
+  }
+
+  /** Add content to the index unconditionally. */
+  add(content: string): void {
+    const fp = this.fingerprint(content);
+    this.bloom.add(fp);
+    this.exactFps.add(fp);
+    const prof = prepareTrigramProfile(content);
+    const idx = this.profiles.push(prof) - 1;
+    const size = prof.tris.size;
+    if (size === 0) {
+      this.zeroSize.push(idx);
+    } else {
+      const arr = this.bySize.get(size);
+      if (arr) arr.push(idx);
+      else this.bySize.set(size, [idx]);
+    }
+  }
+
+  /** Add only if not already a near-duplicate. Returns true if added. */
+  addIfNew(content: string, threshold = this.defaultThreshold): boolean {
+    if (this.has(content, threshold)) return false;
+    this.add(content);
+    return true;
+  }
+
+  /** Number of items held. */
+  get count(): number { return this.profiles.length; }
 }

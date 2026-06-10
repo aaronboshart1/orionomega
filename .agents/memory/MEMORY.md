@@ -3,3 +3,4 @@
 - [Git writes blocked in main agent](git-writes-blocked-main-agent.md) — merge/push tasks can't run as main agent; need isolated task agent; never mark-complete a git-sync from main.
 - [Vitest JSX under rolldown-vite](rolldown-vite-jsx-tests.md) — Vite 8 + tsconfig jsx:preserve needs @vitejs/plugin-react-oxc in vitest config; plain plugin-react/esbuild jsx won't work.
 - [Human-in-the-loop channels](human-in-loop-channels.md) — pause-and-ask channels (humanGate, manual-intervention) mirror each other across core→gateway→web; copy one end-to-end; watch sessions.ts persistence sites + exhaustive WorkerEventType maps.
+- [Stale src/*.js shadows .ts under vitest](vitest-stale-src-js.md) — new exports read as undefined/"not a constructor" though tsc passes; delete gitignored src/*.js so vitest resolves .ts.

@@ -7,7 +7,7 @@
  * keeps both focused and readable.
  */
 
-import { HindsightClient, BankManager, SessionBootstrap, MentalModelManager, SelfKnowledge } from '@orionomega/hindsight';
+import { HindsightClient, BankManager, SessionBootstrap, MentalModelManager, SelfKnowledge, LessonsRollup } from '@orionomega/hindsight';
 import type { SessionAnchor } from '@orionomega/hindsight';
 import { AnthropicClient } from '../anthropic/client.js';
 import { EventBus } from '../orchestration/event-bus.js';
@@ -72,6 +72,14 @@ export class MemoryBridge {
   private sessionSummarizer: SessionSummarizer | null = null;
   private compactionFlush: CompactionFlush | null = null;
   private selfKnowledge: SelfKnowledge | null = null;
+  private lessonsRollup: LessonsRollup | null = null;
+
+  /**
+   * Interval between cross-project lesson rollups. 6h keeps the core bank
+   * fresh without hammering the Hindsight server. Override via the
+   * `ORIONOMEGA_LESSONS_ROLLUP_MS` env var (min 60s, enforced by LessonsRollup).
+   */
+  private static readonly LESSONS_ROLLUP_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
   private activeProjectBank: string | null = null;
   private initialised = false;
@@ -254,6 +262,25 @@ export class MemoryBridge {
       };
 
       this.retentionEngine.start();
+
+      // Cross-project lesson synthesis: periodically promote high-signal lessons
+      // from project-* banks up into the shared `core` bank. Guarded with a
+      // typeof check so test doubles of @orionomega/hindsight that omit
+      // LessonsRollup don't blow up init.
+      if (typeof LessonsRollup === 'function') {
+        try {
+          const envMs = Number(process.env.ORIONOMEGA_LESSONS_ROLLUP_MS);
+          const intervalMs = Number.isFinite(envMs) && envMs > 0
+            ? envMs
+            : MemoryBridge.LESSONS_ROLLUP_INTERVAL_MS;
+          this.lessonsRollup = new LessonsRollup(this.hindsightClient);
+          this.lessonsRollup.start(intervalMs);
+        } catch (err) {
+          log.debug('Lessons rollup init failed', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
 
       this.initialised = true;
       log.info('Memory subsystem initialised', { url: hsCfg.url });

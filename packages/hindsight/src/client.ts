@@ -2,9 +2,10 @@ import { z } from 'zod';
 import { HindsightError } from './errors.js';
 import { createLogger } from './logger.js';
 import {
-  computeClientRelevance, deduplicateByContent, trigramSimilarity,
+  computeClientRelevance, computeHybridRelevance, deduplicateByContent, trigramSimilarity,
   estimateTokens, smartTruncate, compressMemoryContent,
 } from './similarity.js';
+import type { EmbeddingProvider } from './similarity.js';
 import type {
   BankConfig,
   BankInfo,
@@ -140,6 +141,19 @@ export interface Directive {
 export interface HindsightClientOptions {
   /** Maximum content size in characters. Content exceeding this is truncated with a warning. Default: 32768 (32 KB). */
   maxContentSize?: number;
+  /**
+   * Optional embedding backend. When supplied, recall augments the lexical
+   * client-side relevance proxy with a vector cosine score (hybrid recall),
+   * improving synonym/semantic matches. When absent, recall uses lexical
+   * scoring only. See {@link EmbeddingProvider}.
+   */
+  embeddingProvider?: EmbeddingProvider;
+  /**
+   * Fraction of the hybrid recall blend assigned to the vector channel
+   * (0 = lexical only, 1 = vector only). Default 0.5. Ignored when no
+   * embedding provider is configured.
+   */
+  vectorWeight?: number;
 }
 
 export class HindsightClient {
@@ -147,6 +161,8 @@ export class HindsightClient {
   private readonly namespace: string;
   private readonly apiKey?: string;
   private readonly _maxContentSize: number;
+  private readonly _embeddingProvider?: EmbeddingProvider;
+  private readonly _vectorWeight: number;
   private _activeOps = 0;
   private _connected = false;
 
@@ -327,7 +343,12 @@ export class HindsightClient {
     this.namespace = namespace;
     this.apiKey = apiKey || process.env.HINDSIGHT_API_KEY;
     this._maxContentSize = opts?.maxContentSize ?? 32_768;
+    this._embeddingProvider = opts?.embeddingProvider;
+    this._vectorWeight = opts?.vectorWeight ?? 0.5;
   }
+
+  /** Whether a vector embedding backend is configured for hybrid recall. */
+  get vectorRecallEnabled(): boolean { return this._embeddingProvider !== undefined; }
 
   // ── Health ──────────────────────────────────────────────────────────
 
@@ -733,10 +754,46 @@ export class HindsightClient {
       log.verbose('API returned all-zero relevance scores, computing client-side relevance', {
         bankId,
         resultCount: allResults.length,
+        hybrid: this._embeddingProvider !== undefined,
       });
-      allResults = allResults.map((r) => ({
+
+      // Hybrid recall: when an embedding backend is configured, fold a vector
+      // cosine score into the lexical proxy so synonym/paraphrase matches that
+      // share few literal trigrams still surface. Embedding failures degrade
+      // gracefully to lexical-only scoring.
+      let queryEmbedding: number[] | undefined;
+      let contentEmbeddings: number[][] | undefined;
+      if (this._embeddingProvider) {
+        try {
+          const texts = [effectiveQuery, ...allResults.map((r) => r.content)];
+          const vecs = await this._embeddingProvider.embed(texts);
+          if (Array.isArray(vecs) && vecs.length === texts.length) {
+            queryEmbedding = vecs[0];
+            contentEmbeddings = vecs.slice(1);
+          } else {
+            log.warn('Embedding provider returned mismatched batch size — lexical-only fallback', {
+              bankId,
+              expected: texts.length,
+              got: Array.isArray(vecs) ? vecs.length : typeof vecs,
+            });
+          }
+        } catch (err) {
+          log.warn('Embedding provider failed — lexical-only fallback', {
+            bankId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+
+      allResults = allResults.map((r, i) => ({
         ...r,
-        relevance: computeClientRelevance(effectiveQuery, r.content),
+        relevance: queryEmbedding && contentEmbeddings
+          ? computeHybridRelevance(effectiveQuery, r.content, {
+              queryEmbedding,
+              contentEmbedding: contentEmbeddings[i],
+              vectorWeight: this._vectorWeight,
+            })
+          : computeClientRelevance(effectiveQuery, r.content),
       }));
     }
 
