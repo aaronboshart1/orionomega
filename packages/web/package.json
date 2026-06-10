@@ -21,6 +21,7 @@
     "build": "next build",
     "start": "node server.mjs",
     "lint": "next lint",
+    "test": "vitest run",
     "analyze": "ANALYZE=true next build"
   },
   "dependencies": {
@@ -46,12 +47,18 @@
   "devDependencies": {
     "@eslint/eslintrc": "^3",
     "@next/bundle-analyzer": "^15",
+    "@testing-library/dom": "^10",
+    "@testing-library/jest-dom": "^6",
+    "@testing-library/react": "^16",
     "@types/node": "^22",
     "@types/react": "^18",
     "@types/react-dom": "^18",
+    "@vitejs/plugin-react-oxc": "^0.4.3",
     "eslint": "^9",
     "eslint-config-next": "^15",
+    "jsdom": "^25",
     "postcss": "^8",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^4.1.2"
   }
 }
