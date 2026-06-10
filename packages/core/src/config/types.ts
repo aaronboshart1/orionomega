@@ -3,6 +3,8 @@
  * Configuration interfaces for the OrionOmega system.
  */
 
+import type { ModelCapabilityOverride } from '../models/model-registry.js';
+
 /** Top-level configuration for OrionOmega. */
 export interface OrionOmegaConfig {
   gateway: {
@@ -62,6 +64,14 @@ export interface OrionOmegaConfig {
     cheap: string;
     /** Profile → model name mapping for workers. */
     workers: Record<string, string>;
+    /**
+     * Optional declarative overrides for the model capability registry
+     * (Task #229). Each entry is keyed by model ID and merged over the built-in
+     * defaults and discovery seeds — config takes highest precedence. Use this
+     * to correct pricing, output ceilings, beta headers, gating, etc. for a
+     * model without a code change.
+     */
+    registry?: ModelCapabilityOverride[];
   };
 
   orchestration: {

@@ -108,6 +108,27 @@ export {
 export { discoverModels, buildModelGuide, pickModelByTier, clearModelCache } from "./models/model-discovery.js";
 export type { DiscoveredModel } from "./models/model-discovery.js";
 
+export {
+  getModelCapability,
+  inferModelTier,
+  listModelCapabilities,
+  seedRegistryFromDiscovery,
+  applyRegistryOverrides,
+  resetModelRegistry,
+  normalizeModelEffort,
+  ModelRegistry,
+  DEFAULT_CAPABILITIES,
+} from "./models/model-registry.js";
+export type {
+  ModelCapability,
+  ModelCapabilityOverride,
+  ModelTier,
+  ModelPricing,
+  EffortLevel,
+  ThinkingMode,
+  FastModeCapability,
+} from "./models/model-registry.js";
+
 // Utilities
 export { deepMerge } from './utils/deep-merge.js';
 

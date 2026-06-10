@@ -7,6 +7,8 @@
  * executor.ts loop exit conditions). Do NOT delete without auditing all import sites.
  */
 
+import { getModelCapability, normalizeModelEffort, type EffortLevel } from '../models/model-registry.js';
+
 /** A message in the Anthropic conversation format. */
 export interface AnthropicMessage {
   /**
@@ -137,13 +139,7 @@ const log = createLogger('anthropic-api');
  * and prevent unnecessary output truncation.
  */
 export function maxOutputTokensForModel(model: string): number {
-  const lower = model.toLowerCase();
-  // Opus 4.8 supports 128K output tokens
-  if (lower.includes('opus-4-8')) return 128_000;
-  // Opus and Sonnet 4+ support 16K output tokens
-  if (lower.includes('opus') || lower.includes('sonnet')) return 16_384;
-  // Haiku and unknown models — 8K
-  return 8_192;
+  return getModelCapability(model).defaultMaxOutput;
 }
 
 /** True for Claude Opus 4.8 (e.g. `claude-opus-4-8`, dated variants). */
@@ -156,12 +152,11 @@ export function isOpus48(model: string): boolean {
  * that exceed this return a 400. Opus 4.8 accepts up to 128 000 (NOT 131 072 —
  * that exact value is what produced the observed `max_tokens > 128000` 400).
  * Other Opus/Sonnet 4.x cap at 64 000; everything else at 8 192.
+ *
+ * Resolved from the declarative model registry (Task #229).
  */
 export function modelMaxOutputCeiling(model: string): number {
-  const lower = model.toLowerCase();
-  if (isOpus48(model)) return 128_000;
-  if (lower.includes('opus') || lower.includes('sonnet')) return 64_000;
-  return 8_192;
+  return getModelCapability(model).maxOutput;
 }
 
 const API_URL = 'https://api.anthropic.com/v1/messages';
@@ -373,16 +368,17 @@ export class AnthropicClient {
     options: CreateMessageOptions,
     stream: boolean,
   ): Record<string, unknown> {
-    const opus48 = isOpus48(options.model);
+    const capability = getModelCapability(options.model);
 
-    // Mid-conversation system messages: validate for opus-4-8, strip for older models.
+    // Mid-conversation system messages: validate for models that support them,
+    // strip for those that don't.
     let rawMessages = options.messages;
     if (rawMessages.some((m) => m.role === 'system')) {
-      if (opus48) {
+      if (capability.supportsMidConversationSystem) {
         validateMidConversationSystemMessages(rawMessages);
       } else {
         log.warn(
-          'Mid-conversation system messages are only supported on claude-opus-4-8; stripping them',
+          'Mid-conversation system messages are not supported by this model; stripping them',
         );
         rawMessages = rawMessages.filter((m) => m.role !== 'system');
       }
@@ -400,8 +396,11 @@ export class AnthropicClient {
         ]
       : rawMessages;
 
-    // Effort config — auto-raise max_tokens for xhigh/max effort.
-    const effort = options.outputConfig?.effort;
+    // Effort config — normalise via the model's effort aliases (registry) then
+    // auto-raise max_tokens for xhigh/max effort.
+    const effort = options.outputConfig?.effort
+      ? normalizeModelEffort(options.model, options.outputConfig.effort as EffortLevel)
+      : undefined;
     let maxTokens = options.maxTokens ?? 8192;
     if ((effort === 'xhigh' || effort === 'max') && maxTokens < 64_000) {
       maxTokens = 64_000;
@@ -470,14 +469,15 @@ export class AnthropicClient {
       body.messages = msgs;
     }
 
-    // Opus 4.8 rejects sampling params (temperature/top_p/top_k → 400) and only
-    // supports adaptive thinking (manual budget_tokens → 400). Sanitise both so
+    // Some models (adaptive-thinking, e.g. Opus 4.8 / mythos) reject sampling
+    // params (temperature/top_p/top_k → 400) and only support adaptive thinking
+    // (manual budget_tokens → 400). Sanitise both — driven by the registry — so
     // callers can keep passing their usual options regardless of model.
-    if (options.temperature !== undefined && !isOpus48(options.model)) {
+    if (options.temperature !== undefined && capability.supportsSampling) {
       body.temperature = options.temperature;
     }
     if (options.thinking) {
-      body.thinking = isOpus48(options.model)
+      body.thinking = capability.thinking === 'adaptive'
         ? { type: 'adaptive' }
         : options.thinking;
     }
@@ -487,12 +487,15 @@ export class AnthropicClient {
 
   /**
    * Returns the list of `anthropic-beta` header values required for this request.
-   * An empty array means no beta header should be sent.
+   * An empty array means no beta header should be sent. Driven by the registry:
+   * unconditional `betaHeaders` plus the model's fast-mode header when fast mode
+   * is requested.
    */
   private buildBetaHeaders(options: CreateMessageOptions): string[] {
-    const headers: string[] = [];
-    if (options.speed === 'fast' && isOpus48(options.model)) {
-      headers.push('fast-mode-2026-02-01');
+    const capability = getModelCapability(options.model);
+    const headers: string[] = [...capability.betaHeaders];
+    if (options.speed === 'fast' && capability.fastMode) {
+      headers.push(capability.fastMode.betaHeader);
     }
     return headers;
   }

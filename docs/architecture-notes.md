@@ -223,3 +223,16 @@ Helper + tests: `packages/gateway/src/bind-retry.ts`, `packages/gateway/src/__te
 - **WebSocket Proxying**: Frontend WebSocket traffic is proxied through a Next.js custom server to bypass Replit's direct port access limitations.
 - **Context Optimization**: Aggressive token and cost optimizations including prompt caching, cheap model routing, hot window reduction, and dynamic project summaries.
 - **File-Based Slash Commands**: Users define custom agent commands by placing Markdown files in `~/orionomega/commands/`.
+
+## Model capability registry (Task #229)
+
+Model-specific behaviour — tier, output-token ceilings (both the comfortably-supported `defaultMaxOutput` and the hard-400 `maxOutput`), thinking style (`adaptive` vs `budget`), sampling support, mid-conversation system support, pricing, beta headers, fast-mode, effort aliasing, and access gating — is consolidated into one declarative table in `packages/core/src/models/model-registry.ts`. Adding a model is now a data edit (a default entry, a discovery seed, or a `config.yaml` override) rather than a code change.
+
+**Precedence (per field): config > discovery > defaults.**
+- `DEFAULT_CAPABILITIES` seeds the base table (haiku-4-5, sonnet-4-6, opus-4-6, opus-4-8, fable-5).
+- `seedRegistryFromDiscovery()` (called inside `discoverModels`) adds models learned from `/v1/models` that aren't already known — **additive only**, never overwrites, so defaults/config keep precedence.
+- `applyRegistryOverrides()` (called from `readConfig` with `config.models.registry`) merges field-by-field on top — highest precedence.
+
+Resolution (`getModelCapability(id)`): exact-ID match → alias/substring match (longest alias first, so `opus-4-8` beats a broader `opus`) → synthesise from the inferred tier's `TIER_DEFAULTS`. The `mythos` tier sits above `opus`; `inferModelTier` maps `fable`/`mythos` IDs to it (checked before `opus`).
+
+Consumers all read through the registry instead of inline `model.includes(...)` branches: `client.ts` (`maxOutputTokensForModel`, `modelMaxOutputCeiling`, temperature/thinking/beta/mid-conv-system/effort), `model-discovery.ts` (`inferTier`, `buildModelGuide` mythos routing, `pickModelByTier`), `coding-budget.ts` (`MODEL_COST_RATES`, `calculateTokenCost`, `estimateTokenBudget`), `planner.ts` (`coerceModel` tier inference). `fable`/mythos is gated (`accessGated: true`); gated-model fallback is a separate task. Tests: `packages/core/src/models/__tests__/model-registry.test.ts` plus the existing opus-4-8 suites that pin the migrated behaviour.

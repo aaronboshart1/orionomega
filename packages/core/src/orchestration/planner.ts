@@ -13,6 +13,7 @@ import { readConfig } from '../config/loader.js';
 import { createLogger } from '../logging/logger.js';
 import { isExternalAction } from '../memory/query-classifier.js';
 import { discoverModels, buildModelGuide, pickModelByTier, type DiscoveredModel } from '../models/model-discovery.js';
+import { inferModelTier } from '../models/model-registry.js';
 import { getPortAvoidanceInstructions } from '../utils/port-restrictions.js';
 import { calculateTokenCost } from './coding/coding-budget.js';
 
@@ -105,12 +106,9 @@ export class Planner {
       if (!id) return defaultWorkerModel;
       if (discoveredModels.length === 0) return id;
       if (discoveredModels.some((m) => m.id === id)) return id;
-      const lower = id.toLowerCase();
-      const inferredTier: 'opus' | 'sonnet' | 'haiku' | null =
-        lower.includes('opus') ? 'opus'
-        : lower.includes('sonnet') ? 'sonnet'
-        : lower.includes('haiku') ? 'haiku'
-        : null;
+      const rawTier = inferModelTier(id);
+      const inferredTier: 'mythos' | 'opus' | 'sonnet' | 'haiku' | null =
+        rawTier === 'unknown' ? null : rawTier;
       const replacement = inferredTier
         ? (pickModelByTier(discoveredModels, inferredTier)?.id ?? defaultWorkerModel)
         : defaultWorkerModel;
@@ -994,12 +992,9 @@ Do NOT attempt to plan or execute the coding work yourself. Do NOT clone, write 
       if (!id) return defaultWorkerModel;
       if (discoveredModels.length === 0) return id;
       if (discoveredModels.some((m) => m.id === id)) return id;
-      const lower = id.toLowerCase();
-      const inferredTier: 'opus' | 'sonnet' | 'haiku' | null =
-        lower.includes('opus') ? 'opus'
-        : lower.includes('sonnet') ? 'sonnet'
-        : lower.includes('haiku') ? 'haiku'
-        : null;
+      const rawTier = inferModelTier(id);
+      const inferredTier: 'mythos' | 'opus' | 'sonnet' | 'haiku' | null =
+        rawTier === 'unknown' ? null : rawTier;
       const replacement = inferredTier
         ? (pickModelByTier(discoveredModels, inferredTier)?.id ?? defaultWorkerModel)
         : defaultWorkerModel;

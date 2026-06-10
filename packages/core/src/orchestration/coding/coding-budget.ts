@@ -15,6 +15,7 @@ import type {
   NodeBudget,
 } from './coding-types.js';
 import { createLogger } from '../../logging/logger.js';
+import { getModelCapability, type ModelPricing } from '../../models/model-registry.js';
 
 const log = createLogger('coding-budget');
 
@@ -72,24 +73,30 @@ export interface ModelCostRate {
   cacheWrite: number;
 }
 
+/** Map registry pricing ({in,out,...}) to the local {input,output,...} shape. */
+function toRate(p: ModelPricing): ModelCostRate {
+  return { input: p.in, output: p.out, cacheRead: p.cacheRead, cacheWrite: p.cacheWrite };
+}
+
 /**
- * Accurate per-model-tier pricing (as of 2026 Anthropic pricing).
- * Separate input/output rates for precise cost calculation.
+ * Accurate per-model-tier pricing, derived from the declarative model registry
+ * (Task #229) so there is a single source of truth.
  *
  * 'opus-4-8' is listed explicitly because it has dramatically different pricing
- * from earlier opus models ($5/$25 vs $15/$75 per MTok). resolveModelTier()
- * detects the model ID and returns 'opus-4-8' for claude-opus-4-8 variants.
+ * from earlier opus models ($5/$25 vs $15/$75 per MTok). The generic tier keys
+ * (haiku/sonnet/opus) come from the registry's tier defaults; calculateTokenCost
+ * resolves a model's exact pricing from the registry directly.
  */
 export const MODEL_COST_RATES: Record<string, ModelCostRate> = {
-  haiku:      { input: 0.80,  output: 4.00,  cacheRead: 0.08,  cacheWrite: 1.00  },
-  sonnet:     { input: 3.00,  output: 15.00, cacheRead: 0.30,  cacheWrite: 3.75  },
-  opus:       { input: 15.00, output: 75.00, cacheRead: 1.50,  cacheWrite: 18.75 },
-  'opus-4-8': { input: 5.00,  output: 25.00, cacheRead: 0.50,  cacheWrite: 6.25  },
+  haiku:      toRate(getModelCapability('claude-haiku-4-5').pricing),
+  sonnet:     toRate(getModelCapability('claude-sonnet-4-6').pricing),
+  opus:       toRate(getModelCapability('claude-opus-4-6').pricing),
+  'opus-4-8': toRate(getModelCapability('claude-opus-4-8').pricing),
 };
 
 /**
- * Calculate precise cost from token counts using per-tier rates.
- * @param model - Model ID string (matched to tier by keyword).
+ * Calculate precise cost from token counts using the model's registry pricing.
+ * @param model - Model ID string (resolved via the model registry).
  * @param inputTokens - Number of input tokens.
  * @param outputTokens - Number of output tokens.
  * @param cacheReadTokens - Number of cache read tokens.
@@ -103,11 +110,10 @@ export function calculateTokenCost(
   cacheReadTokens = 0,
   cacheWriteTokens = 0,
 ): number {
-  const tier = resolveModelTier(model);
-  const rates = MODEL_COST_RATES[tier] ?? MODEL_COST_RATES.sonnet;
+  const rates = getModelCapability(model).pricing;
   return (
-    (inputTokens / 1_000_000) * rates.input +
-    (outputTokens / 1_000_000) * rates.output +
+    (inputTokens / 1_000_000) * rates.in +
+    (outputTokens / 1_000_000) * rates.out +
     (cacheReadTokens / 1_000_000) * rates.cacheRead +
     (cacheWriteTokens / 1_000_000) * rates.cacheWrite
   );
@@ -300,18 +306,8 @@ export function estimateTokenBudget(
 ): number {
   if (role === 'validator') return 0;
 
-  const tier = resolveModelTier(model);
-  const rates = MODEL_COST_RATES[tier] ?? MODEL_COST_RATES.sonnet;
+  const rates = getModelCapability(model).pricing;
 
   // Estimate input tokens the budget can cover using the input cost rate
-  return Math.floor((budgetUsd / rates.input) * 1_000_000 * 0.6);
-}
-
-function resolveModelTier(modelId: string): 'haiku' | 'sonnet' | 'opus' | 'opus-4-8' {
-  const lower = modelId.toLowerCase();
-  if (lower.includes('haiku')) return 'haiku';
-  // opus-4-8 has distinct pricing — check before generic opus
-  if (lower.includes('opus-4-8')) return 'opus-4-8';
-  if (lower.includes('opus')) return 'opus';
-  return 'sonnet';
+  return Math.floor((budgetUsd / rates.in) * 1_000_000 * 0.6);
 }

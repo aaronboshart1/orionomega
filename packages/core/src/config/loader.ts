@@ -10,6 +10,7 @@ import { join, dirname } from 'node:path';
 import type { OrionOmegaConfig } from './types.js';
 import { deepMerge } from '../utils/deep-merge.js';
 import { createLogger } from '../logging/logger.js';
+import { applyRegistryOverrides } from '../models/model-registry.js';
 
 const log = createLogger('config-loader');
 
@@ -238,6 +239,9 @@ export function readConfig(configPath?: string): OrionOmegaConfig {
 
   merged.gateway.bind = normalizeBindAddresses(merged.gateway.bind);
   merged.webui.bind = normalizeBindAddresses(merged.webui.bind);
+
+  // Apply declarative model-registry overrides (config > discovery > defaults).
+  applyRegistryOverrides(merged.models?.registry);
 
   if (merged.gateway.auth.mode === 'none' && isNonLocalhostBind(merged.gateway.bind)) {
     console.warn(

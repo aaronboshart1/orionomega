@@ -48,6 +48,7 @@ Environment variables:
 - `packages/core/src/db/schema.ts` — database schema for scheduled tasks.
 
 ### Notable source files
+- `packages/core/src/models/model-registry.ts` — declarative `ModelCapability` registry (Task #229): single source of truth for tier, output ceilings, thinking rules, pricing, beta headers, effort aliasing, gating. Seeded by defaults → discovery → `config.yaml` overrides.
 - `packages/web/src/components/orchestration/SchedulesPane.tsx` — Schedules tab in the orchestration pane.
 - `packages/web/src/components/orchestration/GitPane.tsx` — Git tab; register repos and pick one per session.
 - `packages/web/src/components/orchestration/PromptComposer.tsx` — reusable prompt input (textarea + paperclip + drag-drop + attachment chips).

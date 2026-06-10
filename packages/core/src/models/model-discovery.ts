@@ -5,6 +5,7 @@
  */
 
 import { createLogger } from '../logging/logger.js';
+import { inferModelTier, seedRegistryFromDiscovery, type ModelTier } from './model-registry.js';
 
 const log = createLogger('model-discovery');
 
@@ -17,7 +18,7 @@ export interface DiscoveredModel {
   /** ISO timestamp when the model was created. */
   createdAt: string;
   /** Inferred tier based on model family name. */
-  tier: 'opus' | 'sonnet' | 'haiku' | 'unknown';
+  tier: ModelTier;
 }
 
 /** Cached model list with TTL. */
@@ -27,16 +28,11 @@ const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
 /**
  * Infer the model tier from its ID.
- * This is the ONE place where we check for family names — but we're not
- * hardcoding specific version IDs, just the family (opus/sonnet/haiku),
- * which Anthropic has used consistently since Claude 3.
+ * Delegates to the model registry's {@link inferModelTier} so family detection
+ * (incl. the `mythos` tier for fable models) lives in exactly one place.
  */
 function inferTier(modelId: string): DiscoveredModel['tier'] {
-  const lower = modelId.toLowerCase();
-  if (lower.includes('opus')) return 'opus';
-  if (lower.includes('sonnet')) return 'sonnet';
-  if (lower.includes('haiku')) return 'haiku';
-  return 'unknown';
+  return inferModelTier(modelId);
 }
 
 /**
@@ -100,6 +96,10 @@ export async function discoverModels(apiKey: string): Promise<DiscoveredModel[]>
     cachedModels = allModels;
     cacheExpiry = Date.now() + CACHE_TTL_MS;
 
+    // Seed the capability registry with anything we learned that isn't already
+    // known (additive only — config/defaults keep precedence).
+    seedRegistryFromDiscovery(allModels);
+
     log.debug(`Discovered ${allModels.length} models`);
     return allModels;
   } catch (err) {
@@ -126,7 +126,7 @@ export function clearModelCache(): void {
  */
 export function pickModelByTier(
   models: DiscoveredModel[],
-  tier: 'opus' | 'sonnet' | 'haiku',
+  tier: 'opus' | 'sonnet' | 'haiku' | 'mythos',
 ): DiscoveredModel | undefined {
   return models.find((m) => m.tier === tier) ?? models[0];
 }
@@ -144,7 +144,7 @@ export function buildModelGuide(models: DiscoveredModel[], mainModel: string): s
     return `Available models: Use "${mainModel}" for all workers (no model list available).`;
   }
 
-  const grouped: Record<string, DiscoveredModel[]> = { opus: [], sonnet: [], haiku: [], unknown: [] };
+  const grouped: Record<string, DiscoveredModel[]> = { mythos: [], opus: [], sonnet: [], haiku: [], unknown: [] };
   for (const m of models) {
     grouped[m.tier].push(m);
   }
@@ -154,7 +154,7 @@ export function buildModelGuide(models: DiscoveredModel[], mainModel: string): s
   // tier, which can be a freshly-released model the rest of the toolchain
   // (Claude Code CLI, prompt parameters, billing) does not yet support.
   const mainTier = inferTier(mainModel);
-  const preferredForTier = (tier: 'opus' | 'sonnet' | 'haiku'): DiscoveredModel | undefined => {
+  const preferredForTier = (tier: 'mythos' | 'opus' | 'sonnet' | 'haiku'): DiscoveredModel | undefined => {
     if (tier === mainTier) {
       const explicit = grouped[tier].find((m) => m.id === mainModel);
       if (explicit) return explicit;
@@ -164,6 +164,10 @@ export function buildModelGuide(models: DiscoveredModel[], mainModel: string): s
 
   const lines: string[] = ['Available models (from Anthropic API — pick from this list only):'];
 
+  const mythosBest = preferredForTier('mythos');
+  if (mythosBest) {
+    lines.push(`  - ${mythosBest.id} (${mythosBest.displayName}) — FLAGSHIP (mythos tier): the most capable model, above opus. Reserve for the hardest reasoning/planning. Adaptive thinking only. No temperature/top_p/top_k. May be access-gated.`);
+  }
   const opusBest = preferredForTier('opus');
   if (opusBest) {
     lines.push(`  - ${opusBest.id} (${opusBest.displayName}) — HEAVYWEIGHT: superior complex reasoning, planning, creative writing, agentic coding. Adaptive thinking only. No temperature/top_p/top_k.`);
@@ -182,7 +186,8 @@ export function buildModelGuide(models: DiscoveredModel[], mainModel: string): s
   lines.push('  - Default to the midweight model (sonnet-tier) for most workers.');
   lines.push('  - Use lightweight (haiku-tier) for retrieval, data fetching, and simple transforms.');
   lines.push('  - Use heavyweight (opus-tier) only when the task genuinely requires deep reasoning.');
-  lines.push('  - Opus-tier models (e.g. opus-4-8, opus-4-6) use adaptive thinking only — NEVER set temperature, top_p, or top_k for opus workers.');
+  lines.push('  - Use the flagship (mythos-tier) ONLY for the single hardest reasoning/planning step, if one is listed; it is the most expensive and may be access-gated.');
+  lines.push('  - Opus-tier and mythos-tier models use adaptive thinking only — NEVER set temperature, top_p, or top_k for those workers.');
   lines.push('  - If multiple opus models are listed, prefer the newest (opus-4-8 over opus-4-6); opus-4-6 is the fallback when opus-4-8 is unavailable.');
   lines.push(`  - The main agent model is "${mainModel}" — use this as the fallback if unsure.`);
   lines.push('  - Pick model IDs ONLY from the list above. Do not invent newer or older variants.');
