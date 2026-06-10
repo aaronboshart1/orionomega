@@ -59,20 +59,20 @@ function buildRenderItems(messages: ChatMessage[]): RenderItem[] {
     }
 
     if (msg.type === 'tool-call' && msg.toolCall) {
-      const groupNodeId = msg.toolCall.nodeId;
-      const groupLabel = msg.toolCall.nodeLabel || groupNodeId || 'Worker';
+      // Group consecutive tool-call cards that belong to the same agent/phase.
+      // The grouping key is the node id (each DAG node is a phase; direct-mode
+      // calls share the synthetic 'direct' id). Calls that lack a node id are
+      // grouped together under a stable fallback key so legacy/unscoped tool
+      // bursts still collapse instead of flooding the chat as flat cards.
+      const groupKey = msg.toolCall.nodeId ?? '__ungrouped__';
+      const groupLabel = msg.toolCall.nodeLabel || msg.toolCall.nodeId || 'Tool calls';
       const group: { id: string; toolCall: NonNullable<ChatMessage['toolCall']>; workflowId?: string }[] = [];
-      if (groupNodeId) {
-        while (
-          i < messages.length &&
-          messages[i].type === 'tool-call' &&
-          messages[i].toolCall &&
-          messages[i].toolCall!.nodeId === groupNodeId
-        ) {
-          group.push({ id: messages[i].id, toolCall: messages[i].toolCall!, workflowId: messages[i].dagId });
-          i++;
-        }
-      } else {
+      while (
+        i < messages.length &&
+        messages[i].type === 'tool-call' &&
+        messages[i].toolCall &&
+        (messages[i].toolCall!.nodeId ?? '__ungrouped__') === groupKey
+      ) {
         group.push({ id: messages[i].id, toolCall: messages[i].toolCall!, workflowId: messages[i].dagId });
         i++;
       }

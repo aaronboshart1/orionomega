@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import {
   Terminal,
   FileText,
@@ -16,6 +16,7 @@ import {
   Copy,
   Check,
   ExternalLink,
+  Layers,
 } from 'lucide-react';
 import type { ToolCallData } from '@/stores/chat';
 import { copyToClipboard } from '@/utils/clipboard';
@@ -208,22 +209,108 @@ interface ToolCallGroupProps {
   toolCalls: { id: string; toolCall: ToolCallData; workflowId?: string; onRetry?: () => void }[];
 }
 
+/**
+ * Bursts at or above this many consecutive same-agent/phase tool calls are
+ * treated as a "tool storm" and collapse by default into a single summary
+ * card, so the human-readable narrative isn't buried. Smaller groups stay
+ * expanded so short tool chains remain immediately visible.
+ */
+const STORM_THRESHOLD = 6;
+
+interface GroupSummary {
+  /** Per-tool counts, most frequent first. */
+  breakdown: { name: string; count: number }[];
+  errors: number;
+  running: number;
+}
+
+function summarizeToolCalls(
+  toolCalls: ToolCallGroupProps['toolCalls'],
+): GroupSummary {
+  const counts = new Map<string, number>();
+  let errors = 0;
+  let running = 0;
+  for (const { toolCall } of toolCalls) {
+    const name = toolCall.toolName || 'tool';
+    counts.set(name, (counts.get(name) ?? 0) + 1);
+    if (toolCall.isError || toolCall.status === 'error') errors++;
+    if (toolCall.status === 'running') running++;
+  }
+  const breakdown = [...counts.entries()]
+    .map(([name, count]) => ({ name, count }))
+    .sort((a, b) => b.count - a.count);
+  return { breakdown, errors, running };
+}
+
 export function ToolCallGroup({ nodeLabel, toolCalls }: ToolCallGroupProps) {
-  const [expanded, setExpanded] = useState(true);
+  const isStorm = toolCalls.length >= STORM_THRESHOLD;
+  // Storms collapse by default; smaller chains stay open for quick scanning.
+  const [expanded, setExpanded] = useState(!isStorm);
+  // Track whether the operator has manually toggled this group so a live,
+  // incrementally-growing burst can auto-collapse the first time it crosses
+  // the storm threshold without ever fighting a deliberate expand/collapse.
+  const userToggledRef = useRef(false);
+  useEffect(() => {
+    if (!userToggledRef.current && isStorm) {
+      setExpanded(false);
+    }
+  }, [isStorm]);
+  const toggleExpanded = useCallback(() => {
+    userToggledRef.current = true;
+    setExpanded((e) => !e);
+  }, []);
+
+  const summary = useMemo(() => summarizeToolCalls(toolCalls), [toolCalls]);
+  const { breakdown, errors, running } = summary;
+  // Show the few most-used tools inline; the rest fold into a "+N more" chip.
+  const topTools = breakdown.slice(0, 3);
+  const remainingTools = breakdown.length - topTools.length;
 
   return (
     <div className="my-2 flex justify-start">
       <div className="max-w-[85%] w-full">
         <div className="rounded-xl border border-zinc-700/40 bg-zinc-850/50 overflow-hidden">
           <button
-            onClick={() => setExpanded(!expanded)}
+            onClick={toggleExpanded}
             className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-zinc-500 hover:bg-zinc-700/30 transition-colors"
+            aria-expanded={expanded}
+            aria-label={`${expanded ? 'Collapse' : 'Expand'} ${toolCalls.length} tool calls from ${nodeLabel}`}
           >
             {expanded
-              ? <ChevronDown size={12} />
-              : <ChevronRight size={12} />}
-            <span className="font-medium text-zinc-400">{nodeLabel}</span>
-            <span className="ml-auto text-zinc-600">
+              ? <ChevronDown size={12} className="flex-shrink-0" />
+              : <ChevronRight size={12} className="flex-shrink-0" />}
+            {isStorm && <Layers size={12} className="flex-shrink-0 text-zinc-500" />}
+            <span className="font-medium text-zinc-400 truncate" title={nodeLabel}>{nodeLabel}</span>
+
+            {/* Tool-name breakdown chips — keep the summary informative even
+                when collapsed so operators can scan a storm at a glance. */}
+            {!expanded && topTools.map((t) => (
+              <span
+                key={t.name}
+                className="hidden sm:inline-flex items-center gap-1 rounded bg-zinc-800/70 px-1.5 py-0.5 text-[10px] text-zinc-400"
+              >
+                {t.name}
+                <span className="text-zinc-500 tabular-nums">{t.count}</span>
+              </span>
+            ))}
+            {!expanded && remainingTools > 0 && (
+              <span className="hidden sm:inline text-[10px] text-zinc-600">+{remainingTools} more</span>
+            )}
+
+            {running > 0 && (
+              <span className="inline-flex items-center gap-1 text-[10px] text-blue-400">
+                <Loader2 size={10} className="animate-spin" />
+                {running}
+              </span>
+            )}
+            {errors > 0 && (
+              <span className="inline-flex items-center gap-1 rounded bg-red-950/40 px-1.5 py-0.5 text-[10px] text-red-300">
+                <XCircle size={10} />
+                {errors}
+              </span>
+            )}
+
+            <span className="ml-auto flex-shrink-0 text-zinc-600 tabular-nums">
               {toolCalls.length} tool call{toolCalls.length !== 1 ? 's' : ''}
             </span>
           </button>
