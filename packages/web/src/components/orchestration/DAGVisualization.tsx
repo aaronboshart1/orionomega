@@ -1,10 +1,12 @@
 'use client';
 
-import { useMemo, useCallback, useEffect, useRef } from 'react';
+import { useMemo, useCallback, useEffect, useRef, useState } from 'react';
 import {
   ReactFlow,
   Background,
   Controls,
+  MiniMap,
+  Panel,
   type Node,
   type Edge,
   type ReactFlowInstance,
@@ -12,74 +14,131 @@ import {
   useEdgesState,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
+import { Maximize2, FoldVertical, UnfoldVertical } from 'lucide-react';
 
-import { useOrchestrationStore, type GraphNode, type InlineDAGNode } from '@/stores/orchestration';
+import { useOrchestrationStore, type GraphNode, type InlineDAGNode, type WorkerEvent } from '@/stores/orchestration';
 import { WorkerNode } from './WorkerNode';
+import { GroupSummaryNode, GroupContainerNode } from './GroupNodes';
+import {
+  buildDagLayout,
+  findCompletedBranchRoots,
+  type DagGroup,
+  type LayoutGraphNode,
+  type PositionedNode,
+} from '@/lib/dag-layout';
 
-const nodeTypes = { worker: WorkerNode };
+const nodeTypes = {
+  worker: WorkerNode,
+  groupSummary: GroupSummaryNode,
+  groupContainer: GroupContainerNode,
+};
 
-function computeLayout(nodes: Record<string, GraphNode>) {
-  const entries = Object.values(nodes);
-  const layers: string[][] = [];
-  const placed = new Set<string>();
+interface NodeMeta {
+  status: string;
+  progress?: number;
+  model?: string;
+}
 
-  while (placed.size < entries.length) {
-    const layer: string[] = [];
-    for (const node of entries) {
-      if (placed.has(node.id)) continue;
-      const depsReady = node.dependsOn.every((d) => placed.has(d));
-      if (depsReady) layer.push(node.id);
-    }
-    if (layer.length === 0) {
-      for (const node of entries) {
-        if (!placed.has(node.id)) layer.push(node.id);
-      }
-    }
-    layer.forEach((id) => placed.add(id));
-    layers.push(layer);
+/** Per-tick live data the layout deliberately doesn't carry. */
+interface OverlayCtx {
+  meta: Map<string, NodeMeta>;
+  summaryMembers: Map<string, string[]>;
+  onToggleCollapse: (id: string) => void;
+  onToggleGroup: (groupId: string) => void;
+}
+
+function aggregateStatus(memberIds: string[], meta: Map<string, NodeMeta>) {
+  let done = 0;
+  let running = 0;
+  let error = 0;
+  for (const m of memberIds) {
+    const s = meta.get(m)?.status;
+    if (s === 'done') done++;
+    else if (s === 'running') running++;
+    else if (s === 'error') error++;
   }
+  const status: 'pending' | 'running' | 'done' | 'error' =
+    error > 0 ? 'error' : running > 0 ? 'running' : done === memberIds.length && memberIds.length > 0 ? 'done' : 'pending';
+  return { done, running, error, status };
+}
 
-  const rfNodes: Node[] = [];
-  layers.forEach((layer, layerIdx) => {
-    layer.forEach((nodeId, nodeIdx) => {
-      const gn = nodes[nodeId];
-      rfNodes.push({
-        id: nodeId,
-        type: 'worker',
-        position: { x: layerIdx * 350, y: nodeIdx * 110 },
-        data: {
-          label: gn.label,
-          nodeType: gn.type,
-          status: gn.status,
-          progress: gn.progress,
-          model: gn.agent?.model,
-        },
-      });
-    });
-  });
+function statusForNode(id: string, ctx: OverlayCtx): string {
+  const direct = ctx.meta.get(id);
+  if (direct) return direct.status;
+  const members = ctx.summaryMembers.get(id);
+  if (members) return aggregateStatus(members, ctx.meta).status;
+  return 'pending';
+}
 
-  const rfEdges: Edge[] = [];
-  for (const node of entries) {
-    for (const dep of node.dependsOn) {
-      const sourceNode = nodes[dep];
-      rfEdges.push({
-        id: `${dep}-${node.id}`,
-        source: dep,
-        target: node.id,
-        animated: sourceNode?.status === 'running',
-        style: {
-          stroke:
-            sourceNode?.status === 'done'
-              ? '#22c55e'
-              : sourceNode?.status === 'running'
-                ? '#3b82f6'
-                : '#3f3f46',
-        },
-      });
-    }
+function dataForNode(ln: PositionedNode, ctx: OverlayCtx): Record<string, unknown> {
+  if (ln.kind === 'groupSummary') {
+    const members = ln.memberIds ?? [];
+    const agg = aggregateStatus(members, ctx.meta);
+    return {
+      title: ln.label,
+      groupId: ln.groupId,
+      memberCount: members.length,
+      doneCount: agg.done,
+      runningCount: agg.running,
+      errorCount: agg.error,
+      status: agg.status,
+      onToggleGroup: ctx.onToggleGroup,
+    };
   }
+  if (ln.kind === 'groupContainer') {
+    return {
+      title: ln.label,
+      groupId: ln.groupId,
+      memberCount: ln.memberIds?.length ?? 0,
+      onToggleGroup: ctx.onToggleGroup,
+    };
+  }
+  const m = ctx.meta.get(ln.id);
+  return {
+    label: ln.label,
+    nodeType: ln.nodeType,
+    status: m?.status ?? 'pending',
+    progress: m?.progress,
+    model: m?.model,
+    collapsible: ln.collapsible,
+    collapsed: ln.collapsed,
+    hiddenCount: ln.hiddenCount,
+    onToggleCollapse: ctx.onToggleCollapse,
+  };
+}
 
-  return { rfNodes, rfEdges };
+function buildRfNode(ln: PositionedNode, ctx: OverlayCtx): Node {
+  const base: Node = {
+    id: ln.id,
+    type: ln.kind,
+    position: { x: ln.x, y: ln.y },
+    data: dataForNode(ln, ctx),
+  };
+  if (ln.kind === 'groupContainer') {
+    base.draggable = false;
+    base.selectable = false;
+    base.zIndex = -1;
+    base.width = ln.width;
+    base.height = ln.height;
+    base.style = { width: ln.width, height: ln.height };
+  }
+  return base;
+}
+
+function edgeStyle(sourceStatus: string) {
+  return {
+    animated: sourceStatus === 'running',
+    style: {
+      stroke:
+        sourceStatus === 'done'
+          ? '#22c55e'
+          : sourceStatus === 'running'
+            ? '#3b82f6'
+            : sourceStatus === 'error'
+              ? '#ef4444'
+              : '#3f3f46',
+    },
+  };
 }
 
 function inlineNodesToGraphNodes(nodes: InlineDAGNode[]): Record<string, GraphNode> {
@@ -98,100 +157,183 @@ function inlineNodesToGraphNodes(nodes: InlineDAGNode[]): Record<string, GraphNo
   return result;
 }
 
+const miniMapColors: Record<string, string> = {
+  running: '#3b82f6',
+  done: '#22c55e',
+  error: '#ef4444',
+  skipped: '#52525b',
+};
+
 export function DAGVisualization() {
   const graphState = useOrchestrationStore((s) => s.graphState);
   const activeWorkflowId = useOrchestrationStore((s) => s.activeWorkflowId);
   const inlineDAGs = useOrchestrationStore((s) => s.inlineDAGs);
+  const events = useOrchestrationStore((s) => s.events);
   const selectWorker = useOrchestrationStore((s) => s.selectWorker);
   const selectedWorker = useOrchestrationStore((s) => s.selectedWorker);
   const rfInstanceRef = useRef<ReactFlowInstance | null>(null);
 
-  const { rfNodes, rfEdges } = useMemo(() => {
-    if (graphState) {
-      return computeLayout(graphState.nodes);
-    }
-    // Fall back to InlineDAG nodes for live runs (graphState arrives only in event/status msgs)
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  const [collapsedSubtrees, setCollapsedSubtrees] = useState<Set<string>>(new Set());
+
+  // Raw graph nodes (recomputed per tick — cheap, no layout work here).
+  const graphNodes = useMemo<Record<string, GraphNode>>(() => {
+    if (graphState) return graphState.nodes;
     const activeDag = activeWorkflowId ? inlineDAGs[activeWorkflowId] : null;
-    if (!activeDag || activeDag.nodes.length === 0) {
-      return { rfNodes: [], rfEdges: [] };
-    }
-    return computeLayout(inlineNodesToGraphNodes(activeDag.nodes));
+    if (!activeDag || activeDag.nodes.length === 0) return {};
+    return inlineNodesToGraphNodes(activeDag.nodes);
   }, [graphState, activeWorkflowId, inlineDAGs]);
 
-  const [nodes, setNodes, onNodesChange] = useNodesState(rfNodes);
-  const [edges, setEdges, onEdgesChange] = useEdgesState(rfEdges);
+  // Live per-node status/progress/model — overlaid onto stable positions.
+  const meta = useMemo(() => {
+    const m = new Map<string, NodeMeta>();
+    for (const n of Object.values(graphNodes)) {
+      m.set(n.id, { status: n.status, progress: n.progress, model: n.agent?.model });
+    }
+    return m;
+  }, [graphNodes]);
+
+  // Macro phase → sub-DAG groups, derived client-side from expansion events.
+  const groups = useMemo<DagGroup[]>(() => {
+    const byId = new Map<string, DagGroup>();
+    for (const e of events as WorkerEvent[]) {
+      if (e.type !== 'macro_expansion_complete') continue;
+      const mc = e.macro;
+      if (!mc || !mc.subNodeIds || mc.subNodeIds.length === 0) continue;
+      byId.set(mc.macroNodeId, {
+        id: mc.macroNodeId,
+        title: mc.phaseTitle || mc.phaseId || 'Phase',
+        memberIds: mc.subNodeIds,
+      });
+    }
+    return Array.from(byId.values());
+  }, [events]);
 
   /**
-   * Stable structural signature: changes only when the *set* of node ids or
-   * edge ids changes (e.g. new layers stream in, or the active workflow
-   * switches), not when a node's status/progress ticks. Used both to gate
-   * wholesale array replacement (which interacts badly with React Flow's
-   * measurement pass on large graphs) and to schedule a viewport re-fit so
-   * newly-added nodes don't end up off-screen.
+   * Structural-only node list (id/type/label/deps). Memoized on a structural
+   * signature so its identity stays stable while status ticks, which in turn
+   * keeps the layout memo from re-running the topological sort every event.
    */
   const structuralSignature = useMemo(() => {
-    const nodeIds = rfNodes.map((n) => n.id).sort().join('|');
-    const edgeIds = rfEdges.map((e) => e.id).sort().join('|');
-    // Include the active workflow id so switching between two workflows that
-    // happen to share node ids still counts as a structural change and
-    // triggers a re-fit rather than silently keeping the old viewport.
-    return `${activeWorkflowId ?? ''}::${nodeIds}::${edgeIds}`;
-  }, [activeWorkflowId, rfNodes, rfEdges]);
+    const parts: string[] = [];
+    for (const n of Object.values(graphNodes)) {
+      parts.push(`${n.id}:${n.type}:${[...n.dependsOn].sort().join(',')}`);
+    }
+    parts.sort();
+    return `${activeWorkflowId ?? ''}::${parts.join('|')}`;
+  }, [graphNodes, activeWorkflowId]);
+
+  const structuralNodes = useMemo<LayoutGraphNode[]>(() => {
+    return Object.values(graphNodes).map((n) => ({
+      id: n.id,
+      type: n.type,
+      label: n.label,
+      dependsOn: n.dependsOn ?? [],
+    }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [structuralSignature]);
+
+  const groupSignature = useMemo(
+    () => groups.map((g) => `${g.id}:${g.memberIds.join(',')}`).sort().join('|'),
+    [groups],
+  );
+  const collapsedGroupsKey = useMemo(() => [...collapsedGroups].sort().join('|'), [collapsedGroups]);
+  const collapsedSubtreesKey = useMemo(() => [...collapsedSubtrees].sort().join('|'), [collapsedSubtrees]);
+
+  // The expensive part — runs only on structural / group / collapse changes.
+  const layout = useMemo(
+    () => buildDagLayout(structuralNodes, { groups, collapsedGroups, collapsedSubtrees }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [structuralSignature, groupSignature, collapsedGroupsKey, collapsedSubtreesKey],
+  );
+
+  const summaryMembers = useMemo(() => {
+    const m = new Map<string, string[]>();
+    for (const n of layout.nodes) {
+      if (n.kind === 'groupSummary') m.set(n.id, n.memberIds ?? []);
+    }
+    return m;
+  }, [layout]);
+
+  const onToggleCollapse = useCallback((id: string) => {
+    setCollapsedSubtrees((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const onToggleGroup = useCallback((groupId: string) => {
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(groupId)) next.delete(groupId);
+      else next.add(groupId);
+      return next;
+    });
+  }, []);
+
+  const ctx = useMemo<OverlayCtx>(
+    () => ({ meta, summaryMembers, onToggleCollapse, onToggleGroup }),
+    [meta, summaryMembers, onToggleCollapse, onToggleGroup],
+  );
+  const ctxRef = useRef(ctx);
+  ctxRef.current = ctx;
+
+  const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
+
+  const layoutNodeById = useMemo(() => {
+    const m = new Map<string, PositionedNode>();
+    for (const n of layout.nodes) m.set(n.id, n);
+    return m;
+  }, [layout]);
 
   const prevSignatureRef = useRef<string>('');
   const pendingFitRef = useRef(false);
 
   /**
-   * Sync store-derived nodes/edges into React Flow's internal state.
-   *
-   * - Structural change (new/removed nodes or edges, workflow switch):
-   *   replace the arrays wholesale and schedule a viewport re-fit so the
-   *   newly-grown graph stays on-screen.
-   * - Data-only change (status, progress, model badge, edge animation):
-   *   patch existing nodes/edges in place by id so React Flow keeps its
-   *   internal measurements and doesn't tear mid-render. On a large
-   *   streaming run this is what previously caused the canvas to go blank.
+   * Structural change (new/removed nodes, collapse toggled, workflow switch):
+   * rebuild the React Flow arrays wholesale and schedule a viewport re-fit.
    */
   useEffect(() => {
-    const signatureChanged = prevSignatureRef.current !== structuralSignature;
-    if (signatureChanged) {
-      const isFirstStructure = prevSignatureRef.current === '';
-      prevSignatureRef.current = structuralSignature;
-      setNodes(rfNodes);
-      setEdges(rfEdges);
-      if (!isFirstStructure) {
-        // First mount is handled by the `fitView` prop on <ReactFlow>.
-        pendingFitRef.current = true;
-      }
-      return;
-    }
-    // Data-only update — patch by id, preserving node identity & measurements.
-    const nodeById = new Map(rfNodes.map((n) => [n.id, n]));
-    const edgeById = new Map(rfEdges.map((e) => [e.id, e]));
+    if (prevSignatureRef.current === layout.signature) return;
+    const isFirst = prevSignatureRef.current === '';
+    prevSignatureRef.current = layout.signature;
+    const c = ctxRef.current;
+    setNodes(layout.nodes.map((ln) => buildRfNode(ln, c)));
+    setEdges(
+      layout.edges.map((e) => {
+        const st = edgeStyle(statusForNode(e.source, c));
+        return { id: e.id, source: e.source, target: e.target, animated: st.animated, style: st.style };
+      }),
+    );
+    if (!isFirst) pendingFitRef.current = true;
+  }, [layout, setNodes, setEdges]);
+
+  /**
+   * Data-only tick (status / progress / model / edge colour): patch existing
+   * nodes & edges by id so React Flow keeps its measurements and never tears.
+   */
+  useEffect(() => {
     setNodes((curr) =>
       curr.map((n) => {
-        const next = nodeById.get(n.id);
-        return next ? { ...n, data: next.data } : n;
+        const ln = layoutNodeById.get(n.id);
+        return ln ? { ...n, data: dataForNode(ln, ctx) } : n;
       }),
     );
     setEdges((curr) =>
       curr.map((e) => {
-        const next = edgeById.get(e.id);
-        return next ? { ...e, animated: next.animated, style: next.style } : e;
+        const st = edgeStyle(statusForNode(e.source as string, ctx));
+        return { ...e, animated: st.animated, style: st.style };
       }),
     );
-  }, [structuralSignature, rfNodes, rfEdges, setNodes, setEdges]);
+  }, [ctx, layoutNodeById, setNodes, setEdges]);
 
-  /**
-   * After a structural change, re-fit the viewport on the next frame so
-   * React Flow has a chance to measure the new nodes. Skipped when a
-   * deep-link selection is active so the selected-node `setCenter` effect
-   * (Task #201) keeps winning.
-   */
+  /** Re-fit the viewport after a structural change (deferred a frame for measurement). */
   useEffect(() => {
     if (!pendingFitRef.current) return;
     if (selectedWorker) {
-      // Selection takes precedence; drop the pending fit so we don't fight it.
       pendingFitRef.current = false;
       return;
     }
@@ -206,11 +348,11 @@ export function DAGVisualization() {
       }
     });
     return () => cancelAnimationFrame(handle);
-  }, [structuralSignature, selectedWorker]);
+  }, [layout.signature, selectedWorker]);
 
   const onNodeClick = useCallback(
     (_: React.MouseEvent, node: Node) => {
-      selectWorker(node.id);
+      if (node.type === 'worker') selectWorker(node.id);
     },
     [selectWorker],
   );
@@ -219,18 +361,39 @@ export function DAGVisualization() {
     rfInstanceRef.current = instance;
   }, []);
 
+  const fitView = useCallback(() => {
+    rfInstanceRef.current?.fitView({ padding: 0.2, duration: 400 });
+  }, []);
+
+  const collapseCompleted = useCallback(() => {
+    const roots = findCompletedBranchRoots(structuralNodes, (id) => meta.get(id)?.status ?? 'pending');
+    const doneGroups = groups
+      .filter((g) => g.memberIds.length > 0 && g.memberIds.every((m) => meta.get(m)?.status === 'done'))
+      .map((g) => g.id);
+    setCollapsedSubtrees((prev) => {
+      const next = new Set(prev);
+      for (const r of roots) next.add(r);
+      return next;
+    });
+    if (doneGroups.length > 0) {
+      setCollapsedGroups((prev) => {
+        const next = new Set(prev);
+        for (const g of doneGroups) next.add(g);
+        return next;
+      });
+    }
+  }, [structuralNodes, meta, groups]);
+
+  const expandAll = useCallback(() => {
+    setCollapsedSubtrees(new Set());
+    setCollapsedGroups(new Set());
+  }, []);
+
+  const hasCollapsed = collapsedGroups.size > 0 || collapsedSubtrees.size > 0;
+
   /**
-   * Task #201: when an external selection occurs (e.g. clicking a row
-   * in the Sub-planning panel), pan the viewport so the corresponding
-   * DAG node is visible. The WorkerNode component already renders a
-   * highlight ring when its id matches `selectedWorker`.
-   *
-   * Only re-runs on selection change (not on every nodes/edges update),
-   * so live graph churn during a run doesn't keep snapping the viewport
-   * back to the selected node. If the node isn't in the React Flow
-   * instance yet on first attempt (e.g. user clicked a sub-planning row
-   * before the new layer rendered), retry once on the next animation
-   * frame so the deep-link still works.
+   * Task #201: deep-link selection — pan to the selected node when an external
+   * selection occurs (e.g. clicking a Sub-planning row).
    */
   const lastCenteredRef = useRef<string | null>(null);
   useEffect(() => {
@@ -262,7 +425,7 @@ export function DAGVisualization() {
     return () => cancelAnimationFrame(handle);
   }, [selectedWorker]);
 
-  if (rfNodes.length === 0) {
+  if (layout.nodes.length === 0) {
     return (
       <div className="flex h-full items-center justify-center text-xs text-zinc-600">
         No active workflow
@@ -280,16 +443,63 @@ export function DAGVisualization() {
       onInit={onInit}
       nodeTypes={nodeTypes}
       fitView
+      minZoom={0.05}
       proOptions={{ hideAttribution: true }}
       className="bg-zinc-950"
     >
       <Background color="#27272a" gap={20} />
+
+      <Panel position="top-left" className="!m-2 flex gap-1">
+        <button
+          type="button"
+          onClick={fitView}
+          title="Zoom to fit"
+          className="flex items-center gap-1 rounded-md border border-zinc-700 bg-zinc-800/90 px-2 py-1 text-[11px] text-zinc-300 shadow-lg transition-colors hover:bg-zinc-700"
+        >
+          <Maximize2 className="h-3 w-3" />
+          Fit
+        </button>
+        <button
+          type="button"
+          onClick={collapseCompleted}
+          title="Collapse completed branches"
+          className="flex items-center gap-1 rounded-md border border-zinc-700 bg-zinc-800/90 px-2 py-1 text-[11px] text-zinc-300 shadow-lg transition-colors hover:bg-zinc-700"
+        >
+          <FoldVertical className="h-3 w-3" />
+          Collapse done
+        </button>
+        {hasCollapsed && (
+          <button
+            type="button"
+            onClick={expandAll}
+            title="Expand all collapsed nodes"
+            className="flex items-center gap-1 rounded-md border border-zinc-700 bg-zinc-800/90 px-2 py-1 text-[11px] text-zinc-300 shadow-lg transition-colors hover:bg-zinc-700"
+          >
+            <UnfoldVertical className="h-3 w-3" />
+            Expand all
+          </button>
+        )}
+      </Panel>
+
+      <MiniMap
+        pannable
+        zoomable
+        position="bottom-left"
+        className="!bottom-[52px] !left-4 !rounded-md !border !border-zinc-700 !bg-zinc-900 !shadow-lg"
+        maskColor="rgba(9, 9, 11, 0.7)"
+        nodeColor={(n) => {
+          if (n.type === 'groupContainer') return 'transparent';
+          const status = (n.data as { status?: string } | undefined)?.status ?? 'pending';
+          return miniMapColors[status] ?? '#71717a';
+        }}
+        nodeStrokeWidth={2}
+      />
+
       <Controls
         showInteractive={false}
         position="bottom-right"
         className="!bg-zinc-800 !border-zinc-700 !shadow-lg !bottom-[52px] !right-4 [&>button]:!bg-zinc-800 [&>button]:!border-zinc-700 [&>button]:!text-zinc-400 [&>button:hover]:!bg-zinc-700"
       />
-
     </ReactFlow>
   );
 }

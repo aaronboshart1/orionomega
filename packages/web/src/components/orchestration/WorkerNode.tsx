@@ -2,7 +2,7 @@
 
 import { memo } from 'react';
 import { Handle, Position, type NodeProps } from '@xyflow/react';
-import { Bot, Wrench, GitBranch, Zap, Link, Clock, CheckCircle2, XCircle, Minus } from 'lucide-react';
+import { Bot, Wrench, GitBranch, Zap, Link, Clock, CheckCircle2, XCircle, Minus, ChevronRight, ChevronDown } from 'lucide-react';
 import { useOrchestrationStore } from '@/stores/orchestration';
 import { OmegaSpinner } from '../chat/OmegaSpinner';
 
@@ -12,6 +12,11 @@ interface WorkerNodeData {
   status: string;
   progress?: number;
   model?: string;
+  /** Task #233: subtree-collapse affordances. */
+  collapsible?: boolean;
+  collapsed?: boolean;
+  hiddenCount?: number;
+  onToggleCollapse?: (id: string) => void;
   [key: string]: unknown;
 }
 
@@ -65,6 +70,20 @@ function WorkerNodeComponent({ data, id }: NodeProps) {
           <StatusIcon status={d.status as string} />
           <NodeTypeIcon type={d.nodeType as string} />
           <span className={`flex-1 min-w-0 text-xs font-medium ${colors.text} truncate`}>{d.label as string}</span>
+          {d.collapsible && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                d.onToggleCollapse?.(id);
+              }}
+              title={d.collapsed ? `Expand ${d.hiddenCount} hidden` : 'Collapse completed branch'}
+              className="flex flex-shrink-0 items-center gap-0.5 rounded bg-zinc-700/70 px-1 py-0.5 text-[10px] text-zinc-300 transition-colors hover:bg-zinc-600"
+            >
+              {d.collapsed ? <ChevronRight className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+              {d.collapsed && d.hiddenCount ? <span className="font-mono">+{d.hiddenCount}</span> : null}
+            </button>
+          )}
         </div>
 
         {/* Progress bar */}
