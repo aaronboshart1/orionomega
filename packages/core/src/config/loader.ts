@@ -121,6 +121,10 @@ export function getDefaultConfig(): OrionOmegaConfig {
       enabled: true,
       permissionMode: 'acceptEdits',
       effort: 'high',
+      // R4: native context editing (auto-compaction) on by default so long
+      // unattended AGENT/CODING_AGENT runs auto-trim stale tool results
+      // instead of exhausting the context window. Set enabled:false to disable.
+      contextEditing: { enabled: true },
     },
     codingMode: {
       enabled: true,

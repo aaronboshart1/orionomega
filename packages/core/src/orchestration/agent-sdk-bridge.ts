@@ -20,6 +20,7 @@ import type {
   SDKTaskStartedMessage,
   SDKTaskProgressMessage,
   McpSdkServerConfigWithInstance,
+  Settings,
 } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod/v4';
 import { readConfig } from '../config/loader.js';
@@ -318,6 +319,42 @@ export function resolveThinkingEffort(
   }
   // The SDK bridge tops out at 'xhigh'; map the model-side 'max' effort down.
   return thinkingCfg.effort === 'max' ? 'xhigh' : thinkingCfg.effort;
+}
+
+// ── R4: Native Context Editing (auto-compaction) ──────────────────────────
+
+/**
+ * Resolve the native-context-editing settings fragment for an SDK query from
+ * the `agentSdk` config (R4 / 4.3-P1).
+ *
+ * The Agent SDK exposes context editing as conversation auto-compaction
+ * (`autoCompactEnabled` / `autoCompactWindow` in the SDK `Settings` interface):
+ * as the context window fills it auto-trims stale tool calls/results so long
+ * unattended runs continue instead of degrading or failing on context
+ * exhaustion.
+ *
+ * Native context editing is **on by default** — it directly attacks context
+ * exhaustion on the long-running AGENT/CODING_AGENT nodes that pair it with
+ * the executor's wall-clock timeout floors. The value is always returned
+ * explicitly (never left to the CLI default) so that `enabled: false` in
+ * config provably *turns it off* (`autoCompactEnabled: false`) rather than
+ * merely omitting the flag.
+ *
+ * @param sdkConfig - The resolved `agentSdk` config block.
+ * @returns A `Settings` fragment ready to pass to the SDK `settings` option.
+ */
+export function buildContextEditingSettings(
+  sdkConfig: { contextEditing?: { enabled?: boolean; autoCompactWindow?: number } },
+): Settings {
+  const ce = sdkConfig.contextEditing;
+  const enabled = ce?.enabled ?? true;
+  const settings: Settings = { autoCompactEnabled: enabled };
+  // A custom window only makes sense when compaction is on; ignore non-positive
+  // or missing values so the SDK falls back to its own tuned default.
+  if (enabled && typeof ce?.autoCompactWindow === 'number' && ce.autoCompactWindow > 0) {
+    settings.autoCompactWindow = ce.autoCompactWindow;
+  }
+  return settings;
 }
 
 /**
@@ -1414,6 +1451,10 @@ export async function executeAgent(
           CLAUDE_AGENT_SDK_CLIENT_APP: 'orionomega-worker',
         },
         additionalDirectories: sdkConfig.additionalDirectories,
+        // R4: native context editing (auto-compaction) — keeps long-running
+        // AGENT nodes alive as the context window fills by auto-trimming stale
+        // tool results. On by default; disable via agentSdk.contextEditing.
+        settings: buildContextEditingSettings(sdkConfig),
         // Omit settingSources — default is no CLAUDE.md loading; the worker
         // system prompt is self-contained.
         persistSession: false,
@@ -1932,6 +1973,11 @@ export async function executeCodingAgent(
         },
         additionalDirectories: codingConfig.additionalDirectories ?? sdkConfig.additionalDirectories,
         ...(agents ? { agents } : {}),
+        // R4: native context editing (auto-compaction) — coding nodes run the
+        // longest multi-turn loops, so auto-trimming stale tool results as the
+        // window fills is what keeps them from exhausting context. On by
+        // default; disable via agentSdk.contextEditing.
+        settings: buildContextEditingSettings(sdkConfig),
         settingSources: ['project'], // Load CLAUDE.md files from the project
         persistSession: false, // Don't persist — orchestration manages state
         // Capture stderr for diagnostics when the CLI process crashes

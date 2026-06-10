@@ -12,7 +12,26 @@ This file holds the in-depth architecture-decision and task-history notes that u
 
 **Verification done for the bump:** `packages/core` builds clean (`tsc`), the full monorepo typecheck (`tsc --build`) passes, and the core test suite is green (743 tests). No source changes were required — the SDK upgrade is purely a dependency/lockfile bump because the bridge already treats `model` as an open `string`.
 
-**Out of scope (separate tasks):** the model capability registry (R2) and any Fable 5 routing/fallback behaviour, plus native context editing on agent queries (R4).
+**Out of scope (separate tasks):** the model capability registry (R2) and any Fable 5 routing/fallback behaviour.
+
+## Native context editing on agent queries (R4 / 4.3-P1)
+
+For unattended long runs, context exhaustion is a real failure mode. Anthropic's **native context editing** auto-trims stale tool calls/results as the context window fills, preserving conversation flow so a run continues instead of degrading or hard-failing. The Agent SDK surfaces this as conversation **auto-compaction**: the SDK `Settings` interface exposes `autoCompactEnabled` (master switch) and `autoCompactWindow` (post-compaction token window the SDK keeps). Both are passed through the `query()` `settings` option.
+
+**Wiring.** `buildContextEditingSettings(sdkConfig)` in `agent-sdk-bridge.ts` resolves a `Settings` fragment from the `agentSdk.contextEditing` config and is spread into the `settings` option of **both** SDK query paths — `executeAgent` (AGENT nodes) and `executeCodingAgent` (CODING_AGENT nodes). These are exactly the long-running orchestration nodes that benefit, and the only two code paths that reach the SDK. The coding path already passes `settingSources: ['project']`; `settings` is a separate, higher-priority "flag settings" layer, so the two coexist.
+
+**Defaults & config.** On by default — `getDefaultConfig()` seeds `agentSdk.contextEditing = { enabled: true }`. The helper defaults `enabled` to `true` when the block (or the field) is absent, so existing on-disk configs that predate this key get context editing automatically via the defaults merge. The fragment is **always emitted explicitly**: `enabled: false` yields `{ autoCompactEnabled: false }` (provably off, not merely omitted). An optional `autoCompactWindow` override is only applied when editing is enabled and the value is a positive number; otherwise the SDK's own tuned default is used.
+
+```yaml
+agentSdk:
+  contextEditing:
+    enabled: true          # set false to disable native context editing
+    autoCompactWindow: 50000  # optional; omit to use the SDK default
+```
+
+**Interaction with timeout floors.** This pairs directly with the executor's per-node wall-clock timeout floors (`TIMEOUT_FLOOR_SEC` in `executor.ts`: AGENT 900s, CODING_AGENT 1800s). The floors guarantee a run gets enough wall-clock budget to make progress; context editing guarantees the *context window* doesn't fill before that budget is spent. Without auto-trimming, a long CODING_AGENT loop could exhaust context well before its timeout; together they let long unattended runs run to completion.
+
+**Tests.** `buildContextEditingSettings` is a pure function unit-tested in `agent-sdk-bridge-opus-48.test.ts`: default-on, explicit-on, disabling turns it off (`autoCompactEnabled: false`), window pass-through, and non-positive/disabled window dropping.
 
 ## Hindsight hybrid recall, fast dedup, cross-project lessons, and the native-memory boundary (Task #241)
 

@@ -197,6 +197,25 @@ export interface OrionOmegaConfig {
     maxBudgetUsd?: number;
     /** Additional directories the agent can access beyond the working directory. */
     additionalDirectories?: string[];
+    /**
+     * Native context editing (R4) — the SDK's auto-compaction. When enabled,
+     * the Agent SDK auto-trims stale tool calls/results as the context window
+     * fills, so long unattended runs continue instead of degrading or failing
+     * on context exhaustion. Applied to the long-running orchestration nodes
+     * (AGENT and CODING_AGENT) that go through the Agent SDK bridge, pairing
+     * the executor's wall-clock timeout floors with auto-trimming.
+     *
+     * On by default. Set `enabled: false` to turn it off.
+     */
+    contextEditing?: {
+      /** Master switch for native context editing. Default: true. */
+      enabled?: boolean;
+      /**
+       * Optional override for the auto-compact window size (the token budget
+       * the SDK keeps after a compaction). Omit to use the SDK default.
+       */
+      autoCompactWindow?: number;
+    };
   };
 
   /** Coding Mode configuration — transforms OrionOmega into an autonomous coding system. */

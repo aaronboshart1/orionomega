@@ -24,6 +24,7 @@ import {
   RETRY_CONFIG,
   resolveThinkingEffort,
   createCodingAgent,
+  buildContextEditingSettings,
   type ThinkingConfig,
 } from '../agent-sdk-bridge.js';
 
@@ -343,5 +344,52 @@ describe('createCodingAgent — thinking effort (Task #226)', () => {
   it("resolves a thinking-disabled role (codebase-scanner) to 'low'", () => {
     const agent = createCodingAgent({ ...baseOptions, role: 'codebase-scanner' });
     expect(agent.effort).toBe('low');
+  });
+});
+
+// ── buildContextEditingSettings — native context editing (R4) ─────────────────
+
+describe('buildContextEditingSettings (Task R4 / 4.3-P1)', () => {
+  it('enables context editing by default when no config is provided', () => {
+    expect(buildContextEditingSettings({})).toEqual({ autoCompactEnabled: true });
+  });
+
+  it('enables context editing by default when contextEditing.enabled is omitted', () => {
+    expect(buildContextEditingSettings({ contextEditing: {} })).toEqual({
+      autoCompactEnabled: true,
+    });
+  });
+
+  it('enables context editing when explicitly enabled', () => {
+    expect(buildContextEditingSettings({ contextEditing: { enabled: true } })).toEqual({
+      autoCompactEnabled: true,
+    });
+  });
+
+  it('disabling the flag turns context editing off explicitly', () => {
+    expect(buildContextEditingSettings({ contextEditing: { enabled: false } })).toEqual({
+      autoCompactEnabled: false,
+    });
+  });
+
+  it('passes through a positive autoCompactWindow override when enabled', () => {
+    expect(
+      buildContextEditingSettings({ contextEditing: { enabled: true, autoCompactWindow: 50_000 } }),
+    ).toEqual({ autoCompactEnabled: true, autoCompactWindow: 50_000 });
+  });
+
+  it('ignores a non-positive autoCompactWindow', () => {
+    expect(
+      buildContextEditingSettings({ contextEditing: { autoCompactWindow: 0 } }),
+    ).toEqual({ autoCompactEnabled: true });
+    expect(
+      buildContextEditingSettings({ contextEditing: { autoCompactWindow: -100 } }),
+    ).toEqual({ autoCompactEnabled: true });
+  });
+
+  it('drops the window override when context editing is disabled', () => {
+    expect(
+      buildContextEditingSettings({ contextEditing: { enabled: false, autoCompactWindow: 50_000 } }),
+    ).toEqual({ autoCompactEnabled: false });
   });
 });
