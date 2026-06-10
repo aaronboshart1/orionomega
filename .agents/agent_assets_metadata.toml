@@ -6,3 +6,9 @@ id = "GU8fyGT6mGbDA3Ymf6FV_"
 uri = "file://.local/exports/scheduler-round2.patch.txt"
 type = "text"
 title = "scheduler-round2.patch (rename to .patch after download)"
+
+[[outputs]]
+id = "p-pF1rC2aB9bKZT8PRjm6"
+uri = "file://docs/codebase-review-2026-06.md"
+type = "text"
+title = "OrionOmega — Complete Codebase Review & Upgrade Roadmap (June 2026)"
