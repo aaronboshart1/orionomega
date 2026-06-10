@@ -2,6 +2,18 @@
 
 This file holds the in-depth architecture-decision and task-history notes that used to live in `replit.md`. The README keeps only Run/Stack/Where-things-live/Gotchas; everything else lives here.
 
+## Claude Agent SDK version (Task #228)
+
+`@anthropic-ai/claude-agent-sdk` is pinned at **`^0.3.172`** in `packages/core/package.json` (R1 / 4.2-P0). The bump from the previous `^0.3.165` unblocks running Opus 4.8 + Fable 5 through the SDK.
+
+**What 0.3.170–0.3.172 changed (relevant to OrionOmega):**
+- **Fable 5 model support.** The SDK's model union now recognises the `fable` alias and the `claude-fable-5` full model ID (added in 0.3.170), alongside existing aliases (`opus`, `sonnet`, `haiku`) and full IDs (`claude-sonnet-4-6`, `claude-opus-4-8`). The bridge passes `model` as a plain `string` into `query()` options, so these new identifiers type-check without any code change — they flow through the existing `discoverModels`/`coerceModel` validation pipeline at plan time.
+- **`skipMcpDiscovery` plugin option.** SDK plugin configs now accept `skipMcpDiscovery?: boolean`. OrionOmega does not set it today; noted here so a future MCP-discovery-skipping optimisation knows the field exists.
+
+**Verification done for the bump:** `packages/core` builds clean (`tsc`), the full monorepo typecheck (`tsc --build`) passes, and the core test suite is green (743 tests). No source changes were required — the SDK upgrade is purely a dependency/lockfile bump because the bridge already treats `model` as an open `string`.
+
+**Out of scope (separate tasks):** the model capability registry (R2) and any Fable 5 routing/fallback behaviour, plus native context editing on agent queries (R4).
+
 ## Hierarchical macro planning for very large coding specs (Task #197)
 
 **Motivation.** Single-pass coding-mode planning fails with `stop_reason=max_tokens` on very large multi-phase specs (the canonical case is the Cannabis MSO Legal Operations Platform: ~150KB combined / 17 phases). The planner's tool output simply cannot fit one CODING_AGENT per phase plus all per-phase context inside Anthropic's max output budget.
