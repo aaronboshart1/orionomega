@@ -1036,6 +1036,52 @@ async function initMainAgent(): Promise<void> {
         gateResolved: info,
       }, sid);
     },
+    onInterventionRequest(request, sessionId) {
+      const sid = sessionId ?? DEFAULT_SESSION_ID;
+      const msgId = randomBytes(8).toString('hex');
+      // Persist the pending intervention server-side so the input panel
+      // rehydrates after a reload while the worker is still blocked.
+      try {
+        sessionManager.setPendingIntervention(sid, {
+          interventionId: request.interventionId,
+          workflowId: request.workflowId,
+          workflowName: request.workflowName,
+          nodeId: request.nodeId,
+          nodeLabel: request.nodeLabel,
+          prompt: request.prompt,
+          timestamp: request.timestamp,
+        });
+      } catch (err) {
+        log.warn('[intervention:persist] Failed to persist pending intervention', {
+          interventionId: request.interventionId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      eventStreamer.emitDAGMessage({
+        id: msgId,
+        type: 'intervention_request',
+        workflowId: request.workflowId,
+        interventionRequest: request,
+      }, sid);
+    },
+    onInterventionResolved(info, sessionId) {
+      const sid = sessionId ?? DEFAULT_SESSION_ID;
+      const msgId = randomBytes(8).toString('hex');
+      try {
+        sessionManager.removePendingIntervention(sid, info.interventionId);
+      } catch (err) {
+        log.warn('[intervention:persist] Failed to clear resolved intervention', {
+          interventionId: info.interventionId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      eventStreamer.emitDAGMessage({
+        id: msgId,
+        type: 'intervention_resolved',
+        workflowId: info.workflowId,
+        interventionResolved: info,
+      }, sid);
+    },
     onDAGConfirm(confirm, sessionId) {
       const sid = sessionId ?? DEFAULT_SESSION_ID;
       const msgId = randomBytes(8).toString('hex');

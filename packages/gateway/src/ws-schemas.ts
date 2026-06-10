@@ -62,6 +62,13 @@ const gateResponseSchema = z.object({
   gateAction: z.enum(['approve', 'deny']),
 });
 
+const interventionResponseSchema = z.object({
+  id: z.string().min(1).max(128),
+  type: z.literal('intervention_response'),
+  interventionId: z.string().min(1).max(128),
+  interventionInput: z.string().max(MAX_CONTENT_LENGTH),
+});
+
 const subscribeSchema = z.object({
   id: z.string().min(1).max(128),
   type: z.literal('subscribe'),
@@ -112,6 +119,7 @@ const clientMessageSchema = z.discriminatedUnion('type', [
   planResponseSchema,
   dagResponseSchema,
   gateResponseSchema,
+  interventionResponseSchema,
   subscribeSchema,
   pingSchema,
   fileReadSchema,

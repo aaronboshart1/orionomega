@@ -3,13 +3,77 @@
 import { useState, useMemo, useCallback } from 'react';
 import {
   X, ChevronDown, Check, Clock, Cpu,
-  ArrowRight, ChevronRight, AlertCircle,
+  ArrowRight, ChevronRight, AlertCircle, MessageSquare, Send,
 } from 'lucide-react';
-import { useOrchestrationStore, type WorkerEvent, type WorkerEventType } from '@/stores/orchestration';
+import { useOrchestrationStore, type WorkerEvent, type WorkerEventType, type PendingIntervention } from '@/stores/orchestration';
+import { useGateway } from '@/lib/gateway';
 import { TabGroup } from '../shared/TabGroup';
 import { CopyButton } from '../shared/CopyButton';
 import { EventRow } from './ActivityFeed';
 import { formatElapsed } from '@/utils/format';
+
+/**
+ * Task #234 — Free-text human-input panel rendered when the selected worker is
+ * blocked on a MANUAL_INTERVENTION node. Submitting resumes the worker.
+ */
+function InterventionPanel({ intervention }: { intervention: PendingIntervention }) {
+  const { submitIntervention } = useGateway();
+  const [value, setValue] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const resolved = intervention.resolved === true;
+
+  const handleSubmit = useCallback(() => {
+    const trimmed = value.trim();
+    if (!trimmed || resolved || submitting) return;
+    setSubmitting(true);
+    submitIntervention(intervention.interventionId, intervention.nodeId, trimmed);
+  }, [value, resolved, submitting, submitIntervention, intervention]);
+
+  return (
+    <div className="shrink-0 border-b border-amber-500/30 bg-amber-500/5 px-4 py-3">
+      <div className="flex items-center gap-2 mb-1.5">
+        <MessageSquare size={13} className="text-amber-400 shrink-0" />
+        <span className="text-xs font-semibold text-amber-300">
+          {resolved ? 'Input submitted' : 'Manual intervention required'}
+        </span>
+      </div>
+      <p className="text-xs text-zinc-300 whitespace-pre-wrap mb-2">{intervention.prompt}</p>
+      {resolved ? (
+        <p className="flex items-center gap-1 text-[11px] text-emerald-400">
+          <Check size={11} /> Worker resuming…
+        </p>
+      ) : (
+        <div className="space-y-2">
+          <textarea
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            onKeyDown={(e) => {
+              if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                e.preventDefault();
+                handleSubmit();
+              }
+            }}
+            disabled={submitting}
+            rows={3}
+            placeholder="Type your input to resume this worker…"
+            className="w-full resize-y rounded-md border border-zinc-700 bg-zinc-900/70 px-2.5 py-2 text-xs text-zinc-200 placeholder-zinc-600 outline-none focus:border-amber-500/50 disabled:opacity-60"
+          />
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] text-zinc-600">⌘/Ctrl + Enter to submit</span>
+            <button
+              onClick={handleSubmit}
+              disabled={!value.trim() || submitting}
+              className="flex items-center gap-1.5 rounded-md bg-amber-500/90 px-3 py-1.5 text-xs font-medium text-zinc-950 transition-colors hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <Send size={11} />
+              {submitting ? 'Submitting…' : 'Submit'}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 type Tab = 'activity' | 'reasoning' | 'tools' | 'output' | 'info';
 
@@ -125,6 +189,11 @@ export function WorkerDetail() {
 
   const activeWorkflowId = useOrchestrationStore((s) => s.activeWorkflowId);
   const inlineDAGs = useOrchestrationStore((s) => s.inlineDAGs);
+  const pendingInterventions = useOrchestrationStore((s) => s.pendingInterventions);
+
+  // Task #234: surface the human-input panel when the selected worker is
+  // blocked on a MANUAL_INTERVENTION node (keyed by nodeId).
+  const intervention = selectedWorker ? pendingInterventions[selectedWorker] : undefined;
 
   // Fall back to building a GraphNode from inlineDAG data when graphState is missing
   // (e.g. historical runs where graphState hasn't been reconstructed yet)
@@ -274,6 +343,8 @@ export function WorkerDetail() {
           <X size={14} />
         </button>
       </div>
+
+      {intervention && <InterventionPanel intervention={intervention} />}
 
       {!collapsed && (
         <>

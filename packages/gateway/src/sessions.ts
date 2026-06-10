@@ -183,6 +183,22 @@ export interface PendingGateData {
   timestamp: string;
 }
 
+/**
+ * Task #234 — A pending manual-intervention input request tracked server-side
+ * so the WorkerDetail input panel survives page reloads while the worker is
+ * still blocked. Mirrors the `interventionRequest` payload broadcast over
+ * WebSocket.
+ */
+export interface PendingInterventionData {
+  interventionId: string;
+  workflowId: string;
+  workflowName: string;
+  nodeId: string;
+  nodeLabel: string;
+  prompt: string;
+  timestamp: string;
+}
+
 /** Cumulative session-level token/cost totals tracked server-side. */
 export interface SessionTotals {
   inputTokens: number;
@@ -238,6 +254,8 @@ interface SessionData {
   pendingConfirmation?: unknown;
   /** Outstanding human-gate approval requests, keyed by gateId. */
   pendingGates?: Record<string, PendingGateData>;
+  /** Task #234: Outstanding manual-intervention requests, keyed by interventionId. */
+  pendingInterventions?: Record<string, PendingInterventionData>;
 }
 
 /** Maximum memory events to persist per session. */
@@ -306,6 +324,8 @@ export interface Session {
   pendingConfirmation: unknown | null;
   /** Outstanding human-gate approval requests, keyed by gateId. */
   pendingGates: Record<string, PendingGateData>;
+  /** Task #234: Outstanding manual-intervention requests, keyed by interventionId. */
+  pendingInterventions: Record<string, PendingInterventionData>;
   /** Events buffered while no clients were connected — drained on reconnect. */
   eventBuffer: BufferedEvent[];
 }
@@ -482,6 +502,7 @@ export class SessionManager {
       activePlan: null,
       pendingConfirmation: null,
       pendingGates: {},
+      pendingInterventions: {},
       eventBuffer: [],
     };
     this.sessions.set(id, session);
@@ -1003,6 +1024,28 @@ export class SessionManager {
   }
 
   /**
+   * Task #234 — Track a manual-intervention input request server-side so the
+   * WorkerDetail input panel survives page reloads while the worker waits.
+   */
+  setPendingIntervention(sessionId: string, intervention: PendingInterventionData): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    session.pendingInterventions[intervention.interventionId] = intervention;
+    session.updatedAt = new Date().toISOString();
+    this.schedulePersist(sessionId);
+  }
+
+  /** Task #234 — Drop a manual-intervention request once resolved or abandoned. */
+  removePendingIntervention(sessionId: string, interventionId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    if (!(interventionId in session.pendingInterventions)) return;
+    delete session.pendingInterventions[interventionId];
+    session.updatedAt = new Date().toISOString();
+    this.schedulePersist(sessionId);
+  }
+
+  /**
    * Buffer a ServerMessage when no clients are connected.
    * These will be drained and delivered on reconnect.
    */
@@ -1052,6 +1095,7 @@ export class SessionManager {
     session.activePlan = null;
     session.pendingConfirmation = null;
     session.pendingGates = {};
+    session.pendingInterventions = {};
     session.eventBuffer.length = 0;
     session.updatedAt = new Date().toISOString();
     this.schedulePersist(sessionId);
@@ -1237,6 +1281,7 @@ export class SessionManager {
           activePlan: inMemSession?.activePlan ?? null,
           pendingConfirmation: inMemSession?.pendingConfirmation ?? null,
           pendingGates: inMemSession?.pendingGates ?? {},
+          pendingInterventions: inMemSession?.pendingInterventions ?? {},
           agentMode: inMemSession?.agentMode ?? 'orchestrate',
           activeWorkflows: [...(inMemSession?.activeWorkflows ?? [])],
           hindsightStatus: hindsightStatus ?? null,
@@ -1283,6 +1328,7 @@ export class SessionManager {
       activePlan: session.activePlan,
       pendingConfirmation: session.pendingConfirmation,
       pendingGates: session.pendingGates,
+      pendingInterventions: session.pendingInterventions,
       agentMode: session.agentMode ?? 'orchestrate',
       activeWorkflows: [...session.activeWorkflows],
       hindsightStatus: hindsightStatus ?? null,
@@ -1435,6 +1481,7 @@ export class SessionManager {
       activePlan: session.activePlan,
       pendingConfirmation: session.pendingConfirmation,
       pendingGates: session.pendingGates,
+      pendingInterventions: session.pendingInterventions,
     };
 
     const filePath = this.sessionFilePath(sessionId);
@@ -1537,6 +1584,7 @@ export class SessionManager {
             activePlan: data.activePlan ?? null,
             pendingConfirmation: data.pendingConfirmation ?? null,
             pendingGates: data.pendingGates ?? {},
+            pendingInterventions: data.pendingInterventions ?? {},
             eventBuffer: [], // Event buffer is transient — not persisted to disk
           };
 
@@ -1721,6 +1769,7 @@ export class SessionManager {
       activePlan: null,
       pendingConfirmation: null,
       pendingGates: {},
+      pendingInterventions: {},
       eventBuffer: [],
     };
     this.sessions.set(DEFAULT_SESSION_ID, session);

@@ -613,6 +613,38 @@ function rehydrateFromSnapshot(snapshot: any, bufferedEvents?: unknown[]): void 
       console.error('[gateway] Failed to rehydrate pending gates', err);
     }
 
+    // ── 6b. Rehydrate pending manual-intervention requests (Task #234) ───
+    // Persisted server-side so the WorkerDetail input panel survives page
+    // reloads while the worker is still blocked awaiting human input.
+    try {
+      if (snapshot.pendingInterventions && typeof snapshot.pendingInterventions === 'object') {
+        for (const iv of Object.values(snapshot.pendingInterventions) as Array<{
+          interventionId: string;
+          workflowId: string;
+          workflowName: string;
+          nodeId: string;
+          nodeLabel: string;
+          prompt: string;
+          timestamp: string;
+        }>) {
+          if (!iv || !iv.interventionId || !iv.nodeId) continue;
+          orch.setPendingIntervention({
+            interventionId: iv.interventionId,
+            workflowId: iv.workflowId,
+            workflowName: iv.workflowName,
+            nodeId: iv.nodeId,
+            nodeLabel: iv.nodeLabel,
+            prompt: iv.prompt,
+            timestamp: iv.timestamp,
+          });
+        }
+      }
+      sectionsOk++;
+    } catch (err) {
+      sectionsFailed++;
+      console.error('[gateway] Failed to rehydrate pending interventions', err);
+    }
+
     // ── 6. Rehydrate pending confirmation ───────────────────────────────
     try {
       if (snapshot.pendingConfirmation !== undefined) {
@@ -1162,6 +1194,29 @@ function bindListeners(ws: ReconnectingWebSocket): void {
         // Using resolvePendingGate (rather than removePendingGate) keeps
         // the card mounted with a clear status badge instead of vanishing.
         orch.resolvePendingGate(gr.gateId, gr.resolution);
+        break;
+      }
+      case 'intervention_request': {
+        const ir = msg.interventionRequest;
+        if (!ir) break;
+        // Surface a free-text input panel keyed by nodeId in WorkerDetail.
+        orch.setPendingIntervention({
+          interventionId: ir.interventionId,
+          workflowId: ir.workflowId,
+          workflowName: ir.workflowName,
+          nodeId: ir.nodeId,
+          nodeLabel: ir.nodeLabel,
+          prompt: ir.prompt,
+          timestamp: ir.timestamp,
+        });
+        break;
+      }
+      case 'intervention_resolved': {
+        const ir = msg.interventionResolved;
+        if (!ir) break;
+        // Mark the panel resolved (keeps it briefly mounted with status) then drop.
+        orch.resolvePendingIntervention(ir.nodeId);
+        orch.removePendingIntervention(ir.nodeId);
         break;
       }
       case 'gate_request': {
@@ -1986,6 +2041,20 @@ export function useGateway() {
     [send],
   );
 
+  const submitIntervention = useCallback(
+    (interventionId: string, nodeId: string, input: string) => {
+      send({
+        id: uuid(),
+        type: 'intervention_response',
+        interventionId,
+        interventionInput: input,
+      });
+      // Optimistically mark resolved so the panel reflects submission immediately.
+      useOrchestrationStore.getState().resolvePendingIntervention(nodeId);
+    },
+    [send],
+  );
+
   const sendFeedback = useCallback(
     (messageId: string, value: 'good' | 'bad' | null) => {
       send({ id: uuid(), type: 'feedback', feedbackPayload: { messageId, value } });
@@ -1993,7 +2062,7 @@ export function useGateway() {
     [send],
   );
 
-  return { send, sendChat, sendCommand, sendWorkflowCommand, sendFeedback, respondToPlan, respondToDAG, respondToConfirmation, respondToGate };
+  return { send, sendChat, sendCommand, sendWorkflowCommand, sendFeedback, respondToPlan, respondToDAG, respondToConfirmation, respondToGate, submitIntervention };
 }
 
 // Logs API helpers — typed wrappers around /api/logs/{meta,tail,stream,download}.

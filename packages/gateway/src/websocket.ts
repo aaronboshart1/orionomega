@@ -387,6 +387,9 @@ export class WebSocketHandler {
       case 'gate_response':
         this.handleGateResponse(conn, msg);
         break;
+      case 'intervention_response':
+        this.handleInterventionResponse(conn, msg);
+        break;
       case 'subscribe':
         this.handleSubscribe(conn, msg);
         break;
@@ -673,6 +676,46 @@ export class WebSocketHandler {
     }
   }
 
+  /** Task #234 — Handle a manual-intervention input submission from a client. */
+  private handleInterventionResponse(conn: ClientConnection, msg: ClientMessage): void {
+    if (!msg.interventionId || typeof msg.interventionInput !== 'string') {
+      this.send(conn.ws, {
+        id: randomBytes(8).toString('hex'),
+        type: 'error',
+        error: 'intervention_response requires interventionId and interventionInput',
+      });
+      return;
+    }
+
+    if (this.mainAgent) {
+      // Drop the persisted pending intervention so it doesn't rehydrate on reload.
+      try {
+        this.sessionManager.removePendingIntervention(conn.sessionId, msg.interventionId);
+      } catch (err) {
+        log.warn('[intervention:persist] Failed to clear pending intervention', {
+          interventionId: msg.interventionId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      this.mainAgent
+        .handleInterventionResponse(conn.sessionId, msg.interventionId, msg.interventionInput)
+        .catch((err) => {
+          log.error('MainAgent.handleInterventionResponse error', { error: err instanceof Error ? err.message : String(err) });
+          this.send(conn.ws, {
+            id: randomBytes(8).toString('hex'),
+            type: 'error',
+            error: 'Internal intervention response error',
+          });
+        });
+    } else {
+      this.send(conn.ws, {
+        id: randomBytes(8).toString('hex'),
+        type: 'ack',
+        content: 'Intervention response received. Agent not connected.',
+      });
+    }
+  }
+
   /** Handle a workflow subscription request. */
   private handleSubscribe(conn: ClientConnection, msg: ClientMessage): void {
     if (msg.workflowId) {
@@ -734,6 +777,7 @@ export class WebSocketHandler {
         activePlan: inMemSession?.activePlan ?? null,
         pendingConfirmation: inMemSession?.pendingConfirmation ?? null,
         pendingGates: inMemSession?.pendingGates ?? {},
+        pendingInterventions: inMemSession?.pendingInterventions ?? {},
       } : undefined;
 
       this.send(conn.ws, {

@@ -127,6 +127,19 @@ interface HumanGateRequest {
   timestamp: string;
 }
 
+/** Task #234 — A manual-intervention input request waiting for operator text. */
+interface InterventionRequest {
+  interventionId: string;
+  workflowId: string;
+  workflowName: string;
+  nodeId: string;
+  nodeLabel: string;
+  prompt: string;
+  resolve: (input: string) => void;
+  reject: (err: Error) => void;
+  timestamp: string;
+}
+
 /**
  * Manages the lifecycle of workflow planning and execution.
  *
@@ -146,6 +159,9 @@ export class OrchestrationBridge {
 
   /** Human gate requests awaiting approval, keyed by gate ID. */
   private readonly pendingGates = new Map<string, HumanGateRequest>();
+
+  /** Task #234: Manual-intervention input requests awaiting operator text, keyed by intervention ID. */
+  private readonly pendingInterventions = new Map<string, InterventionRequest>();
 
   /** Guarded DAG confirmations awaiting user approval, keyed by workflow ID. */
   private readonly pendingConfirmations = new Map<string, {
@@ -1229,6 +1245,62 @@ ${userTask}`;
           );
         });
       },
+      humanInputCallback: async (
+        req: { nodeId: string; nodeLabel: string; prompt: string; workflowId: string },
+        signal: AbortSignal,
+      ): Promise<string> => {
+        const interventionId = randomBytes(8).toString('hex');
+        const timestamp = new Date().toISOString();
+        return new Promise<string>((resolve, reject) => {
+          this.pendingInterventions.set(interventionId, {
+            interventionId,
+            workflowId,
+            workflowName,
+            nodeId: req.nodeId,
+            nodeLabel: req.nodeLabel,
+            prompt: req.prompt,
+            resolve,
+            reject,
+            timestamp,
+          });
+          // If the run is stopped while waiting, drop the pending entry,
+          // reject the wait (so the node fails/cancels cleanly), and tell
+          // clients to clear the input panel.
+          const cleanup = (): void => {
+            if (this.pendingInterventions.delete(interventionId)) {
+              this.callbacks.onInterventionResolved?.({
+                interventionId,
+                workflowId,
+                nodeId: req.nodeId,
+                resolution: 'expired',
+                timestamp: new Date().toISOString(),
+              });
+              reject(new Error('Manual intervention aborted'));
+            }
+          };
+          if (signal.aborted) {
+            cleanup();
+            return;
+          }
+          signal.addEventListener('abort', cleanup, { once: true });
+          // Structured event for clients that render the input panel
+          // (WorkerDetail). The plain-text fallback keeps a text-mode
+          // "reply" flow discoverable for clients without the panel.
+          this.callbacks.onInterventionRequest?.({
+            interventionId,
+            workflowId,
+            workflowName,
+            nodeId: req.nodeId,
+            nodeLabel: req.nodeLabel,
+            prompt: req.prompt,
+            timestamp,
+          });
+          this.callbacks.onText(
+            `✋ [${workflowName}] Manual input needed at "${req.nodeLabel}": ${req.prompt}\nIntervention ID: ${interventionId}`,
+            false, true,
+          );
+        });
+      },
       onMemoryIO: this.memory.onMemoryEvent
         ? (event) => this.memory.onMemoryEvent?.(event.op as MemoryEvent['op'], event.detail, event.bank, event.meta)
         : undefined,
@@ -1613,6 +1685,31 @@ ${userTask}`;
   /** Return all pending gate requests as an array. */
   listPendingGates(): HumanGateRequest[] {
     return [...this.pendingGates.values()];
+  }
+
+  // ── Manual intervention API (Task #234) ─────────────────────────
+
+  /** Resolve a pending manual-intervention request by ID with operator input. */
+  resolveIntervention(interventionId: string, input: string): void {
+    const req = this.pendingInterventions.get(interventionId);
+    if (!req) return;
+    this.pendingInterventions.delete(interventionId);
+    req.resolve(input);
+    // Broadcast resolution so any other connected clients (or replays) can
+    // finalize the matching input panel instead of leaving it pending.
+    this.callbacks.onInterventionResolved?.({
+      interventionId,
+      workflowId: req.workflowId,
+      nodeId: req.nodeId,
+      resolution: 'submitted',
+      input,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  /** Return all pending manual-intervention requests as an array. */
+  listPendingInterventions(): InterventionRequest[] {
+    return [...this.pendingInterventions.values()];
   }
 
   // ── Checkpoint resume API ───────────────────────────────────────

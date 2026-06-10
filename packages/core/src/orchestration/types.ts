@@ -6,7 +6,7 @@
  */
 
 /** The kind of node in a workflow graph. */
-export type NodeType = 'AGENT' | 'TOOL' | 'ROUTER' | 'PARALLEL' | 'JOIN' | 'CODING_AGENT' | 'LOOP' | 'MACRO_NODE';
+export type NodeType = 'AGENT' | 'TOOL' | 'ROUTER' | 'PARALLEL' | 'JOIN' | 'CODING_AGENT' | 'LOOP' | 'MACRO_NODE' | 'MANUAL_INTERVENTION';
 
 /**
  * Task #197 — Hierarchical macro planning.
@@ -137,6 +137,21 @@ export interface LoopNodeConfig {
   carryForward?: boolean;
 }
 
+/**
+ * Task #234 — Configuration for a MANUAL_INTERVENTION node.
+ *
+ * A MANUAL_INTERVENTION node halts its worker mid-run and requests free-text
+ * input from a human operator. The executor emits an `awaiting_input` event,
+ * blocks on the configured `humanInputCallback`, records the operator's
+ * response as the node output (and an `intervention.md` artifact), then
+ * emits `input_received` and lets the run continue. Distinct from the
+ * boolean approve/deny humanGate channel.
+ */
+export interface ManualInterventionConfig {
+  /** Prompt/instruction shown to the operator in the WorkerDetail input panel. */
+  prompt: string;
+}
+
 // ── Workflow Node ───────────────────────────────────────────────────────────
 
 /** A single node in the workflow graph. */
@@ -151,6 +166,8 @@ export interface WorkflowNode {
   loop?: LoopNodeConfig;
   /** Task #197: Set when `type === 'MACRO_NODE'`. */
   macro?: MacroNodeConfig;
+  /** Task #234: Set when `type === 'MANUAL_INTERVENTION'`. */
+  manualIntervention?: ManualInterventionConfig;
   timeout?: number;
   retries?: number;
   fallbackNodeId?: string;
@@ -202,7 +219,9 @@ export interface WorkerEvent {
     | 'macro_expansion_failed'
     | 'planner_started'
     | 'planner_complete'
-    | 'planner_failed';
+    | 'planner_failed'
+    | 'awaiting_input'
+    | 'input_received';
   tool?: { name: string; action?: string; file?: string; summary: string; id?: string };
   thinking?: string;
   progress?: number;

@@ -204,6 +204,22 @@ export interface MainAgentCallbacks {
    * don't sit on screen after the agent has moved on.
    */
   onGateResolved?: (info: GateResolvedInfo, sessionId?: string) => void;
+
+  /**
+   * Task #234 — Emitted when a MANUAL_INTERVENTION node halts its worker and
+   * requests free-text operator input. Renderers should surface an input
+   * panel in the matching worker's detail view; the operator's answer is
+   * routed back via MainAgent.handleInterventionResponse(interventionId, input).
+   */
+  onInterventionRequest?: (request: InterventionRequestInfo, sessionId?: string) => void;
+
+  /**
+   * Task #234 — Emitted when a manual-intervention request has been resolved
+   * — either by an operator submission (`submitted`) or because the run was
+   * stopped while waiting (`expired`). Renderers should clear/finalize the
+   * input panel so stale panels don't sit on screen.
+   */
+  onInterventionResolved?: (info: InterventionResolvedInfo, sessionId?: string) => void;
 }
 
 /** Payload describing a single human-gate approval prompt. */
@@ -224,6 +240,31 @@ export interface GateResolvedInfo {
   workflowId: string;
   /** How the gate was resolved. `expired` means the backend aborted/timed out. */
   resolution: 'approved' | 'denied' | 'expired';
+  timestamp: string;
+}
+
+/** Task #234 — Payload describing a single manual-intervention input request. */
+export interface InterventionRequestInfo {
+  interventionId: string;
+  workflowId: string;
+  workflowName: string;
+  /** The node that halted awaiting input. */
+  nodeId: string;
+  nodeLabel: string;
+  /** Prompt/instruction shown to the operator. */
+  prompt: string;
+  timestamp: string;
+}
+
+/** Task #234 — Payload describing the resolution of a manual-intervention request. */
+export interface InterventionResolvedInfo {
+  interventionId: string;
+  workflowId: string;
+  nodeId: string;
+  /** `submitted` = operator gave input; `expired` = aborted while waiting. */
+  resolution: 'submitted' | 'expired';
+  /** The operator's input (present when resolution is `submitted`). */
+  input?: string;
   timestamp: string;
 }
 
@@ -580,6 +621,12 @@ export class MainAgent {
         : undefined,
       onGateResolved: user.onGateResolved
         ? (info) => user.onGateResolved!(info, sid(info.workflowId))
+        : undefined,
+      onInterventionRequest: user.onInterventionRequest
+        ? (req) => user.onInterventionRequest!(req, sid(req.workflowId))
+        : undefined,
+      onInterventionResolved: user.onInterventionResolved
+        ? (info) => user.onInterventionResolved!(info, sid(info.workflowId))
         : undefined,
     };
   }
@@ -1327,6 +1374,23 @@ export class MainAgent {
       const msg = err instanceof Error ? err.message : String(err);
       log.error('handleGateResponse error', { error: msg });
       this.callbacks.onText(`Error handling gate response: ${msg}`, false, true);
+    }
+  }
+
+  /**
+   * Task #234 — Handle a manual-intervention input submission from the
+   * gateway. Mirrors handleGateResponse: the gateway calls this when a client
+   * sends an `intervention_response` message with the interventionId returned
+   * in the matching `intervention_request` event.
+   */
+  async handleInterventionResponse(sessionId: string, interventionId: string, input: string): Promise<void> {
+    this.currentSessionId = sessionId || DEFAULT_SESSION_ID;
+    try {
+      this.orchestration.resolveIntervention(interventionId, input);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log.error('handleInterventionResponse error', { error: msg });
+      this.callbacks.onText(`Error handling intervention response: ${msg}`, false, true);
     }
   }
 

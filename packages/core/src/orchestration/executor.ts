@@ -230,6 +230,16 @@ export interface ExecutorConfig {
   replanCallback?: (failedNode: WorkflowNode, error: string, originalTask: string) => Promise<WorkflowNode[] | null>;
   /** Callback for human gate approval. */
   humanGateCallback?: (action: string, description: string, signal: AbortSignal) => Promise<boolean>;
+  /**
+   * Task #234 — Callback for a MANUAL_INTERVENTION node. Halts the worker and
+   * requests free-text input from a human operator, resolving with the
+   * submitted string. The `signal` is aborted if the run is stopped while
+   * waiting, in which case the callback should reject.
+   */
+  humanInputCallback?: (
+    req: { nodeId: string; nodeLabel: string; prompt: string; workflowId: string },
+    signal: AbortSignal,
+  ) => Promise<string>;
   /** Original task description (for re-planning context). */
   task?: string;
   /** Callback for memory I/O events (forwarded to HindsightClient.onIO). */
@@ -293,6 +303,8 @@ export class GraphExecutor {
   private readonly startedAt: string;
   private readonly activeWorkers = new Map<string, WorkerProcess>();
   private readonly activeCodingAborts = new Map<string, AbortController>();
+  /** Task #234: AbortControllers for in-flight MANUAL_INTERVENTION waits. */
+  private readonly activeInterventions = new Map<string, AbortController>();
   /**
    * Tracks why each in-flight node's abort was triggered (timeout vs user stop).
    * Consulted by error-handling and result-status logic so a timeout-driven
@@ -706,6 +718,12 @@ export class GraphExecutor {
       this.nodeAbortReasons.set(id, { kind: 'user' });
       // Pass a typed reason so the bridge's AbortError handler can render
       // "cancelled by user" instead of the SDK's generic abort message.
+      controller.abort({ kind: 'user' } satisfies OrionOmegaAbortReason);
+    }
+
+    for (const [id, controller] of this.activeInterventions) {
+      log.info(`Aborting manual intervention '${id}'`);
+      this.nodeAbortReasons.set(id, { kind: 'user' });
       controller.abort({ kind: 'user' } satisfies OrionOmegaAbortReason);
     }
 
@@ -1388,6 +1406,9 @@ export class GraphExecutor {
           `MACRO_NODE '${node.id}' was not expanded — wire ExecutorConfig.macroExpansionCallback`,
         );
 
+      case 'MANUAL_INTERVENTION':
+        return this.executeManualIntervention(node);
+
       default:
         throw new Error(`Unsupported node type: ${node.type}`);
     }
@@ -1924,6 +1945,82 @@ export class GraphExecutor {
       durationMs: 0,
       toolCallCount: 0,
       findings: [], outputPaths: joinPaths,
+    };
+  }
+
+  /**
+   * Task #234 — Executes a MANUAL_INTERVENTION node: halts the worker, emits an
+   * `awaiting_input` event, and blocks on the configured `humanInputCallback`
+   * until an operator submits free-text input. The submitted input becomes the
+   * node output and is written to an `intervention.md` artifact (so it lands in
+   * the run record), then an `input_received` event is emitted and the run
+   * continues. Fails clearly if no callback is wired.
+   */
+  private async executeManualIntervention(node: WorkflowNode): Promise<WorkerResult> {
+    const startMs = Date.now();
+    const prompt = node.manualIntervention?.prompt?.trim()
+      || 'Operator input requested. Provide input to resume this run.';
+
+    if (!this.config.humanInputCallback) {
+      throw new Error(
+        `MANUAL_INTERVENTION '${node.id}' requires ExecutorConfig.humanInputCallback to be wired`,
+      );
+    }
+
+    this.eventBus.emit({
+      workflowId: this.graph.id,
+      workerId: node.id,
+      nodeId: node.id,
+      timestamp: new Date().toISOString(),
+      type: 'awaiting_input',
+      message: prompt,
+    });
+
+    const abort = new AbortController();
+    this.activeInterventions.set(node.id, abort);
+
+    let input: string;
+    try {
+      input = await this.config.humanInputCallback(
+        { nodeId: node.id, nodeLabel: node.label, prompt, workflowId: this.graph.id },
+        abort.signal,
+      );
+    } finally {
+      this.activeInterventions.delete(node.id);
+    }
+
+    this.eventBus.emit({
+      workflowId: this.graph.id,
+      workerId: node.id,
+      nodeId: node.id,
+      timestamp: new Date().toISOString(),
+      type: 'input_received',
+      message: input,
+    });
+
+    this.decisions.push(`Manual intervention '${node.label}': operator submitted input (${input.length} chars)`);
+
+    const interventionOutputDir = `${this.getRunDir()}/${node.id}`;
+    try { mkdirSync(interventionOutputDir, { recursive: true }); } catch { /* may exist */ }
+    const interventionPaths: string[] = [];
+    const interventionArtifact = join(interventionOutputDir, 'intervention.md');
+    const interventionDoc =
+      `# Manual Intervention — ${node.label}\n\n` +
+      `**Node:** ${node.id}\n\n` +
+      `**Prompt:**\n\n${prompt}\n\n` +
+      `**Operator input:**\n\n${input}\n`;
+    try {
+      writeFileSync(interventionArtifact, interventionDoc, 'utf-8');
+      interventionPaths.push(interventionArtifact);
+    } catch { /* best effort */ }
+
+    return {
+      nodeId: node.id,
+      output: { prompt, input },
+      durationMs: Date.now() - startMs,
+      toolCallCount: 0,
+      findings: [],
+      outputPaths: interventionPaths,
     };
   }
 

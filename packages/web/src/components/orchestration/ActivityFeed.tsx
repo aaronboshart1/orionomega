@@ -98,6 +98,8 @@ const typeLabels: Record<WorkerEventType, string> = {
   planner_complete: 'Plan Done',
   planner_failed: 'Plan Failed',
   context_updated: 'Context Updated',
+  awaiting_input: 'Awaiting Input',
+  input_received: 'Input Received',
 };
 
 const defaultIcon = <BarChart3 size={12} aria-hidden className="text-zinc-400" />;

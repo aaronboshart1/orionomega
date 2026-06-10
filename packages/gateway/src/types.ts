@@ -25,7 +25,7 @@ export interface ClientConnection {
 /** Client → Gateway message envelope. */
 export interface ClientMessage {
   id: string;
-  type: 'chat' | 'command' | 'plan_response' | 'subscribe' | 'dag_response' | 'gate_response' | 'ping' | 'file_read' | 'init' | 'client_state' | 'feedback';
+  type: 'chat' | 'command' | 'plan_response' | 'subscribe' | 'dag_response' | 'gate_response' | 'intervention_response' | 'ping' | 'file_read' | 'init' | 'client_state' | 'feedback';
   /** Feedback envelope — UI-emitted thumbs-up / thumbs-down on an assistant message. Lightweight: logged, not persisted. */
   feedbackPayload?: {
     messageId: string;
@@ -63,6 +63,10 @@ export interface ClientMessage {
   gateId?: string;
   /** Approve or deny a pending tool-permission gate. */
   gateAction?: 'approve' | 'deny';
+  /** Intervention ID being responded to — sent with `intervention_response`. */
+  interventionId?: string;
+  /** Operator's free-text input for a manual-intervention node. */
+  interventionInput?: string;
   /** File attachments sent with the message. */
   attachments?: { name: string; size: number; type: string; data?: string; textContent?: string }[];
   /**
@@ -193,6 +197,8 @@ export interface ServerMessage {
     | 'dag_dispatched' | 'dag_progress' | 'dag_complete' | 'dag_confirm'
     | 'gate_request'
     | 'gate_resolved'
+    | 'intervention_request'
+    | 'intervention_resolved'
     | 'pong' | 'file_content'
     | 'hindsight_status' | 'memory_event' | 'memory_history'
     | 'coding_event'
@@ -306,6 +312,38 @@ export interface ServerMessage {
     gateId: string;
     workflowId: string;
     resolution: 'approved' | 'denied' | 'expired';
+    timestamp: string;
+  };
+
+  /**
+   * Task #234 — Manual-intervention input prompt. Present when
+   * `type === 'intervention_request'`. Emitted when a MANUAL_INTERVENTION
+   * node halts its worker; the client renders a free-text input panel in
+   * the matching worker's detail view and sends an `intervention_response`
+   * message back with the matching `interventionId`.
+   */
+  interventionRequest?: {
+    interventionId: string;
+    workflowId: string;
+    workflowName: string;
+    nodeId: string;
+    nodeLabel: string;
+    prompt: string;
+    timestamp: string;
+  };
+
+  /**
+   * Task #234 — Resolution of a previously emitted `intervention_request`.
+   * Present when `type === 'intervention_resolved'`. `resolution: 'expired'`
+   * indicates the run was stopped while waiting, so any input panel on
+   * screen should be cleared.
+   */
+  interventionResolved?: {
+    interventionId: string;
+    workflowId: string;
+    nodeId: string;
+    resolution: 'submitted' | 'expired';
+    input?: string;
     timestamp: string;
   };
 

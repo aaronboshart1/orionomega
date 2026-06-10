@@ -23,7 +23,9 @@ export type WorkerEventType =
   | 'planner_started'
   | 'planner_complete'
   | 'planner_failed'
-  | 'context_updated';
+  | 'context_updated'
+  | 'awaiting_input'
+  | 'input_received';
 
 /** Task #199: macro-expansion progress payload mirrored from `@orionomega/core`. */
 export interface MacroEventPayload {
@@ -250,6 +252,22 @@ export interface PendingGate {
   resolved?: 'approved' | 'denied' | 'expired';
 }
 
+/**
+ * Task #234 — A pending manual-intervention request surfaced as a free-text
+ * input panel in WorkerDetail. Keyed by nodeId so the panel renders against
+ * the selected worker. `resolved` flips once the operator submits input.
+ */
+export interface PendingIntervention {
+  interventionId: string;
+  workflowId: string;
+  workflowName: string;
+  nodeId: string;
+  nodeLabel: string;
+  prompt: string;
+  timestamp: string;
+  resolved?: boolean;
+}
+
 export interface WorkflowData {
   graphState: GraphState | null;
   events: WorkerEvent[];
@@ -263,6 +281,8 @@ interface OrchestrationStore {
   inlineDAGs: Record<string, InlineDAG>;
   pendingConfirmation: DAGConfirmation | null;
   pendingGates: Record<string, PendingGate>;
+  /** Task #234: pending manual-intervention requests, keyed by nodeId. */
+  pendingInterventions: Record<string, PendingIntervention>;
   orchPaneOpen: boolean;
   scrollToDagId: string | null;
   activitySectionCollapsed: boolean;
@@ -290,6 +310,9 @@ interface OrchestrationStore {
   setPendingGate: (gate: PendingGate) => void;
   resolvePendingGate: (gateId: string, resolution: 'approved' | 'denied' | 'expired') => void;
   removePendingGate: (gateId: string) => void;
+  setPendingIntervention: (intervention: PendingIntervention) => void;
+  resolvePendingIntervention: (nodeId: string) => void;
+  removePendingIntervention: (nodeId: string) => void;
   setOrchPaneOpen: (open: boolean) => void;
   clearScrollToDagId: () => void;
   toggleActivitySectionCollapsed: () => void;
@@ -326,6 +349,7 @@ export const useOrchestrationStore = create<OrchestrationStore>()((set) => ({
   inlineDAGs: {},
   pendingConfirmation: null,
   pendingGates: {},
+  pendingInterventions: {},
   orchPaneOpen: true,
   scrollToDagId: null,
   activitySectionCollapsed: false,
@@ -535,6 +559,33 @@ export const useOrchestrationStore = create<OrchestrationStore>()((set) => ({
       return { pendingGates: rest };
     }),
 
+  setPendingIntervention: (intervention) =>
+    set((s) => ({
+      pendingInterventions: {
+        ...s.pendingInterventions,
+        [intervention.nodeId]: intervention,
+      },
+    })),
+
+  resolvePendingIntervention: (nodeId) =>
+    set((s) => {
+      const existing = s.pendingInterventions[nodeId];
+      if (!existing) return s;
+      return {
+        pendingInterventions: {
+          ...s.pendingInterventions,
+          [nodeId]: { ...existing, resolved: true },
+        },
+      };
+    }),
+
+  removePendingIntervention: (nodeId) =>
+    set((s) => {
+      if (!s.pendingInterventions[nodeId]) return s;
+      const { [nodeId]: _, ...rest } = s.pendingInterventions;
+      return { pendingInterventions: rest };
+    }),
+
   setOrchPaneOpen: (open) => set({ orchPaneOpen: open }),
   clearScrollToDagId: () => set({ scrollToDagId: null }),
 
@@ -660,6 +711,7 @@ export const useOrchestrationStore = create<OrchestrationStore>()((set) => ({
       inlineDAGs: {},
       pendingConfirmation: null,
       pendingGates: {},
+      pendingInterventions: {},
       orchPaneOpen: true,
       scrollToDagId: null,
       activitySectionCollapsed: false,
