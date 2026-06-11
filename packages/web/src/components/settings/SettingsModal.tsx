@@ -138,7 +138,7 @@ interface AnthropicModel {
   id: string;
   displayName: string;
   createdAt: string;
-  tier: 'opus' | 'sonnet' | 'haiku' | 'unknown';
+  tier: 'mythos' | 'opus' | 'sonnet' | 'haiku' | 'unknown';
 }
 
 function ModelSelect({
@@ -177,6 +177,7 @@ function ModelSelect({
     : models;
 
   const grouped = {
+    mythos: filtered.filter((m) => m.tier === 'mythos'),
     opus: filtered.filter((m) => m.tier === 'opus'),
     sonnet: filtered.filter((m) => m.tier === 'sonnet'),
     haiku: filtered.filter((m) => m.tier === 'haiku'),
@@ -184,6 +185,7 @@ function ModelSelect({
   };
 
   const tierLabels: Record<string, string> = {
+    mythos: 'Mythos — Flagship',
     opus: 'Opus — Heavyweight',
     sonnet: 'Sonnet — Midweight',
     haiku: 'Haiku — Lightweight',
@@ -225,7 +227,7 @@ function ModelSelect({
             {models.length === 0 && !loading && (
               <div className="px-3 py-2 text-xs text-zinc-500">No models available. Check your API key.</div>
             )}
-            {(['opus', 'sonnet', 'haiku', 'unknown'] as const).map((tier) => {
+            {(['mythos', 'opus', 'sonnet', 'haiku', 'unknown'] as const).map((tier) => {
               const tierModels = grouped[tier];
               if (tierModels.length === 0) return null;
               return (
