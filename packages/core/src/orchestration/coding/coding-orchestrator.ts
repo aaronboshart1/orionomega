@@ -24,7 +24,7 @@
  */
 
 import { randomBytes } from 'node:crypto';
-import { mkdirSync, existsSync } from 'node:fs';
+import { mkdirSync } from 'node:fs';
 import { resolve as resolvePath } from 'node:path';
 import { createLogger } from '../../logging/logger.js';
 import { getDb } from '../../db/client.js';
@@ -35,6 +35,8 @@ import { ValidationLoop, detectValidationCommands, buildValidationChain } from '
 import { CodingModelResolver } from './coding-models.js';
 import { classifyCodeIntent } from './intent-classifier.js';
 import { findUnsafeFiles } from './safe-commit.js';
+import { parseCodingRequest } from './coding-request.js';
+import { resolveCodingRemote } from './remote-resolver.js';
 import type {
   CodingModeConfig,
   CodebaseScanOutput,
@@ -55,7 +57,6 @@ import {
   commitChanges,
   pushChanges,
   getRepoStatus,
-  getRemoteUrl,
   getHeadCommit,
   repoNameFromRemoteUrl,
 } from './repo-manager.js';
@@ -262,202 +263,19 @@ function now(): string {
   return new Date().toISOString();
 }
 
-/**
- * Normalize a user-supplied repo hint into a clone-able URL.
- *
- * Accepts:
- *   - Full URLs (`https://`, `http://`, `ssh://`, `git://`, `git@host:…`,
- *     `file://`) — returned as-is after stripping trailing punctuation.
- *   - Bare GitHub slugs (`owner/repo`) — expanded to
- *     `https://github.com/owner/repo.git`. This covers the common case
- *     where a user types "the repo is aaronboshart1/orionomega" and
- *     expects the system to figure out it's a GitHub repo.
- *   - GitHub HTTPS URLs missing the trailing `.git` — `.git` is appended
- *     so `git clone` doesn't follow GitHub's redirect dance.
- *
- * Trailing punctuation (`.`, `,`, `;`, `:`, `!`, `?`, `)`, `]`) is
- * stripped because conversational hints like "the repo is foo/bar."
- * would otherwise capture the period into the slug.
- *
- * Returns `undefined` for empty / whitespace-only input.
- */
-export function normalizeRepoHint(raw: string | undefined): string | undefined {
-  if (raw === undefined) return undefined;
-  let v = raw.trim().replace(/[.,;:!?)\]]+$/, '');
-  if (v.length === 0) return undefined;
-
-  // Strip surrounding quotes / backticks.
-  if ((v.startsWith('"') && v.endsWith('"')) ||
-      (v.startsWith("'") && v.endsWith("'")) ||
-      (v.startsWith('`') && v.endsWith('`'))) {
-    v = v.slice(1, -1).trim();
-    if (v.length === 0) return undefined;
-  }
-
-  // Already a full URL or scp-like SSH form (`git@github.com:owner/repo.git`).
-  if (/^(https?|ssh|git|file):\/\//i.test(v) || /^[\w.-]+@[^:]+:/.test(v)) {
-    // Append .git to GitHub HTTPS URLs that lack it so the clone path is
-    // unambiguous. Other hosts vary, so leave them alone.
-    if (/^https?:\/\/github\.com\/[\w.-]+\/[\w.-]+$/i.test(v) && !/\.git$/i.test(v)) {
-      return `${v}.git`;
-    }
-    return v;
-  }
-
-  // Bare slug `owner/repo` (one slash, GitHub-style identifier on both
-  // sides) → assume GitHub HTTPS clone URL.
-  if (/^[\w.-]+\/[\w.-]+$/.test(v)) {
-    return `https://github.com/${v}.git`;
-  }
-
-  return v;
-}
-
-/**
- * Quick syntactic test: does this raw token *look like* a repo reference
- * (URL, scp-like SSH, or `owner/repo` slug) once trailing punctuation is
- * stripped? Used by {@link parseCodingRequest} to reject false positives
- * from loose conversational patterns ("clone the repo" must NOT capture
- * "the" as a repo, "the default branch is main" must NOT capture "main"
- * via a non-existent loose branch pattern).
- */
-function looksLikeRepoToken(raw: string | undefined): boolean {
-  if (!raw) return false;
-  const v = raw.trim().replace(/[.,;:!?)\]]+$/, '').replace(/^["'`]|["'`]$/g, '');
-  if (v.length === 0) return false;
-  if (/^(https?|ssh|git|file):\/\//i.test(v)) return true;
-  if (/^[\w.-]+@[^:]+:/.test(v)) return true; // git@github.com:foo/bar.git
-  if (/^[\w.-]+\/[\w.-]+$/.test(v)) return true; // owner/repo slug
-  return false;
-}
-
-export function parseCodingRequest(task: string): { repoUrl: string | undefined; branch: string; taskDescription: string } {
-  // Try each pattern in priority order. The first pattern whose capture
-  // looks like a real repo reference wins. Patterns 2-5 require word
-  // boundaries plus a repo-like token to avoid swallowing innocent
-  // English like "clone the repo" → repo="the".
-  const repoPatterns: RegExp[] = [
-    // Strict explicit forms — accept anything as the value (legacy behaviour).
-    /\brepo(?:url)?\s*[:=]\s*(\S+)/i,
-    // Conversational forms — capture is validated below.
-    /(?:^|[\s,.;])(?:the\s+)?repo\s+(?:is|=)\s+(\S+)/i,
-    /(?:^|[\s,.;])(?:use|using|with)\s+repo\s+(\S+)/i,
-    /(?:^|[\s,.;])clone\s+(?:from\s+)?(\S+)/i,
-  ];
-  let rawRepo: string | undefined;
-  for (let i = 0; i < repoPatterns.length; i++) {
-    const m = task.match(repoPatterns[i]);
-    if (!m) continue;
-    const candidate = m[1];
-    // Pattern 0 (strict `repo:` / `repo=` / `repoUrl:`) trusts the user
-    // verbatim — they explicitly tagged it. Patterns 1-3 are loose, so
-    // the captured token MUST look repo-like or we discard the match.
-    if (i === 0 || looksLikeRepoToken(candidate)) {
-      rawRepo = candidate;
-      break;
-    }
-  }
-
-  // Branch hints: require an explicit delimiter (`branch:` / `branch=`)
-  // OR the conversational "branch is <name>" form. Plain `branch <name>`
-  // is rejected because natural sentences like "the default branch is
-  // main" or "switch branch upstream" would otherwise capture filler
-  // words ("the", "upstream") as branch names.
-  const branchMatch =
-    task.match(/\bbranch\s*[:=]\s*(\S+)/i) ??
-    task.match(/(?:^|[\s,.;])branch\s+is\s+(\S+)/i);
-
-  return {
-    repoUrl: normalizeRepoHint(rawRepo),
-    branch: branchMatch?.[1]?.replace(/[.,;:!?)\]]+$/, '') ?? 'main',
-    taskDescription: task,
-  };
-}
-
-/**
- * Typed error raised when no remote URL can be resolved for a coding run.
- * Carries a user-facing message that explains every fallback path that was
- * tried so the operator can pick the easiest one to fix.
- */
-export class RemoteResolutionError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'RemoteResolutionError';
-  }
-}
-
-/**
- * Inputs to {@link resolveCodingRemote}. Kept as a discrete type so tests
- * can call the resolver without spinning up a full orchestrator config.
- */
-export interface RemoteResolutionContext {
-  /** A `repo:<url>` hint extracted from the user's task, if any. */
-  repoHint?: string;
-  /**
-   * Optional path to a local git checkout. If it has an `origin` remote,
-   * its URL is used. The checkout itself is never reused as the working
-   * tree — see `CodingOrchestratorConfig.sourceRepoDir`.
-   */
-  sourceRepoDir?: string;
-  /** Operator-configured default remote URL (`coding.defaultRemote`). */
-  defaultRemote?: string;
-  /**
-   * Final fallback: read `git remote get-url origin` from this directory
-   * (typically the install / project root). Skipped when `null`.
-   */
-  cwdForFallback?: string | null;
-}
-
-/**
- * Resolve the remote URL for a code-mode run from contextual clues.
- *
- * Priority order, matching the task spec:
- *   1. Explicit `repo:<url>` hint in the task description.
- *   2. `git remote get-url origin` inside `sourceRepoDir` (if it's a repo).
- *   3. `defaultRemote` from `config.yaml` (`coding.defaultRemote`).
- *   4. `git remote get-url origin` inside `cwdForFallback` (typically the
- *      install / project root) as a last-ditch attempt.
- *
- * When all four miss, throws {@link RemoteResolutionError} with a message
- * that names every option the operator can set to recover. Callers
- * surface this verbatim to the user — the previous code silently fell back
- * to `file://./`, which dropped runs into the gateway process's cwd and
- * led to "not a git repository" failures further down the DAG.
- */
-export async function resolveCodingRemote(ctx: RemoteResolutionContext): Promise<string> {
-  if (ctx.repoHint && ctx.repoHint.trim().length > 0) {
-    // Defense in depth: normalize even hints that came in pre-extracted by
-    // a caller, so a bare slug like `owner/repo` still becomes a valid
-    // clone URL when fed directly.
-    const normalized = normalizeRepoHint(ctx.repoHint);
-    if (normalized) return normalized;
-  }
-
-  if (ctx.sourceRepoDir && existsSync(ctx.sourceRepoDir)) {
-    const origin = await getRemoteUrl(ctx.sourceRepoDir, 'origin').catch(() => null);
-    if (origin) return origin;
-  }
-
-  if (ctx.defaultRemote && ctx.defaultRemote.trim().length > 0) {
-    return ctx.defaultRemote.trim();
-  }
-
-  if (ctx.cwdForFallback && existsSync(ctx.cwdForFallback)) {
-    const origin = await getRemoteUrl(ctx.cwdForFallback, 'origin').catch(() => null);
-    if (origin) return origin;
-  }
-
-  throw new RemoteResolutionError(
-    'Could not resolve a git remote for this coding run. ' +
-    'Try one of these (in order of effort): ' +
-    '(1) Include `repo:<https-or-ssh-url>` in your message; ' +
-    '(2) set `coding.defaultRemote` in config.yaml to your repo URL; ' +
-    '(3) set `coding.repoDir` (sourceRepoDir) to a local checkout whose ' +
-    '`origin` remote points at the upstream repo; or ' +
-    '(4) launch the gateway from inside a working git checkout so ' +
-    '`git remote get-url origin` resolves.',
-  );
-}
+// Request parsing & remote resolution were extracted into focused modules
+// (Task #237). Re-exported here so existing import paths keep working.
+export {
+  normalizeRepoHint,
+  looksLikeRepoToken,
+  parseCodingRequest,
+  type ParsedCodingRequest,
+} from './coding-request.js';
+export {
+  RemoteResolutionError,
+  resolveCodingRemote,
+  type RemoteResolutionContext,
+} from './remote-resolver.js';
 
 // ── CodingOrchestrator ────────────────────────────────────────────────────────
 

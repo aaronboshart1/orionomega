@@ -29,193 +29,16 @@ import { createLogger } from '../logging/logger.js';
 import { readConfig } from '../config/loader.js';
 import { HindsightClient } from '@orionomega/hindsight';
 import { isExternalAction } from '../memory/query-classifier.js';
+import { RetryPolicy } from './retry-policy.js';
+import { ArtifactCollector } from './artifact-collector.js';
+import { CommitSafetyGate } from './commit-safety-gate.js';
+import { LayerScheduler } from './layer-scheduler.js';
 
 const log = createLogger('executor');
 
-type ErrorClassification = 'transient' | 'permanent';
-
-const PERMANENT_ERROR_PATTERNS = [
-  /authentication failed/i,
-  /unauthorized/i,
-  /forbidden/i,
-  /invalid api key/i,
-  /invalid.*token/i,
-  /permission denied/i,
-  /access denied/i,
-  /validation error/i,
-  /invalid.*parameter/i,
-  /invalid.*argument/i,
-  /missing required/i,
-  /schema.*validation/i,
-  /not found/i,
-  /404/,
-  /401/,
-  /403/,
-  /422/,
-];
-
-const TRANSIENT_ERROR_PATTERNS = [
-  /timeout/i,
-  /timed out/i,
-  /ETIMEDOUT/,
-  /ECONNRESET/,
-  /ECONNREFUSED/,
-  /ENOTFOUND/,
-  /socket hang up/i,
-  /network error/i,
-  /rate limit/i,
-  /too many requests/i,
-  /429/,
-  /500/,
-  /502/,
-  /503/,
-  /504/,
-  /service unavailable/i,
-  /internal server error/i,
-  /bad gateway/i,
-  /gateway timeout/i,
-  /overloaded/i,
-];
-
-function classifyError(err: Error): ErrorClassification {
-  // Task #230: a model-unavailable/forbidden/not-entitled failure is PERMANENT
-  // — the same call will keep failing. The executor degrades to another tier
-  // instead of backing off. Checked first so it wins over any pattern below.
-  if (err instanceof ModelUnavailableError) return 'permanent';
-  // Trust an explicit decision from the bridge over message-pattern matching.
-  if (err instanceof TaggedRetryError) {
-    return err.retryable ? 'transient' : 'permanent';
-  }
-  const msg = err.message;
-  if (isModelUnavailableMessage(msg)) return 'permanent';
-  for (const pattern of TRANSIENT_ERROR_PATTERNS) {
-    if (pattern.test(msg)) return 'transient';
-  }
-  for (const pattern of PERMANENT_ERROR_PATTERNS) {
-    if (pattern.test(msg)) return 'permanent';
-  }
-  return 'transient';
-}
-
-const BASE_BACKOFF_MS = 1000;
-const MAX_BACKOFF_MS = 30000;
-
-function computeBackoffDelay(attempt: number): number {
-  const exponential = Math.min(BASE_BACKOFF_MS * Math.pow(2, attempt - 1), MAX_BACKOFF_MS);
-  const jitter = exponential * (0.5 + Math.random() * 0.5);
-  return Math.round(jitter);
-}
-
-function saveTextOutputIfEmpty(outputDir: string, text: string, filename: string = 'output.md'): string | null {
-  try {
-    if (!existsSync(outputDir)) return null;
-    const files = readdirSync(outputDir);
-    if (files.length > 0) return null;
-    if (!text || !text.trim()) return null;
-    const filePath = join(outputDir, filename);
-    writeFileSync(filePath, text.trim(), 'utf-8');
-    return filePath;
-  } catch {
-    return null;
-  }
-}
-
-function scanForUntrackedFiles(outputDir: string, knownPaths: string[]): string[] {
-  try {
-    if (!existsSync(outputDir)) return [];
-    const knownSet = new Set(knownPaths.map(p => {
-      try { return resolvePath(p); } catch { return p; }
-    }));
-    const newPaths: string[] = [];
-    const walk = (dir: string) => {
-      const entries = readdirSync(dir);
-      for (const entry of entries) {
-        const fullPath = join(dir, entry);
-        try {
-          if (statSync(fullPath).isDirectory()) {
-            walk(fullPath);
-          } else {
-            const resolved = resolvePath(fullPath);
-            if (!knownSet.has(resolved) && !knownSet.has(fullPath)) {
-              newPaths.push(fullPath);
-            }
-          }
-        } catch { /* skip inaccessible entries */ }
-      }
-    };
-    walk(outputDir);
-    return newPaths;
-  } catch {
-    return [];
-  }
-}
-
-/**
- * Minimum wall-clock timeout per node type, applied as a floor regardless of
- * what the planner LLM emits or the user passes via config.
- *
- * Rationale: the planner has historically emitted node-level `timeout: 120`
- * (the JSON example value) which silently overrode the user's higher
- * `workerTimeout`. That triggered AbortController-driven aborts that the SDK
- * surfaced as "Claude Code process aborted by user" — confusing every
- * downstream operator. Floors below catch that class of bug at execution time.
- *
- * - AGENT:        900s  — research/analysis tasks need real headroom;
- *                         bumped from 600s after observing repeated timeouts
- *                         on GitHub-heavy research nodes (MCS Legal 2 run).
- * - CODING_AGENT: 1800s — multi-turn coding loops are long-running by design.
- * - TOOL:         60s   — short-lived shell invocations.
- */
-// Floors must match the planner's documented rule 7 so the planner and the
-// runtime agree on the minimum budget per node type. Setting these too low
-// here was the original cause of "Worker timed out after 120s" — the planner
-// would helpfully emit, say, timeout:120 and the runtime would happily honor
-// it, guaranteeing an abort before the SDK had any chance to make progress.
-const TIMEOUT_FLOOR_SEC = {
-  AGENT: 900,
-  CODING_AGENT: 1800,
-  TOOL: 60,
-} as const;
 
 type AbortReason = { kind: 'user' } | { kind: 'timeout'; timeoutSec: number; lastTool?: string };
 
-/**
- * Resolve the effective wall-clock timeout for a node, applying the per-type
- * floor so a too-small planner-supplied value (e.g. `timeout: 120` for a
- * coding agent) cannot cause a guaranteed timeout-driven abort.
- */
-function resolveNodeTimeoutSec(
-  node: WorkflowNode,
-  defaults: { workerTimeout: number; codingAgentTimeout: number },
-): number {
-  const requested = node.timeout
-    ?? (node.type === 'CODING_AGENT' ? defaults.codingAgentTimeout : defaults.workerTimeout);
-  const floor = node.type === 'CODING_AGENT'
-    ? TIMEOUT_FLOOR_SEC.CODING_AGENT
-    : node.type === 'TOOL'
-      ? TIMEOUT_FLOOR_SEC.TOOL
-      : TIMEOUT_FLOOR_SEC.AGENT;
-  if (requested < floor) {
-    log.info(
-      `Node '${node.id}' has timeout=${requested}s below the ${node.type} floor of ${floor}s — clamping up`,
-    );
-    return floor;
-  }
-  return requested;
-}
-
-/**
- * Per-attempt timeout multiplier. The first attempt gets the base budget;
- * each retry gets progressively more time, since a transient timeout on
- * attempt N often means the workload is genuinely larger than the planner
- * estimated. This prevents the same-budget-every-time loop where every
- * attempt times out at exactly the same point.
- */
-const RETRY_TIMEOUT_MULTIPLIERS = [1.0, 1.5, 2.0, 2.0, 2.0] as const;
-
-function timeoutMultiplierForAttempt(attempt: number): number {
-  return RETRY_TIMEOUT_MULTIPLIERS[Math.min(attempt, RETRY_TIMEOUT_MULTIPLIERS.length - 1)];
-}
 
 /** Configuration for the graph executor. */
 export interface ExecutorConfig {
@@ -328,6 +151,14 @@ export class GraphExecutor {
   private readonly errors: { worker: string; message: string; resolution?: string }[] = [];
   private completedLayers = 0;
   private readonly checkpointMgr: CheckpointManager;
+  /** Task #237: extracted retry/backoff/timeout policy collaborator. */
+  private readonly retryPolicy = new RetryPolicy();
+  /** Task #237: extracted artifact-collection collaborator (FS concerns). */
+  private readonly artifacts: ArtifactCollector;
+  /** Task #237: extracted commit-safety preflight gate. */
+  private readonly commitSafetyGate = new CommitSafetyGate();
+  /** Task #237: extracted layer-scheduling collaborator. */
+  private readonly scheduler: LayerScheduler;
   private readonly nodeOutputs = new Map<string, string>();
   private totalCostUsd = 0;
   private readonly autonomousStartTime = Date.now();
@@ -375,6 +206,17 @@ export class GraphExecutor {
     this.startedAt = new Date().toISOString();
     this.state = existingState ?? new WorkflowState(graph.id, config.checkpointDir);
     this.checkpointMgr = new CheckpointManager(config.checkpointDir);
+    this.artifacts = new ArtifactCollector({
+      workspaceDir: config.workspaceDir,
+      runsDir: config.runsDir,
+      workflowId: graph.id,
+    });
+    this.scheduler = new LayerScheduler(
+      this.graph,
+      this.skippedNodes,
+      this.nodeErrors,
+      this.nodeResults,
+    );
   }
 
   /**
@@ -410,67 +252,13 @@ export class GraphExecutor {
    */
   private runCommitSafetyPreflight(): void {
     if (!this.commitSafety) return;
-    try {
-      const { findUnsafeCommittedFiles } =
-        require('./coding/safe-commit.js') as typeof import('./coding/safe-commit.js');
-      const { refused, skippedReason } = findUnsafeCommittedFiles(
-        this.commitSafety.checkoutPath,
-        this.commitSafety.baseHeadCommit,
-      );
-      if (skippedReason !== null) {
-        this.commitSafety = {
-          ...this.commitSafety,
-          preflightStatus: 'skipped',
-          preflightReason: skippedReason,
-          refusedFiles: [],
-        };
-        return;
-      }
-      if (refused.length === 0) {
-        this.commitSafety = {
-          ...this.commitSafety,
-          preflightStatus: 'clean',
-          preflightReason: undefined,
-          refusedFiles: [],
-        };
-        return;
-      }
-      // Refused: escalate the run to error and surface a top-level
-      // error message. The executor's error-collection plumbing
-      // takes care of stamping status='error' downstream.
-      this.commitSafety = {
-        ...this.commitSafety,
-        preflightStatus: 'refused',
-        preflightReason: undefined,
-        refusedFiles: refused,
-      };
-      const sample = refused
-        .slice(0, 5)
-        .map((r) => `${r.path} (${r.reason}, ${r.bytes} B, in ${r.commit.slice(0, 7)})`)
-        .join('; ');
-      const more = refused.length > 5 ? ` (+${refused.length - 5} more — see Commit Safety section)` : '';
-      this.errors.push({
-        worker: 'commit-safety-preflight',
-        message:
-          `Refusing run: post-execution preflight found ${refused.length} ` +
-          `committed file(s) on ${this.commitSafety.baseHeadCommit ? 'commits the agent added' : 'all reachable history'} ` +
-          `that trip the safe-commit deny-list (oversize / secret / build-artefact / control-bytes): ${sample}${more}.`,
-        resolution:
-          'Remove the offending blobs (e.g. `git filter-repo --invert-paths`), ' +
-          'add the appropriate `.gitignore` patterns, then re-dispatch.',
-      });
-      log.error('Commit safety preflight refused the run (Task #209)', {
-        checkoutPath: this.commitSafety.checkoutPath,
-        baseHeadCommit: this.commitSafety.baseHeadCommit,
-        refusedCount: refused.length,
-      });
-    } catch (err) {
-      this.commitSafety = {
-        ...this.commitSafety,
-        preflightStatus: 'skipped',
-        preflightReason: `preflight crashed: ${err instanceof Error ? err.message : String(err)}`,
-        refusedFiles: [],
-      };
+    const { report, error } = this.commitSafetyGate.runPreflight(this.commitSafety);
+    this.commitSafety = report;
+    if (error) {
+      // Refused: escalate the run to error and surface a top-level error
+      // message. The executor's error-collection plumbing takes care of
+      // stamping status='error' downstream.
+      this.errors.push(error);
     }
   }
 
@@ -480,15 +268,14 @@ export class GraphExecutor {
    * the legacy {workspaceDir}/output/{workflowId} path.
    */
   private getRunDir(): string {
-    const base = this.config.runsDir ?? `${this.config.workspaceDir}/output`;
-    return `${base}/${this.graph.id}`;
+    return this.artifacts.getRunDir();
   }
 
   /**
    * Resolves the output directory for a specific node within this run.
    */
   private getNodeOutputDir(nodeId: string): string {
-    return `${this.getRunDir()}/${nodeId}`;
+    return this.artifacts.getNodeOutputDir(nodeId);
   }
 
   /**
@@ -556,31 +343,11 @@ export class GraphExecutor {
         await this.expandMacroNodesInLayer(layerIdx);
 
         const layer = this.graph.layers[layerIdx] ?? [];
-        const runnableNodes = layer.filter((id) => {
-          if (this.skippedNodes.has(id)) return false;
-          const node = this.graph.nodes.get(id);
-          if (node && node.status === 'done') {
-            log.info(`Skipping already-completed node '${id}'`);
-            return false;
-          }
-          // Fix 5: Skip nodes whose dependencies failed or were cancelled.
-          // Running them with missing upstream outputs would produce incorrect
-          // results and can leave the workflow in a partially-stuck state where
-          // subsequent layers wait on outputs that will never arrive.
-          if (node && node.dependsOn.length > 0) {
-            const failedDeps = node.dependsOn.filter(depId => this.nodeErrors.has(depId));
-            if (failedDeps.length > 0) {
-              const failedLabels = failedDeps
-                .map(depId => this.graph.nodes.get(depId)?.label ?? depId)
-                .join(', ');
-              log.warn(`Node '${id}' skipped — upstream dependencies failed: ${failedLabels}`);
-              this.skippedNodes.add(id);
-              node.status = 'skipped';
-              return false;
-            }
-          }
-          return true;
-        });
+        // Fix 5: nodes whose dependencies failed/cancelled are skipped here.
+        // Running them with missing upstream outputs would produce incorrect
+        // results and can leave the workflow in a partially-stuck state where
+        // subsequent layers wait on outputs that will never arrive.
+        const runnableNodes = this.scheduler.computeRunnableNodes(layer);
 
         this.emitOrchestrator(
           'status',
@@ -636,7 +403,7 @@ export class GraphExecutor {
               log.warn(`Node '${nodeId}' failed: ${errorMsg}`);
 
               const failedOutputDir = this.getNodeOutputDir(nodeId);
-              const failedArtifacts = scanForUntrackedFiles(failedOutputDir, []);
+              const failedArtifacts = this.artifacts.scanForUntrackedFiles(failedOutputDir, []);
               if (failedArtifacts.length > 0) {
                 this.outputPaths.push(...failedArtifacts);
               }
@@ -795,10 +562,7 @@ export class GraphExecutor {
     // the global cap and at the per-node level `0` keeps its original
     // meaning of "no retries" — so the sentinel translation is applied
     // only when falling back to the global config value.
-    const cfgMax = this.config.maxRetries <= 0
-      ? Number.POSITIVE_INFINITY
-      : this.config.maxRetries;
-    const maxRetries = node.retries ?? cfgMax;
+    const maxRetries = this.retryPolicy.resolveMaxRetries(node.retries, this.config.maxRetries);
     const capLabel = Number.isFinite(maxRetries) ? `${maxRetries + 1}` : '∞';
     let lastError: Error | undefined;
 
@@ -813,7 +577,7 @@ export class GraphExecutor {
 
       try {
         if (attempt > 0) {
-          const delayMs = computeBackoffDelay(attempt);
+          const delayMs = this.retryPolicy.backoffDelay(attempt);
           log.info(`Retrying node '${nodeId}' (attempt ${attempt + 1}/${capLabel}) after ${delayMs}ms backoff`);
           this.emitOrchestrator('status', `Retrying '${node.label}' (attempt ${attempt + 1}) in ${Math.round(delayMs / 1000)}s`, {
             retry: { attempt, maxRetries: Number.isFinite(maxRetries) ? maxRetries : -1, delayMs },
@@ -837,7 +601,7 @@ export class GraphExecutor {
           break;
         }
 
-        if (classifyError(lastError) === 'permanent') {
+        if (this.retryPolicy.classify(lastError) === 'permanent') {
           log.warn(`Node '${nodeId}' failed with permanent error — skipping remaining retries`);
           break;
         }
@@ -1106,13 +870,13 @@ export class GraphExecutor {
         const workerOutputDir = `${this.getRunDir()}/${node.id}`;
         try { mkdirSync(workerOutputDir, { recursive: true }); } catch { /* may exist */ }
 
-        const baseTimeoutSec = resolveNodeTimeoutSec(node, {
+        const baseTimeoutSec = this.retryPolicy.resolveTimeoutSec(node, {
           workerTimeout: this.config.workerTimeout,
           codingAgentTimeout: this.config.codingAgentTimeout ?? this.config.workerTimeout,
         });
         // Escalate the wall-clock budget on retries — see
         // RETRY_TIMEOUT_MULTIPLIERS for the rationale.
-        const multiplier = timeoutMultiplierForAttempt(attempt);
+        const multiplier = this.retryPolicy.timeoutMultiplier(attempt);
         const effectiveTimeoutSec = Math.round(baseTimeoutSec * multiplier);
         if (multiplier !== 1.0) {
           log.info(
@@ -1233,14 +997,14 @@ export class GraphExecutor {
         // Fix 3: Enforce wall-clock timeout for CODING_AGENT nodes.
         // The SDK's maxTurns/maxBudgetUsd are soft limits; a stalled API call
         // or infinite streaming response can hold up the entire workflow layer.
-        const baseCodingTimeoutSec = resolveNodeTimeoutSec(node, {
+        const baseCodingTimeoutSec = this.retryPolicy.resolveTimeoutSec(node, {
           workerTimeout: this.config.workerTimeout,
           codingAgentTimeout: this.config.codingAgentTimeout ?? this.config.workerTimeout,
         });
         // Same per-attempt escalation as AGENT/TOOL — see
         // RETRY_TIMEOUT_MULTIPLIERS. Coding agents are the *most* likely to
         // need extra wall-clock on retries.
-        const codingMultiplier = timeoutMultiplierForAttempt(attempt);
+        const codingMultiplier = this.retryPolicy.timeoutMultiplier(attempt);
         const codingTimeoutSec = Math.round(baseCodingTimeoutSec * codingMultiplier);
         if (codingMultiplier !== 1.0) {
           log.info(
@@ -1399,7 +1163,7 @@ export class GraphExecutor {
             // isn't empty on timeout/failure — operators can still inspect
             // whatever the coding agent produced before it was killed.
             if (typeof codingResult.output === 'string' && codingResult.output.trim()) {
-              saveTextOutputIfEmpty(codingOutputDir, codingResult.output, 'partial-output.md');
+              this.artifacts.saveTextOutputIfEmpty(codingOutputDir, codingResult.output, 'partial-output.md');
             }
             throw new TaggedRetryError(`Coding agent failed: ${codingResult.error}`, {
               retryable: codingResult.retryable ?? true,
@@ -1410,11 +1174,11 @@ export class GraphExecutor {
           const codingOutputPaths = codingResult.outputPaths ?? [];
 
           if (typeof codingResult.output === 'string' && codingResult.output.trim()) {
-            const saved = saveTextOutputIfEmpty(codingOutputDir, codingResult.output, 'output.md');
+            const saved = this.artifacts.saveTextOutputIfEmpty(codingOutputDir, codingResult.output, 'output.md');
             if (saved) codingOutputPaths.push(saved);
           }
 
-          const untrackedCoding = scanForUntrackedFiles(codingOutputDir, codingOutputPaths);
+          const untrackedCoding = this.artifacts.scanForUntrackedFiles(codingOutputDir, codingOutputPaths);
           codingOutputPaths.push(...untrackedCoding);
 
           const dedupedCodingPaths = [...new Set(codingOutputPaths)];
@@ -2161,43 +1925,14 @@ export class GraphExecutor {
    * and marks non-selected downstream paths as skipped.
    */
   private evaluateRouters(layer: string[]): void {
-    for (const nodeId of layer) {
-      const node = this.graph.nodes.get(nodeId);
-      if (node?.type !== 'ROUTER' || node.status !== 'done') continue;
-
-      const result = this.nodeResults.get(nodeId);
-      if (!result?.output) continue;
-
-      const routeOutput = result.output as { route: string; target?: string };
-      const router = node.router;
-      if (!router) continue;
-
-      // Skip nodes that are targets of non-selected routes
-      const selectedTarget = routeOutput.target;
-      for (const [, targetId] of Object.entries(router.routes)) {
-        if (targetId && targetId !== selectedTarget) {
-          this.markSubtreeSkipped(targetId);
-        }
-      }
-    }
+    this.scheduler.evaluateRouters(layer);
   }
 
   /**
    * Recursively marks a node and all its exclusive dependents as skipped.
    */
   private markSubtreeSkipped(nodeId: string): void {
-    if (this.skippedNodes.has(nodeId)) return;
-    this.skippedNodes.add(nodeId);
-
-    // Find nodes that depend exclusively on skipped nodes
-    for (const [id, node] of this.graph.nodes) {
-      if (
-        node.dependsOn.includes(nodeId) &&
-        node.dependsOn.every((dep) => this.skippedNodes.has(dep))
-      ) {
-        this.markSubtreeSkipped(id);
-      }
-    }
+    this.scheduler.markSubtreeSkipped(nodeId);
   }
 
   /** Waits until resume() is called. */

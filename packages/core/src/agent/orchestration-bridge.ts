@@ -32,6 +32,12 @@ import type {
 } from '../orchestration/types.js';
 import type { MemoryBridge } from './memory-bridge.js';
 import type { MainAgentCallbacks, ThinkingStep, ThinkingStepStatus, MemoryEvent } from './main-agent.js';
+import type {
+  DispatchCoordinator,
+  DispatchFullDAGOptions,
+  CodingDispatchOptions,
+  ExecutorOverrides,
+} from './dispatch-coordinator.js';
 import { createLogger } from '../logging/logger.js';
 import { randomBytes } from 'node:crypto';
 import { collectRunArtifacts } from '../memory/run-artifact-collector.js';
@@ -59,41 +65,11 @@ export interface OrchestrationConfig {
   runsDir?: string;
 }
 
-/**
- * Per-dispatch override for the executor config. Code-mode dispatches
- * use this to pin every CODING_AGENT node's cwd to the per-run checkout
- * path even when the planner LLM forgets to include `cwd` on a node.
- *
- * Kept extremely narrow (only the fields code mode needs to override) so
- * future overrides are added intentionally rather than by accident.
- */
-type ExecutorOverrides = Pick<ExecutorConfig, 'codingRepoDir' | 'stagedAttachments'> & {
-  /**
-   * Optional cleanup hook invoked AFTER `executor.execute()` returns
-   * (regardless of success / failure) and BEFORE `cleanupWorkflow`.
-   * Used by Task #196 to merge per-CODING_AGENT-node worktree branches
-   * back into the session clone's base branch on success and to prune
-   * the worktrees on either outcome. Errors thrown here are caught and
-   * surfaced to the user but do not re-throw.
-   */
-  postExecute?: (success: boolean) => Promise<void>;
-  /**
-   * Task #197: Coding-mode preamble (Repository block + rules) that the
-   * macro-expansion callback passes to the per-phase sub-planner so each
-   * sub-DAG inherits the same repo / cwd / branch context. Set by
-   * `dispatchCodingWorkflow` only — non-coding dispatches leave this
-   * unset and the executor's `macroExpansionCallback` stays unwired.
-   */
-  codingPreamble?: string;
-  /**
-   * Task #197: Trusted phase bodies, keyed by `${specRef}::${phaseId}`.
-   * The macro-expansion callback looks bodies up here at run-time so
-   * the planner's top-level tool output never has to carry phase body
-   * text. Built by `dispatchCodingWorkflow` from `prepared.specs` and
-   * is only set when at least one referenced spec has parsed phases.
-   */
-  macroPhaseBodies?: Map<string, { title: string; body: string }>;
-};
+// Task #237: the per-dispatch executor-override and dispatch option types
+// moved into `dispatch-coordinator.ts` so the `DispatchCoordinator` interface
+// and this implementation share one definition. Re-exported for backwards-
+// compatible imports (the type is also imported above for internal use).
+export type { ExecutorOverrides };
 
 /** An active, running workflow. */
 interface ActiveWorkflow {
@@ -146,7 +122,7 @@ interface InterventionRequest {
  * Owns: planner, executor map, pending plan map, event subscriptions.
  * Delegates: memory recall to MemoryBridge, UI updates to callbacks.
  */
-export class OrchestrationBridge {
+export class OrchestrationBridge implements DispatchCoordinator {
   private readonly planner: Planner;
   readonly eventBus: EventBus;
   readonly commands: OrchestratorCommands;
@@ -270,51 +246,7 @@ export class OrchestrationBridge {
   async dispatchFullDAG(
     task: string,
     pushHistory: (entry: { role: string; content: string }) => void,
-    opts: {
-      requireConfirmation?: boolean;
-      executorOverrides?: ExecutorOverrides;
-      /**
-       * Pre-minted workflow ID. When provided, overrides the planner's
-       * randomly-generated `plan.graph.id` so the executor's
-       * `getRunDir()` (which is keyed off `graph.id`) and any pre-clone
-       * folder share the same identifier. Code mode uses this so the
-       * pre-clone path `<workspaceDir>/output/<runId>/<repoName>` and
-       * the executor artifacts dir `<workspaceDir>/output/<runId>` live
-       * under the same `runId`, giving operators one folder per run.
-       */
-      workflowId?: string;
-      /**
-       * Task #192: chat attachments already staged to disk by
-       * `MainAgent.handleMessage`. Prepended to the planner task and
-       * forwarded to the executor so every AGENT/CODING_AGENT/TOOL
-       * worker is told the absolute paths.
-       */
-      stagedAttachments?: StagedAttachment[];
-      /**
-       * Hook invoked AFTER planning, BEFORE dispatch. Receives the
-       * generated plan so callers can mutate node configs in-place
-       * (e.g. Task #196 worktree allocation per CODING_AGENT node) and
-       * optionally return a `postExecute` callback that runs after the
-       * executor finishes (used to merge worktree branches back).
-       */
-      onPlanReady?: (plan: PlannerOutput) => Promise<{ postExecute?: (success: boolean) => Promise<void> } | void>;
-      /**
-       * Task #209 (review round 4): structured commit-safety report
-       * from {@link prepareCodingDispatch}. Threaded through to the
-       * executor via `setCommitSafety` so it surfaces in
-       * `run-summary.md`. Code-mode dispatches always pass it;
-       * orchestrate/direct dispatches leave it undefined.
-       */
-      commitSafety?: import('../orchestration/types.js').CommitSafetyReport;
-      /**
-       * Architecture/prior-decision context already recalled by the
-       * caller (e.g. `recallForArchitect` in `dispatchCodingWorkflow`).
-       * Merged with the memories returned by `recallForPlanning` so the
-       * planner sees both planning memories AND architect memories in one
-       * combined context block, without a second round-trip to Hindsight.
-       */
-      preRecalledContext?: string;
-    } = {},
+    opts: DispatchFullDAGOptions = {},
   ): Promise<void> {
     // Prepend the staged-attachments block to the task so the planner's
     // preamble lists every file with its absolute path, MIME, and size.
@@ -470,7 +402,7 @@ export class OrchestrationBridge {
   async dispatchCodingWorkflow(
     task: string,
     pushHistory: (entry: { role: string; content: string }) => void,
-    opts: { stagedAttachments?: StagedAttachment[]; sessionRepo?: SessionRepoSelection } = {},
+    opts: CodingDispatchOptions = {},
   ): Promise<void> {
     // Per Task #172: every code-mode call is its own run.
     //   1. Resolve the remote URL up-front (fail fast on unresolvable).
