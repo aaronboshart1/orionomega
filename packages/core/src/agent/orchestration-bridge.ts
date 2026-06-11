@@ -11,6 +11,8 @@ import { Planner } from '../orchestration/planner.js';
 // Coding mode uses the standard Planner → Executor pipeline with a coding-specific task preamble.
 import { GraphExecutor } from '../orchestration/executor.js';
 import type { ExecutorConfig } from '../orchestration/executor.js';
+import { createTaskQueue, type TaskQueue } from '../orchestration/queue/index.js';
+import { readConfig } from '../config/loader.js';
 import { prepareCodingDispatch, type SessionRepoSelection } from './coding-dispatch.js';
 import { parseCodingRequest, RemoteResolutionError } from '../orchestration/coding/coding-orchestrator.js';
 import { addWorktree, removeWorktree, mergeBranchInto, pushChanges } from '../orchestration/coding/repo-manager.js';
@@ -1033,6 +1035,30 @@ ${userTask}`;
   }
 
   /**
+   * Task #238 (R5): build the persistent task queue for a workflow run from the
+   * `orchestration.queue` config. Returns `undefined` for the in-process
+   * default (the executor then builds its own zero-setup queue), or a
+   * Redis-backed queue scoped to this `workflowId` so concurrent runs never
+   * consume each other's node jobs from a shared queue.
+   */
+  private buildTaskQueue(workflowId: string): TaskQueue | undefined {
+    let queueCfg: import('../config/types.js').OrionOmegaConfig['orchestration']['queue'];
+    try {
+      queueCfg = readConfig().orchestration?.queue;
+    } catch {
+      // Config unreadable (e.g. in unit harnesses) — fall back to in-process.
+      return undefined;
+    }
+    if (queueCfg?.backend !== 'redis') return undefined;
+
+    const baseName = queueCfg.queueName ?? 'orionomega-nodes';
+    return createTaskQueue({
+      ...queueCfg,
+      queueName: `${baseName}:${workflowId}`,
+    });
+  }
+
+  /**
    * Execute an approved plan via the GraphExecutor.
    * Registers the workflow in both the active map and the commands registry.
    */
@@ -1057,6 +1083,12 @@ ${userTask}`;
     // can never accidentally land in the install tree.
     const effectiveCodingRepoDir = executorOverrides?.codingRepoDir ?? this.config.codingRepoDir;
 
+    // Task #238 (R5): build the persistent task queue from config. Only inject
+    // when the Redis backend is selected — otherwise the executor builds its
+    // own zero-setup in-process queue. The Redis queue name is scoped per
+    // workflow so concurrent runs never steal each other's node jobs.
+    const taskQueue = this.buildTaskQueue(workflowId);
+
     const executorConfig: ExecutorConfig = {
       workspaceDir: this.config.workspaceDir,
       checkpointDir: this.config.checkpointDir,
@@ -1065,6 +1097,7 @@ ${userTask}`;
       maxRetries: this.config.maxRetries,
       checkpointInterval: 1,
       codingRepoDir: effectiveCodingRepoDir,
+      ...(taskQueue ? { taskQueue } : {}),
       ...(executorOverrides?.stagedAttachments?.length
         ? { stagedAttachments: executorOverrides.stagedAttachments }
         : {}),

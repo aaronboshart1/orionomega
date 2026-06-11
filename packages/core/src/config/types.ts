@@ -130,6 +130,30 @@ export interface OrionOmegaConfig {
       /** Event types that bypass batching and fire immediately. */
       immediateTypes: string[];
     };
+    /**
+     * Task #238 (R5) — Persistent distributed task queue. Controls how the
+     * executor dispatches each topological layer's node jobs. Optional: when
+     * absent the executor uses the zero-setup in-process queue, so local dev
+     * needs no external infrastructure.
+     */
+    queue?: {
+      /**
+       * Dispatch backend. `in-process` (default) runs node jobs in the current
+       * process; `redis` persists jobs in Redis (via BullMQ) so they survive a
+       * worker restart and can be consumed by separate worker processes.
+       */
+      backend?: 'in-process' | 'redis';
+      /**
+       * Redis connection URL for the `redis` backend (e.g.
+       * `redis://localhost:6379`). Falls back to the `REDIS_URL` env var; if
+       * neither is set the backend degrades to in-process.
+       */
+      redisUrl?: string;
+      /** BullMQ queue name for the `redis` backend (default `orionomega-nodes`). */
+      queueName?: string;
+      /** Per-process worker concurrency for the `redis` backend (default 8). */
+      concurrency?: number;
+    };
   };
 
   workspace: {

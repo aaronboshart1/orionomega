@@ -20,6 +20,12 @@ import type { EventBus } from './event-bus.js';
 import { topologicalSort, validateGraph } from './graph.js';
 import { WorkflowState } from './state.js';
 import { WorkerProcess, type WorkerResult } from './worker.js';
+import {
+  createTaskQueue,
+  type TaskQueue,
+  type NodeJob,
+  type NodeRunOutcome,
+} from './queue/index.js';
 import { TaggedRetryError } from './retry-error.js';
 import { ModelUnavailableError, isModelUnavailableMessage } from './model-fallback.js';
 import { selectFallbackModel, getModelCapability } from '../models/model-registry.js';
@@ -116,6 +122,14 @@ export interface ExecutorConfig {
    * phases; 40 leaves comfortable headroom for any plausible spec).
    */
   macroMaxExpansions?: number;
+  /**
+   * Task #238 (R5) — Persistent distributed task queue. When supplied, each
+   * topological layer's node jobs are dispatched through this queue instead of
+   * the default in-process one. The bridge builds it from
+   * `orchestration.queue` config; tests may inject a fake. When omitted the
+   * executor uses a zero-setup {@link InProcessTaskQueue}.
+   */
+  taskQueue?: TaskQueue;
 }
 
 /**
@@ -160,6 +174,11 @@ export class GraphExecutor {
   /** Task #237: extracted layer-scheduling collaborator. */
   private readonly scheduler: LayerScheduler;
   private readonly nodeOutputs = new Map<string, string>();
+  /**
+   * Task #238 (R5): the persistent task queue used to dispatch each layer's
+   * node jobs. Defaults to the zero-setup in-process queue.
+   */
+  private readonly queue: TaskQueue;
   private totalCostUsd = 0;
   private readonly autonomousStartTime = Date.now();
 
@@ -217,6 +236,64 @@ export class GraphExecutor {
       this.nodeErrors,
       this.nodeResults,
     );
+    // Task #238 (R5): the in-process queue is the zero-setup default; the
+    // bridge injects a Redis-backed (per-run) queue when configured. Either
+    // way the queue is per-run and closed at the end of `execute()`.
+    this.queue = config.taskQueue ?? createTaskQueue({ backend: 'in-process' });
+    // Task #238 (R5): checkpoint-store-as-source-of-truth. On resume the graph
+    // node statuses + WorkflowState carry what already completed; rebuild the
+    // executor's in-process bookkeeping from that persistent state so the maps
+    // are a cache of the checkpoint, never its sole holder. Completed nodes are
+    // skipped by the LayerScheduler (status==='done'), so they are never re-run.
+    this.rehydrateFromState();
+  }
+
+  /**
+   * Task #238 (R5): rebuild the in-process bookkeeping maps from the persistent
+   * graph/WorkflowState after a resume so they mirror the checkpoint store.
+   *
+   * The checkpoint persists each node's terminal `status` (and its output via
+   * WorkflowState). Without this, a resumed executor starts with empty
+   * `nodeOutputs`/`nodeErrors`/`skippedNodes` maps even though the graph says
+   * those nodes are done/failed/skipped — making the in-process map the sole
+   * (and stale) holder of run state. Idempotent and a no-op for a fresh run
+   * (all nodes `pending`).
+   */
+  private rehydrateFromState(): void {
+    let rehydrated = 0;
+    for (const [id, node] of this.graph.nodes) {
+      switch (node.status) {
+        case 'done': {
+          // Prefer the WorkflowState entry; fall back to the node's persisted
+          // `output` (present on a checkpoint-reconstructed graph). Repopulate
+          // BOTH the in-process cache and WorkflowState so downstream nodes can
+          // read upstream outputs via `state.getNodeOutput()` after a resume —
+          // making the checkpoint, not a lost in-memory map, the source of truth.
+          const stateOutput = this.state.getNodeOutput(id);
+          const output = stateOutput ?? node.output;
+          if (typeof output === 'string') {
+            this.nodeOutputs.set(id, output);
+            if (stateOutput === undefined) this.state.setNodeOutput(id, output);
+          }
+          rehydrated++;
+          break;
+        }
+        case 'error': {
+          if (node.error) this.nodeErrors.set(id, node.error);
+          rehydrated++;
+          break;
+        }
+        case 'skipped':
+          this.skippedNodes.add(id);
+          rehydrated++;
+          break;
+        default:
+          break;
+      }
+    }
+    if (rehydrated > 0) {
+      log.info(`Rehydrated ${rehydrated} node(s) from checkpoint state on resume`);
+    }
   }
 
   /**
@@ -355,61 +432,27 @@ export class GraphExecutor {
           { layer: layerIdx, nodes: runnableNodes },
         );
 
-        // Execute all nodes in this layer concurrently
-        const results = await Promise.allSettled(
-          runnableNodes.map((nodeId) => this.executeNode(nodeId)),
+        // Execute all nodes in this layer concurrently, dispatched through the
+        // persistent task queue (Task #238). The queue invokes `onSettled` as
+        // each node finishes; we process the result and checkpoint immediately
+        // so a crash mid-layer never loses a completed node's progress — on
+        // resume those nodes are already `done` in the checkpoint and skipped.
+        const jobs: NodeJob[] = runnableNodes.map((nodeId) => ({
+          workflowId: this.graph.id,
+          nodeId,
+          layerIndex: layerIdx,
+        }));
+
+        await this.queue.dispatchLayer(
+          jobs,
+          (job) => this.executeNode(job.nodeId),
+          (job, outcome) => {
+            this.processNodeOutcome(job.nodeId, outcome);
+            // Node-level checkpoint: persist the moment a node settles so the
+            // checkpoint store reflects per-node truth, not just per-layer.
+            this.saveCheckpoint();
+          },
         );
-
-        // Process results
-        for (let i = 0; i < runnableNodes.length; i++) {
-          const nodeId = runnableNodes[i];
-          const result = results[i];
-          const node = this.graph.nodes.get(nodeId)!;
-
-          if (result.status === 'fulfilled' && result.value.cancelled) {
-            node.status = 'cancelled';
-            log.info(`Node '${nodeId}' cancelled by stop`);
-          } else if (result.status === 'fulfilled') {
-            node.status = 'done';
-            node.completedAt = new Date().toISOString();
-            node.output = result.value.output;
-            node.progress = 100;
-            this.nodeResults.set(nodeId, result.value);
-            this.totalCostUsd += result.value.costUsd ?? 0;
-            this.state.setNodeOutput(nodeId, result.value.output);
-            if (result.value.output && typeof result.value.output === 'string') {
-              this.nodeOutputs.set(nodeId, result.value.output);
-            }
-            this.findings.push(...result.value.findings);
-            if (result.value.outputPaths?.length) this.outputPaths.push(...result.value.outputPaths);
-          } else {
-            const errorMsg = result.reason instanceof Error
-              ? result.reason.message
-              : String(result.reason);
-
-            const isAbort = this.stopRequested &&
-              (result.reason?.name === 'AbortError' ||
-               errorMsg.includes('aborted') ||
-               errorMsg.includes('abort'));
-
-            if (isAbort) {
-              node.status = 'cancelled';
-              log.info(`Node '${nodeId}' cancelled by stop`);
-            } else {
-              node.status = 'error';
-              node.error = errorMsg;
-              this.nodeErrors.set(nodeId, errorMsg);
-              this.errors.push({ worker: nodeId, message: errorMsg });
-              log.warn(`Node '${nodeId}' failed: ${errorMsg}`);
-
-              const failedOutputDir = this.getNodeOutputDir(nodeId);
-              const failedArtifacts = this.artifacts.scanForUntrackedFiles(failedOutputDir, []);
-              if (failedArtifacts.length > 0) {
-                this.outputPaths.push(...failedArtifacts);
-              }
-            }
-          }
-        }
 
         // Mark skipped nodes
         for (const nodeId of layer) {
@@ -458,6 +501,73 @@ export class GraphExecutor {
       this.writeRunSummaryArtifacts(errorResult);
       this.checkpointMgr.remove(this.graph.id);
       return errorResult;
+    } finally {
+      // Task #238 (R5): release the per-run queue's resources (Redis
+      // connections / BullMQ workers). A no-op for the in-process backend.
+      try {
+        await this.queue.close();
+      } catch (closeErr) {
+        log.warn('Failed to close task queue', {
+          error: closeErr instanceof Error ? closeErr.message : String(closeErr),
+        });
+      }
+    }
+  }
+
+  /**
+   * Task #238 (R5): process a single node's settled outcome and fold it into
+   * the run's bookkeeping + the persistent graph/WorkflowState. Extracted from
+   * the old per-layer result loop so it can run incrementally as each node
+   * settles (invoked from `dispatchLayer`'s `onSettled`), enabling node-level
+   * checkpointing. The behaviour is byte-for-byte the same as the previous
+   * inline loop — only the timing (per-node vs. per-layer) changed.
+   */
+  private processNodeOutcome(nodeId: string, outcome: NodeRunOutcome): void {
+    const node = this.graph.nodes.get(nodeId)!;
+
+    if (outcome.status === 'fulfilled' && outcome.value.cancelled) {
+      node.status = 'cancelled';
+      log.info(`Node '${nodeId}' cancelled by stop`);
+    } else if (outcome.status === 'fulfilled') {
+      node.status = 'done';
+      node.completedAt = new Date().toISOString();
+      node.output = outcome.value.output;
+      node.progress = 100;
+      this.nodeResults.set(nodeId, outcome.value);
+      this.totalCostUsd += outcome.value.costUsd ?? 0;
+      this.state.setNodeOutput(nodeId, outcome.value.output);
+      if (outcome.value.output && typeof outcome.value.output === 'string') {
+        this.nodeOutputs.set(nodeId, outcome.value.output);
+      }
+      this.findings.push(...outcome.value.findings);
+      if (outcome.value.outputPaths?.length) this.outputPaths.push(...outcome.value.outputPaths);
+    } else {
+      const reason = outcome.reason as { name?: string } | undefined;
+      const errorMsg = outcome.reason instanceof Error
+        ? outcome.reason.message
+        : String(outcome.reason);
+
+      const isAbort = this.stopRequested &&
+        (reason?.name === 'AbortError' ||
+         errorMsg.includes('aborted') ||
+         errorMsg.includes('abort'));
+
+      if (isAbort) {
+        node.status = 'cancelled';
+        log.info(`Node '${nodeId}' cancelled by stop`);
+      } else {
+        node.status = 'error';
+        node.error = errorMsg;
+        this.nodeErrors.set(nodeId, errorMsg);
+        this.errors.push({ worker: nodeId, message: errorMsg });
+        log.warn(`Node '${nodeId}' failed: ${errorMsg}`);
+
+        const failedOutputDir = this.getNodeOutputDir(nodeId);
+        const failedArtifacts = this.artifacts.scanForUntrackedFiles(failedOutputDir, []);
+        if (failedArtifacts.length > 0) {
+          this.outputPaths.push(...failedArtifacts);
+        }
+      }
     }
   }
 

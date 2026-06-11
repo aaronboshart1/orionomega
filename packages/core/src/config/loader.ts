@@ -94,6 +94,13 @@ export function getDefaultConfig(): OrionOmegaConfig {
         webIntervalMs: 1000,
         immediateTypes: ['error', 'done', 'finding'],
       },
+      // Task #238 (R5): persistent task queue. In-process by default so local
+      // dev needs zero setup; set backend: 'redis' + a redisUrl/REDIS_URL to
+      // dispatch node jobs through a durable, restart-surviving Redis/BullMQ
+      // queue that can be consumed by separate worker processes.
+      queue: {
+        backend: 'in-process',
+      },
     },
     workspace: {
       path: join(homedir(), 'orionomega', 'workspace'),
