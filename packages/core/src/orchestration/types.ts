@@ -273,6 +273,11 @@ export interface WorkerEvent {
       cacheWrite?: number;
       costUsd?: number;
     };
+    /**
+     * Task #239: set on `macro_expansion_complete` — true when the
+     * sub-DAG was reused from the sub-DAG cache (no planner round-trip).
+     */
+    cacheHit?: boolean;
   };
   /**
    * Task #200: top-level planner lifecycle payload, set on the three
@@ -502,6 +507,14 @@ export interface MacroPlanningStats {
   expansionsSucceeded: number;
   /** Total sub-nodes added to the live graph across all expansions. */
   subNodesAdded: number;
+  /**
+   * Task #239: successful expansions served from the sub-DAG cache (no
+   * planner round-trip). `cacheHits + cacheMisses` equals the number of
+   * successful expansions whose callback reported cache status.
+   */
+  cacheHits?: number;
+  /** Task #239: successful expansions that required a fresh sub-plan call. */
+  cacheMisses?: number;
   /** Per-expansion breakdown for inspection. */
   expansions: MacroExpansionRecord[];
 }
@@ -522,6 +535,14 @@ export interface MacroExpansionRecord {
    */
   inputTokens?: number;
   outputTokens?: number;
+  /**
+   * Task #239: true when this expansion was served from the sub-DAG
+   * cache (no planner round-trip), false when it required a fresh
+   * sub-plan call. Undefined for ad-hoc/test callbacks that don't report
+   * cache status. Surfaced into run-summary so operators can see how
+   * much re-planning the cache is saving.
+   */
+  cacheHit?: boolean;
   /** Populated on failure. */
   error?: string;
 }
@@ -542,6 +563,13 @@ export interface MacroExpansionResult {
     cacheWriteTokens?: number;
     costUsd?: number;
   };
+  /**
+   * Task #239: true when the sub-DAG was served from the sub-DAG cache
+   * (no planner round-trip). When true, `usage` reports zero spend for
+   * the pass (the original spend was already counted on the miss that
+   * populated the cache).
+   */
+  cacheHit?: boolean;
 }
 
 // ── Checkpointing ───────────────────────────────────────────────────────────

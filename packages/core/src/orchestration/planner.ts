@@ -16,6 +16,7 @@ import { discoverModels, buildModelGuide, pickModelByTier, type DiscoveredModel 
 import { inferModelTier } from '../models/model-registry.js';
 import { getPortAvoidanceInstructions } from '../utils/port-restrictions.js';
 import { calculateTokenCost } from './coding/coding-budget.js';
+import { SubDagCache } from './coding/sub-dag-cache.js';
 
 const log = createLogger('planner');
 
@@ -25,6 +26,13 @@ export interface PlannerConfig {
   model: string;
   /** Maximum number of concurrent workers. Defaults to 8. */
   maxWorkers?: number;
+  /**
+   * Task #239: sub-DAG cache shared across `subPlan` calls. Defaults to a
+   * fresh in-memory cache. Injectable so tests can pre-populate or assert
+   * against it. Because the orchestration bridge constructs the planner
+   * once, the default cache persists across runs for the process lifetime.
+   */
+  subDagCache?: SubDagCache;
 }
 
 /**
@@ -36,9 +44,21 @@ export interface PlannerConfig {
  */
 export class Planner {
   private readonly config: PlannerConfig;
+  /** Task #239: shared sub-DAG cache for macro-phase expansions. */
+  private readonly subDagCache: SubDagCache;
 
   constructor(config: PlannerConfig) {
     this.config = config;
+    this.subDagCache = config.subDagCache ?? new SubDagCache();
+  }
+
+  /**
+   * Task #239: exposes the sub-DAG cache so the orchestration bridge /
+   * executor can read hit-miss-size counters for logging, and tests can
+   * pre-populate or assert against it.
+   */
+  getSubDagCache(): SubDagCache {
+    return this.subDagCache;
   }
 
   /** The model used for planning. */
@@ -967,8 +987,41 @@ Do NOT attempt to plan or execute the coding work yourself. Do NOT clone, write 
     }
 
     const appConfig = readConfig();
-    const apiKey = appConfig.models.apiKey;
     const model = appConfig.models.planner || this.config.model;
+
+    // Task #239: sub-DAG cache lookup. Re-expanding an identical phase
+    // (same body / phase id / model / context) reuses the previously
+    // produced sub-DAG instead of making another planner LLM round-trip.
+    // The check runs BEFORE the API-key gate so a cached phase can be
+    // served even without network credentials. Cached nodes are deep-
+    // cloned by the cache so the executor's in-place splice can't corrupt
+    // the stored copy.
+    const cacheKey = this.subDagCache.keyFor({
+      phaseBody,
+      phaseId: cfg.phaseId,
+      model,
+      repoPreamble,
+      upstreamPhaseSummary,
+    });
+    const cached = this.subDagCache.get(cacheKey);
+    if (cached) {
+      const savedTokens =
+        (cached.usage?.inputTokens ?? 0) + (cached.usage?.outputTokens ?? 0);
+      log.info(
+        `subPlan: cache HIT for macro '${macroNode.id}' (phase ${cfg.phaseId}) — ` +
+          `reusing ${cached.nodes.length} sub-node(s), skipped planner round-trip` +
+          (savedTokens > 0 ? ` (~${savedTokens.toLocaleString()} tokens saved)` : ''),
+      );
+      return {
+        nodes: cached.nodes,
+        // No round-trip happened: report zero spend for this pass (the
+        // original spend was already counted on the populating miss).
+        usage: { inputTokens: 0, outputTokens: 0 },
+        cacheHit: true,
+      };
+    }
+
+    const apiKey = appConfig.models.apiKey;
     if (!apiKey) {
       throw new Error('subPlan: no API key configured');
     }
@@ -1219,15 +1272,21 @@ ${upstreamPhaseSummary}
       outputTokens: subOutput,
       inputTokens: subInput,
     });
+    const usage = {
+      inputTokens: subInput,
+      outputTokens: subOutput,
+      ...(subCacheRead > 0 ? { cacheReadTokens: subCacheRead } : {}),
+      ...(subCacheWrite > 0 ? { cacheWriteTokens: subCacheWrite } : {}),
+      ...(subCostUsd != null ? { costUsd: subCostUsd } : {}),
+    };
+    // Task #239: populate the cache for this phase. `set` deep-clones the
+    // nodes so the executor's subsequent in-place splice of the returned
+    // `subNodes` can't reach back and corrupt the stored copy.
+    this.subDagCache.set(cacheKey, subNodes, usage);
     return {
       nodes: subNodes,
-      usage: {
-        inputTokens: subInput,
-        outputTokens: subOutput,
-        ...(subCacheRead > 0 ? { cacheReadTokens: subCacheRead } : {}),
-        ...(subCacheWrite > 0 ? { cacheWriteTokens: subCacheWrite } : {}),
-        ...(subCostUsd != null ? { costUsd: subCostUsd } : {}),
-      },
+      usage,
+      cacheHit: false,
     };
   }
 

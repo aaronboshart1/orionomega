@@ -1415,6 +1415,9 @@ export class GraphExecutor {
 
       let subNodes: WorkflowNode[];
       let usage: import('./types.js').MacroExpansionResult['usage'];
+      // Task #239: whether this expansion was served from the sub-DAG
+      // cache. Undefined for ad-hoc/test callbacks that don't report it.
+      let cacheHit: boolean | undefined;
       try {
         const raw = await this.config.macroExpansionCallback(macroNode);
         // Back-compat: callbacks may return either WorkflowNode[] or
@@ -1425,6 +1428,7 @@ export class GraphExecutor {
         } else {
           subNodes = raw.nodes;
           usage = raw.usage;
+          cacheHit = raw.cacheHit;
         }
       } catch (err) {
         const raw = err instanceof Error ? err.message : String(err);
@@ -1500,11 +1504,13 @@ export class GraphExecutor {
         ...recordBase,
         subNodeCount: subNodes.length,
         ...(usage ? { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens } : {}),
+        ...(cacheHit !== undefined ? { cacheHit } : {}),
       });
 
       log.info(
         `MACRO_NODE '${macroId}' spliced: +${subNodes.length} nodes ` +
-          `(graph size ${this.graph.nodes.size}, expansions ${this.macroExpansions}/${maxExpansions})`,
+          `(graph size ${this.graph.nodes.size}, expansions ${this.macroExpansions}/${maxExpansions}` +
+          `${cacheHit === undefined ? '' : cacheHit ? ', cache HIT' : ', cache MISS'})`,
       );
       this.emitOrchestrator(
         'status',
@@ -1515,6 +1521,7 @@ export class GraphExecutor {
         ...macroEventBase,
         subNodeCount: subNodes.length,
         subNodeIds: subNodes.map((n) => n.id),
+        ...(cacheHit !== undefined ? { cacheHit } : {}),
         // Task #204: forward sub-planner token usage so the UI's
         // MacroExpansionPanel can show per-pass spend with the same
         // treatment as the top-level planning indicator.
@@ -2330,6 +2337,13 @@ export class GraphExecutor {
         mdParts.push(`- **Expansions attempted:** ${mp.expansionsAttempted}`);
         mdParts.push(`- **Expansions succeeded:** ${mp.expansionsSucceeded}`);
         mdParts.push(`- **Sub-nodes added:** ${mp.subNodesAdded}`);
+        // Task #239: sub-DAG cache effectiveness. Only surfaced when at
+        // least one expansion reported cache status (bridge-wired runs do).
+        if (mp.cacheHits != null || mp.cacheMisses != null) {
+          const hits = mp.cacheHits ?? 0;
+          const misses = mp.cacheMisses ?? 0;
+          mdParts.push(`- **Sub-DAG cache (Task #239):** ${hits} hit(s) / ${misses} miss(es)`);
+        }
         mdParts.push('');
         const totalIn = mp.expansions.reduce((acc, r) => acc + (r.inputTokens ?? 0), 0);
         const totalOut = mp.expansions.reduce((acc, r) => acc + (r.outputTokens ?? 0), 0);
@@ -2337,13 +2351,14 @@ export class GraphExecutor {
           mdParts.push(`- **Sub-planner tokens (sum):** ${totalIn.toLocaleString()} in / ${totalOut.toLocaleString()} out`);
           mdParts.push('');
         }
-        mdParts.push('| Macro Node | Spec / Phase | Title | Sub-Nodes | Input Tokens | Output Tokens | Status |');
-        mdParts.push('|------------|--------------|-------|-----------|--------------|---------------|--------|');
+        mdParts.push('| Macro Node | Spec / Phase | Title | Sub-Nodes | Input Tokens | Output Tokens | Cache | Status |');
+        mdParts.push('|------------|--------------|-------|-----------|--------------|---------------|-------|--------|');
         for (const r of mp.expansions) {
           const status = r.error ? `error: ${r.error.replace(/\|/g, '\\|')}` : 'ok';
           const inTok = r.inputTokens != null ? r.inputTokens.toLocaleString() : '—';
           const outTok = r.outputTokens != null ? r.outputTokens.toLocaleString() : '—';
-          mdParts.push(`| ${r.macroNodeId} | ${r.specRef}::${r.phaseId} | ${r.phaseTitle} | ${r.subNodeCount} | ${inTok} | ${outTok} | ${status} |`);
+          const cache = r.cacheHit === undefined ? '—' : r.cacheHit ? 'hit' : 'miss';
+          mdParts.push(`| ${r.macroNodeId} | ${r.specRef}::${r.phaseId} | ${r.phaseTitle} | ${r.subNodeCount} | ${inTok} | ${outTok} | ${cache} | ${status} |`);
         }
         mdParts.push('');
       }
@@ -2456,10 +2471,16 @@ export class GraphExecutor {
     let macroPlanning: import('./types.js').MacroPlanningStats | undefined;
     if (this.macroExpansionRecords.length > 0) {
       const succeeded = this.macroExpansionRecords.filter((r) => !r.error);
+      // Task #239: aggregate sub-DAG cache effectiveness across successful
+      // expansions that reported cache status. Records with `cacheHit`
+      // undefined (ad-hoc/test callbacks) are excluded from both counts.
+      const cacheHits = succeeded.filter((r) => r.cacheHit === true).length;
+      const cacheMisses = succeeded.filter((r) => r.cacheHit === false).length;
       macroPlanning = {
         expansionsAttempted: this.macroExpansionRecords.length,
         expansionsSucceeded: succeeded.length,
         subNodesAdded: succeeded.reduce((acc, r) => acc + r.subNodeCount, 0),
+        ...(cacheHits > 0 || cacheMisses > 0 ? { cacheHits, cacheMisses } : {}),
         expansions: this.macroExpansionRecords,
       };
     }
