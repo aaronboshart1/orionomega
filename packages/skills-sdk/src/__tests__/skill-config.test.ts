@@ -65,6 +65,18 @@ describe('writeSkillConfig / readSkillConfig round-trip', () => {
     });
   });
 
+  it('persists the per-install hardened override', () => {
+    const config: SkillConfig = {
+      name: 'demo',
+      enabled: true,
+      configured: true,
+      hardened: true,
+      fields: {},
+    };
+    writeSkillConfig(skillsDir, config);
+    expect(readSkillConfig(skillsDir, 'demo').hardened).toBe(true);
+  });
+
   it('persists via the (skillsDir, name, config) signature', () => {
     const config: SkillConfig = { name: 'demo', enabled: false, configured: false, fields: {} };
     writeSkillConfig(skillsDir, 'demo', config);

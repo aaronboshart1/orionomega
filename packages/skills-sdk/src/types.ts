@@ -286,6 +286,12 @@ export interface SkillManifest {
     maxTimeout?: number;
   };
 
+  /**
+   * Opt-in hardened-execution policy for this skill's handlers.
+   * When omitted, handlers run in the default advisory mode.
+   */
+  execution?: SkillExecutionPolicy;
+
   /** Optional setup configuration for interactive skill setup. */
   setup?: SkillSetup;
 
@@ -301,6 +307,47 @@ export interface SkillManifest {
      */
     healthCheck?: string;
   };
+}
+
+// ── Hardened Execution ─────────────────────────────────────────────────
+
+/**
+ * Filesystem and process-isolation policy for hardened skill execution.
+ * All fields are optional; sensible secure defaults are applied when omitted.
+ */
+export interface SandboxPolicy {
+  /**
+   * Mount the skill directory read-only inside the sandbox so handlers cannot
+   * mutate their own code or sibling files at runtime. Defaults to `true`.
+   */
+  readonlySkillDir?: boolean;
+  /**
+   * Isolate the network namespace so the handler has no outbound connectivity.
+   * Defaults to `true`.
+   */
+  isolateNetwork?: boolean;
+  /**
+   * Absolute paths to hide from the handler by overmounting them with an empty
+   * in-memory filesystem. Use this to keep host secrets (e.g. `~/.ssh`, the
+   * OrionOmega config dir) out of an untrusted handler's view.
+   */
+  hidePaths?: string[];
+}
+
+/**
+ * Execution policy declared by a skill manifest (or overridden per install via
+ * {@link SkillConfig.hardened}). Hardened mode is opt-in; when absent or
+ * `hardened: false`, handlers run in the default advisory mode.
+ */
+export interface SkillExecutionPolicy {
+  /**
+   * Run this skill's handlers inside a restricted-filesystem / isolated-process
+   * sandbox. Requires a namespace backend on the host; if hardened mode is
+   * requested but unavailable, execution fails rather than silently degrading.
+   */
+  hardened?: boolean;
+  /** Fine-grained sandbox tuning applied when {@link hardened} is `true`. */
+  sandbox?: SandboxPolicy;
 }
 
 // ── Tool Definitions ───────────────────────────────────────────────────
@@ -462,6 +509,13 @@ export interface SkillConfig {
   enabled: boolean;
   /** Whether setup has been completed and the skill is ready to use. */
   configured: boolean;
+  /**
+   * Per-install override of the manifest's hardened-execution setting.
+   * When set, takes precedence over `manifest.execution.hardened`, letting an
+   * operator force a third-party skill into the sandbox (or, deliberately, out
+   * of it) without editing the manifest.
+   */
+  hardened?: boolean;
   /** Which auth method was chosen (if the skill requires auth). */
   authMethod?: string;
   /** ISO 8601 timestamp of the last setup/config change. */

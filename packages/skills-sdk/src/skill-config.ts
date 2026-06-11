@@ -45,6 +45,7 @@ export function readSkillConfig(skillsDir: string, skillName: string): SkillConf
       name: parsed.name ?? skillName,
       enabled: parsed.enabled ?? true,
       configured: parsed.configured ?? false,
+      hardened: parsed.hardened,
       authMethod: parsed.authMethod,
       configuredAt: parsed.configuredAt,
       fields: parsed.fields ?? {},

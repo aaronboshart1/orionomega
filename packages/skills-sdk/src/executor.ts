@@ -11,11 +11,22 @@
 
 import { spawn } from 'node:child_process';
 import path from 'node:path';
+import type { SandboxPolicy } from './types.js';
+import { buildSandboxedSpawn } from './sandbox.js';
 
 export interface ExecuteOptions {
   cwd: string;
   timeout?: number;
   env?: Record<string, string>;
+  /**
+   * Run the handler inside the hardened namespace sandbox (restricted filesystem
+   * view + isolated PID/network/IPC/UTS namespaces). Defaults to `false`
+   * (advisory mode). When `true` and no sandbox backend is available, the run
+   * is rejected rather than silently downgraded.
+   */
+  hardened?: boolean;
+  /** Fine-grained sandbox policy applied when {@link hardened} is `true`. */
+  sandbox?: SandboxPolicy;
 }
 
 const ALLOWED_EXTENSIONS = new Set(['.js', '.mjs']);
@@ -71,12 +82,27 @@ export class SkillExecutor {
 
     const timeout = options.timeout ?? 30_000;
 
+    let spawnCommand = resolvedHandler;
+    let spawnArgs: string[] = [];
+    let sandboxEnv: Record<string, string> = {};
+
+    if (options.hardened) {
+      try {
+        const sandboxed = buildSandboxedSpawn(resolvedHandler, normalizedCwd, options.sandbox);
+        spawnCommand = sandboxed.command;
+        spawnArgs = sandboxed.args;
+        sandboxEnv = sandboxed.env;
+      } catch (err) {
+        return Promise.reject(err instanceof Error ? err : new Error(String(err)));
+      }
+    }
+
     return new Promise((resolve, reject) => {
       let timedOut = false;
 
-      const child = spawn(resolvedHandler, [], {
+      const child = spawn(spawnCommand, spawnArgs, {
         cwd: options.cwd,
-        env: { ...filterSensitiveEnv(process.env), ...(options.env ?? {}) },
+        env: { ...filterSensitiveEnv(process.env), ...(options.env ?? {}), ...sandboxEnv },
         stdio: ['pipe', 'pipe', 'pipe'],
       });
 

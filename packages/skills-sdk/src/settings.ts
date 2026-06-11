@@ -18,6 +18,8 @@ import type {
   ValidationResult,
 } from './types.js';
 import { SkillSettingType } from './types.js';
+import type { JsonSchema, JsonSchemaType } from './json-schema.js';
+import { validateAgainstSchema } from './json-schema.js';
 
 // ── Schema Extraction ──────────────────────────────────────────────────
 
@@ -58,38 +60,25 @@ export function validateSettings(
   const errors: string[] = [];
   const warnings: string[] = [];
 
-  const schema = getSettingsSchema(manifest);
+  const block = getSettingsSchema(manifest);
 
-  if (!schema) {
+  if (!block) {
     return { valid: true, errors, warnings };
   }
 
-  for (const key of schema.required ?? []) {
-    const value = settings[key];
-    if (value === undefined || value === null || value === '') {
-      errors.push(`Required setting "${key}" is missing or empty.`);
-    }
+  // Build a proper JSON Schema from the manifest settings block and validate
+  // the supplied values against it. This gives type-, range-, and enum-aware
+  // checking with precise, path-qualified error messages — rather than just a
+  // shallow `required` list.
+  const schema = buildSettingsJsonSchema(block);
+  for (const err of validateAgainstSchema(settings, schema, 'settings')) {
+    errors.push(err.message);
   }
 
-  for (const [key, prop] of Object.entries(schema.properties)) {
-    const value = settings[key];
-
-    if (value === undefined || value === null) {
-      continue;
-    }
-
-    const typeError = checkType(key, value, prop);
-    if (typeError) {
-      errors.push(typeError);
-      continue;
-    }
-
-    const constraintErrors = checkConstraints(key, value, prop);
-    errors.push(...constraintErrors);
-  }
-
+  // Unknown keys remain advisory warnings (not hard errors) for forward
+  // compatibility with newer skill versions.
   for (const key of Object.keys(settings)) {
-    if (!Object.prototype.hasOwnProperty.call(schema.properties, key)) {
+    if (!Object.prototype.hasOwnProperty.call(block.properties, key)) {
       warnings.push(`Unknown setting "${key}" is not declared in the manifest schema.`);
     }
   }
@@ -97,114 +86,89 @@ export function validateSettings(
   return { valid: errors.length === 0, errors, warnings };
 }
 
-function checkType(key: string, value: unknown, prop: SkillSettingSchema): string | null {
-  const types = Array.isArray(prop.type) ? prop.type : [prop.type];
+// ── JSON Schema generation ─────────────────────────────────────────────
 
-  for (const t of types) {
-    if (matchesType(value, t)) return null;
+const SETTING_TYPE_TO_JSON: Record<SkillSettingType, JsonSchemaType> = {
+  [SkillSettingType.String]: 'string',
+  [SkillSettingType.Password]: 'string',
+  [SkillSettingType.URL]: 'string',
+  [SkillSettingType.Textarea]: 'string',
+  [SkillSettingType.Select]: 'string',
+  [SkillSettingType.Number]: 'number',
+  [SkillSettingType.Boolean]: 'boolean',
+  [SkillSettingType.Multiselect]: 'array',
+};
+
+/**
+ * Translate a manifest {@link SkillSettingsBlock} into a JSON Schema (draft-07
+ * subset) suitable for {@link validateAgainstSchema}. Exposed so callers can
+ * surface the canonical schema (e.g. for editor tooling) without re-deriving it.
+ */
+export function buildSettingsJsonSchema(block: SkillSettingsBlock): JsonSchema {
+  const properties: Record<string, JsonSchema> = {};
+
+  for (const [key, prop] of Object.entries(block.properties)) {
+    properties[key] = buildPropertySchema(prop);
   }
 
-  const typeName = Array.isArray(prop.type) ? prop.type.join(' | ') : prop.type;
-  return `Setting "${key}" has invalid type. Expected ${typeName}, got ${typeof value}.`;
+  return {
+    type: 'object',
+    properties,
+    required: block.required,
+    // Unknown keys are handled as warnings by validateSettings, so we do not
+    // forbid additional properties at the schema level.
+    additionalProperties: true,
+  };
 }
 
-function matchesType(value: unknown, type: SkillSettingType): boolean {
-  switch (type) {
-    case SkillSettingType.String:
-    case SkillSettingType.Password:
-    case SkillSettingType.URL:
-    case SkillSettingType.Textarea:
-      return typeof value === 'string';
-    case SkillSettingType.Boolean:
-      return typeof value === 'boolean';
-    case SkillSettingType.Number:
-      return typeof value === 'number' && Number.isFinite(value);
-    case SkillSettingType.Select:
-      return typeof value === 'string';
-    case SkillSettingType.Multiselect:
-      return Array.isArray(value) && value.every((v) => typeof v === 'string');
-    default:
-      return false;
-  }
-}
+function buildPropertySchema(prop: SkillSettingSchema): JsonSchema {
+  const declared = Array.isArray(prop.type) ? prop.type : [prop.type];
+  const jsonTypes = unique(declared.map((t) => SETTING_TYPE_TO_JSON[t]));
+  const primary = jsonTypes[0];
 
-type ValidationRules = NonNullable<SkillSettingSchema['validation']>;
+  const schema: JsonSchema = {
+    type: jsonTypes.length === 1 ? jsonTypes[0] : jsonTypes,
+    title: prop.label,
+  };
 
-function checkStringConstraints(key: string, value: string, v: ValidationRules): string[] {
-  const errors: string[] = [];
-  if (v.min !== undefined && value.length < v.min) {
-    errors.push(`Setting "${key}" must be at least ${v.min} characters long.`);
-  }
-  if (v.max !== undefined && value.length > v.max) {
-    errors.push(`Setting "${key}" must be at most ${v.max} characters long.`);
-  }
-  if (v.pattern) {
-    try {
-      if (!new RegExp(v.pattern).test(value)) {
-        errors.push(`Setting "${key}" does not match the required pattern.`);
-      }
-    } catch {
-      // Silently ignore invalid patterns
-    }
-  }
-  if (v.enum && !v.enum.includes(value)) {
-    errors.push(`Setting "${key}" must be one of: ${v.enum.map(String).join(', ')}.`);
-  }
-  return errors;
-}
-
-function checkNumberConstraints(key: string, value: number, v: ValidationRules): string[] {
-  const errors: string[] = [];
-  if (v.min !== undefined && value < v.min) {
-    errors.push(`Setting "${key}" must be at least ${v.min}.`);
-  }
-  if (v.max !== undefined && value > v.max) {
-    errors.push(`Setting "${key}" must be at most ${v.max}.`);
-  }
-  if (v.enum && !v.enum.includes(value)) {
-    errors.push(`Setting "${key}" must be one of: ${v.enum.map(String).join(', ')}.`);
-  }
-  return errors;
-}
-
-function checkConstraints(
-  key: string,
-  value: unknown,
-  prop: SkillSettingSchema,
-): string[] {
-  const errors: string[] = [];
   const v = prop.validation;
-
-  if (typeof value === 'string' && v) {
-    errors.push(...checkStringConstraints(key, value, v));
+  if (v) {
+    if (primary === 'string') {
+      if (v.min !== undefined) schema.minLength = v.min;
+      if (v.max !== undefined) schema.maxLength = v.max;
+      if (v.pattern !== undefined) schema.pattern = v.pattern;
+    } else if (primary === 'number') {
+      if (v.min !== undefined) schema.minimum = v.min;
+      if (v.max !== undefined) schema.maximum = v.max;
+    }
+    if (v.enum && v.enum.length > 0) {
+      schema.enum = [...v.enum];
+    }
   }
 
-  if (typeof value === 'number' && v) {
-    errors.push(...checkNumberConstraints(key, value, v));
+  // URL fields get format validation unless the author overrode the pattern.
+  if (declared.includes(SkillSettingType.URL) && schema.pattern === undefined) {
+    schema.format = 'uri';
   }
 
-  const types = Array.isArray(prop.type) ? prop.type : [prop.type];
-  if (types.includes(SkillSettingType.Select) && prop.options) {
+  // Closed option lists become enums on the value (Select) or the items
+  // (Multiselect), taking precedence over any author-supplied validation.enum.
+  if (prop.options && prop.options.length > 0) {
     const allowed = prop.options.map((o) => o.value);
-    if (typeof value === 'string' && !allowed.includes(value)) {
-      errors.push(
-        `Setting "${key}" must be one of: ${allowed.join(', ')}.`,
-      );
+    if (declared.includes(SkillSettingType.Multiselect)) {
+      schema.items = { type: 'string', enum: allowed };
+    } else {
+      schema.enum = allowed;
     }
+  } else if (declared.includes(SkillSettingType.Multiselect)) {
+    schema.items = { type: 'string' };
   }
 
-  if (types.includes(SkillSettingType.Multiselect) && prop.options && Array.isArray(value)) {
-    const allowed = new Set(prop.options.map((o) => o.value));
-    for (const item of value as string[]) {
-      if (!allowed.has(item)) {
-        errors.push(
-          `Setting "${key}" contains invalid option "${item}". Allowed: ${[...allowed].join(', ')}.`,
-        );
-      }
-    }
-  }
+  return schema;
+}
 
-  return errors;
+function unique<T>(arr: T[]): T[] {
+  return [...new Set(arr)];
 }
 
 // ── Secret Masking ─────────────────────────────────────────────────────

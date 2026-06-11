@@ -148,6 +148,39 @@ export function validateManifest(manifest: SkillManifest): ValidationResult {
     }
   }
 
+  // ── Execution policy (optional) ───────────────────────────────────────
+
+  if (manifest.execution !== undefined) {
+    const exec = manifest.execution;
+    if (typeof exec !== 'object' || exec === null || Array.isArray(exec)) {
+      errors.push('manifest.execution must be an object');
+    } else {
+      if (exec.hardened !== undefined && typeof exec.hardened !== 'boolean') {
+        errors.push('manifest.execution.hardened must be a boolean');
+      }
+      if (exec.sandbox !== undefined) {
+        const sb = exec.sandbox;
+        if (typeof sb !== 'object' || sb === null || Array.isArray(sb)) {
+          errors.push('manifest.execution.sandbox must be an object');
+        } else {
+          if (sb.readonlySkillDir !== undefined && typeof sb.readonlySkillDir !== 'boolean') {
+            errors.push('manifest.execution.sandbox.readonlySkillDir must be a boolean');
+          }
+          if (sb.isolateNetwork !== undefined && typeof sb.isolateNetwork !== 'boolean') {
+            errors.push('manifest.execution.sandbox.isolateNetwork must be a boolean');
+          }
+          if (sb.hidePaths !== undefined) {
+            if (!Array.isArray(sb.hidePaths)) {
+              errors.push('manifest.execution.sandbox.hidePaths must be an array of absolute paths');
+            } else if (!sb.hidePaths.every((p) => typeof p === 'string' && p.startsWith('/'))) {
+              errors.push('manifest.execution.sandbox.hidePaths entries must be absolute paths (starting with "/")');
+            }
+          }
+        }
+      }
+    }
+  }
+
   // ── Settings block (optional) ─────────────────────────────────────────
 
   if (manifest.settings !== undefined) {

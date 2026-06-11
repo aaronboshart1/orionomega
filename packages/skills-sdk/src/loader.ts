@@ -32,6 +32,7 @@ import type {
   ValidationResult,
   SkillConfig,
   SkillContext,
+  SandboxPolicy,
 } from './types.js';
 import { validateManifest } from './validator.js';
 import { readSkillConfig } from './skill-config.js';
@@ -42,6 +43,20 @@ import { BaseSkill } from './interfaces.js';
 const execFileAsync = promisify(execFile);
 
 const DEFAULT_TIMEOUT = 30_000;
+
+/**
+ * Resolve the effective hardened-execution policy for a skill from its manifest
+ * and (optional) per-install config. The config's `hardened` flag, when set,
+ * overrides the manifest's `execution.hardened`.
+ */
+export function resolveExecutionPolicy(
+  manifest: SkillManifest,
+  config?: SkillConfig,
+): { hardened: boolean; sandbox?: SandboxPolicy } {
+  const manifestHardened = manifest.execution?.hardened ?? false;
+  const hardened = config?.hardened ?? manifestHardened;
+  return { hardened, sandbox: manifest.execution?.sandbox };
+}
 
 // ── Dual-mode helpers ──────────────────────────────────────────────────
 
@@ -152,6 +167,7 @@ export async function instantiateSkill(
 
   const executor = new SkillExecutor();
   const toolDefs = manifest.tools ?? [];
+  const policy = resolveExecutionPolicy(manifest, config);
 
   class ManifestSkill extends BaseSkill {
     override async initialize(ctx: SkillContext): Promise<void> {
@@ -182,6 +198,8 @@ export async function instantiateSkill(
       return executor.executeHandler(tool.handler, params, {
         cwd: resolvedDir,
         timeout: tool.timeout ?? DEFAULT_TIMEOUT,
+        hardened: policy.hardened,
+        sandbox: policy.sandbox,
       });
     }
   }
@@ -284,6 +302,9 @@ export class SkillLoader {
       // Optional
     }
 
+    const config = readSkillConfig(this.skillsDir, skillName);
+    const policy = resolveExecutionPolicy(manifest, config);
+
     const tools: RegisteredTool[] = (manifest.tools ?? []).map((toolDef) => ({
       name: toolDef.name,
       description: toolDef.description,
@@ -292,6 +313,8 @@ export class SkillLoader {
         this.executor.executeHandler(toolDef.handler, params, {
           cwd: skillDir,
           timeout: toolDef.timeout ?? DEFAULT_TIMEOUT,
+          hardened: policy.hardened,
+          sandbox: policy.sandbox,
         }),
     }));
 

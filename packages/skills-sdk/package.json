@@ -40,6 +40,14 @@
       "types": "./dist/executor.d.ts",
       "import": "./dist/executor.js"
     },
+    "./sandbox": {
+      "types": "./dist/sandbox.d.ts",
+      "import": "./dist/sandbox.js"
+    },
+    "./json-schema": {
+      "types": "./dist/json-schema.d.ts",
+      "import": "./dist/json-schema.js"
+    },
     "./scaffold": {
       "types": "./dist/scaffold.d.ts",
       "import": "./dist/scaffold.js"

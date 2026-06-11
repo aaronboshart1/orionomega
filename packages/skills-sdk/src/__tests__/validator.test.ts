@@ -170,3 +170,42 @@ describe('validateManifest — settings block', () => {
     expect(result.errors.join('\n')).toMatch(/settings\.properties is required/);
   });
 });
+
+describe('validateManifest — execution policy', () => {
+  it('accepts a valid hardened execution block', () => {
+    const result = validateManifest(
+      baseManifest({
+        execution: {
+          hardened: true,
+          sandbox: { readonlySkillDir: true, isolateNetwork: true, hidePaths: ['/home/u/.ssh'] },
+        },
+      }),
+    );
+    expect(result.valid).toBe(true);
+    expect(result.errors).toEqual([]);
+  });
+
+  it('rejects a non-boolean hardened flag', () => {
+    const result = validateManifest(
+      baseManifest({ execution: { hardened: 'yes' } as never }),
+    );
+    expect(result.valid).toBe(false);
+    expect(result.errors.join('\n')).toMatch(/execution\.hardened must be a boolean/);
+  });
+
+  it('rejects non-absolute hidePaths entries', () => {
+    const result = validateManifest(
+      baseManifest({ execution: { sandbox: { hidePaths: ['relative/path'] } } as never }),
+    );
+    expect(result.valid).toBe(false);
+    expect(result.errors.join('\n')).toMatch(/hidePaths entries must be absolute paths/);
+  });
+
+  it('rejects a non-object sandbox', () => {
+    const result = validateManifest(
+      baseManifest({ execution: { sandbox: [] } as never }),
+    );
+    expect(result.valid).toBe(false);
+    expect(result.errors.join('\n')).toMatch(/execution\.sandbox must be an object/);
+  });
+});

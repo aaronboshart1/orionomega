@@ -47,11 +47,28 @@ export {
   discoverSkills,
   loadSkillManifest,
   instantiateSkill,
+  resolveExecutionPolicy,
 } from './loader.js';
 
 // ── Executor ───────────────────────────────────────────────────────────
 
 export { SkillExecutor } from './executor.js';
+export type { ExecuteOptions } from './executor.js';
+
+// ── Sandbox (hardened execution) ───────────────────────────────────────
+
+export {
+  detectSandboxBackend,
+  buildSandboxedSpawn,
+  SandboxUnavailableError,
+  resetSandboxBackendCache,
+} from './sandbox.js';
+export type { SandboxBackend, SandboxedSpawn } from './sandbox.js';
+
+// ── JSON Schema ────────────────────────────────────────────────────────
+
+export { validateAgainstSchema } from './json-schema.js';
+export type { JsonSchema, JsonSchemaType, SchemaError } from './json-schema.js';
 
 // ── Validator ──────────────────────────────────────────────────────────
 
@@ -63,6 +80,7 @@ export {
   getSettingsSchema,
   resolveSettings,
   validateSettings,
+  buildSettingsJsonSchema,
   maskSecrets,
   splitSecrets,
 } from './settings.js';
@@ -94,6 +112,9 @@ export type {
   // Settings schema
   SkillSettingsBlock,
   SkillSettingSchema,
+  // Hardened execution
+  SkillExecutionPolicy,
+  SandboxPolicy,
   // Health & context
   HealthStatus,
   HealthErrorCode,
