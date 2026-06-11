@@ -14,6 +14,39 @@ This file holds the in-depth architecture-decision and task-history notes that u
 
 **Out of scope (separate tasks):** the model capability registry (R2) and any Fable 5 routing/fallback behaviour.
 
+## Native multi-agent sessions as a sub-DAG substrate — pilot (Task #240 / R3)
+
+A scoped pilot that lets ONE eligible sub-DAG layer run via a single Anthropic **native multi-agent session** (a coordinator query with an `agents` roster) instead of OrionOmega's in-house per-node dispatch. It is **OFF by default** and changes nothing on the common path.
+
+**Config flag.** `agentSdk.nativeSessions?: { enabled?: boolean; maxAgentsPerLayer?: number }`. `getDefaultConfig()` seeds `{ enabled: false, maxAgentsPerLayer: 8 }`. `resolveNativeSessionConfig` normalises a missing block to disabled and clamps the cap to `>= 1` so a misconfigured `0` can't silently disable every layer.
+
+```yaml
+agentSdk:
+  nativeSessions:
+    enabled: false        # pilot — leave off; set true to route eligible layers natively
+    maxAgentsPerLayer: 8   # layers larger than this fall back to per-node dispatch
+```
+
+**Where it lives.** All substrate logic is in `packages/core/src/orchestration/native-session-substrate.ts` (pure helpers + one SDK-touching dispatch). The executor wires it in behind the flag: `executor.ts` `execute()` evaluates `evaluateLayerEligibility` before the default `Promise.allSettled`, and `executeLayerViaNativeSession()` runs the native path and returns results in the **same** `PromiseSettledResult<WorkerResult>[]` shape, so the downstream processing loop, checkpointing and artifact model are untouched.
+
+**Eligibility (conservative).** A layer is eligible iff: the flag is on; it has `>= 2` runnable nodes (a single node gains nothing from a coordinator); every node is a `CODING_AGENT` (the only node type the substrate models); and the count is `<= maxAgentsPerLayer`. Anything it can't model cleanly (mixed types, oversized, single-node) falls back to the in-house path. The pilot is scoped to the **first** eligible layer per workflow via the `nativeSessionUsed` guard — subsequent eligible layers use the normal path.
+
+**Context isolation.** `buildAgentRoster` emits one `AgentDefinition` per node; `buildCoordinatorPrompt` instructs the coordinator to fan each independent task out to its named subagent via the Task tool (never doing the work in the main thread), so each node runs in its **own** isolated subagent context over a shared sandbox cwd. This is the native equivalent of our per-node context separation, but provided by the platform.
+
+**Persistent follow-ups.** The dispatch fires `query()` with `persistSession: true` and captures the `session_id`. `submitNativeSessionFollowUp` resumes that exact thread (`resume: sessionId`) — demonstrating the platform retains what each subagent did without OrionOmega re-supplying context. The session id is surfaced in `ExecutionResult.nativeSessions` and `run-summary.md`.
+
+**Result mapping + fail-closed.** The coordinator must emit one fenced JSON `results[]` report (`{ nodeId, status, summary, outputPaths }`). `parseCoordinatorReport` extracts the last `results`-bearing JSON block and maps it onto the expected node ids; **any** node missing from the report — or an unparseable report — is marked `error` so the executor's normal error path handles it, never a silent success. Aggregate token usage / cost from the single shared session is split across the nodes (cost attributed once, tokens floor-split with remainder on the first node) so per-model cost aggregation stays correct without double-counting.
+
+**Ownership decision (retries / budgets / checkpointing across the hybrid).** The executor — **not** the platform — remains the system of record:
+- **Retries.** OrionOmega owns retry/fallback. The native path runs the layer **once**; a node the coordinator marks failed comes back as a rejected settled result and re-enters the executor's existing retry/replan/model-fallback machinery. Per-node *retry within* a native session is intentionally **out of scope** for the pilot — mixing the SDK's internal turn loop with our retry policy would create two competing controllers. Documented tradeoff: a transient subagent failure costs a full executor-level retry rather than a cheap in-session one.
+- **Budgets.** `agentSdk.maxBudgetUsd` is passed through to the session, but the executor's own cost aggregation and burn-rate accounting stay authoritative (cost is read back from the session result and folded into `modelUsage`/`totalCostUsd` exactly like the per-node path).
+- **Checkpointing.** Unchanged and executor-owned. Because the native path returns the standard settled-result shape, the post-layer checkpoint write, artifact scan and `run-summary.md` rendering all run as before — there is no SDK-side checkpoint we depend on.
+- **Failure of the whole session.** A hard throw from `executeNativeSessionLayer` (or a missing API key) fails every node in the layer via rejected results; the executor records and handles it. The substrate never throws past the executor boundary on a per-node basis.
+
+**Build-vs-adopt recommendation.** *Adopt the native session as a substrate, keep the orchestrator as the controller.* The pilot shows the platform's coordinator + subagent roster gives us context isolation and persistent threads for free, which is genuinely better than re-implementing them. But retries, budgets, checkpointing, artifacts and cross-layer DAG semantics are OrionOmega's differentiators and must stay in-house — the native session is the right tool for *intra-layer fan-out of independent coding tasks*, not for whole-workflow orchestration. Recommended next steps before widening past the pilot: (1) richer per-node result extraction (today we lean on the coordinator's JSON summary rather than structured per-subagent telemetry); (2) a decision on in-session retry once the SDK exposes per-subagent restart; (3) lifting the single-layer scope once budget/cost attribution from multi-agent sessions is validated against real runs. Until then the flag stays off by default.
+
+**Tests.** `native-session-substrate.test.ts` covers eligibility gating (flag off, single node, mixed types, oversize, happy path), roster build (one agent per node, name sanitisation, tools/model pass-through), coordinator-report parsing (happy, fenced-block extraction, fail-closed on missing node / unparseable), result mapping + token splitting via an injected fake `queryFn`, and the persistent follow-up resume path. The flag-off invariant (eligibility returns false → executor untouched) is asserted directly.
+
 ## Native context editing on agent queries (R4 / 4.3-P1)
 
 For unattended long runs, context exhaustion is a real failure mode. Anthropic's **native context editing** auto-trims stale tool calls/results as the context window fills, preserving conversation flow so a run continues instead of degrading or hard-failing. The Agent SDK surfaces this as conversation **auto-compaction**: the SDK `Settings` interface exposes `autoCompactEnabled` (master switch) and `autoCompactWindow` (post-compaction token window the SDK keeps). Both are passed through the `query()` `settings` option.

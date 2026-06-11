@@ -225,6 +225,20 @@ agentSdk:
   # additionalDirectories:
   #   - ~/projects/my-repo
 
+  # Task #240 (roadmap R3) — EXPERIMENTAL pilot. When enabled, ONE eligible
+  # sub-DAG layer (all CODING_AGENT nodes, >=2 of them, under the cap) is run
+  # through Anthropic's native multi-agent sessions: a single `query()` with an
+  # `agents` roster + a coordinator that delegates to each subagent. The
+  # platform owns context isolation, session threading and persistent
+  # follow-ups; the executor keeps owning retries, budgets and checkpointing.
+  # OFF by default — when disabled the executor behaves exactly as before.
+  # See docs/architecture-notes.md (Native Multi-Agent Sessions).
+  nativeSessions:
+    enabled: false
+    # Max CODING_AGENT nodes a single native session fans out to in one layer.
+    # Layers above this fall back to the in-house per-node path. Default: 8.
+    maxAgentsPerLayer: 8
+
 # ─── Commands ─────────────────────────────────────────────────────────────────
 commands:
   # Directory containing custom slash command files (*.md).

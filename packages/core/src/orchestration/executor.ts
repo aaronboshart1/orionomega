@@ -39,6 +39,14 @@ import { RetryPolicy } from './retry-policy.js';
 import { ArtifactCollector } from './artifact-collector.js';
 import { CommitSafetyGate } from './commit-safety-gate.js';
 import { LayerScheduler } from './layer-scheduler.js';
+import {
+  resolveNativeSessionConfig,
+  evaluateLayerEligibility,
+  executeNativeSessionLayer,
+  type NativeSessionConfig,
+  type NativeSessionQueryFn,
+  type NativeSessionNodeSpec,
+} from './native-session-substrate.js';
 
 const log = createLogger('executor');
 
@@ -130,6 +138,19 @@ export interface ExecutorConfig {
    * executor uses a zero-setup {@link InProcessTaskQueue}.
    */
   taskQueue?: TaskQueue;
+  /**
+   * Task #240 (R3): native multi-agent-session pilot config. When omitted, the
+   * executor resolves it from `readConfig().agentSdk.nativeSessions` (OFF by
+   * default). Tests may inject a resolved config here to force-enable the
+   * substrate without touching global config.
+   */
+  nativeSessions?: NativeSessionConfig;
+  /**
+   * Task #240: injectable SDK query function for the native-session substrate.
+   * Defaults to the real `query()`. Tests pass a fake stream here so the pilot
+   * path is exercised without a live API.
+   */
+  nativeSessionQueryFn?: NativeSessionQueryFn;
 }
 
 /**
@@ -206,6 +227,21 @@ export class GraphExecutor {
    * and `run-summary.md`.
    */
   private readonly modelFallbacks: import('./types.js').ModelFallbackRecord[] = [];
+
+  /**
+   * Task #240 (R3): telemetry for the one layer (if any) executed via the
+   * native multi-agent-session substrate. Null until/unless an eligible layer
+   * actually ran natively. Surfaced into `ExecutionResult.nativeSessions` and
+   * `run-summary.md`.
+   */
+  private nativeSessionStats: import('./types.js').NativeSessionPilotStats | null = null;
+
+  /**
+   * Task #240: ensures the pilot runs natively for at most ONE eligible layer
+   * per workflow (the scoped R3 pilot). Subsequent eligible layers fall back to
+   * the in-house per-node path.
+   */
+  private nativeSessionUsed = false;
 
   // Control flags
   private pauseRequested = false;
@@ -432,27 +468,63 @@ export class GraphExecutor {
           { layer: layerIdx, nodes: runnableNodes },
         );
 
-        // Execute all nodes in this layer concurrently, dispatched through the
-        // persistent task queue (Task #238). The queue invokes `onSettled` as
-        // each node finishes; we process the result and checkpoint immediately
-        // so a crash mid-layer never loses a completed node's progress — on
-        // resume those nodes are already `done` in the checkpoint and skipped.
-        const jobs: NodeJob[] = runnableNodes.map((nodeId) => ({
-          workflowId: this.graph.id,
-          nodeId,
-          layerIndex: layerIdx,
-        }));
+        // Task #240 (R3 pilot): when the flag is on and this layer qualifies,
+        // run it through a SINGLE Anthropic native multi-agent session instead
+        // of the in-house per-node dispatch. Scoped to the FIRST eligible layer
+        // per workflow. The branch yields results in the SAME
+        // PromiseSettledResult<WorkerResult>[] shape the task queue produces, so
+        // each outcome is folded back in via `processNodeOutcome` + a node-level
+        // checkpoint exactly like the default queue path — keeping the
+        // checkpointing/state model (Task #238) consistent across both paths.
+        const nativeEligibility = this.nativeSessionUsed
+          ? { eligible: false, reason: 'native session already used this run' }
+          : evaluateLayerEligibility(
+              runnableNodes.map((id) => {
+                const n = this.graph.nodes.get(id)!;
+                return { id, type: n.type };
+              }),
+              this.resolveNativeSessionConfig(),
+            );
 
-        await this.queue.dispatchLayer(
-          jobs,
-          (job) => this.executeNode(job.nodeId),
-          (job, outcome) => {
-            this.processNodeOutcome(job.nodeId, outcome);
-            // Node-level checkpoint: persist the moment a node settles so the
-            // checkpoint store reflects per-node truth, not just per-layer.
+        if (nativeEligibility.eligible) {
+          log.info(
+            `Layer ${layerIdx + 1}: ${nativeEligibility.reason} — using native multi-agent session`,
+          );
+          this.emitOrchestrator(
+            'status',
+            `Layer ${layerIdx + 1}: routing ${runnableNodes.length} node(s) through a native multi-agent session (Task #240 pilot)`,
+            { layer: layerIdx, nodes: runnableNodes, nativeSession: true },
+          );
+          const results = await this.executeLayerViaNativeSession(runnableNodes, layerIdx);
+          // Fold each node's settled outcome into the run + checkpoint per node,
+          // mirroring the queue's `onSettled` callback below.
+          for (let i = 0; i < runnableNodes.length; i++) {
+            this.processNodeOutcome(runnableNodes[i], results[i]);
             this.saveCheckpoint();
-          },
-        );
+          }
+        } else {
+          // Execute all nodes in this layer concurrently, dispatched through the
+          // persistent task queue (Task #238). The queue invokes `onSettled` as
+          // each node finishes; we process the result and checkpoint immediately
+          // so a crash mid-layer never loses a completed node's progress — on
+          // resume those nodes are already `done` in the checkpoint and skipped.
+          const jobs: NodeJob[] = runnableNodes.map((nodeId) => ({
+            workflowId: this.graph.id,
+            nodeId,
+            layerIndex: layerIdx,
+          }));
+
+          await this.queue.dispatchLayer(
+            jobs,
+            (job) => this.executeNode(job.nodeId),
+            (job, outcome) => {
+              this.processNodeOutcome(job.nodeId, outcome);
+              // Node-level checkpoint: persist the moment a node settles so the
+              // checkpoint store reflects per-node truth, not just per-layer.
+              this.saveCheckpoint();
+            },
+          );
+        }
 
         // Mark skipped nodes
         for (const nodeId of layer) {
@@ -1048,33 +1120,8 @@ export class GraphExecutor {
         // Route to Claude Agent SDK — full coding toolset
         const { executeCodingAgent } = await import('./agent-sdk-bridge.js');
 
-        // Build upstream context for the coding agent
-        const codingContext: string[] = [];
-        if (node.dependsOn.length > 0) {
-          for (const depId of node.dependsOn) {
-            const depOutput = this.state.getNodeOutput(depId);
-            const depNode = this.graph.nodes.get(depId);
-            if (depOutput && typeof depOutput === 'string') {
-              codingContext.push(`### ${depNode?.label ?? depId}\n${depOutput}`);
-            }
-          }
-        }
-
-        // Task #192: prepend staged-attachments block so CODING_AGENT
-        // workers know where on disk the user's uploads live.
-        const stagedBlock = this.config.stagedAttachments?.length
-          ? `## Attached files (staged on disk — read via absolute paths)\n` +
-            this.config.stagedAttachments
-              .map((s) => `- ${s.absPath}  (mime: ${s.mimeType}, size: ${s.size} bytes, name: ${s.name})`)
-              .join('\n') +
-            '\n\n'
-          : '';
-
-        // Inject upstream context into the task description
-        const baseTask = node.codingAgent?.task ?? node.agent?.task ?? '';
-        const codingTask = codingContext.length > 0
-          ? `${stagedBlock}${baseTask}\n\n## Context from previous steps:\n${codingContext.join('\n\n')}`
-          : `${stagedBlock}${baseTask}`;
+        // Build the coding task (staged-attachments + upstream context).
+        const codingTask = this.buildCodingAgentTask(node);
 
         // Create output directory for the coding agent
         const codingOutputDir = `${this.getRunDir()}/${node.id}`;
@@ -2091,6 +2138,225 @@ export class GraphExecutor {
     });
   }
 
+  /**
+   * Builds the fully-resolved task prompt for a CODING_AGENT node: the
+   * staged-attachments block (Task #192) + the node's base task + a
+   * "Context from previous steps" section assembled from upstream node
+   * outputs. Shared by the in-house per-node dispatch and the Task #240
+   * native-session substrate so both feed identical context to the agent.
+   */
+  private buildCodingAgentTask(node: WorkflowNode): string {
+    const codingContext: string[] = [];
+    if (node.dependsOn.length > 0) {
+      for (const depId of node.dependsOn) {
+        const depOutput = this.state.getNodeOutput(depId);
+        const depNode = this.graph.nodes.get(depId);
+        if (depOutput && typeof depOutput === 'string') {
+          codingContext.push(`### ${depNode?.label ?? depId}\n${depOutput}`);
+        }
+      }
+    }
+
+    const stagedBlock = this.config.stagedAttachments?.length
+      ? `## Attached files (staged on disk — read via absolute paths)\n` +
+        this.config.stagedAttachments
+          .map((s) => `- ${s.absPath}  (mime: ${s.mimeType}, size: ${s.size} bytes, name: ${s.name})`)
+          .join('\n') +
+        '\n\n'
+      : '';
+
+    const baseTask = node.codingAgent?.task ?? node.agent?.task ?? '';
+    return codingContext.length > 0
+      ? `${stagedBlock}${baseTask}\n\n## Context from previous steps:\n${codingContext.join('\n\n')}`
+      : `${stagedBlock}${baseTask}`;
+  }
+
+  /**
+   * Task #240 (R3): resolve the native-session pilot config. An explicit
+   * override on ExecutorConfig (used by tests) wins; otherwise we read the
+   * live `agentSdk.nativeSessions` block (OFF by default). Failures fall back
+   * to disabled so a config read can never break execution.
+   */
+  private resolveNativeSessionConfig(): NativeSessionConfig {
+    if (this.config.nativeSessions) return this.config.nativeSessions;
+    try {
+      return resolveNativeSessionConfig(readConfig().agentSdk?.nativeSessions);
+    } catch {
+      return resolveNativeSessionConfig(undefined);
+    }
+  }
+
+  /**
+   * Task #240 (R3 pilot): execute one eligible layer as a SINGLE Anthropic
+   * native multi-agent session. Builds one subagent per node, fires one
+   * `query()` (persisted, so follow-ups can resume the thread), maps the
+   * coordinator's report back onto graph nodes, and returns results in the
+   * exact `PromiseSettledResult<WorkerResult>[]` shape the default path
+   * produces — so the caller's processing loop, checkpointing and artifact
+   * model are untouched.
+   *
+   * The executor retains ownership of retries/budgets/checkpointing: a node
+   * the coordinator marks failed is returned as a rejected settled result so
+   * the normal error-handling path records it. (Per-node *retry* within the
+   * native layer is intentionally out of scope for the pilot — see
+   * docs/architecture-notes.md.)
+   */
+  private async executeLayerViaNativeSession(
+    runnableNodes: string[],
+    layerIdx: number,
+  ): Promise<PromiseSettledResult<WorkerResult>[]> {
+    const config = readConfig();
+    const apiKey = config.models?.apiKey;
+    const model = config.models?.default ?? 'claude-sonnet-4-5';
+    const sdkConfig = config.agentSdk;
+
+    // Shared sandbox cwd for the whole session (the point of native sessions:
+    // isolated *contexts* over a shared filesystem).
+    const cwd = this.config.codingRepoDir ?? this.getRunDir();
+
+    // Build one spec per node, reusing the same task assembly as the per-node
+    // path so context is identical.
+    const specs: NativeSessionNodeSpec[] = runnableNodes.map((id) => {
+      const node = this.graph.nodes.get(id)!;
+      const spec: NativeSessionNodeSpec = {
+        nodeId: id,
+        label: node.label,
+        task: this.buildCodingAgentTask(node),
+      };
+      const tools = node.codingAgent?.allowedTools;
+      if (tools && tools.length > 0) spec.tools = tools;
+      const nodeModel = node.codingAgent?.model ?? node.agent?.model;
+      if (nodeModel) spec.model = nodeModel;
+      return spec;
+    });
+
+    const startMs = Date.now();
+
+    // No API key → every node fails (the per-node path would fail identically).
+    if (!apiKey) {
+      const err = new Error('Native session aborted: no API key configured');
+      return runnableNodes.map(() => ({ status: 'rejected', reason: err }));
+    }
+
+    // Pre-create per-node output dirs so artifact scanning has somewhere to look.
+    for (const id of runnableNodes) {
+      try { mkdirSync(`${this.getRunDir()}/${id}`, { recursive: true }); } catch { /* may exist */ }
+    }
+
+    let settings: import('@anthropic-ai/claude-agent-sdk').Settings | undefined;
+    try {
+      const { buildContextEditingSettings } = await import('./agent-sdk-bridge.js');
+      settings = buildContextEditingSettings(sdkConfig);
+    } catch { /* non-fatal — proceed without context-editing settings */ }
+
+    let layerResult;
+    try {
+      layerResult = await executeNativeSessionLayer({
+        specs,
+        cwd,
+        apiKey,
+        model,
+        effort: sdkConfig?.effort ?? 'high',
+        ...(sdkConfig?.maxBudgetUsd ? { maxBudgetUsd: sdkConfig.maxBudgetUsd } : {}),
+        runDir: this.getRunDir(),
+        ...(settings ? { settings } : {}),
+        ...(this.config.nativeSessionQueryFn ? { queryFn: this.config.nativeSessionQueryFn } : {}),
+        onProgress: (p) => {
+          this.emitOrchestrator(
+            p.type === 'error' ? 'error' : 'status',
+            `[native-session] ${p.message}`,
+            { layer: layerIdx, nativeSession: true },
+          );
+        },
+      });
+    } catch (err) {
+      // A hard failure of the whole session fails every node (recorded by the
+      // normal error path). The executor — not the platform — owns this.
+      const reason = err instanceof Error ? err : new Error(String(err));
+      log.error(`Native multi-agent session failed: ${reason.message}`);
+      return runnableNodes.map(() => ({ status: 'rejected', reason }));
+    }
+
+    // Mark the pilot as used so only the first eligible layer runs natively.
+    this.nativeSessionUsed = true;
+
+    // Record telemetry.
+    const nodeStats: { nodeId: string; label: string; success: boolean }[] = [];
+    let succeeded = 0;
+
+    const durationMs = Date.now() - startMs;
+    const settled: PromiseSettledResult<WorkerResult>[] = runnableNodes.map((id) => {
+      const node = this.graph.nodes.get(id)!;
+      const r = layerResult.perNode.get(id);
+      if (!r) {
+        nodeStats.push({ nodeId: id, label: node.label, success: false });
+        return {
+          status: 'rejected' as const,
+          reason: new Error(`Native session produced no result for node '${id}'`),
+        };
+      }
+
+      // Persist output + collect artifacts into the node's output dir, mirroring
+      // the per-node CODING_AGENT path.
+      const nodeOutputDir = `${this.getRunDir()}/${id}`;
+      const outputPaths = [...r.outputPaths];
+      if (typeof r.output === 'string' && r.output.trim()) {
+        const saved = this.artifacts.saveTextOutputIfEmpty(nodeOutputDir, r.output, 'output.md');
+        if (saved) outputPaths.push(saved);
+      }
+      const untracked = this.artifacts.scanForUntrackedFiles(nodeOutputDir, outputPaths);
+      outputPaths.push(...untracked);
+      const dedupedPaths = [...new Set(outputPaths)];
+
+      nodeStats.push({ nodeId: id, label: node.label, success: r.success });
+
+      if (!r.success) {
+        return {
+          status: 'rejected' as const,
+          reason: new TaggedRetryError(
+            `Native session node failed: ${r.error ?? 'unknown error'}`,
+            { retryable: false },
+          ),
+        };
+      }
+      succeeded++;
+      const workerResult: WorkerResult = {
+        nodeId: id,
+        output: r.output,
+        durationMs,
+        toolCallCount: r.toolCalls,
+        findings: [],
+        outputPaths: dedupedPaths,
+        model: r.model,
+        costUsd: r.costUsd,
+        inputTokens: r.inputTokens,
+        outputTokens: r.outputTokens,
+        cacheReadTokens: r.cacheReadTokens,
+        cacheCreationTokens: r.cacheCreationTokens,
+      };
+      return { status: 'fulfilled' as const, value: workerResult };
+    });
+
+    this.nativeSessionStats = {
+      layerIndex: layerIdx,
+      sessionId: layerResult.sessionId,
+      reportParsed: layerResult.reportParsed,
+      nodeCount: runnableNodes.length,
+      succeeded,
+      failed: runnableNodes.length - succeeded,
+      totalCostUsd: layerResult.totalCostUsd,
+      totalToolCalls: layerResult.totalToolCalls,
+      nodes: nodeStats,
+    };
+
+    log.info(
+      `Native multi-agent session complete: ${succeeded}/${runnableNodes.length} node(s) succeeded ` +
+        `(session ${layerResult.sessionId ?? 'n/a'}, report ${layerResult.reportParsed ? 'parsed' : 'unparsed'})`,
+    );
+
+    return settled;
+  }
+
   /** Emits an event on the 'orchestrator' channel, tagged with this workflow's ID. */
   private emitOrchestrator(
     type: WorkerEvent['type'],
@@ -2340,6 +2606,34 @@ export class GraphExecutor {
             `| ${f.nodeLabel} | \`${f.requestedModel}\` | \`${f.fallbackModel}\` | ` +
             `${f.requestedTier}→${f.fallbackTier} | ${f.succeeded ? 'ok' : 'failed'} | ${reason} |`,
           );
+        }
+        mdParts.push('');
+      }
+
+      // Task #240 (R3 pilot): native multi-agent-session telemetry. Rendered
+      // only when an eligible layer actually ran through the native substrate
+      // (flag-off / no-eligible-layer runs are unaffected).
+      if (result.nativeSessions) {
+        const ns = result.nativeSessions;
+        mdParts.push('## Native Multi-Agent Session (Task #240 pilot)');
+        mdParts.push('');
+        mdParts.push(
+          '_One eligible sub-DAG layer ran via a single Anthropic native multi-agent ' +
+          'session (coordinator + per-node subagents) instead of in-house per-node dispatch._',
+        );
+        mdParts.push('');
+        mdParts.push(`- **Layer:** ${ns.layerIndex + 1}`);
+        mdParts.push(`- **Session id:** ${ns.sessionId ? `\`${ns.sessionId}\`` : 'n/a'}`);
+        mdParts.push(`- **Coordinator report parsed:** ${ns.reportParsed ? 'yes' : 'no (failed closed)'}`);
+        mdParts.push(`- **Nodes:** ${ns.succeeded}/${ns.nodeCount} succeeded`);
+        mdParts.push(`- **Total cost:** $${ns.totalCostUsd.toFixed(4)}`);
+        mdParts.push(`- **Total tool calls:** ${ns.totalToolCalls}`);
+        mdParts.push('');
+        mdParts.push('| Node | Label | Result |');
+        mdParts.push('|------|-------|--------|');
+        for (const n of ns.nodes) {
+          const label = n.label.replace(/\|/g, '\\|').slice(0, 80);
+          mdParts.push(`| \`${n.nodeId}\` | ${label} | ${n.success ? 'ok' : 'failed'} |`);
         }
         mdParts.push('');
       }
@@ -2615,6 +2909,7 @@ export class GraphExecutor {
       macroPlanning,
       ...(this.commitSafety ? { commitSafety: this.commitSafety } : {}),
       ...(this.modelFallbacks.length > 0 ? { modelFallbacks: this.modelFallbacks } : {}),
+      ...(this.nativeSessionStats ? { nativeSessions: this.nativeSessionStats } : {}),
     };
   }
 

@@ -392,6 +392,40 @@ export interface ExecutionResult {
    * summaries stay visually identical.
    */
   modelFallbacks?: ModelFallbackRecord[];
+  /**
+   * Task #240 (R3): native multi-agent-session pilot telemetry. Populated only
+   * when the run actually routed an eligible layer through the native substrate
+   * (the `agentSdk.nativeSessions` flag was on AND a layer qualified); absent
+   * otherwise so common-path summaries stay visually identical.
+   */
+  nativeSessions?: NativeSessionPilotStats;
+}
+
+/**
+ * Task #240 — outcome of the one layer executed via Anthropic native
+ * multi-agent sessions. Surfaced into `run-summary.md` so operators can see
+ * the session id (for follow-ups), whether the coordinator report parsed, and
+ * per-node success.
+ */
+export interface NativeSessionPilotStats {
+  /** Zero-based index of the layer that ran natively. */
+  layerIndex: number;
+  /** Persisted session id (resumable for follow-ups), or null. */
+  sessionId: string | null;
+  /** Whether the coordinator emitted a parseable result report. */
+  reportParsed: boolean;
+  /** Number of nodes dispatched in the native session. */
+  nodeCount: number;
+  /** Nodes the coordinator reported as succeeded. */
+  succeeded: number;
+  /** Nodes the coordinator reported as failed (fail-closed included). */
+  failed: number;
+  /** Aggregate cost of the native session. */
+  totalCostUsd: number;
+  /** Total tool calls across the session. */
+  totalToolCalls: number;
+  /** Per-node breakdown. */
+  nodes: { nodeId: string; label: string; success: boolean }[];
 }
 
 /**

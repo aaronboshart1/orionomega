@@ -140,6 +140,11 @@ export function getDefaultConfig(): OrionOmegaConfig {
       // unattended AGENT/CODING_AGENT runs auto-trim stale tool results
       // instead of exhausting the context window. Set enabled:false to disable.
       contextEditing: { enabled: true },
+      // Task #240 (R3): native multi-agent-session substrate pilot. OFF by
+      // default — enabling it routes one eligible sub-DAG layer through a
+      // single Anthropic native multi-agent session instead of in-house
+      // per-node dispatch. See docs/architecture-notes.md.
+      nativeSessions: { enabled: false, maxAgentsPerLayer: 8 },
     },
     codingMode: {
       enabled: true,

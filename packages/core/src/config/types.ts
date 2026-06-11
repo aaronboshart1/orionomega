@@ -247,6 +247,25 @@ export interface OrionOmegaConfig {
        */
       autoCompactWindow?: number;
     };
+    /**
+     * Task #240 (roadmap R3) — pilot: run a single eligible sub-DAG layer
+     * through Anthropic's *native* multi-agent sessions (one `query()` with an
+     * `agents` roster + a coordinator) instead of OrionOmega's in-house
+     * per-node dispatch. The platform owns context isolation, session
+     * threading and persistent follow-ups; the executor keeps owning retries,
+     * budgets and checkpointing. This is an experimental substrate gated OFF
+     * by default — when disabled the executor behaves exactly as before.
+     */
+    nativeSessions?: {
+      /** Master switch for the native-multi-agent-session pilot. Default: false. */
+      enabled?: boolean;
+      /**
+       * Safety cap on how many CODING_AGENT nodes a single native session
+       * will fan out to in one layer. Layers above the cap fall back to the
+       * in-house per-node path. Default: 8.
+       */
+      maxAgentsPerLayer?: number;
+    };
   };
 
   /** Coding Mode configuration — transforms OrionOmega into an autonomous coding system. */
