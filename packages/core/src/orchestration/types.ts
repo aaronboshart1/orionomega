@@ -380,6 +380,40 @@ export interface ExecutionResult {
    * after the run completes (review feedback, round 4).
    */
   commitSafety?: CommitSafetyReport;
+  /**
+   * Task #230: graceful model-degradation events. Populated only when a
+   * node's requested model was unavailable/forbidden/not entitled and the
+   * executor fell back to another tier; absent otherwise so common-path
+   * summaries stay visually identical.
+   */
+  modelFallbacks?: ModelFallbackRecord[];
+}
+
+/**
+ * Task #230 — one graceful model-degradation event. A node's requested model
+ * was unavailable / forbidden / not entitled, so the executor degraded to the
+ * next-best available tier from the model registry and re-dispatched. Surfaced
+ * into `run-summary.md` + logs so operators see requested→fallback and why.
+ */
+export interface ModelFallbackRecord {
+  /** Node whose model was degraded. */
+  nodeId: string;
+  /** Human-readable node label (for the summary table). */
+  nodeLabel: string;
+  /** The model the planner originally requested (the unavailable one). */
+  requestedModel: string;
+  /** Tier of the requested model. */
+  requestedTier: string;
+  /** The model the executor degraded to. */
+  fallbackModel: string;
+  /** Tier of the fallback model. */
+  fallbackTier: string;
+  /** Why the requested model was unavailable (underlying error message). */
+  reason: string;
+  /** Whether the fallback dispatch ultimately succeeded. */
+  succeeded: boolean;
+  /** ISO timestamp of the degradation decision. */
+  timestamp: string;
 }
 
 /**

@@ -21,6 +21,8 @@ import { topologicalSort, validateGraph } from './graph.js';
 import { WorkflowState } from './state.js';
 import { WorkerProcess, type WorkerResult } from './worker.js';
 import { TaggedRetryError } from './retry-error.js';
+import { ModelUnavailableError, isModelUnavailableMessage } from './model-fallback.js';
+import { selectFallbackModel, getModelCapability } from '../models/model-registry.js';
 import type { OrionOmegaAbortReason } from './abort-reason.js';
 import { CheckpointManager } from './checkpoint.js';
 import { createLogger } from '../logging/logger.js';
@@ -76,11 +78,16 @@ const TRANSIENT_ERROR_PATTERNS = [
 ];
 
 function classifyError(err: Error): ErrorClassification {
+  // Task #230: a model-unavailable/forbidden/not-entitled failure is PERMANENT
+  // — the same call will keep failing. The executor degrades to another tier
+  // instead of backing off. Checked first so it wins over any pattern below.
+  if (err instanceof ModelUnavailableError) return 'permanent';
   // Trust an explicit decision from the bridge over message-pattern matching.
   if (err instanceof TaggedRetryError) {
     return err.retryable ? 'transient' : 'permanent';
   }
   const msg = err.message;
+  if (isModelUnavailableMessage(msg)) return 'permanent';
   for (const pattern of TRANSIENT_ERROR_PATTERNS) {
     if (pattern.test(msg)) return 'transient';
   }
@@ -341,6 +348,14 @@ export class GraphExecutor {
    * hooks are protecting the checkout. Null for non-coding runs.
    */
   private commitSafety: import('./types.js').CommitSafetyReport | null = null;
+
+  /**
+   * Task #230: graceful model-degradation events recorded when a node's
+   * requested model was unavailable/forbidden/not entitled and the executor
+   * fell back to another tier. Surfaced into `ExecutionResult.modelFallbacks`
+   * and `run-summary.md`.
+   */
+  private readonly modelFallbacks: import('./types.js').ModelFallbackRecord[] = [];
 
   // Control flags
   private pauseRequested = false;
@@ -814,11 +829,28 @@ export class GraphExecutor {
         lastError = err instanceof Error ? err : new Error(String(err));
         log.warn(`Node '${nodeId}' attempt ${attempt + 1} failed: ${lastError.message}`);
 
+        // Task #230: a gated/unavailable model is permanent AND special —
+        // break out immediately so we degrade to another tier rather than
+        // burning retries (or replanning) against the same forbidden model.
+        if (isModelUnavailableMessage(lastError.message)) {
+          log.warn(`Node '${nodeId}' requested an unavailable/forbidden model — not retrying; will attempt tier fallback`);
+          break;
+        }
+
         if (classifyError(lastError) === 'permanent') {
           log.warn(`Node '${nodeId}' failed with permanent error — skipping remaining retries`);
           break;
         }
       }
+    }
+
+    // Task #230: graceful model degradation. If the failure was a
+    // model-unavailable/forbidden/not-entitled error, degrade to the
+    // next-best available tier from the registry BEFORE node-level
+    // fallback / replan — those would re-dispatch the same forbidden model.
+    if (lastError && isModelUnavailableMessage(lastError.message)) {
+      const degraded = await this.attemptModelFallback(node, lastError);
+      if (degraded) return degraded;
     }
 
     // Retries exhausted — try fallback
@@ -887,6 +919,106 @@ export class GraphExecutor {
 
     // Everything exhausted
     throw lastError ?? new Error(`Node '${nodeId}' failed with no retries, fallback, or re-plan`);
+  }
+
+  /**
+   * Task #230: resolve the concrete model a node will dispatch with, mirroring
+   * the resolution order used by the worker (AGENT/TOOL) and the bridge
+   * (CODING_AGENT). Used to record the "requested" side of a degradation.
+   */
+  private resolveNodeModel(node: WorkflowNode): string {
+    const cfg = readConfig();
+    if (node.type === 'CODING_AGENT') {
+      return node.codingAgent?.model ?? node.agent?.model ?? cfg.models.default;
+    }
+    return node.agent?.model ?? cfg.models.default;
+  }
+
+  /** Cap on how many lower tiers we walk before giving up on degradation. */
+  private static readonly MAX_MODEL_FALLBACKS = 2;
+
+  /**
+   * Task #230: graceful model degradation. When a node's requested model is
+   * unavailable / forbidden / not entitled, re-dispatch the node against the
+   * next-best *available* tier from the model registry (e.g. mythos → opus).
+   *
+   * Each attempt is recorded into `this.modelFallbacks` (surfaced in
+   * `run-summary.md` + logs). If a substitute is *also* unavailable we exclude
+   * it and walk one tier further, up to {@link MAX_MODEL_FALLBACKS}. A
+   * substitute that runs but fails for a non-model reason stops the walk and
+   * leaves the node-fallback / replan paths to handle it.
+   *
+   * Returns the successful WorkerResult, or `null` when no fallback succeeded.
+   */
+  private async attemptModelFallback(
+    node: WorkflowNode,
+    initialError: Error,
+  ): Promise<WorkerResult | null> {
+    const requestedModel = this.resolveNodeModel(node);
+    const requestedTier = getModelCapability(requestedModel).tier;
+    const tried: string[] = [];
+    let reason = initialError.message;
+
+    for (let depth = 0; depth < GraphExecutor.MAX_MODEL_FALLBACKS; depth++) {
+      const fallback = selectFallbackModel(requestedModel, { exclude: tried });
+      if (!fallback) {
+        log.warn(`No available fallback model for '${node.id}' (requested ${requestedModel}); registry tiers exhausted`);
+        break;
+      }
+      tried.push(fallback.id);
+
+      const record: import('./types.js').ModelFallbackRecord = {
+        nodeId: node.id,
+        nodeLabel: node.label,
+        requestedModel,
+        requestedTier,
+        fallbackModel: fallback.id,
+        fallbackTier: fallback.tier,
+        reason,
+        succeeded: false,
+        timestamp: new Date().toISOString(),
+      };
+
+      log.warn(
+        `Model fallback for '${node.id}': ${requestedModel} (${requestedTier}) → ${fallback.id} (${fallback.tier}) — ${reason}`,
+      );
+      this.emitOrchestrator(
+        'status',
+        `Model unavailable for '${node.label}': falling back ${requestedModel} → ${fallback.id}`,
+        { modelFallback: { nodeId: node.id, requestedModel, fallbackModel: fallback.id, reason } },
+      );
+
+      // Override the model on whichever config the node carries, leaving the
+      // original graph node untouched (we dispatch a shallow clone).
+      const degradedNode: WorkflowNode = {
+        ...node,
+        ...(node.agent ? { agent: { ...node.agent, model: fallback.id } } : {}),
+        ...(node.codingAgent ? { codingAgent: { ...node.codingAgent, model: fallback.id } } : {}),
+      };
+
+      try {
+        const result = await this.executeNodeByType(degradedNode);
+        record.succeeded = true;
+        this.modelFallbacks.push(record);
+        this.decisions.push(
+          `Model fallback: ${node.id} ${requestedModel} → ${fallback.id} ` +
+          `(${requestedTier}→${fallback.tier}); requested model unavailable`,
+        );
+        return { ...result, nodeId: node.id };
+      } catch (err) {
+        this.modelFallbacks.push(record);
+        const e = err instanceof Error ? err : new Error(String(err));
+        log.warn(`Model fallback to ${fallback.id} for '${node.id}' also failed: ${e.message}`);
+        if (!isModelUnavailableMessage(e.message)) {
+          // Substitute ran but failed for a non-model reason — stop degrading.
+          break;
+        }
+        // Substitute was *also* unavailable — exclude it and walk one tier down.
+        reason = e.message;
+      }
+    }
+
+    return null;
   }
 
   /**
@@ -2337,6 +2469,29 @@ export class GraphExecutor {
         mdParts.push('');
       }
 
+      // Task #230: graceful model-degradation telemetry. Rendered only when a
+      // requested model was unavailable/forbidden/not entitled and the run
+      // degraded to another tier, so common-path summaries are unaffected.
+      if (result.modelFallbacks && result.modelFallbacks.length > 0) {
+        mdParts.push('## Model Fallbacks (Task #230)');
+        mdParts.push('');
+        mdParts.push(
+          '_A requested model was unavailable / forbidden / not entitled, so the run ' +
+          'degraded to the next-best available tier from the model registry._',
+        );
+        mdParts.push('');
+        mdParts.push('| Node | Requested | Fallback | Tier | Result | Reason |');
+        mdParts.push('|------|-----------|----------|------|--------|--------|');
+        for (const f of result.modelFallbacks) {
+          const reason = f.reason.replace(/\|/g, '\\|').replace(/\s*\n\s*/g, ' ').slice(0, 160);
+          mdParts.push(
+            `| ${f.nodeLabel} | \`${f.requestedModel}\` | \`${f.fallbackModel}\` | ` +
+            `${f.requestedTier}→${f.fallbackTier} | ${f.succeeded ? 'ok' : 'failed'} | ${reason} |`,
+          );
+        }
+        mdParts.push('');
+      }
+
       if (result.findings.length > 0) {
         mdParts.push('## Findings');
         mdParts.push('');
@@ -2593,6 +2748,7 @@ export class GraphExecutor {
       toolCallCount: Array.from(this.nodeResults.values()).reduce((sum, r) => sum + r.toolCallCount, 0),
       macroPlanning,
       ...(this.commitSafety ? { commitSafety: this.commitSafety } : {}),
+      ...(this.modelFallbacks.length > 0 ? { modelFallbacks: this.modelFallbacks } : {}),
     };
   }
 

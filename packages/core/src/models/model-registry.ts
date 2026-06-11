@@ -441,3 +441,63 @@ export function normalizeModelEffort(modelId: string, effort: EffortLevel): Effo
   const cap = getModelCapability(modelId);
   return cap.effortAliases[effort] ?? effort;
 }
+
+// ── Tier ranking + fallback selection (Task #230) ────────────────────────────
+
+/**
+ * Numeric ordering of tiers, highest-capability first. Used to find the
+ * "next-best available tier" when a requested model is unavailable. `unknown`
+ * ranks 0 so it is never chosen as a degradation target.
+ */
+export const TIER_RANK: Record<ModelTier, number> = {
+  unknown: 0,
+  haiku: 1,
+  sonnet: 2,
+  opus: 3,
+  mythos: 4,
+};
+
+/**
+ * Task #230 — pick the next-best *available* model to degrade to when the
+ * requested model is unavailable / forbidden / not entitled.
+ *
+ * Selection rules:
+ *  - Only models in a strictly lower tier than the requested model qualify
+ *    (so an unavailable mythos model degrades to opus, opus → sonnet, etc.).
+ *  - `accessGated` models are skipped — falling back to another gated model
+ *    would just hit the same entitlement wall.
+ *  - The `unknown` tier (rank 0) is never selected.
+ *  - Anything in `exclude` (e.g. models already tried this run) is skipped.
+ *  - Among candidates, the highest tier wins; ties break by id descending so a
+ *    newer dated variant (`claude-opus-4-8`) is preferred over an older one
+ *    (`claude-opus-4-6`).
+ *
+ * Returns `null` when no eligible fallback exists.
+ */
+export function selectFallbackModel(
+  requestedModel: string,
+  opts: { exclude?: readonly string[]; capabilities?: readonly ModelCapability[] } = {},
+): ModelCapability | null {
+  const caps = opts.capabilities ?? registry.list();
+  const requestedRank = TIER_RANK[registry.resolve(requestedModel).tier];
+  const excludeSet = new Set(
+    [requestedModel, ...(opts.exclude ?? [])].map((m) => m.toLowerCase()),
+  );
+
+  const candidates = caps.filter((c) => {
+    if (c.accessGated) return false;
+    if (excludeSet.has(c.id.toLowerCase())) return false;
+    const rank = TIER_RANK[c.tier];
+    return rank > 0 && rank < requestedRank;
+  });
+
+  if (candidates.length === 0) return null;
+
+  candidates.sort((a, b) => {
+    const rankDiff = TIER_RANK[b.tier] - TIER_RANK[a.tier];
+    if (rankDiff !== 0) return rankDiff;
+    return b.id.localeCompare(a.id);
+  });
+
+  return candidates[0] ?? null;
+}
