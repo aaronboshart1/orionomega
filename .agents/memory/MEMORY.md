@@ -8,3 +8,4 @@
 - [gateway WS client singleton constraint](gateway-ws-singletons.md) — mutable WS state must stay in lib/gateway.ts (export let is read-only in importers); extract pure handlers, pass setter ctx.
 - [Replit gateway/web shared config + bind](replit-gateway-web-config.md) — pin both procs to one config.yaml via CONFIG_PATH or keyHash mismatch breaks UI; gateway must bind 0.0.0.0 or workflow port-probe kills it.
 - [core vitest full-run hangs](core-vitest-full-run.md) — running entire packages/core suite at once exits with no output; chunk by dir with --no-file-parallelism (~862 total).
+- [Gateway scheduler tests are timing-flaky](gateway-scheduler-flaky-tests.md) — scheduler.test.ts abort/timeout cases fail under CPU load; not a regression if your diff doesn't touch scheduler code.

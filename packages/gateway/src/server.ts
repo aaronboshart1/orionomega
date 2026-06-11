@@ -13,7 +13,7 @@ import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { spawn as spawnProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { readConfig, normalizeBindAddresses, assertSecureBind, ensureGatewayAuthSecret, InsecureBindError, MainAgent, CommandFileLoader, createLogger, setGlobalLogLevel, enableFileLogging, discoverModels, clearModelCache, auditApiRequest, setCodingOrchestatorEmitters, getDb, BUILD_INFO as CORE_BUILD_INFO, getStaleBuildStatus, getDatabaseStatus } from '@orionomega/core';
+import { readConfig, normalizeBindAddresses, assertSecureBind, ensureGatewayAuthSecret, InsecureBindError, MainAgent, CommandFileLoader, createLogger, setGlobalLogLevel, enableFileLogging, discoverModels, clearModelCache, auditApiRequest, setCodingOrchestatorEmitters, getDb, BUILD_INFO as CORE_BUILD_INFO, getStaleBuildStatus, getDatabaseStatus, realpathContainedPath } from '@orionomega/core';
 import type { MainAgentConfig, MainAgentCallbacks, LogLevel, PlannerOutput, StaleBuildStatus } from '@orionomega/core';
 import { BUILD_INFO as GATEWAY_BUILD_INFO } from './generated/build-info.js';
 import { setLogLevel as setHindsightLogLevel } from '@orionomega/hindsight';
@@ -1875,8 +1875,11 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
         res.end(JSON.stringify({ error: 'File not found' }));
         return;
       }
-      const realResolved = realpathSync(resolved);
-      if (!realResolved.startsWith(workspaceRoot + '/') && realResolved !== workspaceRoot) {
+      // Task #232: centralized symlink-aware containment guard. Returns
+      // the canonical path only when it stays under the workspace root;
+      // null means a traversal/symlink escape (existence was checked above).
+      const realResolved = realpathContainedPath(workspaceRoot, resolved);
+      if (!realResolved) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Invalid path: outside workspace' }));
         return;

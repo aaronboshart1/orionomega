@@ -17,7 +17,8 @@
  */
 
 import { readFileSync } from 'node:fs';
-import { resolve as resolvePath, sep } from 'node:path';
+import { resolve as resolvePath } from 'node:path';
+import { resolveContainedPath } from '../utils/path-containment.js';
 
 /** 5 MB — mirrors the gateway file-read endpoint cap (see replit.md Gotchas). */
 export const SPEC_FILE_CAP_BYTES = 5 * 1024 * 1024;
@@ -280,10 +281,12 @@ export function loadSpecReferences(input: LoadSpecReferencesInput): SpecReferenc
     let resolved = '';
     outer: for (const root of roots) {
       for (const probe of cand.probes) {
-        const candidate = resolvePath(root, probe);
-        // Sandbox guard: candidate must live under root (mirrors the
-        // gateway file-read workspace-root restriction).
-        if (candidate !== root && !candidate.startsWith(root + sep)) continue;
+        // Sandbox guard (Task #232): the centralized containment helper
+        // resolves `probe` under `root` and rejects anything that escapes
+        // it (`../../etc/passwd`), mirroring the gateway file-read
+        // workspace-root restriction.
+        const candidate = resolveContainedPath(root, probe);
+        if (!candidate) continue;
         try {
           contents = read(candidate);
           resolved = candidate;

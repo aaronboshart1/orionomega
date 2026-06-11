@@ -2,7 +2,7 @@ import { createLogger } from './logger.js';
 
 const log = createLogger('audit');
 
-export type AuditCategory = 'tool_invocation' | 'api_request' | 'auth_event' | 'config_change';
+export type AuditCategory = 'tool_invocation' | 'api_request' | 'auth_event' | 'config_change' | 'data_mutation';
 
 export interface AuditEntry {
   category: AuditCategory;
@@ -56,6 +56,20 @@ export function auditConfigChange(setting: string, detail?: string, actor?: stri
   emitAuditEvent({
     category: 'config_change',
     action: setting,
+    actor,
+    detail,
+  });
+}
+
+/**
+ * Task #232: Audit a state-mutating data operation that isn't a config
+ * change — e.g. a database backup/export. Keeps these privileged
+ * mutations consistently auditable alongside config changes.
+ */
+export function auditDataMutation(action: string, detail?: string, actor?: string): void {
+  emitAuditEvent({
+    category: 'data_mutation',
+    action,
     actor,
     detail,
   });

@@ -22,6 +22,7 @@ import { eq, and, gt, lt, desc, asc, sql } from 'drizzle-orm';
 import {
   createLogger,
   getDb,
+  redactSensitive,
   sessions,
   events,
   messages,
@@ -302,6 +303,10 @@ export class PersistenceService {
     workflowId?: string,
   ): number {
     try {
+      // Task #232: scrub secrets out of tool inputs/outputs before they
+      // land in the on-disk event log. Tool args/results flow verbatim
+      // into this table; redaction strips API keys, tokens, and other
+      // secret-shaped values so they aren't persisted in plaintext.
       const result = this.db
         .insert(events)
         .values({
@@ -309,7 +314,7 @@ export class PersistenceService {
           timestamp: new Date().toISOString(),
           eventType,
           workflowId: workflowId ?? null,
-          payload: payload ? JSON.stringify(payload) : null,
+          payload: payload ? JSON.stringify(redactSensitive(payload)) : null,
         })
         .run();
 

@@ -16,7 +16,8 @@ import {
 import type { SkillManifest } from '@orionomega/skills-sdk';
 import type { SkillConfig, SkillSettingSchema } from '@orionomega/skills-sdk';
 import { SkillSettingType } from '@orionomega/skills-sdk';
-import { readConfig, createLogger } from '@orionomega/core';
+import { readConfig, createLogger, assertLoopbackTarget, isValidPort } from '@orionomega/core';
+import { z } from 'zod';
 import type { GatewayConfig } from '../types.js';
 import { readBody } from './utils.js';
 import { checkAuth } from './auth-utils.js';
@@ -24,6 +25,21 @@ import { checkAuth } from './auth-utils.js';
 const log = createLogger('routes/skills');
 
 const MASK_SENTINEL = '[REDACTED]';
+
+// Task #232: validate the skill-config PUT body shape with Zod before
+// acting on it (parity with the WS validation path). Domain validation of
+// individual setting values still happens via the skill manifest schema.
+const SkillConfigPutBody = z.object({
+  enabled: z.boolean().optional(),
+  configured: z.boolean().optional(),
+  settings: z.record(z.string(), z.unknown()).optional(),
+  accountId: z.string().optional(),
+}).passthrough();
+
+/** Flatten a ZodError into a short, human-readable message. */
+function zodMessage(err: z.ZodError): string {
+  return err.issues.map((i) => (i.path.length ? `${i.path.join('.')}: ${i.message}` : i.message)).join('; ');
+}
 
 function getDefaultSkillsDir(): string {
   const thisFile = fileURLToPath(import.meta.url);
@@ -145,7 +161,13 @@ export async function handlePutSkillConfig(
 
   try {
     const body = await readBody(req);
-    const payload = JSON.parse(body) as Partial<SkillConfig> & {
+    const parsedBody = SkillConfigPutBody.safeParse(JSON.parse(body));
+    if (!parsedBody.success) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: zodMessage(parsedBody.error) }));
+      return;
+    }
+    const payload = parsedBody.data as Partial<SkillConfig> & {
       settings?: Record<string, unknown>;
       accountId?: string;
     };
@@ -562,6 +584,12 @@ function extractHostPort(value: string): { host: string; port: number } | null {
  */
 function probeLocalListener(port: number, timeoutMs = 1500): Promise<boolean> {
   return new Promise((resolve) => {
+    // Task #232 SSRF guard: the port is derived from on-disk account
+    // config — refuse to even attempt a connect if it's out of range.
+    if (!isValidPort(port)) {
+      resolve(false);
+      return;
+    }
     const sock = createConnection({ host: '127.0.0.1', port });
     let done = false;
     const finish = (ok: boolean) => {
@@ -733,6 +761,26 @@ export async function handleGoogleOAuthCallback(
     if (!callbackUrl) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'No authorization code found. Paste the full redirect URL or just the code parameter.' }));
+      return;
+    }
+
+    // Task #232 SSRF guard: callbackUrl's port is derived from on-disk
+    // account config. Before issuing the proxied fetch, assert the target
+    // is a loopback host with a valid port so the proxy can never be
+    // coerced into reaching an off-box address.
+    try {
+      const targetUrl = new URL(callbackUrl);
+      assertLoopbackTarget(
+        targetUrl.hostname,
+        targetUrl.port ? Number(targetUrl.port) : (targetUrl.protocol === 'https:' ? 443 : 80),
+      );
+    } catch (guardErr) {
+      log.error('OAuth callback: refusing non-loopback proxy target', {
+        accountId: account.id,
+        error: guardErr instanceof Error ? guardErr.message : String(guardErr),
+      });
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Refusing to proxy OAuth callback to a non-loopback target.' }));
       return;
     }
 

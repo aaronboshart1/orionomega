@@ -20,6 +20,7 @@
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { resolve as resolvePath } from 'node:path';
+import { z } from 'zod';
 import { ensureSessionClone, getRepoStatus, isValidGitRefName } from '@orionomega/core';
 import type { RepoStatus } from '@orionomega/core';
 import { getReposStore, type KnownRepo, type SelectedRepo } from '../repos-store.js';
@@ -30,6 +31,30 @@ const log = createLogger('routes/git');
 const SESSION_ID_RE = /^[a-z0-9_-]{1,128}$/i;
 const REPO_ID_RE = /^[a-z0-9_-]{1,128}$/i;
 const REMOTE_URL_RE = /^(https?:\/\/|git@|ssh:\/\/|git:\/\/|file:\/\/)/i;
+
+// Task #232: validate REST bodies with Zod at parity with the WS path.
+// Schemas enforce shape/types; domain rules (valid remote URL forms, git
+// ref-name validity) are still applied after a successful parse.
+const RepoCreateBody = z.object({
+  remoteUrl: z.string().min(1, 'remoteUrl is required'),
+  label: z.string().optional(),
+  defaultBranch: z.string().optional(),
+}).strict();
+
+const RepoUpdateBody = z.object({
+  label: z.string().optional(),
+  defaultBranch: z.string().optional(),
+}).strict();
+
+const SessionRepoSelectBody = z.object({
+  repoId: z.string().min(1, 'repoId is required'),
+  branch: z.string().optional(),
+}).strict();
+
+/** Flatten a ZodError into a short, human-readable message. */
+function zodMessage(err: z.ZodError): string {
+  return err.issues.map((i) => (i.path.length ? `${i.path.join('.')}: ${i.message}` : i.message)).join('; ');
+}
 
 function readJsonBody(req: IncomingMessage, maxBytes = 1024 * 1024): Promise<unknown> {
   return new Promise((resolve, reject) => {
@@ -94,11 +119,9 @@ export async function handleGitRoute(
     }
     if (method === 'POST') {
       try {
-        const body = (await readJsonBody(req)) as { remoteUrl?: string; label?: string; defaultBranch?: string };
-        if (!body.remoteUrl || typeof body.remoteUrl !== 'string') {
-          sendErr(res, 400, 'remoteUrl is required');
-          return true;
-        }
+        const parsed = RepoCreateBody.safeParse(await readJsonBody(req));
+        if (!parsed.success) { sendErr(res, 400, zodMessage(parsed.error)); return true; }
+        const body = parsed.data;
         if (!REMOTE_URL_RE.test(body.remoteUrl) && !/^[\w.-]+\/[\w.-]+$/.test(body.remoteUrl)) {
           sendErr(res, 400, 'remoteUrl must be an https://, ssh://, git@, file://, or owner/repo URL');
           return true;
@@ -129,7 +152,9 @@ export async function handleGitRoute(
     if (!REPO_ID_RE.test(id)) { sendErr(res, 400, 'Invalid repo id'); return true; }
     if (method === 'PATCH') {
       try {
-        const body = (await readJsonBody(req)) as { label?: string; defaultBranch?: string };
+        const parsed = RepoUpdateBody.safeParse(await readJsonBody(req));
+        if (!parsed.success) { sendErr(res, 400, zodMessage(parsed.error)); return true; }
+        const body = parsed.data;
         if (body.defaultBranch !== undefined && !isValidGitRefName(body.defaultBranch)) {
           sendErr(res, 400, 'defaultBranch must be a valid git ref name');
           return true;
@@ -174,8 +199,9 @@ export async function handleGitRoute(
     }
     if (method === 'PUT') {
       try {
-        const body = (await readJsonBody(req)) as { repoId?: string; branch?: string };
-        if (!body.repoId) { sendErr(res, 400, 'repoId is required'); return true; }
+        const parsed = SessionRepoSelectBody.safeParse(await readJsonBody(req));
+        if (!parsed.success) { sendErr(res, 400, zodMessage(parsed.error)); return true; }
+        const body = parsed.data;
         const repo = store.getKnownRepo(body.repoId);
         if (!repo) { sendErr(res, 404, 'Repo not found'); return true; }
         const branch = (body.branch || repo.defaultBranch || 'main').trim();

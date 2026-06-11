@@ -22,4 +22,5 @@ export {
   auditApiRequest,
   auditAuthEvent,
   auditConfigChange,
+  auditDataMutation,
 } from './audit.js';

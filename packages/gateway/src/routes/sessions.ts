@@ -7,6 +7,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { copyFileSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
+import { auditDataMutation } from '@orionomega/core';
 import { SessionManager, DEFAULT_SESSION_ID } from '../sessions.js';
 import { TtlCache, STATE_TTL_MS, ACTIVITY_TTL_MS } from './cache.js';
 import type { ServerSessionStore } from '../state-store.js';
@@ -521,6 +522,9 @@ export function handleBackupDb(
 
   try {
     copyFileSync(dbPath, backupPath);
+    // Task #232: privileged data mutation — audit it consistently
+    // alongside config changes.
+    auditDataMutation('db_backup', `Backed up database to ${backupPath}`, _req.socket.remoteAddress ?? undefined);
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ success: true, backupPath }));
   } catch (err) {
