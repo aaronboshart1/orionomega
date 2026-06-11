@@ -1,4 +1,5 @@
 packages:
+  - 'packages/shared'
   - 'packages/core'
   - 'packages/gateway'
   - 'packages/hindsight'

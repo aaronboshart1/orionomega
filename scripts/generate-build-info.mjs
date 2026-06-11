@@ -8,26 +8,40 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const repoRoot = resolve(__dirname, '..');
 
-const packageName = process.argv[2];
-if (!packageName) {
-  console.error('[generate-build-info] Usage: node scripts/generate-build-info.mjs <package-name>');
+/**
+ * Canonical list of packages whose `dist/` carries a baked-in build-info
+ * module (used for stale-build detection at runtime). This is the SINGLE
+ * source of truth — root scripts invoke `--all` instead of hardcoding the
+ * package list in multiple places, and per-package `prebuild` hooks pass their
+ * own name as a safety net for filtered builds (`pnpm --filter <pkg> build`).
+ *
+ * Build order itself is documented canonically in docs/architecture-notes.md
+ * (see "Build order & build-info"). Keep this list in sync with the packages
+ * that import `./generated/build-info.js`.
+ */
+const BUILD_INFO_PACKAGES = ['core', 'gateway'];
+
+const args = process.argv.slice(2);
+if (args.length === 0) {
+  console.error(
+    '[generate-build-info] Usage: node scripts/generate-build-info.mjs <package-name>... | --all',
+  );
   process.exit(2);
 }
 
-const pkgRoot = resolve(repoRoot, 'packages', packageName);
-if (!existsSync(pkgRoot)) {
-  console.error(`[generate-build-info] Package not found: ${pkgRoot}`);
-  process.exit(2);
-}
+const packages = args.includes('--all')
+  ? BUILD_INFO_PACKAGES
+  : args;
 
+// ── Git metadata (resolved once for the whole repo) ────────────────────────
 // Track whether ANY git command failed so we can degrade `dirty` gracefully
 // in restricted environments (read-only checkouts, sandboxes that block
 // `git status`'s implicit index lock acquisition, CI runners without a
 // `.git` directory, etc.) rather than emitting a misleading `dirty: false`.
 let gitAvailable = true;
-function tryGit(args, cwd) {
+function tryGit(gitArgs, cwd) {
   try {
-    return execSync(`git ${args}`, { cwd, stdio: ['ignore', 'pipe', 'ignore'], encoding: 'utf-8' }).trim();
+    return execSync(`git ${gitArgs}`, { cwd, stdio: ['ignore', 'pipe', 'ignore'], encoding: 'utf-8' }).trim();
   } catch {
     gitAvailable = false;
     return '';
@@ -63,17 +77,24 @@ if (gitAvailable && commit !== 'unknown') {
 }
 const buildTime = new Date().toISOString();
 
-let pkgVersion = '0.0.0';
-try {
-  const pkgJson = JSON.parse(readFileSync(join(pkgRoot, 'package.json'), 'utf-8'));
-  pkgVersion = pkgJson.version ?? pkgVersion;
-} catch { /* ignore */ }
+function generateForPackage(packageName) {
+  const pkgRoot = resolve(repoRoot, 'packages', packageName);
+  if (!existsSync(pkgRoot)) {
+    console.error(`[generate-build-info] Package not found: ${pkgRoot}`);
+    process.exit(2);
+  }
 
-const outDir = join(pkgRoot, 'src', 'generated');
-mkdirSync(outDir, { recursive: true });
-const outFile = join(outDir, 'build-info.ts');
+  let pkgVersion = '0.0.0';
+  try {
+    const pkgJson = JSON.parse(readFileSync(join(pkgRoot, 'package.json'), 'utf-8'));
+    pkgVersion = pkgJson.version ?? pkgVersion;
+  } catch { /* ignore */ }
 
-const content = `/**
+  const outDir = join(pkgRoot, 'src', 'generated');
+  mkdirSync(outDir, { recursive: true });
+  const outFile = join(outDir, 'build-info.ts');
+
+  const content = `/**
  * @module generated/build-info
  *
  * AUTO-GENERATED at build time by scripts/generate-build-info.mjs.
@@ -112,5 +133,10 @@ export const BUILD_INFO: BuildInfo = {
 };
 `;
 
-writeFileSync(outFile, content, 'utf-8');
-console.log(`[generate-build-info] wrote ${outFile} (commit=${shortCommit}${dirty ? '-dirty' : ''})`);
+  writeFileSync(outFile, content, 'utf-8');
+  console.log(`[generate-build-info] wrote ${outFile} (commit=${shortCommit}${dirty ? '-dirty' : ''})`);
+}
+
+for (const packageName of packages) {
+  generateForPackage(packageName);
+}

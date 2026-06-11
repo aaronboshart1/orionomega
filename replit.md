@@ -6,6 +6,7 @@
 
 ```bash
 pnpm install
+pnpm --filter @orionomega/shared build
 pnpm --filter @orionomega/hindsight build
 pnpm --filter @orionomega/skills-sdk build
 pnpm --filter @orionomega/core build
@@ -77,7 +78,7 @@ OrionOmega is an AI agent orchestration platform with a web dashboard, WebSocket
 
 ## Gotchas
 
-- **Build order**: packages must be built in order (`hindsight`, `skills-sdk`, `core`, `gateway`) before the first run.
+- **Build order**: packages must be built in dependency order (`shared`, `hindsight`, `skills-sdk`, `core`, `gateway`) before the first run. The canonical explanation of the build-order foot-gun and centralized build-info generation lives in [`docs/architecture-notes.md`](docs/architecture-notes.md#build-order--build-info-canonical).
 - **Configuration path**: on Replit, `config.yaml` is at `.orionomega/config.yaml` for persistence. Use `CONFIG_PATH` to override.
 - **Replit port mapping**: Next.js binds to `0.0.0.0:5000` (webview) and the gateway to `0.0.0.0:8000` (console).
 - **Skill execution security**: skill handlers are validated to run within the skill directory, restricted to `.js`/`.mjs`, and sensitive env vars are filtered.

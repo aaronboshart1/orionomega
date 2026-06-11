@@ -28,6 +28,7 @@
   "dependencies": {
     "@orionomega/core": "workspace:*",
     "@orionomega/hindsight": "workspace:*",
+    "@orionomega/shared": "workspace:*",
     "@orionomega/skills-sdk": "workspace:*",
     "better-sqlite3": "^12.8.0",
     "croner": "^10.0.1",

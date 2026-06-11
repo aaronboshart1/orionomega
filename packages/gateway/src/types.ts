@@ -349,7 +349,11 @@ export interface ServerMessage {
 
   /** Coding Mode lifecycle event. Present when `type === 'coding_event'`. */
   codingEvent?: CodingEventPayload;
-  /** Full state snapshot for reconnection. Present when `type === 'session'`. */
+  /** Full state snapshot for reconnection. Present when `type === 'session'`.
+   *  The wire shape is modelled by the shared Zod-derived `SessionSnapshot`
+   *  contract (`@orionomega/shared/ws-contract`), which the web client uses to
+   *  type the received snapshot. Kept loose here so the gateway's concrete
+   *  builder types assign without friction. */
   snapshot?: Record<string, unknown>;
   /** Session ID. Present when `type === 'session'`. */
   sessionId?: string;

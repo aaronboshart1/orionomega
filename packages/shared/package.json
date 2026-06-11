@@ -1,0 +1,48 @@
+{
+  "name": "@orionomega/shared",
+  "version": "0.1.0",
+  "description": "Cross-package shared utilities (logger, truncate) and the Zod-derived WebSocket protocol contract for OrionOmega",
+  "keywords": ["orionomega", "logger", "zod", "websocket", "shared"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/aaronboshart1/orionomega.git",
+    "directory": "packages/shared"
+  },
+  "license": "AGPL-3.0-only OR LicenseRef-OrionOmega-Commercial",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./logger": {
+      "types": "./dist/logger.d.ts",
+      "default": "./dist/logger.js"
+    },
+    "./truncate": {
+      "types": "./dist/truncate.d.ts",
+      "default": "./dist/truncate.js"
+    },
+    "./ws-contract": {
+      "types": "./dist/ws-contract.d.ts",
+      "default": "./dist/ws-contract.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.2"
+  },
+  "files": [
+    "dist",
+    "src"
+  ]
+}

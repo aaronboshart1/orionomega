@@ -19,6 +19,7 @@
   },
   "files": [],
   "references": [
+    { "path": "packages/shared" },
     { "path": "packages/hindsight" },
     { "path": "packages/core" },
     { "path": "packages/gateway" },

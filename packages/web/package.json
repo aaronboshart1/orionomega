@@ -25,6 +25,7 @@
     "analyze": "ANALYZE=true next build"
   },
   "dependencies": {
+    "@orionomega/shared": "workspace:*",
     "@tailwindcss/postcss": "^4",
     "@xyflow/react": "^12",
     "cronstrue": "^3.14.0",

@@ -255,3 +255,36 @@ Model-specific behaviour — tier, output-token ceilings (both the comfortably-s
 Resolution (`getModelCapability(id)`): exact-ID match → alias/substring match (longest alias first, so `opus-4-8` beats a broader `opus`) → synthesise from the inferred tier's `TIER_DEFAULTS`. The `mythos` tier sits above `opus`; `inferModelTier` maps `fable`/`mythos` IDs to it (checked before `opus`).
 
 Consumers all read through the registry instead of inline `model.includes(...)` branches: `client.ts` (`maxOutputTokensForModel`, `modelMaxOutputCeiling`, temperature/thinking/beta/mid-conv-system/effort), `model-discovery.ts` (`inferTier`, `buildModelGuide` mythos routing, `pickModelByTier`), `coding-budget.ts` (`MODEL_COST_RATES`, `calculateTokenCost`, `estimateTokenBudget`), `planner.ts` (`coerceModel` tier inference). `fable`/mythos is gated (`accessGated: true`); gated-model fallback is a separate task. Tests: `packages/core/src/models/__tests__/model-registry.test.ts` plus the existing opus-4-8 suites that pin the migrated behaviour.
+
+## Build order & build-info (canonical)
+
+**Build order.** Packages must be built in dependency order. `tsc --build` and
+`pnpm -r build` both respect this automatically via project references /
+workspace topology, but a manual or filtered build must follow it:
+
+```
+shared → hindsight → skills-sdk → core → gateway   (→ tui, → web)
+```
+
+`@orionomega/shared` is the lowest layer (it owns the consolidated logger /
+`truncate` utilities and the Zod-derived WebSocket contract); `hindsight` and
+`core` both depend on it. Building out of order yields the classic foot-gun:
+`tsc` resolves a dependency's *type declarations* from its `dist/`, so a
+not-yet-built dependency surfaces as spurious "cannot find module
+`@orionomega/...`" errors downstream.
+
+**Build-info.** `scripts/generate-build-info.mjs` bakes the current git commit
++ build timestamp into `packages/<pkg>/src/generated/build-info.ts` (gitignored)
+so the runtime can detect a *stale build* (dist/ compiled from a different
+commit than the source tree — see `getStaleBuildStatus` in
+`packages/core/src/build-info.ts`). Generation is centralized:
+
+- The canonical list of packages that carry build-info lives in ONE place —
+  the `BUILD_INFO_PACKAGES` constant inside `scripts/generate-build-info.mjs`.
+- Root scripts (`prebuild`, `build-info`, `pretypecheck`, `pretest`) invoke
+  `node scripts/generate-build-info.mjs --all`, so a root `pnpm build` /
+  typecheck / test generates every package's build-info up front.
+- Per-package `prebuild` hooks still pass their own name as a safety net for
+  filtered builds (`pnpm --filter <pkg> build`), so any build path regenerates
+  it. Add a new build-info consumer by appending to `BUILD_INFO_PACKAGES` (and
+  its own `prebuild` hook) — not by editing several root scripts.

@@ -5,3 +5,4 @@
 - [Human-in-the-loop channels](human-in-loop-channels.md) — pause-and-ask channels (humanGate, manual-intervention) mirror each other across core→gateway→web; copy one end-to-end; watch sessions.ts persistence sites + exhaustive WorkerEventType maps.
 - [Stale src/*.js shadows .ts under vitest](vitest-stale-src-js.md) — new exports read as undefined/"not a constructor" though tsc passes; delete gitignored src/*.js so vitest resolves .ts.
 - [Model capability registry](model-capability-registry.md) — all per-model behavior lives in one declarative table; resolve via getModelCapability; precedence config>discovery>defaults.
+- [gateway WS client singleton constraint](gateway-ws-singletons.md) — mutable WS state must stay in lib/gateway.ts (export let is read-only in importers); extract pure handlers, pass setter ctx.

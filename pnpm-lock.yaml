@@ -58,6 +58,9 @@ importers:
       '@orionomega/hindsight':
         specifier: workspace:*
         version: link:../hindsight
+      '@orionomega/shared':
+        specifier: workspace:*
+        version: link:../shared
       '@orionomega/skills-sdk':
         specifier: workspace:*
         version: link:../skills-sdk
@@ -98,6 +101,9 @@ importers:
       '@orionomega/hindsight':
         specifier: workspace:*
         version: link:../hindsight
+      '@orionomega/shared':
+        specifier: workspace:*
+        version: link:../shared
       '@orionomega/skills-sdk':
         specifier: workspace:*
         version: link:../skills-sdk
@@ -143,6 +149,19 @@ importers:
         version: 4.1.2(@types/node@22.19.15)(jsdom@25.0.1)(vite@8.0.3(@emnapi/core@1.9.2)(@emnapi/runtime@1.8.1)(@types/node@22.19.15)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.0))
 
   packages/hindsight:
+    dependencies:
+      '@orionomega/shared':
+        specifier: workspace:*
+        version: link:../shared
+      zod:
+        specifier: ^4.3.6
+        version: 4.3.6
+    devDependencies:
+      vitest:
+        specifier: ^4.1.2
+        version: 4.1.2(@types/node@22.19.15)(jsdom@25.0.1)(vite@8.0.3(@emnapi/core@1.9.2)(@emnapi/runtime@1.8.1)(@types/node@22.19.15)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.0))
+
+  packages/shared:
     dependencies:
       zod:
         specifier: ^4.3.6
@@ -194,6 +213,9 @@ importers:
 
   packages/web:
     dependencies:
+      '@orionomega/shared':
+        specifier: workspace:*
+        version: link:../shared
       '@tailwindcss/postcss':
         specifier: ^4
         version: 4.2.1
