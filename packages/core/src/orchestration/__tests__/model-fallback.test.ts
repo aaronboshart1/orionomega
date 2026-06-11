@@ -129,8 +129,8 @@ describe('selectFallbackModel — registry-driven tier degradation', () => {
     // The requested model's tier is resolved from the shared registry
     // (claude-fable-5 → mythos); the supplied list is the candidate pool.
     const caps: ModelCapability[] = [
-      { id: 'o-mid', aliases: [], tier: 'opus', contextWindow: 1, maxOutput: 1, defaultMaxOutput: 1, thinking: 'budget', supportsSampling: true, supportsMidConversationSystem: false, supportedEfforts: ['low'], effortAliases: {}, pricing: { in: 1, out: 1, cacheRead: 1, cacheWrite: 1 }, betaHeaders: [], accessGated: false },
-      { id: 'g-gated', aliases: [], tier: 'opus', contextWindow: 1, maxOutput: 1, defaultMaxOutput: 1, thinking: 'budget', supportsSampling: true, supportsMidConversationSystem: false, supportedEfforts: ['low'], effortAliases: {}, pricing: { in: 1, out: 1, cacheRead: 1, cacheWrite: 1 }, betaHeaders: [], accessGated: true },
+      { id: 'o-mid', aliases: [], tier: 'opus', contextWindow: 1, maxOutput: 1, defaultMaxOutput: 1, thinking: 'budget', supportsSampling: true, supportsForcedToolChoice: true, supportsMidConversationSystem: false, supportedEfforts: ['low'], effortAliases: {}, pricing: { in: 1, out: 1, cacheRead: 1, cacheWrite: 1 }, betaHeaders: [], accessGated: false },
+      { id: 'g-gated', aliases: [], tier: 'opus', contextWindow: 1, maxOutput: 1, defaultMaxOutput: 1, thinking: 'budget', supportsSampling: true, supportsForcedToolChoice: true, supportsMidConversationSystem: false, supportedEfforts: ['low'], effortAliases: {}, pricing: { in: 1, out: 1, cacheRead: 1, cacheWrite: 1 }, betaHeaders: [], accessGated: true },
     ];
     const fb = selectFallbackModel('claude-fable-5', { capabilities: caps });
     // g-gated is skipped (accessGated); o-mid is the only eligible candidate.

@@ -439,7 +439,17 @@ export class AnthropicClient {
     }
 
     if (options.toolChoice) {
-      body.tool_choice = options.toolChoice;
+      // Mythos models (e.g. Fable 5) reject a *forced* tool_choice with a 400
+      // ("tool_choice forces tool use is not compatible with this model") — they
+      // only accept `{ type: 'auto' }`. Downgrade a forced choice for those
+      // models; the single available tool plus the prompt still steers the model
+      // to call it, and callers fall back to parsing JSON from text blocks.
+      const tc = options.toolChoice;
+      const forcesToolUse = tc.type === 'tool' || tc.type === 'any';
+      body.tool_choice =
+        forcesToolUse && !capability.supportsForcedToolChoice
+          ? { type: 'auto' }
+          : tc;
     }
 
     if (Array.isArray(messages) && messages.length >= 2) {

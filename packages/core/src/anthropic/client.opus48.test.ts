@@ -8,6 +8,7 @@ import {
 
 const OPUS_48 = 'claude-opus-4-8';
 const SONNET = 'claude-sonnet-4-6';
+const FABLE = 'claude-fable-5';
 
 function buildBody(options: CreateMessageOptions): Record<string, unknown> {
   const client = new AnthropicClient('test-key');
@@ -81,5 +82,34 @@ describe('buildRequestBody — Opus 4.8 sanitisation', () => {
       thinking: { type: 'enabled', budget_tokens: 16_000 },
     });
     expect(body.thinking).toEqual({ type: 'enabled', budget_tokens: 16_000 });
+  });
+});
+
+describe('buildRequestBody — forced tool_choice sanitisation', () => {
+  const forced = { type: 'tool', name: 'submit_plan' } as const;
+
+  it('downgrades a forced tool_choice to auto for mythos models (Fable 5)', () => {
+    const body = buildBody({ model: FABLE, messages: [], toolChoice: forced });
+    expect(body.tool_choice).toEqual({ type: 'auto' });
+  });
+
+  it('downgrades tool_choice:any to auto for mythos models', () => {
+    const body = buildBody({ model: FABLE, messages: [], toolChoice: { type: 'any' } });
+    expect(body.tool_choice).toEqual({ type: 'auto' });
+  });
+
+  it('passes a forced tool_choice through unchanged for sonnet', () => {
+    const body = buildBody({ model: SONNET, messages: [], toolChoice: forced });
+    expect(body.tool_choice).toEqual(forced);
+  });
+
+  it('passes a forced tool_choice through unchanged for opus 4.8 (only mythos rejects it)', () => {
+    const body = buildBody({ model: OPUS_48, messages: [], toolChoice: forced });
+    expect(body.tool_choice).toEqual(forced);
+  });
+
+  it('leaves an explicit auto tool_choice as auto for mythos models', () => {
+    const body = buildBody({ model: FABLE, messages: [], toolChoice: { type: 'auto' } });
+    expect(body.tool_choice).toEqual({ type: 'auto' });
   });
 });

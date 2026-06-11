@@ -1146,12 +1146,24 @@ ${upstreamPhaseSummary}
     const toolUseBlock = response.content.find(
       (b) => b.type === 'tool_use' && b.name === 'submit_plan',
     );
-    if (!toolUseBlock || !toolUseBlock.input || typeof toolUseBlock.input !== 'object') {
+    let parsed: Record<string, unknown> | null = null;
+    if (toolUseBlock && toolUseBlock.input && typeof toolUseBlock.input === 'object') {
+      parsed = toolUseBlock.input as Record<string, unknown>;
+    } else {
+      // Models that reject a forced tool_choice (mythos tier, e.g. Fable 5) run
+      // with tool_choice:'auto' and may emit the plan as JSON text instead of a
+      // tool_use block. Recover JSON from text the same way Planner.plan does.
+      const rawResponseText = response.content
+        .filter((b) => b.type === 'text' && b.text)
+        .map((b) => b.text!)
+        .join('');
+      if (rawResponseText) parsed = this.extractJson(rawResponseText);
+    }
+    if (!parsed) {
       throw new Error(
-        `subPlan for '${macroNode.id}' returned no tool_use (stop_reason=${response.stop_reason})`,
+        `subPlan for '${macroNode.id}' returned no submit_plan tool_use and no parseable JSON text (stop_reason=${response.stop_reason})`,
       );
     }
-    const parsed = toolUseBlock.input as Record<string, unknown>;
     const rawNodes = parsed.nodes;
     if (!Array.isArray(rawNodes) || rawNodes.length === 0) {
       throw new Error(`subPlan for '${macroNode.id}' returned no nodes`);

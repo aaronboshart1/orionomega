@@ -38,6 +38,8 @@ describe('getModelCapability — lookup', () => {
     expect(cap.defaultMaxOutput).toBe(128_000);
     expect(cap.thinking).toBe('adaptive');
     expect(cap.supportsSampling).toBe(false);
+    // Opus 4.8 still accepts a forced tool_choice (only mythos rejects it).
+    expect(cap.supportsForcedToolChoice).toBe(true);
     expect(cap.supportsMidConversationSystem).toBe(true);
     expect(cap.fastMode?.betaHeader).toBe('fast-mode-2026-02-01');
     expect(cap.accessGated).toBe(false);
@@ -71,6 +73,8 @@ describe('getModelCapability — lookup', () => {
     expect(cap.accessGated).toBe(true);
     expect(cap.thinking).toBe('adaptive');
     expect(cap.supportsSampling).toBe(false);
+    // Mythos rejects a forced tool_choice (400) — must run with auto.
+    expect(cap.supportsForcedToolChoice).toBe(false);
     expect(cap.maxOutput).toBe(128_000);
   });
 

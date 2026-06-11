@@ -83,6 +83,13 @@ export interface ModelCapability {
    * Adaptive-thinking models (Opus 4.8, Fable) reject them with a 400.
    */
   supportsSampling: boolean;
+  /**
+   * Whether the model accepts a *forced* `tool_choice` (`{ type: 'tool' }` or
+   * `{ type: 'any' }`). Mythos models (Fable 5) reject forced tool use with a
+   * 400 ("tool_choice forces tool use is not compatible with this model") and
+   * only accept `{ type: 'auto' }`.
+   */
+  supportsForcedToolChoice: boolean;
   /** Whether mid-conversation `system` messages are supported. */
   supportsMidConversationSystem: boolean;
   /** Effort presets the model understands. */
@@ -122,6 +129,7 @@ const TIER_DEFAULTS: Record<ModelTier, Omit<ModelCapability, 'id' | 'aliases' | 
     defaultMaxOutput: 8_192,
     thinking: 'budget',
     supportsSampling: true,
+    supportsForcedToolChoice: true,
     supportsMidConversationSystem: false,
     supportedEfforts: ['low', 'medium', 'high'],
     effortAliases: { xhigh: 'high', max: 'high' },
@@ -135,6 +143,7 @@ const TIER_DEFAULTS: Record<ModelTier, Omit<ModelCapability, 'id' | 'aliases' | 
     defaultMaxOutput: 16_384,
     thinking: 'budget',
     supportsSampling: true,
+    supportsForcedToolChoice: true,
     supportsMidConversationSystem: false,
     supportedEfforts: ['low', 'medium', 'high', 'xhigh'],
     effortAliases: { max: 'xhigh' },
@@ -148,6 +157,7 @@ const TIER_DEFAULTS: Record<ModelTier, Omit<ModelCapability, 'id' | 'aliases' | 
     defaultMaxOutput: 16_384,
     thinking: 'budget',
     supportsSampling: true,
+    supportsForcedToolChoice: true,
     supportsMidConversationSystem: false,
     supportedEfforts: ['low', 'medium', 'high', 'xhigh'],
     effortAliases: { max: 'xhigh' },
@@ -161,6 +171,8 @@ const TIER_DEFAULTS: Record<ModelTier, Omit<ModelCapability, 'id' | 'aliases' | 
     defaultMaxOutput: 128_000,
     thinking: 'adaptive',
     supportsSampling: false,
+    // Mythos rejects a forced tool_choice (400) — only `{ type: 'auto' }`.
+    supportsForcedToolChoice: false,
     supportsMidConversationSystem: true,
     supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
     effortAliases: {},
@@ -176,6 +188,7 @@ const TIER_DEFAULTS: Record<ModelTier, Omit<ModelCapability, 'id' | 'aliases' | 
     defaultMaxOutput: 8_192,
     thinking: 'budget',
     supportsSampling: true,
+    supportsForcedToolChoice: true,
     supportsMidConversationSystem: false,
     supportedEfforts: ['low', 'medium', 'high'],
     effortAliases: { xhigh: 'high', max: 'high' },
@@ -223,6 +236,8 @@ export const DEFAULT_CAPABILITIES: ModelCapability[] = [
     thinking: 'adaptive',
     // Rejects temperature/top_p/top_k with a 400.
     supportsSampling: false,
+    // Opus 4.8 still accepts a forced tool_choice (only mythos rejects it).
+    supportsForcedToolChoice: true,
     // Supports mid-conversation system messages (only opus-4-8+).
     supportsMidConversationSystem: true,
     supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
