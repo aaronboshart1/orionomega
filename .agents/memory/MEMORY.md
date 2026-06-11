@@ -6,3 +6,4 @@
 - [Stale src/*.js shadows .ts under vitest](vitest-stale-src-js.md) — new exports read as undefined/"not a constructor" though tsc passes; delete gitignored src/*.js so vitest resolves .ts.
 - [Model capability registry](model-capability-registry.md) — all per-model behavior lives in one declarative table; resolve via getModelCapability; precedence config>discovery>defaults.
 - [gateway WS client singleton constraint](gateway-ws-singletons.md) — mutable WS state must stay in lib/gateway.ts (export let is read-only in importers); extract pure handlers, pass setter ctx.
+- [Replit gateway/web shared config + bind](replit-gateway-web-config.md) — pin both procs to one config.yaml via CONFIG_PATH or keyHash mismatch breaks UI; gateway must bind 0.0.0.0 or workflow port-probe kills it.

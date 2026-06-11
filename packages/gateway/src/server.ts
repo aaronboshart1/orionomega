@@ -13,7 +13,7 @@ import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { spawn as spawnProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { readConfig, normalizeBindAddresses, MainAgent, CommandFileLoader, createLogger, setGlobalLogLevel, enableFileLogging, discoverModels, clearModelCache, auditApiRequest, setCodingOrchestatorEmitters, getDb, BUILD_INFO as CORE_BUILD_INFO, getStaleBuildStatus, getDatabaseStatus } from '@orionomega/core';
+import { readConfig, normalizeBindAddresses, assertSecureBind, ensureGatewayAuthSecret, InsecureBindError, MainAgent, CommandFileLoader, createLogger, setGlobalLogLevel, enableFileLogging, discoverModels, clearModelCache, auditApiRequest, setCodingOrchestatorEmitters, getDb, BUILD_INFO as CORE_BUILD_INFO, getStaleBuildStatus, getDatabaseStatus } from '@orionomega/core';
 import type { MainAgentConfig, MainAgentCallbacks, LogLevel, PlannerOutput, StaleBuildStatus } from '@orionomega/core';
 import { BUILD_INFO as GATEWAY_BUILD_INFO } from './generated/build-info.js';
 import { setLogLevel as setHindsightLogLevel } from '@orionomega/hindsight';
@@ -60,6 +60,7 @@ import { setCodingEventStreamer, emitCodingSessionStarted, emitCodingWorkflowSta
 import { FeedService } from './feed/index.js';
 import { handleGetFeed, handleGetFeedMessage, handlePostFeedMessage, handleGetFeedCount } from './routes/feed.js';
 import { handleGitRoute } from './routes/git.js';
+import { checkAuth } from './routes/auth-utils.js';
 import { getReposStore } from './repos-store.js';
 
 process.on('uncaughtException', (err) => {
@@ -83,6 +84,25 @@ let hindsightUrl: string;
 
 try {
   const fullConfig = readConfig();
+
+  // Security P0 (Task #231): refuse an unauthenticated gateway that is exposed
+  // on a non-localhost address unless the operator explicitly opted in. This
+  // throws InsecureBindError, which we treat as fatal below.
+  assertSecureBind(fullConfig);
+
+  // When auth is enabled (the default) and no signing secret has been
+  // configured yet, generate and persist one so local clients (web proxy / TUI)
+  // can mint signed tokens. The raw key is logged once so operators can copy it
+  // for any external clients.
+  const bootstrap = ensureGatewayAuthSecret(fullConfig);
+  if (bootstrap.generated && bootstrap.keyHash) {
+    log.warn(
+      '[security] Generated a new gateway api-key secret and saved it to config. ' +
+      'Local clients use it automatically; copy it for any external client:\n' +
+      `    keyHash: ${bootstrap.keyHash}`,
+    );
+  }
+
   config = fullConfig.gateway;
   hindsightUrl = fullConfig.hindsight.url;
 
@@ -99,7 +119,14 @@ try {
     enableFileLogging(fullConfig.logging.file);
   }
   log.info(`Log level set to: ${logLevel}`);
-} catch {
+} catch (err: unknown) {
+  // A refused insecure bind (Task #231) is a deliberate, fatal security
+  // decision — never silently fall back to an unauthenticated default in that
+  // case; that would defeat the whole point of the refusal.
+  if (err instanceof InsecureBindError) {
+    console.error('[gateway] FATAL: ' + err.message);
+    process.exit(1);
+  }
   // Fallback defaults if core config is unavailable
   config = {
     port: 8000,
@@ -1305,6 +1332,33 @@ function setCorsHeaders(req: IncomingMessage, res: ServerResponse): void {
 /**
  * Minimal pattern-matching router for REST endpoints.
  */
+/**
+ * Genuinely-public API endpoints that must NOT require a token even when
+ * api-key auth is enabled (Task #231). Keep this list as small as possible.
+ *
+ * - `GET /api/health` — unauthenticated liveness probe (load balancers, etc.).
+ * - `GET /api/skills/atlassian/oauth/callback` — the OAuth redirect URI hit
+ *   directly by the user's browser coming back from Atlassian; it cannot carry
+ *   our Bearer token. The follow-up `/oauth/exchange` POST is authenticated.
+ */
+function isPublicApiRoute(pathname: string, method: string): boolean {
+  if (pathname === '/api/health' && method === 'GET') return true;
+  if (pathname === '/api/skills/atlassian/oauth/callback' && method === 'GET') return true;
+  return false;
+}
+
+/**
+ * Extracts the gateway session id a request targets, for per-session
+ * authorization (Task #231). Only the `/api/sessions/:id...` family is scoped;
+ * for every other route this returns undefined, which means a session-scoped
+ * token is refused (only an unscoped master token may proceed) — a deliberately
+ * restrictive default.
+ */
+function extractSessionScope(pathname: string): string | undefined {
+  const m = pathname.match(/^\/api\/sessions\/([a-z0-9_-]+)(?:\/|$)/);
+  return m ? m[1] : undefined;
+}
+
 function handleRequest(req: IncomingMessage, res: ServerResponse): void {
   setSecurityHeaders(res);
   setCorsHeaders(req, res);
@@ -1326,6 +1380,20 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
 
   if (pathname !== '/api/health') {
     auditApiRequest(method, pathname, undefined, req.socket.remoteAddress);
+  }
+
+  // ── Central authentication & per-session authorization gate (Task #231) ──
+  // Every /api route requires a valid token when api-key auth is enabled,
+  // except a tiny allowlist of genuinely-public endpoints. Session-scoped
+  // tokens may only act on their own session; unscoped master tokens (used by
+  // the trusted web proxy / TUI) may act on any session. This is the single
+  // authoritative auth boundary — per-route checkAuth calls in the handlers
+  // remain as defense-in-depth.
+  if (pathname.startsWith('/api/') && !isPublicApiRoute(pathname, method)) {
+    const requiredSessionId = extractSessionScope(pathname);
+    if (!checkAuth(req, res, config, requiredSessionId)) {
+      return;
+    }
   }
 
   // --- Health ---

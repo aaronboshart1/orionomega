@@ -123,15 +123,22 @@ app.prepare().then(() => {
     if (parsedUrl.pathname.startsWith('/api/gateway/')) {
       const targetPath = stripGatewayPrefix(req.url);
       console.log(`[proxy] ${req.method} ${req.url} -> ${gatewayHost}:${gatewayPort}${targetPath}`);
+      // Inject a master Bearer token on REST calls when the gateway is in
+      // api-key auth mode (Task #231). The trusted web proxy mints an unscoped
+      // master token so the UI keeps working once auth is on by default. The
+      // `authorization` header is NOT in ALLOWED_HTTP_HEADERS, so a client can
+      // never forge or override this — it is set purely server-side here.
+      const headerOverrides = { host: `${gatewayHost}:${gatewayPort}` };
+      if (gatewayAuthSecret) {
+        headerOverrides.authorization = 'Bearer ' + generateGatewayToken(gatewayAuthSecret);
+      }
       const proxyReq = httpRequest(
         {
           hostname: gatewayHost,
           port: gatewayPort,
           path: targetPath,
           method: req.method,
-          headers: filterHeaders(req.headers, ALLOWED_HTTP_HEADERS, {
-            host: `${gatewayHost}:${gatewayPort}`,
-          }),
+          headers: filterHeaders(req.headers, ALLOWED_HTTP_HEADERS, headerOverrides),
         },
         (proxyRes) => {
           console.log(`[proxy] ${req.method} ${req.url} <- ${proxyRes.statusCode}`);

@@ -10,4 +10,8 @@ export {
   getConfigPath,
   getDefaultConfig,
   normalizeBindAddresses,
+  assertSecureBind,
+  ensureGatewayAuthSecret,
+  InsecureBindError,
+  INSECURE_BIND_OVERRIDE_ENV,
 } from './loader.js';

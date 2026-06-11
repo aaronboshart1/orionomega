@@ -5,6 +5,7 @@
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync, chmodSync, copyFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { randomBytes } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import type { OrionOmegaConfig } from './types.js';
@@ -41,7 +42,14 @@ export function getDefaultConfig(): OrionOmegaConfig {
       port: 8000,
       bind: ['127.0.0.1'],
       auth: {
-        mode: 'none',
+        // Authenticated by default (Task #231 — Security P0). On first start the
+        // gateway auto-generates a random api-key secret (see
+        // `ensureGatewayAuthSecret`) and persists its `keyHash` so local clients
+        // (the web proxy / TUI) can mint signed tokens. Operators who genuinely
+        // want an unauthenticated local-only gateway must explicitly set
+        // `mode: 'none'` in config.yaml — and will then be refused a
+        // non-localhost bind unless they also set ORIONOMEGA_ALLOW_INSECURE_BIND=1.
+        mode: 'api-key',
       },
       cors: {
         origins: ['http://localhost:*'],
@@ -248,15 +256,121 @@ export function readConfig(configPath?: string): OrionOmegaConfig {
   // Apply declarative model-registry overrides (config > discovery > defaults).
   applyRegistryOverrides(merged.models?.registry);
 
-  if (merged.gateway.auth.mode === 'none' && isNonLocalhostBind(merged.gateway.bind)) {
+  if (merged.gateway.auth.mode === 'none') {
+    if (isNonLocalhostBind(merged.gateway.bind)) {
+      console.warn(
+        '[security] WARNING: auth mode is "none" but gateway is bound to a non-localhost address (' +
+        merged.gateway.bind.join(', ') +
+        '). This exposes the gateway without authentication. Set auth.mode to "api-key" or bind to 127.0.0.1. ' +
+        'Startup will be REFUSED in this configuration unless ' + INSECURE_BIND_OVERRIDE_ENV + '=1 is set.',
+      );
+    } else {
+      console.warn(
+        '[security] WARNING: auth mode is "none" — the gateway is unauthenticated. This is only safe for ' +
+        'local-only use bound to 127.0.0.1. Set auth.mode to "api-key" for any networked/unattended deployment.',
+      );
+    }
+  } else if (merged.gateway.auth.mode === 'api-key' && !merged.gateway.auth.keyHash) {
     console.warn(
-      '[security] WARNING: auth mode is "none" but gateway is bound to a non-localhost address (' +
-      merged.gateway.bind.join(', ') +
-      '). This exposes the gateway without authentication. Set auth.mode to "api-key" or bind to 127.0.0.1.',
+      '[security] auth mode is "api-key" but no keyHash is set. Run the gateway to auto-generate one, ' +
+      'or run `orionomega setup` to configure a key.',
     );
   }
 
   return merged;
+}
+
+/** Env var that, when set to a truthy value, allows a non-localhost bind with auth disabled. */
+export const INSECURE_BIND_OVERRIDE_ENV = 'ORIONOMEGA_ALLOW_INSECURE_BIND';
+
+/** Error thrown by {@link assertSecureBind} when an insecure bind configuration is refused. */
+export class InsecureBindError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'InsecureBindError';
+  }
+}
+
+/**
+ * Refuses an unsafe gateway exposure: auth disabled (`mode: 'none'`) combined
+ * with a non-localhost bind. Throws {@link InsecureBindError} unless the
+ * operator has explicitly opted in via `ORIONOMEGA_ALLOW_INSECURE_BIND=1`.
+ *
+ * This is the hard refusal that backs the advisory warning emitted by
+ * {@link readConfig}. Callers (the gateway entry point) should treat the throw
+ * as fatal. Pure / side-effect-free so it is trivially unit-testable.
+ *
+ * @param config - The resolved configuration to validate.
+ * @param env - Environment to read the override flag from. Defaults to `process.env`.
+ */
+export function assertSecureBind(
+  config: OrionOmegaConfig,
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  const addrs = normalizeBindAddresses(config.gateway.bind);
+  if (config.gateway.auth.mode !== 'none') return;
+  if (!isNonLocalhostBind(addrs)) return;
+
+  const override = env[INSECURE_BIND_OVERRIDE_ENV];
+  const overridden = override === '1' || override === 'true' || override === 'yes';
+  if (overridden) {
+    console.warn(
+      '[security] DANGER: gateway is bound to a non-localhost address (' + addrs.join(', ') +
+      ') with auth disabled, allowed only because ' + INSECURE_BIND_OVERRIDE_ENV + ' is set. ' +
+      'Anyone who can reach this address has full, unauthenticated control of the agent.',
+    );
+    return;
+  }
+
+  throw new InsecureBindError(
+    'Refusing to start: gateway auth mode is "none" but it is bound to a non-localhost address (' +
+    addrs.join(', ') + '). An unauthenticated gateway that can clone repos, run shell commands, and ' +
+    'spend money must not be network-exposed. Fix one of:\n' +
+    '  • set gateway.auth.mode to "api-key" (recommended), or\n' +
+    '  • bind gateway.bind to 127.0.0.1 (local only), or\n' +
+    '  • set ' + INSECURE_BIND_OVERRIDE_ENV + '=1 to explicitly accept the risk.',
+  );
+}
+
+/**
+ * Ensures the gateway has a usable api-key secret when auth is enabled.
+ *
+ * When `gateway.auth.mode === 'api-key'` and no `keyHash` is configured, this
+ * generates a cryptographically-random secret, stores it as `gateway.auth.keyHash`,
+ * and persists the config to disk (so local clients — the web proxy and TUI —
+ * can read it and mint signed tokens). The generated value is the shared HMAC
+ * signing secret used by {@link generateToken}/`validateToken`; it is not a
+ * scrypt password hash.
+ *
+ * Mutates `config` in place and returns whether a key was generated. The caller
+ * is responsible for logging the (sensitive) `keyHash` if it wants operators to
+ * be able to copy it for external clients.
+ *
+ * @param config - The configuration to inspect/mutate.
+ * @param configPath - Where to persist the config. Defaults to `getConfigPath()`.
+ * @returns `{ generated: true, keyHash }` if a key was created, else `{ generated: false }`.
+ */
+export function ensureGatewayAuthSecret(
+  config: OrionOmegaConfig,
+  configPath?: string,
+): { generated: boolean; keyHash?: string } {
+  if (config.gateway.auth.mode !== 'api-key') return { generated: false };
+  if (config.gateway.auth.keyHash && config.gateway.auth.keyHash.length > 0) {
+    return { generated: false };
+  }
+
+  const keyHash = randomBytes(48).toString('base64url');
+  config.gateway.auth.keyHash = keyHash;
+
+  try {
+    writeConfig(config, configPath);
+  } catch (err) {
+    log.warn('Failed to persist auto-generated gateway api-key secret', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  return { generated: true, keyHash };
 }
 
 /**

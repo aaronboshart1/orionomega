@@ -251,6 +251,7 @@ export class WebSocketHandler {
     }
 
     // Authenticate if auth mode is api-key
+    let tokenSessionScope: string | undefined;
     if (this.config.auth.mode === 'api-key' && this.config.auth.keyHash) {
       const result = validateToken(token, this.config.auth.keyHash);
       if (!result.valid) {
@@ -261,11 +262,34 @@ export class WebSocketHandler {
         auditAuthEvent('ws_auth_failed', 'Invalid token', req.socket.remoteAddress ?? 'unknown');
         return;
       }
+      // Per-session authorization (Task #231): a session-scoped token may only
+      // bind to its own session. A master token (no sessionId) may bind to any.
+      const scoped = result.payload?.sessionId;
+      if (scoped !== undefined && scoped !== null && scoped !== '') {
+        tokenSessionScope = String(scoped);
+        if (rawSessionId && rawSessionId !== tokenSessionScope) {
+          ws.close(4003, 'Forbidden: token not authorized for this session');
+          log.warn('[ws:authz:denied] Token scoped to a different session', {
+            from: req.socket.remoteAddress ?? 'unknown',
+          });
+          auditAuthEvent(
+            'ws_authz_denied',
+            `Token scoped to session "${tokenSessionScope}" may not bind "${rawSessionId}"`,
+            req.socket.remoteAddress ?? 'unknown',
+          );
+          return;
+        }
+      }
       auditAuthEvent('ws_auth_success', undefined, req.socket.remoteAddress ?? undefined);
     }
 
-    // Use the requested session if provided and it exists, otherwise fall back to default
-    const requestedSession = rawSessionId ? this.sessionManager.getSession(rawSessionId) : undefined;
+    // Use the requested session if provided and it exists, otherwise fall back
+    // to default. A session-scoped token with no explicit ?session= is pinned
+    // to its own scoped session rather than the shared default.
+    const effectiveSessionId = rawSessionId || tokenSessionScope || '';
+    const requestedSession = effectiveSessionId
+      ? this.sessionManager.getSession(effectiveSessionId)
+      : undefined;
     const session = requestedSession ?? this.sessionManager.getDefaultSession();
 
     // Use cryptographically random UUID for client IDs (RFC 4122 v4)

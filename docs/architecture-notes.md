@@ -235,6 +235,32 @@ Heavy subsystems (MainAgent, scheduler, hindsight health timer, skill discovery,
 
 Helper + tests: `packages/gateway/src/bind-retry.ts`, `packages/gateway/src/__tests__/bind-retry.test.ts`.
 
+## Auth by default + per-session authorization (Task #231)
+
+Security P0. The gateway is **authenticated by default** and one session can no longer reach another session's data.
+
+### What changed
+- **Default flip**: `getDefaultConfig()` now sets `gateway.auth.mode: 'api-key'`. `mode: 'none'` is an explicit, warned opt-in.
+- **First-run key bootstrap**: on startup `ensureGatewayAuthSecret()` (core `loader.ts`) generates a random 48-byte base64url signing secret, stores it as `gateway.auth.keyHash`, and persists the config (0600). The raw key is logged once so it can be copied for external clients. Local clients (web proxy / TUI) read `keyHash` and mint signed tokens automatically. `GATEWAY_AUTH_SECRET` env override still works in `server.mjs`.
+- **Insecure-bind refusal**: `assertSecureBind()` (core) throws `InsecureBindError` when `auth.mode === 'none'` **and** the gateway binds a non-localhost address, unless `ORIONOMEGA_ALLOW_INSECURE_BIND=1` is set. The gateway entry point treats the throw as **fatal** (`process.exit(1)`) and never falls back to an unauthenticated default in that case.
+- **Central auth gate**: `handleRequest` authenticates **every** `/api/*` request (api-key mode) except a tiny public allowlist — `GET /api/health` and `GET /api/skills/atlassian/oauth/callback` (the external OAuth redirect URI that cannot carry our Bearer token; its follow-up `/oauth/exchange` POST *is* authenticated). Per-route `checkAuth` calls in `config`/`skills`/`schedules` handlers remain as defense-in-depth.
+- **Per-session authZ (tokens)**: tokens are either *master* (no `data.sessionId` — minted by the trusted web proxy / TUI, valid for any session) or *scoped* (`data.sessionId` set — valid only for that one session). `isSessionAuthorized()` enforces the boundary. On REST, `handleRequest` derives the target session from `/api/sessions/:id...` (`extractSessionScope`) and a scoped token presented for a different session — or for a global/unscoped route — gets **403**. On WS, `handleConnection` rejects a scoped token binding a different `?session=` with close code **4003**, and pins a scoped token with no explicit `?session=` to its own session.
+- **Web proxy REST token injection** (`packages/web/server.mjs`): `createHandler` now injects `Authorization: Bearer <master token>` on REST proxy requests (previously only the WS upgrade got a token, which silently broke REST once auth was on). `authorization` is deliberately **not** in `ALLOWED_HTTP_HEADERS`, so a browser can never forge or override it — the proxy sets it purely server-side.
+
+### Hardening checklist (operator)
+- [ ] Leave `gateway.auth.mode` at the default `api-key`. Only set `none` for a throwaway local-only gateway bound to `127.0.0.1`.
+- [ ] Never expose `mode: 'none'` on a non-localhost bind. If you must (you almost never must), you have to opt in with `ORIONOMEGA_ALLOW_INSECURE_BIND=1` and accept full unauthenticated control of the agent.
+- [ ] Treat `gateway.auth.keyHash` as a secret. It is the HMAC signing secret — anyone with it can mint master tokens. It lives in the 0600 config file; don't commit it.
+- [ ] Rotate the key by clearing `keyHash` (the gateway regenerates on next start) or setting a new value; restart the gateway and the web server so both pick it up.
+- [ ] Externally-issued tokens for a single session should be **scoped** (`data.sessionId`), never master.
+- [ ] Out of scope here (downstream task): file containment, REST Zod validation, SSRF, audit redaction.
+
+### Where it lives
+- Core: `packages/core/src/config/loader.ts` (`getDefaultConfig`, `assertSecureBind`, `ensureGatewayAuthSecret`, `InsecureBindError`, `INSECURE_BIND_OVERRIDE_ENV`).
+- Gateway: `packages/gateway/src/routes/auth-utils.ts` (`checkAuth(req,res,cfg,requiredSessionId?)`, `isSessionAuthorized`), `server.ts` (startup bootstrap + `handleRequest` central gate, `isPublicApiRoute`, `extractSessionScope`), `websocket.ts` (`handleConnection` scope enforcement).
+- Web: `packages/web/server.mjs` (`createHandler` Bearer injection).
+- Tests: `packages/core/src/config/__tests__/auth-defaults.test.ts`, `packages/gateway/src/routes/__tests__/auth-utils.test.ts`.
+
 ## Foundational baseline
 
 - **Monorepo Structure**: pnpm for efficient dependency management across multiple packages (`web`, `gateway`, `core`, `hindsight`, `skills-sdk`, `tui`).
