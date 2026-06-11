@@ -562,10 +562,15 @@ async function initMainAgent(): Promise<void> {
         });
       }
 
+      // Attach a live burn-rate snapshot ($/hr + spend series + cap status) so
+      // the web UI can render the burn-rate view alongside the cost (Task #245).
+      const burnRate = stateStore.getBurnRate(sid, config.sessionBudgetCapUsd);
+
       wsHandler.broadcast({
         id: evtId,
         type: "session_status",
         sessionStatus: status,
+        burnRate,
       }, sid);
     },
     onDirectStart(info, sessionId) {

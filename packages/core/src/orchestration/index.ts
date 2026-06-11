@@ -93,3 +93,15 @@ export type {
 // Coding orchestrator emitters
 export { setCodingOrchestatorEmitters } from './coding/coding-orchestrator.js';
 export type { CodingEventEmitters, CodingOrchestratorConfig, CodingProgressCallback } from './coding/coding-orchestrator.js';
+
+// Burn-rate computation (Task #245)
+export {
+  BurnRateTracker,
+  computeBurnRate,
+  buildSpendSeries,
+  summarizeBurnRate,
+  DEFAULT_BURN_WINDOW_MS,
+  DEFAULT_NEAR_CAP_THRESHOLD,
+  DEFAULT_MAX_SERIES_POINTS,
+} from './burn-rate.js';
+export type { CostSample, SpendPoint, BurnRateSnapshot } from './burn-rate.js';

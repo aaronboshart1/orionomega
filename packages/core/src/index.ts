@@ -61,6 +61,18 @@ export { RecoveryManager } from './orchestration/index.js';
 export type { OrchestratorCommandResult } from './orchestration/index.js';
 export { OrchestratorCommands } from './orchestration/index.js';
 
+// Burn-rate computation (Task #245)
+export {
+  BurnRateTracker,
+  computeBurnRate,
+  buildSpendSeries,
+  summarizeBurnRate,
+  DEFAULT_BURN_WINDOW_MS,
+  DEFAULT_NEAR_CAP_THRESHOLD,
+  DEFAULT_MAX_SERIES_POINTS,
+} from './orchestration/index.js';
+export type { CostSample, SpendPoint, BurnRateSnapshot } from './orchestration/index.js';
+
 // File-based commands
 export { CommandFileLoader } from './commands/index.js';
 export type { FileCommand } from './commands/index.js';

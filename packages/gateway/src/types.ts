@@ -223,6 +223,8 @@ export interface ServerMessage {
   status?: SystemStatus;
   commandResult?: CommandResult;
   sessionStatus?: { model: string; inputTokens: number; outputTokens: number; cacheCreationTokens?: number; cacheReadTokens?: number; maxContextTokens: number; sessionCostUsd?: number };
+  /** Live burn-rate snapshot ($/hr + spend series + cap status) — Task #245. */
+  burnRate?: import('@orionomega/core').BurnRateSnapshot;
   hindsightStatus?: { connected: boolean; busy: boolean };
   memoryEvent?: { id: string; timestamp: string; op: string; detail: string; bank?: string; meta?: Record<string, unknown> };
   step?: { id: string; name: string; status: 'pending' | 'active' | 'done'; startedAt?: number; completedAt?: number; elapsedMs?: number; detail?: string };
@@ -448,4 +450,10 @@ export interface GatewayConfig {
   cors: {
     origins: string[];
   };
+  /**
+   * Optional session budget cap (USD) for the live burn-rate view (Task #245).
+   * When set, the burn-rate snapshot surfaces how close a session is to the cap
+   * and a projected time-to-exhaustion. Unset = no cap is displayed.
+   */
+  sessionBudgetCapUsd?: number;
 }

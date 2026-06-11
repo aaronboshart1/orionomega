@@ -12,7 +12,8 @@
  * 5. Managing pending user actions (plan approvals, DAG confirmations)
  */
 
-import { createLogger } from '@orionomega/core';
+import { createLogger, BurnRateTracker } from '@orionomega/core';
+import type { BurnRateSnapshot } from '@orionomega/core';
 import type {
   StateEvent,
   StateEventType,
@@ -80,6 +81,8 @@ export class ServerSessionStore {
   private dags: Map<string, DAGState> = new Map();
   /** Session cost accumulators. */
   private costs: Map<string, SessionCosts> = new Map();
+  /** Per-session live burn-rate trackers (Task #245). */
+  private burnRateTrackers: Map<string, BurnRateTracker> = new Map();
   /** Pending user actions (plans, DAG confirmations). */
   private pendingActions: Map<string, PendingAction> = new Map();
   /** Coding session state per session. */
@@ -439,6 +442,37 @@ export class ServerSessionStore {
     costs.cacheCreationTokens += delta.cacheCreationTokens ?? 0;
     costs.costUsd += delta.costUsd ?? 0;
     costs.updatedAt = new Date().toISOString();
+
+    // Feed the live burn-rate tracker with the new cumulative cost (Task #245).
+    let tracker = this.burnRateTrackers.get(sessionId);
+    if (!tracker) {
+      tracker = new BurnRateTracker();
+      this.burnRateTrackers.set(sessionId, tracker);
+    }
+    tracker.record(costs.costUsd);
+  }
+
+  /**
+   * Produce a live burn-rate snapshot for a session (Task #245).
+   *
+   * @param sessionId session to summarise.
+   * @param capUsd    optional session budget cap (USD) to surface cap-approach.
+   * @returns a {@link BurnRateSnapshot}; an empty/zeroed snapshot when the
+   *          session has no recorded cost samples yet.
+   */
+  getBurnRate(sessionId: string, capUsd?: number): BurnRateSnapshot {
+    const tracker = this.burnRateTrackers.get(sessionId);
+    if (!tracker) {
+      return {
+        burnRateUsdPerHour: 0,
+        totalUsd: this.costs.get(sessionId)?.costUsd ?? 0,
+        spendSeries: [],
+        approachingCap: false,
+        overCap: false,
+        ...(capUsd !== undefined && capUsd > 0 ? { capUsd, fractionOfCap: 0, msToCapExhaustion: null } : {}),
+      };
+    }
+    return tracker.snapshot({ capUsd });
   }
 
   /**
@@ -554,6 +588,7 @@ export class ServerSessionStore {
     this.events.delete(sessionId);
     this.seenEventIds.delete(sessionId);
     this.costs.delete(sessionId);
+    this.burnRateTrackers.delete(sessionId);
     this.codingSessions.delete(sessionId);
 
     // Remove DAGs and pending actions for this session

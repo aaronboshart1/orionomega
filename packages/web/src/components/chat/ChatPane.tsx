@@ -20,6 +20,7 @@ import { PlanCard } from './PlanCard';
 import { BackgroundTaskIndicator } from './BackgroundTaskIndicator';
 import { ConnectionStatus } from './ConnectionStatus';
 import { SessionCostBar } from './SessionCostBar';
+import { BurnRateView } from './BurnRateView';
 import type { ChatMessage } from '@/stores/chat';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import dynamic from 'next/dynamic';
@@ -495,7 +496,12 @@ export function ChatPane() {
       <ChatInput
         onSend={handleSend}
         modeToggle={<AgentModeToggle disabled={isStreaming} variant="inline" />}
-        costBar={<SessionCostBar />}
+        costBar={
+          <div className="flex flex-col items-end gap-1">
+            <BurnRateView />
+            <SessionCostBar />
+          </div>
+        }
       />
     </div>
   );

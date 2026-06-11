@@ -123,6 +123,9 @@ export class CodingPlanner {
       overrides: opts.codingModeConfig.models,
       discoveredModels: opts.discoveredModels ?? [],
       fallbackModel: opts.fallbackModel,
+      // Complexity-aware tier routing (Task #245). Defaults to enabled when the
+      // config omits the block (handled by the resolver's `?? true`).
+      tierRoutingEnabled: opts.codingModeConfig.tierRouting?.enabled,
     });
 
     this.budgetAllocator = new CodingBudgetAllocator({

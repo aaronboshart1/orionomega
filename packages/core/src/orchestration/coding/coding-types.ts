@@ -126,6 +126,15 @@ export interface CodingModeConfig {
   };
   /** Multiply all budget allocations by this factor. Default: 1.0. */
   budgetMultiplier: number;
+  /**
+   * Complexity-aware tier routing (Task #245). When enabled, low-complexity
+   * phases default to a cheaper tier while hard phases still escalate to Opus.
+   * Omitted/undefined = enabled (the default).
+   */
+  tierRouting?: {
+    /** Master switch. Default: true. */
+    enabled: boolean;
+  };
 }
 
 /**

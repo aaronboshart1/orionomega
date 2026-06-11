@@ -34,6 +34,13 @@ interface ModelStrategy {
   upgradeTier: ModelTier | null;
   /** Tier to use when downgrade condition is met (null = no downgrade). */
   downgradeTier: ModelTier | null;
+  /**
+   * Cheaper tier to route to on low-complexity codebases when complexity-aware
+   * tier routing is enabled (Task #245). Distinct from {@link downgradeTier},
+   * which is an explicit per-role rule applied regardless of the routing flag.
+   * null = never auto-downgrade this role for low complexity.
+   */
+  lowComplexityTier?: ModelTier | null;
   /** Whether to enable adaptive thinking mode (extended thinking). */
   thinkingMode: 'adaptive' | 'disabled';
   /**
@@ -62,6 +69,7 @@ const CODING_MODE_MODEL_STRATEGY: Record<CodingRole, ModelStrategy> = {
     preferredTier: 'sonnet',
     upgradeTier:   'opus',
     downgradeTier: null,
+    lowComplexityTier: 'haiku',  // Trivial codebases don't need sonnet for design
     thinkingMode:  'adaptive',  // May need deep reasoning for design decisions
     thinkingBudgetTokens: 16_000,
     thinkingEffort: 'high',
@@ -70,6 +78,7 @@ const CODING_MODE_MODEL_STRATEGY: Record<CodingRole, ModelStrategy> = {
     preferredTier: 'sonnet',
     upgradeTier:   'opus',
     downgradeTier: null,
+    lowComplexityTier: 'haiku',  // Simple edits on a small codebase
     thinkingMode:  'adaptive',
     thinkingBudgetTokens: 10_000,
     thinkingEffort: 'high',
@@ -78,6 +87,7 @@ const CODING_MODE_MODEL_STRATEGY: Record<CodingRole, ModelStrategy> = {
     preferredTier: 'sonnet',
     upgradeTier:   'opus',
     downgradeTier: null,
+    lowComplexityTier: 'haiku',  // Few/no conflicts to reconcile
     thinkingMode:  'adaptive',
     thinkingBudgetTokens: 8_000,
     thinkingEffort: 'medium',
@@ -157,15 +167,24 @@ export class CodingModelResolver {
   private readonly overrides: Partial<Record<CodingRole, string>>;
   private readonly discoveredModels: DiscoveredModel[];
   private readonly fallbackModel: string;
+  /**
+   * Complexity-aware tier routing (Task #245). When true (default), easy
+   * phases are downgraded to a cheaper tier and only hard phases escalate.
+   * When false, every role stays on its preferred tier (legacy behaviour),
+   * with only the explicit per-role downgrades (e.g. test-writer) applied.
+   */
+  private readonly tierRoutingEnabled: boolean;
 
   constructor(opts: {
     overrides?: Partial<Record<CodingRole, string>>;
     discoveredModels?: DiscoveredModel[];
     fallbackModel: string;
+    tierRoutingEnabled?: boolean;
   }) {
     this.overrides = opts.overrides ?? {};
     this.discoveredModels = opts.discoveredModels ?? [];
     this.fallbackModel = opts.fallbackModel;
+    this.tierRoutingEnabled = opts.tierRoutingEnabled ?? true;
   }
 
   /**
@@ -213,9 +232,12 @@ export class CodingModelResolver {
     if (strategy.upgradeTier && this.shouldUpgrade(role, context)) {
       tier = strategy.upgradeTier;
       log.debug(`Role ${role}: upgrading to ${tier} tier`);
-    } else if (strategy.downgradeTier && this.shouldDowngrade(role, context)) {
-      tier = strategy.downgradeTier;
-      log.debug(`Role ${role}: downgrading to ${tier} tier`);
+    } else {
+      const downgrade = this.resolveDowngradeTier(role, strategy, context);
+      if (downgrade) {
+        tier = downgrade;
+        log.debug(`Role ${role}: downgrading to ${tier} tier`);
+      }
     }
 
     // 3. Resolve to actual model ID
@@ -290,6 +312,51 @@ export class CodingModelResolver {
       default:
         return false;
     }
+  }
+
+  /**
+   * Resolves the downgrade tier for a role, if any (Task #245).
+   *
+   * Two independent paths:
+   *  1. Explicit per-role downgrade ({@link ModelStrategy.downgradeTier}, e.g.
+   *     test-writer → haiku). Always honoured regardless of the routing flag —
+   *     this is legacy behaviour.
+   *  2. Complexity-aware tier routing: when enabled and the codebase is
+   *     low-complexity, roles with a {@link ModelStrategy.lowComplexityTier}
+   *     (architect/implementer/stitcher) route to that cheaper tier so easy
+   *     phases don't pay for sonnet. Disabled via `tierRouting.enabled: false`.
+   */
+  private resolveDowngradeTier(
+    role: CodingRole,
+    strategy: ModelStrategy,
+    ctx: ModelResolutionContext,
+  ): ModelTier | null {
+    if (strategy.downgradeTier && this.shouldDowngrade(role, ctx)) {
+      return strategy.downgradeTier;
+    }
+    if (
+      this.tierRoutingEnabled &&
+      strategy.lowComplexityTier &&
+      this.isLowComplexity(ctx)
+    ) {
+      return strategy.lowComplexityTier;
+    }
+    return null;
+  }
+
+  /**
+   * A codebase is "low complexity" — and therefore eligible for cheaper-tier
+   * routing — when its average per-file complexity is mostly 'low', it touches
+   * few files, has no large files, and isn't flagged security-relevant. Any of
+   * those signals keeps the role on its preferred tier.
+   */
+  private isLowComplexity(ctx: ModelResolutionContext): boolean {
+    const { profile, securityRelevant = false } = ctx;
+    if (securityRelevant) return false;
+    const fileCount = profile.relevantFiles.length;
+    if (fileCount === 0 || fileCount > 20) return false;
+    if (profile.relevantFiles.some((f) => f.linesOfCode > 500)) return false;
+    return this.avgComplexity(profile) < 1.5;
   }
 
   private avgComplexity(profile: CodebaseScanOutput): number {

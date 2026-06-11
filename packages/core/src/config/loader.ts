@@ -142,6 +142,7 @@ export function getDefaultConfig(): OrionOmegaConfig {
         commands: [],   // Empty = auto-detect from package.json/Makefile
       },
       budgetMultiplier: 1.0,
+      tierRouting: { enabled: true },
     },
   };
 }

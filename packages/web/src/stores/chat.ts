@@ -105,6 +105,29 @@ export interface SessionTokenTotals {
   messageCount: number;
 }
 
+/** A point in the spend-over-time series (mirrors core's SpendPoint). */
+export interface SpendPoint {
+  t: number;
+  cumulativeUsd: number;
+  usdPerHour: number;
+}
+
+/**
+ * Live burn-rate snapshot pushed by the gateway (Task #245). Mirrors core's
+ * `BurnRateSnapshot`; the web package can't import @orionomega/core so the shape
+ * is duplicated here.
+ */
+export interface BurnRateSnapshot {
+  burnRateUsdPerHour: number;
+  totalUsd: number;
+  spendSeries: SpendPoint[];
+  capUsd?: number;
+  fractionOfCap?: number;
+  msToCapExhaustion?: number | null;
+  approachingCap: boolean;
+  overCap: boolean;
+}
+
 interface ChatStore {
   messages: ChatMessage[];
   isStreaming: boolean;
@@ -113,6 +136,10 @@ interface ChatStore {
   thinkingSteps: ThinkingStep[];
   replyTarget: ReplyToData | null;
   sessionTotals: SessionTokenTotals;
+  /** Latest live burn-rate snapshot from the gateway, or null before any arrives. */
+  burnRate: BurnRateSnapshot | null;
+  /** Replace the current burn-rate snapshot (called on session_status + hydrate). */
+  setBurnRate: (burnRate: BurnRateSnapshot | null) => void;
   addMessage: (msg: ChatMessage) => void;
   setMessages: (msgs: ChatMessage[]) => void;
   prependMessages: (msgs: ChatMessage[]) => void;
@@ -143,7 +170,7 @@ interface ChatStore {
   setMessageFeedback: (id: string, feedback: 'good' | 'bad' | null) => void;
   accumulateTokens: (meta: MessageMetadata) => void;
   /** Rehydrate store from a server state snapshot (replaces localStorage persistence). */
-  hydrateFromSnapshot: (snapshot: { messages?: ChatMessage[]; sessionTotals?: SessionTokenTotals }) => void;
+  hydrateFromSnapshot: (snapshot: { messages?: ChatMessage[]; sessionTotals?: SessionTokenTotals; burnRate?: BurnRateSnapshot | null }) => void;
 }
 
 export const useChatStore = create<ChatStore>()((set) => ({
@@ -154,6 +181,8 @@ export const useChatStore = create<ChatStore>()((set) => ({
       thinkingSteps: [],
       replyTarget: null,
       sessionTotals: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, totalCostUsd: 0, messageCount: 0 },
+      burnRate: null,
+      setBurnRate: (burnRate) => set({ burnRate }),
       addMessage: (msg) => set((s) => ({ messages: [...s.messages, msg] })),
       setMessages: (messages) => set({ messages }),
       prependMessages: (msgs) =>
@@ -280,7 +309,7 @@ export const useChatStore = create<ChatStore>()((set) => ({
         set((s) => ({
           messages: s.messages.map((m) => (m.id === id ? { ...m, ...updates } : m)),
         })),
-      clearMessages: () => set({ messages: [], sessionTotals: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, totalCostUsd: 0, messageCount: 0 } }),
+      clearMessages: () => set({ messages: [], sessionTotals: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, totalCostUsd: 0, messageCount: 0 }, burnRate: null }),
       setReplyTarget: (replyTarget) => set({ replyTarget }),
       draftInput: null,
       setDraftInput: (draftInput) => set({ draftInput }),
@@ -315,6 +344,7 @@ export const useChatStore = create<ChatStore>()((set) => ({
               totalCostUsd: typeof totals.totalCostUsd === 'number' ? totals.totalCostUsd : 0,
               messageCount: typeof totals.messageCount === 'number' ? totals.messageCount : 0,
             },
+            burnRate: snapshot.burnRate ?? null,
             isStreaming: false,
             thinkingContent: '',
             streamingStatus: '',
@@ -325,6 +355,7 @@ export const useChatStore = create<ChatStore>()((set) => ({
           set({
             messages: [],
             sessionTotals: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, totalCostUsd: 0, messageCount: 0 },
+            burnRate: null,
             isStreaming: false,
             thinkingContent: '',
             streamingStatus: '',

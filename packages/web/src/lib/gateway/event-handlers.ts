@@ -12,6 +12,7 @@
 
 import { useOrchestrationStore } from '@/stores/orchestration';
 import { useChatStore } from '@/stores/chat';
+import type { BurnRateSnapshot } from '@/stores/chat';
 import { useConnectionStore } from '@/stores/connection';
 import { useAgentModeStore } from '@/stores/agent-mode';
 import { useCodingModeStore } from '@/stores/coding-mode';
@@ -798,6 +799,16 @@ export function handleServerMessage(msg: ServerMessage, ctx: MessageHandlerConte
     case 'presence': {
       if (typeof msg.count === 'number') {
         useConnectionStore.getState().setPresenceCount(msg.count);
+      }
+      break;
+    }
+    case 'session_status': {
+      // Live burn-rate snapshot ($/hr + spend series + cap status) — Task #245.
+      // `burnRate` rides on the message via the contract's `.passthrough()`, so
+      // it isn't on the inferred `ServerMessage` type — read it defensively.
+      const burnRate = (msg as { burnRate?: BurnRateSnapshot | null }).burnRate;
+      if (burnRate !== undefined) {
+        useChatStore.getState().setBurnRate(burnRate ?? null);
       }
       break;
     }

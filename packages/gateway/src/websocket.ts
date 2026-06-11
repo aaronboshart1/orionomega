@@ -778,6 +778,9 @@ export class WebSocketHandler {
         pendingConfirmation: inMemSession?.pendingConfirmation ?? null,
         pendingGates: inMemSession?.pendingGates ?? {},
         pendingInterventions: inMemSession?.pendingInterventions ?? {},
+        // Live burn-rate snapshot so the UI can hydrate the burn-rate view on
+        // reconnect (Task #245).
+        burnRate: this.stateStore?.getBurnRate(conn.sessionId, this.config.sessionBudgetCapUsd),
       } : undefined;
 
       this.send(conn.ws, {
@@ -813,11 +816,18 @@ export class WebSocketHandler {
       const buffered = this.sessionManager.drainEventBuffer(conn.sessionId);
       const bufferedMessages = buffered.map((b) => b.message);
 
+      // Overlay the live burn-rate snapshot so the UI can hydrate the burn-rate
+      // view on a full reconnect (Task #245).
+      const enrichedSnapshot = snapshot ? {
+        ...snapshot,
+        burnRate: this.stateStore?.getBurnRate(conn.sessionId, this.config.sessionBudgetCapUsd),
+      } : undefined;
+
       this.send(conn.ws, {
         id: msg.id,
         type: 'session',
         sessionId: session.id,
-        snapshot: snapshot ?? undefined,
+        snapshot: enrichedSnapshot,
         bufferedEvents: bufferedMessages,
       });
 

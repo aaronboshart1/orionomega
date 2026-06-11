@@ -14,7 +14,7 @@ import { useChatStore } from '@/stores/chat';
 import { useConnectionStore } from '@/stores/connection';
 import { useAgentModeStore } from '@/stores/agent-mode';
 import { useCodingModeStore } from '@/stores/coding-mode';
-import type { ChatMessage } from '@/stores/chat';
+import type { ChatMessage, BurnRateSnapshot } from '@/stores/chat';
 import type { SessionSnapshot } from '@orionomega/shared/ws-contract';
 
 /**
@@ -476,6 +476,18 @@ export function rehydrateFromSnapshot(
     } catch (err) {
       sectionsFailed++;
       console.error('[gateway] Failed to switch to workflow tab', err);
+    }
+
+    // ── 3e. Rehydrate live burn-rate snapshot (Task #245) ───────────────
+    // `burnRate` rides on the snapshot via the contract's `.passthrough()`,
+    // so it isn't on the inferred `SessionSnapshot` type — read it defensively.
+    try {
+      const burnRate = (snapshot as { burnRate?: BurnRateSnapshot | null }).burnRate;
+      chat.setBurnRate(burnRate ?? null);
+      sectionsOk++;
+    } catch (err) {
+      sectionsFailed++;
+      console.error('[gateway] Failed to rehydrate burn rate', err);
     }
 
     // ── 4. Rehydrate session totals ─────────────────────────────────────

@@ -22,6 +22,13 @@ export interface OrionOmegaConfig {
       /** Allowed CORS origins. */
       origins: string[];
     };
+    /**
+     * Optional session budget cap (USD) used by the live burn-rate view
+     * (Task #245). When set, the UI surfaces how close a session is to the cap
+     * and a projected time-to-exhaustion at the current burn rate. Unset = no
+     * cap is displayed.
+     */
+    sessionBudgetCapUsd?: number;
   };
 
   hindsight: {
@@ -257,6 +264,15 @@ export interface OrionOmegaConfig {
      * 1.0 = default budget; 2.0 = double; 0.5 = half.
      */
     budgetMultiplier: number;
+    /**
+     * Complexity-aware tier routing (Task #245). When enabled, low-complexity
+     * phases default to a cheaper tier while hard phases still escalate to
+     * Opus/Fable. Set `enabled: false` to keep every role on its preferred
+     * tier regardless of codebase complexity.
+     */
+    tierRouting?: {
+      enabled: boolean;
+    };
   };
 
   /**
