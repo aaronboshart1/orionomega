@@ -652,10 +652,10 @@ export class MainAgent {
         initialisedStore.onActivity = (a) => activityCb(a);
       }
 
-      // Late-bind the store into the planner. It was constructed before memory
-      // initialised, so without this its pre-planning recall stays disabled for
-      // the life of the process.
-      this.orchestration.bindMemoryStore();
+      // NOTE: the planner's store is bound in step 3, immediately after the
+      // OrchestrationBridge is constructed. Binding here would dereference
+      // `this.orchestration` while it is still the `null!` placeholder set in
+      // the constructor.
     }
 
     // 2. Discover skills (manifests from BOTH user dir + default-skills)
@@ -786,6 +786,11 @@ export class MainAgent {
       this.availableSkills,
       this.config.model,
     );
+
+    // Bind the initialised memory store into the planner. Memory init (step 1)
+    // has already run, so the store is resolved by now; without this the
+    // planner's pre-planning recall stays disabled for the life of the process.
+    this.orchestration.bindMemoryStore();
 
     // 4. Check for interrupted workflows and auto-resume them (or list for manual resume)
     const interrupted = this.orchestration.checkForInterruptedWorkflows();

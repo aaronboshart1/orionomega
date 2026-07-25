@@ -130,11 +130,13 @@ export class OrchestrationBridge implements DispatchCoordinator {
   /**
    * Bind the memory store into the planner once memory has initialised.
    *
-   * The planner is constructed in this bridge's constructor, which runs before
-   * MemoryBridge.init(). Passing `memory.store` there would capture null
-   * permanently and silently disable pre-planning recall — present in the code,
-   * inert at runtime. The executor takes the store per dispatch instead, where
-   * it is already resolved.
+   * The planner is constructed in this bridge's constructor, which reads
+   * `memory.store` before it is guaranteed to be resolved. Relying on that
+   * would capture null permanently and silently disable pre-planning recall —
+   * present in the code, inert at runtime. MainAgent._init() calls this
+   * immediately after constructing the bridge, once memory has initialised.
+   * The executor takes the store per dispatch instead, where it is already
+   * resolved.
    */
   bindMemoryStore(): void {
     const store = this.memory.store;
