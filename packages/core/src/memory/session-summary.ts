@@ -129,6 +129,33 @@ export interface SummarizerStatus {
 }
 
 /**
+ * Why a summarize() call did not retain anything.
+ *
+ * - `too_few_messages` — below MIN_MESSAGES; not enough context to summarize.
+ * - `debounced` — a summary was retained within DEBOUNCE_WINDOW_MS.
+ * - `empty_summary` — the model returned no text.
+ * - `failed` — generation or the core retain threw (after retries). The error
+ *   is recorded in {@link SummarizerStatus.lastError}.
+ */
+export type SummarizeSkipReason =
+  | 'too_few_messages'
+  | 'debounced'
+  | 'empty_summary'
+  | 'failed';
+
+/**
+ * Outcome of {@link SessionSummarizer.summarize}.
+ *
+ * `summarize()` deliberately does not throw — a failed summary must never take
+ * down the turn that triggered it. That makes the return value the ONLY signal
+ * a caller has about whether anything was actually written, so callers must not
+ * treat "did not throw" as "retained".
+ */
+export type SummarizeResult =
+  | { retained: true }
+  | { retained: false; reason: SummarizeSkipReason };
+
+/**
  * Generates concise session summaries and retains them to memory
  * for continuity across sessions.
  */
@@ -171,17 +198,22 @@ export class SessionSummarizer {
    * F9:  Retries retain calls up to 3 times with exponential backoff.
    * F14: Skips if a summary was already generated within the debounce window.
    *
+   * Never throws: a failed summary must not take down the turn that triggered
+   * it. Callers therefore cannot infer success from the absence of an
+   * exception — inspect the returned {@link SummarizeResult} instead.
+   *
    * @param messages - The full conversation history.
    * @param projectBank - Optional project bank for additional retention.
+   * @returns `{ retained: true }` only when the core retain actually landed.
    */
   async summarize(
     messages: { role: string; content: string | ContentBlock[] }[],
     projectBank?: string,
     sessionId?: string,
-  ): Promise<void> {
+  ): Promise<SummarizeResult> {
     if (messages.length < MIN_MESSAGES) {
       log.debug('Skipping summary — too few messages', { count: messages.length });
-      return;
+      return { retained: false, reason: 'too_few_messages' };
     }
 
     // F14: Debounce — skip if a summary was generated recently
@@ -191,7 +223,7 @@ export class SessionSummarizer {
         lastSummaryAgoMs: now - this.lastSummaryTime,
         windowMs: DEBOUNCE_WINDOW_MS,
       });
-      return;
+      return { retained: false, reason: 'debounced' };
     }
 
     try {
@@ -236,7 +268,7 @@ export class SessionSummarizer {
 
       if (!summary) {
         log.warn('Empty summary generated');
-        return;
+        return { retained: false, reason: 'empty_summary' };
       }
 
       // F9: Retain to core bank with retry. Tag the summary with the
@@ -281,6 +313,7 @@ export class SessionSummarizer {
       this.lastSummaryTime = Date.now();
       this._successCount++;
       this._lastError = null;
+      return { retained: true };
     } catch (err) {
       this._failureCount++;
       this._lastFailureAt = Date.now();
@@ -288,6 +321,7 @@ export class SessionSummarizer {
       log.warn('Session summary failed after retries', {
         error: this._lastError,
       });
+      return { retained: false, reason: 'failed' };
     }
   }
 }

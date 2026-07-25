@@ -37,6 +37,7 @@ export type { RunArtifactCollectorConfig, CollectionResult } from './run-artifac
 
 // Session Summary (stays in core — needs AnthropicClient)
 export { SessionSummarizer } from './session-summary.js';
+export type { SummarizeResult, SummarizeSkipReason } from './session-summary.js';
 
 // Context Assembler — hot window + budgeted recall + Memory Map, per turn
 export { ContextAssembler } from "./context-assembler.js";
