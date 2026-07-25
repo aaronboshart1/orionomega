@@ -15,7 +15,9 @@ import { describe, it, expect, afterAll } from 'vitest';
 import { RedisMemoryStore } from '../redis-store.js';
 import { buildMemoryTools, type MemoryTool } from '../memory-tools.js';
 
-const URL = 'redis://localhost:6379';
+// Honour REDIS_URL so CI can point at its service container, and so the
+// skip-guard can be exercised against an unreachable server.
+const URL = process.env.REDIS_URL ?? 'redis://localhost:6379';
 const DB = 15;
 const BASE = `omtest-tools-${process.pid}-`;
 let n = 0;

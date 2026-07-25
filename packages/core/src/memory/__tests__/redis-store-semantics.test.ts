@@ -24,7 +24,9 @@ import { RedisMemoryStore } from '../redis-store.js';
 import { createRedisConnection, type RedisLike } from '../redis-connection.js';
 import { estimateTokens } from '@orionomega/shared/similarity';
 
-const URL = 'redis://localhost:6379';
+// Honour REDIS_URL so CI can point at its service container, and so the
+// skip-guard can be exercised against an unreachable server.
+const URL = process.env.REDIS_URL ?? 'redis://localhost:6379';
 const DB = 15;
 const BASE = `omtest-semantics-${process.pid}-`;
 
