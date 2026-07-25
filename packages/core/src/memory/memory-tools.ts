@@ -43,6 +43,9 @@ export interface MemoryTool {
   execute(args: Record<string, unknown>): Promise<string>;
 }
 
+/** How a tool call ended, as reported to {@link MemoryToolOptions.onEvent}. */
+export type MemoryToolOutcome = 'ok' | 'no_results' | 'refused' | 'error';
+
 export interface MemoryToolOptions {
   /** Scope used when a call does not name one. */
   defaultScope: string;
@@ -52,6 +55,22 @@ export interface MemoryToolOptions {
   maxReadsPerTurn?: number;
   /** Byte ceiling per tool result. Default 30 000, matching read_file/exec. */
   maxChars?: number;
+  /**
+   * Reports each tool call so the memory feed can show agent-initiated access.
+   *
+   * Without this, the three tools that ARE the agent-facing memory system are
+   * invisible: the feed shows the retain/recall the framework performs on the
+   * agent's behalf, but nothing the agent asks for itself.
+   *
+   * Never throws into the caller — a reporting failure must not fail the tool.
+   */
+  onEvent?: (event: {
+    tool: string;
+    detail: string;
+    scope: string;
+    outcome: MemoryToolOutcome;
+    meta?: Record<string, unknown>;
+  }) => void;
 }
 
 const DEFAULT_MAX_SEARCHES = 3;
@@ -273,5 +292,105 @@ export function buildMemoryTools(store: RedisMemoryStore, opts: MemoryToolOption
     },
   };
 
-  return [memory_search, memory_read, memory_pin];
+  return [memory_search, memory_read, memory_pin].map(instrument);
+
+  /**
+   * Wrap a tool so every call is reported once, from one place.
+   *
+   * Reporting at each `return` inside the tools would mean touching a dozen
+   * exit points and would drift the first time one is added.
+   *
+   * The outcome is read from the result's leading marker. That is a real
+   * coupling, but not an incidental one: `REFUSED`, `NO_RESULTS` and `Error:`
+   * are the tools' documented protocol with the model — the loop guard already
+   * depends on the model distinguishing them — so they are load-bearing
+   * strings rather than log prose. `outcomeOf` is pinned by tests.
+   */
+  function instrument(tool: MemoryTool): MemoryTool {
+    const onEvent = opts.onEvent;
+    if (!onEvent) return tool;
+
+    return {
+      ...tool,
+      async execute(args) {
+        const started = Date.now();
+        const scope = scopeOf(args);
+        const report = (outcome: MemoryToolOutcome, detail: string) => {
+          try {
+            onEvent({
+              tool: tool.name,
+              detail,
+              scope,
+              outcome,
+              meta: {
+                durationMs: Date.now() - started,
+                ...(typeof args.query === 'string' ? { query: args.query } : {}),
+                ...(typeof args.segment === 'string' ? { segment: args.segment } : {}),
+                ...(typeof args.key === 'string' ? { key: args.key } : {}),
+              },
+            });
+          } catch (err) {
+            // A broken reporter must not fail the agent's memory access.
+            log.warn('memory tool event reporting failed', {
+              tool: tool.name,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+        };
+
+        let result: string;
+        try {
+          result = await tool.execute(args);
+        } catch (err) {
+          // The tools catch internally, so this is a defect rather than an
+          // expected path — report it and let it propagate unchanged.
+          report('error', `${tool.name} threw — ${err instanceof Error ? err.message : String(err)}`);
+          throw err;
+        }
+
+        const outcome = outcomeOf(result);
+        report(outcome, describe(tool.name, outcome, args, result));
+        return result;
+      },
+    };
+  }
+}
+
+/** Classify a tool result by its documented leading marker. */
+export function outcomeOf(result: string): MemoryToolOutcome {
+  if (result.startsWith('REFUSED')) return 'refused';
+  if (result.startsWith('NO_RESULTS')) return 'no_results';
+  if (result.startsWith('Error:')) return 'error';
+  return 'ok';
+}
+
+/** One human-readable line per tool call, for the memory feed. */
+function describe(
+  tool: string,
+  outcome: MemoryToolOutcome,
+  args: Record<string, unknown>,
+  result: string,
+): string {
+  const subject =
+    typeof args.query === 'string' && args.query ? `"${clip(args.query, 60)}"`
+      : typeof args.segment === 'string' && args.segment ? args.segment
+        : typeof args.key === 'string' && args.key ? `'${args.key}'`
+          : '';
+
+  switch (outcome) {
+    case 'refused':
+      return `${tool} refused — per-turn call budget spent`;
+    case 'no_results':
+      return `${tool} found nothing for ${subject || 'the query'}`;
+    case 'error':
+      return `${tool} failed${subject ? ` for ${subject}` : ''}`;
+    case 'ok': {
+      // The count is already in the result's first line; reuse it rather than
+      // recomputing and risking a number that disagrees with what the agent saw.
+      const head = result.split('\n', 1)[0] ?? '';
+      const count = /^(\d+) of (\d+) result/.exec(head);
+      if (count) return `${tool} returned ${count[1]} of ${count[2]} result(s) for ${subject}`;
+      return subject ? `${tool} ${subject}` : tool;
+    }
+  }
 }

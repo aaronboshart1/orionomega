@@ -145,7 +145,7 @@ export class ContextAssembler {
   private static readonly RETAIN_FLUSH_INTERVAL_MS = 5_000;
 
   onMemoryEvent?: (
-    op: 'retain' | 'recall' | 'dedup' | 'quality' | 'bootstrap' | 'flush' | 'session_anchor' | 'summary' | 'self_knowledge',
+    op: 'retain' | 'recall' | 'dedup' | 'quality' | 'bootstrap' | 'flush' | 'summary' | 'tool',
     detail: string,
     scope?: string,
     meta?: Record<string, unknown>,
