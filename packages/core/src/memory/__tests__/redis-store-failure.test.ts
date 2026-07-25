@@ -19,7 +19,9 @@ import { describe, it, expect, afterAll } from 'vitest';
 import { RedisMemoryStore } from '../redis-store.js';
 import { createRedisConnection } from '../redis-connection.js';
 
-const URL = 'redis://localhost:6379';
+// Honour REDIS_URL so CI can point at its service container, and so the
+// skip-guard can be exercised against an unreachable server.
+const URL = process.env.REDIS_URL ?? 'redis://localhost:6379';
 const DEAD_URL = 'redis://localhost:6399'; // closed port
 const DB = 15;
 

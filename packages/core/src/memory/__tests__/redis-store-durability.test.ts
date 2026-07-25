@@ -26,7 +26,9 @@ import { RedisMemoryStore } from '../redis-store.js';
 import type { MemoryWrite, RecallOutcome } from '../store.js';
 import { computeClientRelevance } from '@orionomega/shared/similarity';
 
-const REDIS_URL = 'redis://localhost:6379';
+// Honour REDIS_URL so CI can point at its service container, and so the
+// skip-guard can be exercised against an unreachable server.
+const REDIS_URL = process.env.REDIS_URL ?? 'redis://localhost:6379';
 const DB = 15;
 
 // ── connection instrumentation ───────────────────────────────────────────────

@@ -54,6 +54,100 @@ jobs:
         run: pnpm --filter web exec tsc --noEmit
         continue-on-error: false
 
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+
+    # The memory suites exercise a REAL Redis rather than mocks — that is the
+    # point of them, and it is what caught the pipeline-error and concurrency
+    # bugs a mock would have accepted. Without this service they would skip
+    # themselves and the job would go green having tested nothing.
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - name: Get pnpm store directory
+        id: pnpm-cache
+        run: echo "STORE_PATH=$(pnpm store path)" >> $GITHUB_OUTPUT
+
+      - name: Cache pnpm dependencies
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Tests import across packages via their built entry points
+      # (e.g. @orionomega/shared/similarity -> dist), so the build must precede
+      # them or every cross-package import fails to resolve.
+      - name: Build all packages
+        run: pnpm run build
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY || 'sk-ant-placeholder-for-ci' }}
+
+      # FAIL LOUDLY if Redis is unreachable. The memory suites guard themselves
+      # with `describe.skip` when they cannot connect, so a missing or unhealthy
+      # service would silently produce a green run that asserted nothing. Assert
+      # reachability here so that can never happen quietly.
+      - name: Verify Redis is reachable
+        run: |
+          sudo apt-get install -y redis-tools >/dev/null 2>&1 || true
+          if ! redis-cli -h 127.0.0.1 -p 6379 ping | grep -q PONG; then
+            echo "::error::Redis is not reachable — the memory suites would self-skip and this job would pass without testing them."
+            exit 1
+          fi
+          echo "Redis reachable."
+
+      - name: Run tests
+        run: pnpm -r test
+        env:
+          # The memory suites read this; without it they fall back to
+          # localhost:6379, which happens to be the same host here but should
+          # not be relied on implicitly.
+          REDIS_URL: redis://127.0.0.1:6379
+
+      # Belt-and-braces: prove the Redis-backed suites actually EXECUTED rather
+      # than skipping. A suite that skips reports no passing tests, which reads
+      # identically to "nothing to run" in an aggregate count.
+      - name: Assert the Redis-backed suites ran
+        run: |
+          export REDIS_URL=redis://127.0.0.1:6379
+          OUT=$(pnpm --filter @orionomega/core exec vitest run \
+            src/memory/__tests__/redis-store-durability.test.ts \
+            src/memory/__tests__/redis-store-concurrency.test.ts 2>&1)
+          echo "$OUT" | tail -5
+          if echo "$OUT" | grep -qE "Tests +[1-9][0-9]* passed"; then
+            echo "Redis-backed suites executed."
+          else
+            echo "::error::The Redis-backed suites reported no passing tests — they skipped instead of running."
+            exit 1
+          fi
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
