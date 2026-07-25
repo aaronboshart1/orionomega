@@ -137,9 +137,15 @@ jobs:
       - name: Assert the Redis-backed suites ran
         run: |
           export REDIS_URL=redis://127.0.0.1:6379
-          OUT=$(pnpm --filter @orionomega/core exec vitest run \
+          # NO_COLOR plus an explicit ANSI strip: vitest colourises its summary
+          # in CI, which puts escape sequences between "Tests" and the count and
+          # silently defeats a naive grep. That produced a false failure on a run
+          # where the suites had in fact all passed.
+          export NO_COLOR=1
+          RAW=$(pnpm --filter @orionomega/core exec vitest run \
             src/memory/__tests__/redis-store-durability.test.ts \
             src/memory/__tests__/redis-store-concurrency.test.ts 2>&1)
+          OUT=$(printf '%s' "$RAW" | sed -E 's/\x1B\[[0-9;]*[a-zA-Z]//g')
           echo "$OUT" | tail -5
           if echo "$OUT" | grep -qE "Tests +[1-9][0-9]* passed"; then
             echo "Redis-backed suites executed."
