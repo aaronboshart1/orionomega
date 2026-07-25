@@ -66,12 +66,17 @@ function makeBridge(memory: MemoryConfig['memory'] | null = memoryConfig()) {
 }
 
 /** Wire the constructor mocks so init() can complete. */
-function setupMocks() {
+function setupMocks(opts: { hydrate?: ReturnType<typeof vi.fn> } = {}) {
   const close = vi.fn().mockResolvedValue(undefined);
   const stop = vi.fn();
+  // init() warms the index in the background. Omitting `hydrate` here does not
+  // fail loudly — the call throws inside init()'s try and is swallowed as
+  // "init failed" — so the mock must carry it or the warm-up goes untested
+  // while every assertion still passes.
+  const hydrate = opts.hydrate ?? vi.fn().mockResolvedValue(undefined);
 
   vi.mocked(RedisMemoryStore).mockImplementation(function() {
-    return { close } as unknown as InstanceType<typeof RedisMemoryStore>;
+    return { close, hydrate } as unknown as InstanceType<typeof RedisMemoryStore>;
   });
 
   vi.mocked(RetentionEngine).mockImplementation(function() {
@@ -88,7 +93,7 @@ function setupMocks() {
     } as unknown as InstanceType<typeof SessionSummarizer>;
   });
 
-  return { close, stop };
+  return { close, stop, hydrate };
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -180,6 +185,57 @@ describe('MemoryBridge.init() — idempotency after completion', () => {
     await bridge.init(); // third call — should no-op
 
     expect(vi.mocked(RedisMemoryStore)).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('MemoryBridge.init() — index warm-up', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('warms the index so an idle process does not sit on `rebuilding`', async () => {
+    // hydrate() is lazy — it runs on the first retain/recall. A gateway that
+    // boots and waits for a user never issues one, so nothing ever corrects
+    // the consumer's assumed `rebuilding / index_cold`.
+    const { hydrate } = setupMocks();
+    const bridge = makeBridge();
+
+    await bridge.init();
+
+    expect(hydrate).toHaveBeenCalledTimes(1);
+  });
+
+  it('survives a warm-up failure with the store still usable', async () => {
+    // Redis down at boot must not disable memory for the life of the process:
+    // hydrate() retries on the next operation, and the store reports its own
+    // degraded status.
+    const hydrate = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'));
+    setupMocks({ hydrate });
+    const bridge = makeBridge();
+
+    await expect(bridge.init()).resolves.toBeUndefined();
+
+    expect(bridge.isInitialised).toBe(true);
+    expect(bridge.store).not.toBeNull();
+    // Let the rejection settle so it is handled, not an unhandled rejection.
+    await Promise.resolve();
+  });
+
+  it('does not block init on the hydration round trip', async () => {
+    // A slow scan must not delay the gateway coming up.
+    let release!: () => void;
+    const hydrate = vi.fn().mockReturnValue(new Promise<void>((r) => { release = r; }));
+    setupMocks({ hydrate });
+    const bridge = makeBridge();
+
+    await expect(bridge.init()).resolves.toBeUndefined();
+    expect(bridge.isInitialised).toBe(true);
+
+    release();
   });
 });
 

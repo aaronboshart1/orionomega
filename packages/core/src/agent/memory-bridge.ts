@@ -184,6 +184,21 @@ export class MemoryBridge {
       this.initialised = true;
       log.info('Memory subsystem initialised');
       this.onMemoryEvent?.('bootstrap', 'Memory subsystem initialised');
+
+      // Warm the index in the background. hydrate() is otherwise lazy — it runs
+      // on the first retain/recall — so a process that boots and waits for a
+      // user reports `rebuilding` for as long as it stays idle, and the first
+      // turn pays for the full scan.
+      //
+      // Deliberately not awaited and deliberately non-fatal: init() must not
+      // block on a Redis round trip, and a store whose warm-up failed is still
+      // usable because hydrate() retries on the next operation. The store
+      // reports the failure as `degraded` itself.
+      void this.memoryStore.hydrate().catch((err) => {
+        log.warn('Memory index warm-up failed — retrying on first use', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
     } catch (err) {
       log.warn('Memory subsystem init failed — continuing without memory', {
         error: err instanceof Error ? err.message : String(err),
