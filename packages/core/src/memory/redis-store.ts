@@ -242,13 +242,30 @@ export class RedisMemoryStore implements MemoryStore {
    *
    * The word "offline" never appears. Assigned by MemoryBridge.
    */
-  onActivity?: (activity: {
+  private _onActivity?: (activity: {
     busy: boolean;
     health: 'ready' | 'rebuilding' | 'degraded';
     reason?: 'redis_unreachable' | 'index_cold' | 'write_failed';
     op?: string;
     count?: number;
   }) => void;
+
+  get onActivity() { return this._onActivity; }
+
+  /**
+   * Assigning a reporter immediately reports current state.
+   *
+   * Consumers start from an assumed `rebuilding / index_cold`, and this
+   * reporter is otherwise driven only by retain/recall. A store that is warm
+   * but idle would therefore never correct that assumption — the status sat on
+   * "rebuilding" for the life of an unused process. The wiring also happens
+   * after `MemoryBridge.init()` returns, so a hydration that completes first
+   * would emit into an unset callback and be lost.
+   */
+  set onActivity(cb: typeof this._onActivity) {
+    this._onActivity = cb;
+    if (cb) this.emitActivity('bootstrap', 0);
+  }
 
   /** In-flight operations, so `busy` reflects overlap rather than one call. */
   private activeOps = 0;
@@ -258,10 +275,10 @@ export class RedisMemoryStore implements MemoryStore {
     delta: number,
     opts: { degraded?: 'redis_unreachable' | 'write_failed'; count?: number } = {},
   ): void {
-    if (!this.onActivity) return;
+    if (!this._onActivity) return;
     this.activeOps = Math.max(0, this.activeOps + delta);
     const health = opts.degraded ? 'degraded' : this.hydrated ? 'ready' : 'rebuilding';
-    this.onActivity({
+    this._onActivity({
       busy: this.activeOps > 0,
       health,
       ...(opts.degraded ? { reason: opts.degraded } : this.hydrated ? {} : { reason: 'index_cold' as const }),
@@ -351,6 +368,16 @@ export class RedisMemoryStore implements MemoryStore {
 
     try {
       await this.hydrating;
+      // Report the cold → ready transition. Nothing else does: retain/recall
+      // emit around their own work, so a process that hydrates and then sits
+      // idle would leave its consumer on the initial `rebuilding`.
+      this.emitActivity('hydrate', 0);
+    } catch (err) {
+      // A failed scan leaves `hydrated` false, so the next call retries. Say so
+      // rather than letting the stale `rebuilding` stand in for "cannot reach
+      // Redis" — they are different conditions and only one is actionable.
+      this.emitActivity('hydrate', 0, { degraded: 'redis_unreachable' });
+      throw err;
     } finally {
       this.hydrating = null;
     }
