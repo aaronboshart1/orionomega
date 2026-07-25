@@ -2274,6 +2274,15 @@ async function shutdown(signal: string): Promise<void> {
     }
     log.info(' All servers closed — port released.');
 
+    // Release the memory subsystem: stops retention, then closes the Redis
+    // connection and its background GC / sync timers. Runs after the deadline
+    // alongside the other final cleanup, so a slow close cannot hold the port.
+    try {
+      await mainAgent?.shutdown();
+    } catch (err) {
+      log.warn('memory shutdown failed', { error: err instanceof Error ? err.message : String(err) });
+    }
+
     // Final cleanup — synchronous, runs after the deadline.
     try { sessionManager.shutdown(); } catch (err) {
       log.warn('sessionManager.shutdown failed', { error: err instanceof Error ? err.message : String(err) });

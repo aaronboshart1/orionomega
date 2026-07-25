@@ -36,6 +36,7 @@ function makeFake(opts: FakeOpts = {}) {
   const zsets = new Map<string, Map<string, number>>();
   let seq = 0;
   let scanCalls = 0;
+  let getCalls = 0;
   let release: (() => void) | null = null;
 
   const sadd = (k: string, ...m: string[]) => {
@@ -100,7 +101,7 @@ function makeFake(opts: FakeOpts = {}) {
   const client = {
     hset: async (k: string, v: Record<string, string>) => (hashes.set(k, v), 1),
     hgetall: async (k: string) => hashes.get(k) ?? {},
-    get: async () => null,
+    get: async (k: string) => { getCalls++; return k.endsWith('seq') ? String(seq) : null; },
     set: async () => 'OK',
     del: async () => 1,
     incr: async () => ++seq,
@@ -144,6 +145,7 @@ function makeFake(opts: FakeOpts = {}) {
   return {
     client,
     get scanCalls() { return scanCalls; },
+    get getCalls() { return getCalls; },
     releaseScan() { release?.(); release = null; },
   };
 }
@@ -287,6 +289,65 @@ describe('RedisMemoryStore — GC scheduling', () => {
     store.stopGc();
     await vi.advanceTimersByTimeAsync(600_000);
     expect(fake.scanCalls).toBe(1);
+  });
+
+  it('close() releases the sync loop as well as GC', async () => {
+    // The bridge owns a Redis connection plus TWO background timers. A
+    // shutdown that stops only one leaves the other polling a closed client.
+    vi.useFakeTimers();
+    const fake = makeFake();
+    const store = makeStore(fake);
+
+    store.startGc({ initialDelayMs: 10, intervalMs: 60_000, minWritesBetweenRuns: 0 });
+    store.startSync(1_000);
+
+    // Let BOTH loops run at least once, so each has an observable counter to
+    // freeze. Asserting only on the GC counter would pass even if stopSync()
+    // were removed, since close() stops GC either way.
+    await vi.advanceTimersByTimeAsync(2_100);
+    const gcBefore = fake.scanCalls;
+    const syncBefore = fake.getCalls;
+    expect(gcBefore).toBeGreaterThan(0);
+    expect(syncBefore).toBeGreaterThan(0);
+
+    await store.close();
+    await vi.advanceTimersByTimeAsync(600_000);
+
+    // NEITHER loop may fire again.
+    expect(fake.scanCalls, 'GC loop kept running after close()').toBe(gcBefore);
+    expect(fake.getCalls, 'sync loop kept running after close()').toBe(syncBefore);
+  });
+
+  it('close() is idempotent', async () => {
+    vi.useRealTimers();
+    const fake = makeFake();
+    const store = makeStore(fake);
+    store.startGc({ initialDelayMs: 60_000 });
+    store.startSync(5_000);
+    await expect(store.close()).resolves.toBeUndefined();
+    await expect(store.close()).resolves.toBeUndefined();
+  });
+
+  it('startSync is idempotent and stopSync halts it', async () => {
+    vi.useFakeTimers();
+    const fake = makeFake();
+    const store = makeStore(fake);
+
+    // A second startSync must not create a second interval, or every tick
+    // would run two overlapping syncs against one connection.
+    store.startSync(1_000);
+    store.startSync(1_000);
+
+    // The FIRST tick only hydrates — an unhydrated store has nothing to delta
+    // against, so hydration supersedes sync. The GET high-water probe starts
+    // on the second tick.
+    await vi.advanceTimersByTimeAsync(2_100);
+    const calls = fake.getCalls;
+    expect(calls).toBeGreaterThan(0);
+
+    store.stopSync();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fake.getCalls).toBe(calls);
   });
 
   it('close() stops the loop', async () => {
