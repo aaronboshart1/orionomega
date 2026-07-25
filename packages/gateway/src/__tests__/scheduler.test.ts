@@ -5,7 +5,7 @@
  * in-memory SQLite db (via getDb with a tmp path) and a fake MainAgent.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -18,15 +18,28 @@ import type { ServerMessage } from '../types.js';
 
 type AgentBehavior = (prompt: string) => Promise<void>;
 
+/**
+ * Fake MainAgent. The parameter list must mirror the real signature in
+ * packages/core/src/agent/main-agent.ts:
+ *
+ *   handleMessage(sessionId, content, replyContext?, attachments?, agentMode?, signal?)
+ *
+ * `sessionId` is FIRST — it was prepended when scheduled tasks became
+ * per-session. Recording the wrong positional arg here is how this fake
+ * silently drifted from the contract before, so `calls` (prompts) and
+ * `sessions` (session ids) are captured separately and both are asserted.
+ */
 function makeFakeAgent(behavior?: AgentBehavior) {
   const calls: string[] = [];
+  const sessions: string[] = [];
   const agent = {
-    async handleMessage(prompt: string): Promise<void> {
-      calls.push(prompt);
-      if (behavior) await behavior(prompt);
+    async handleMessage(sessionId: string, content: string): Promise<void> {
+      sessions.push(sessionId);
+      calls.push(content);
+      if (behavior) await behavior(content);
     },
   };
-  return { agent, calls };
+  return { agent, calls, sessions };
 }
 
 function makeFakeWs() {
@@ -191,7 +204,7 @@ describe('SchedulerService — execution', () => {
   afterEach(() => { teardownDb(dbPath); });
 
   it('triggerTask invokes agent.handleMessage with the task prompt', async () => {
-    const { agent, calls } = makeFakeAgent();
+    const { agent, calls, sessions } = makeFakeAgent();
     const { ws, broadcasts } = makeFakeWs();
     const scheduler = new SchedulerService(agent, ws);
     scheduler.start();
@@ -205,12 +218,32 @@ describe('SchedulerService — execution', () => {
     await new Promise((r) => setTimeout(r, 30));
 
     expect(calls).toContain('Hello scheduler');
+    // Tasks with no explicit sessionId run under 'default'.
+    expect(sessions).toEqual(['default']);
     expect(broadcasts.some((m) => m.type === 'schedule_triggered')).toBe(true);
     expect(broadcasts.some((m) => m.type === 'schedule_execution_complete')).toBe(true);
 
     const completed = broadcasts.find((m) => m.type === 'schedule_execution_complete');
     expect(completed?.scheduleExecutionComplete?.status).toBe('completed');
 
+    scheduler.stop();
+  });
+
+  it('runs the task under its own sessionId, not the default session', async () => {
+    const { agent, calls, sessions } = makeFakeAgent();
+    const { ws } = makeFakeWs();
+    const scheduler = new SchedulerService(agent, ws);
+    scheduler.start();
+
+    const task = scheduler.createTask({
+      name: 'e-sid', cronExpr: '0 9 * * *', prompt: 'p',
+      sessionId: 'session-abc',
+    });
+    scheduler.triggerTask(task.id);
+    await new Promise((r) => setTimeout(r, 30));
+
+    expect(sessions).toEqual(['session-abc']);
+    expect(calls).toEqual(['p']);
     scheduler.stop();
   });
 
@@ -687,13 +720,26 @@ describe('SchedulerService — timeout abort (H3)', () => {
   afterEach(() => { teardownDb(dbPath); });
 
   it('passes an AbortSignal that fires when the per-attempt timeout elapses', async () => {
+    // Driven by fake timers so the assertion is deterministic rather than a
+    // real 1.5s sleep racing a 1s timeout. Only setTimeout/clearTimeout are
+    // faked: Date stays real so croner's next-run math and the scheduler's
+    // durationSec / minIntervalSec computations are unaffected.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    // setImmediate is deliberately NOT faked, so this drains the microtask
+    // queue after the timeout rejection propagates through executeTask.
+    const flush = (): Promise<void> =>
+      new Promise((resolve) => { setImmediate(resolve); });
+
     const aborts: boolean[] = [];
     const agent = {
+      // Signature mirrors MainAgent.handleMessage: the abort signal is the
+      // SIXTH parameter, after sessionId/content/replyContext/attachments/agentMode.
       async handleMessage(
-        _prompt: string,
-        _convId?: string,
-        _msgId?: string,
-        _mode?: string,
+        _sessionId: string,
+        _content: string,
+        _replyContext?: unknown,
+        _attachments?: unknown,
+        _agentMode?: string,
         signal?: AbortSignal,
       ): Promise<void> {
         // Resolve when the abort signal fires; if it never fires, the test
@@ -714,17 +760,29 @@ describe('SchedulerService — timeout abort (H3)', () => {
     };
     const { ws } = makeFakeWs();
     const scheduler = new SchedulerService(agent, ws);
-    scheduler.start();
 
-    const task = scheduler.createTask({
-      name: 't-abort', cronExpr: '0 9 * * *', prompt: 'p', timeoutSec: 1,
-    });
-    scheduler.triggerTask(task.id);
-    await new Promise((r) => setTimeout(r, 1500));
+    try {
+      scheduler.start();
 
-    expect(aborts).toEqual([true]);
-    const execs = scheduler.getExecutions(task.id);
-    expect(execs[0]?.status).toBe('timeout');
-    scheduler.stop();
-  }, 10_000);
+      const task = scheduler.createTask({
+        name: 't-abort', cronExpr: '0 9 * * *', prompt: 'p', timeoutSec: 1,
+      });
+      // triggerTask runs executeTask synchronously up to and including the
+      // per-attempt setTimeout registration, so the timer exists by the time
+      // this returns and can be advanced immediately.
+      scheduler.triggerTask(task.id);
+
+      // Fire the 1s per-attempt timeout exactly.
+      await vi.advanceTimersByTimeAsync(1000);
+      // Let the rejection finalise the execution row and broadcast.
+      await flush();
+
+      expect(aborts).toEqual([true]);
+      const execs = scheduler.getExecutions(task.id);
+      expect(execs[0]?.status).toBe('timeout');
+      scheduler.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
