@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState, useMemo } from 'react';
-import { useOrchestrationStore, useFilteredMemoryEvents, type MemoryEvent, type MemoryFilterState, type RecallMeta, type RetainMeta, type QualityMeta, type DedupMeta } from '@/stores/orchestration';
+import { useOrchestrationStore, useFilteredMemoryEvents, type MemoryEvent, type MemoryFilterState, type RecallMeta, type RetainMeta, type QualityMeta, type DedupMeta, type ToolMeta, type FlushMeta } from '@/stores/orchestration';
 import { CopyButton } from '@/components/shared/CopyButton';
 import { formatTime } from '@/utils/format';
 import {
@@ -11,14 +11,21 @@ import {
   Filter,
   Shield,
   Zap,
-  Anchor,
   FileText,
-  Sparkles,
+  Wrench,
   ChevronDown,
   ChevronRight,
   X,
 } from 'lucide-react';
 
+/**
+ * One entry per op the memory system actually emits.
+ *
+ * `session_anchor` and `self_knowledge` used to appear here. Both survive as
+ * record *contexts* in the retention engine's TTL and importance tables, but
+ * nothing has ever emitted them as event *ops* — they were filters that could
+ * only ever match zero events.
+ */
 const OP_CONFIG: Record<MemoryEvent['op'], { icon: typeof Brain; label: string; color: string; bgColor: string }> = {
   bootstrap: { icon: Zap, label: 'Bootstrap', color: 'text-violet-400', bgColor: 'bg-violet-500/10' },
   recall: { icon: Search, label: 'Recall', color: 'text-blue-400', bgColor: 'bg-blue-500/10' },
@@ -26,76 +33,106 @@ const OP_CONFIG: Record<MemoryEvent['op'], { icon: typeof Brain; label: string; 
   flush: { icon: Download, label: 'Flush', color: 'text-amber-400', bgColor: 'bg-amber-500/10' },
   dedup: { icon: Filter, label: 'Dedup', color: 'text-orange-400', bgColor: 'bg-orange-500/10' },
   quality: { icon: Shield, label: 'Quality', color: 'text-cyan-400', bgColor: 'bg-cyan-500/10' },
-  session_anchor: { icon: Anchor, label: 'Anchor', color: 'text-pink-400', bgColor: 'bg-pink-500/10' },
   summary: { icon: FileText, label: 'Summary', color: 'text-emerald-400', bgColor: 'bg-emerald-500/10' },
-  self_knowledge: { icon: Sparkles, label: 'Self-Knowledge', color: 'text-purple-400', bgColor: 'bg-purple-500/10' },
+  // memory_search / memory_read / memory_pin — memory the agent asked for
+  // itself, as opposed to what the framework did on its behalf.
+  tool: { icon: Wrench, label: 'Tool', color: 'text-purple-400', bgColor: 'bg-purple-500/10' },
 };
 
 const ALL_OPS = Object.keys(OP_CONFIG) as MemoryEvent['op'][];
 
-function formatDate(iso: string): string {
-  try {
-    const d = new Date(iso);
-    return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
-  } catch {
-    return '';
-  }
-}
-
-function RelevanceBar({ score }: { score: number }) {
-  const pct = Math.round(score * 100);
-  const color = score >= 0.7 ? 'bg-green-500' : score >= 0.4 ? 'bg-yellow-500' : 'bg-red-500';
-  return (
-    <div className="flex items-center gap-1.5">
-      <div className="w-10 h-1.5 bg-zinc-700 rounded-full overflow-hidden">
-        <div className={`h-full rounded-full ${color}`} style={{ width: `${pct}%` }} />
-      </div>
-      <span className="text-xs font-mono text-zinc-500">{score.toFixed(2)}</span>
-    </div>
-  );
-}
+// `RelevanceBar`, `MemoryContentCard` and `formatDate` were removed with the
+// meta they rendered. Both cards were reachable only through the recall
+// `records` array and the retain `items` array — neither of which the Redis
+// memory system emits. Recall now reports a record COUNT, and per-record
+// content is not carried on the event at all.
 
 function QualityDot({ score }: { score: number }) {
   const color = score >= 0.7 ? 'bg-green-500' : score >= 0.4 ? 'bg-yellow-500' : 'bg-red-500';
   return <span className={`inline-block w-2 h-2 rounded-full ${color} flex-shrink-0`} title={`Quality: ${score.toFixed(2)}`} />;
 }
 
-function MemoryContentCard({ memory }: { memory: { content: string; context: string; timestamp: string; relevance?: number } }) {
-  const [showFull, setShowFull] = useState(false);
-  const isLong = memory.content.length > 200;
-  const displayContent = showFull ? memory.content : memory.content.slice(0, 200);
+/**
+ * Recall detail.
+ *
+ * Recall is emitted from three places with different shapes: the context
+ * assembler reports a per-turn token budget and what it filled, while planning
+ * and architect recalls report record counts and the scopes they queried.
+ * Everything here is a field the current system emits — the previous version
+ * rendered a remote-service funnel (`N API → M passed filter`) that no longer
+ * exists, so the panel was blank in practice.
+ */
+function ExpandedRecall({ meta }: { meta: RecallMeta }) {
+  const skipped = meta.recallTokens === 0;
 
   return (
-    <div className="rounded border border-zinc-700/40 bg-zinc-900/50 p-2 mt-1.5">
-      <div className="flex items-center gap-2 mb-1 flex-wrap">
-        <span className="text-xs px-1.5 py-0.5 bg-zinc-800 rounded text-zinc-400 font-mono">
-          {memory.context}
-        </span>
-        {memory.timestamp && (
-          <span className="text-xs text-zinc-600">{formatDate(memory.timestamp)}</span>
+    <div className="mt-2 space-y-2 text-xs">
+      {skipped && (
+        <div className="text-zinc-500">
+          Skipped — <span className="text-zinc-400">external action query</span>
+        </div>
+      )}
+      <div className="flex flex-wrap gap-x-3 gap-y-1 text-zinc-500">
+        {meta.recallTokens != null && meta.recallTokens > 0 && (
+          <span>Budget: <span className="text-zinc-400 font-mono">{meta.recallTokens.toLocaleString()} tok</span></span>
         )}
-        {memory.relevance !== undefined && <RelevanceBar score={memory.relevance} />}
-        <span className="ml-auto">
-          <CopyButton text={memory.content} stopPropagation />
-        </span>
+        {meta.recalledTokens != null && (
+          <span>Recalled: <span className="text-zinc-400 font-mono">{meta.recalledTokens.toLocaleString()} tok</span></span>
+        )}
+        {meta.records != null && (
+          <span>Records: <span className="text-zinc-400 font-mono">{meta.records}</span></span>
+        )}
+        {meta.totalResults != null && (
+          <span>Results: <span className="text-zinc-400 font-mono">{meta.totalResults}</span></span>
+        )}
+        {meta.totalTokensUsed != null && (
+          <span>Used: <span className="text-zinc-400 font-mono">{meta.totalTokensUsed.toLocaleString()} tok</span></span>
+        )}
+        {meta.durationMs != null && (
+          <span><span className="text-zinc-400 font-mono">{meta.durationMs}</span> ms</span>
+        )}
+        {meta.queryKind && <span className="text-zinc-400">{meta.queryKind}</span>}
       </div>
-      <p className="text-xs text-zinc-400 leading-relaxed whitespace-pre-wrap break-words">
-        {displayContent}
-        {isLong && !showFull && '…'}
-      </p>
-      {isLong && (
-        <button
-          onClick={() => setShowFull(!showFull)}
-          className="text-xs text-violet-400 mt-1 hover:text-violet-300"
-        >
-          {showFull ? 'Show less' : `Show full (${memory.content.length} chars)`}
-        </button>
+      {/* How much of the turn's budget the recall actually used. */}
+      {meta.recallTokens != null && meta.recallTokens > 0 && meta.recalledTokens != null && (
+        <BudgetBar used={meta.recalledTokens} total={meta.recallTokens} />
+      )}
+      {meta.scopesQueried && meta.scopesQueried.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          <span className="text-zinc-600">Scopes:</span>
+          {meta.scopesQueried.map(sc => (
+            <span key={sc} className="px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 font-mono text-[10px]">
+              {sc}
+            </span>
+          ))}
+        </div>
       )}
     </div>
   );
 }
 
-function ExpandedRecall({ meta }: { meta: RecallMeta }) {
+/** Fill bar for recalled-vs-budget tokens. */
+function BudgetBar({ used, total }: { used: number; total: number }) {
+  const pct = Math.max(0, Math.min(100, (used / total) * 100));
+  return (
+    <div className="flex items-center gap-2">
+      <div className="flex-1 h-1 bg-zinc-800 rounded overflow-hidden">
+        <div className="h-full bg-blue-500/60 rounded" style={{ width: `${pct}%` }} />
+      </div>
+      <span className="text-zinc-600 font-mono text-[10px]">{pct.toFixed(0)}%</span>
+    </div>
+  );
+}
+
+/** Memory-tool detail — what the agent asked memory for, and what it got. */
+function ExpandedTool({ meta }: { meta: ToolMeta }) {
+  const OUTCOME_COLOR: Record<NonNullable<ToolMeta['outcome']>, string> = {
+    ok: 'text-emerald-400',
+    no_results: 'text-zinc-400',
+    refused: 'text-amber-400',
+    error: 'text-red-400',
+  };
+
   return (
     <div className="mt-2 space-y-2 text-xs">
       {meta.query && (
@@ -104,32 +141,29 @@ function ExpandedRecall({ meta }: { meta: RecallMeta }) {
           <span className="text-zinc-300 break-words">&ldquo;{meta.query}&rdquo;</span>
         </div>
       )}
+      {meta.segment && (
+        <div className="flex gap-1.5">
+          <span className="text-zinc-600 flex-shrink-0">Segment:</span>
+          <span className="text-zinc-300 font-mono break-all">{meta.segment}</span>
+        </div>
+      )}
+      {meta.key && (
+        <div className="flex gap-1.5">
+          <span className="text-zinc-600 flex-shrink-0">Key:</span>
+          <span className="text-zinc-300 font-mono break-all">{meta.key}</span>
+        </div>
+      )}
       <div className="flex flex-wrap gap-x-3 gap-y-1 text-zinc-500">
-        {meta.maxTokens != null && <span>Max tokens: <span className="text-zinc-400 font-mono">{meta.maxTokens}</span></span>}
-        {meta.minRelevance != null && <span>Floor: <span className="text-zinc-400 font-mono">{meta.minRelevance}</span></span>}
-        {meta.tokensUsed != null && <span>Used: <span className="text-zinc-400 font-mono">{meta.tokensUsed} tok</span></span>}
-        {meta.clientScored && <span className="text-yellow-500/80">client-scored</span>}
+        {meta.tool && <span className="text-zinc-400 font-mono">{meta.tool}</span>}
+        {meta.outcome && (
+          <span className={OUTCOME_COLOR[meta.outcome]}>
+            {meta.outcome === 'refused' ? 'refused — turn budget spent' : meta.outcome.replace('_', ' ')}
+          </span>
+        )}
+        {meta.durationMs != null && (
+          <span><span className="text-zinc-400 font-mono">{meta.durationMs}</span> ms</span>
+        )}
       </div>
-      {(meta.totalFromApi != null || meta.droppedByRelevance != null) && (
-        <div className="text-zinc-500">
-          Funnel:{' '}
-          <span className="text-zinc-400 font-mono">{meta.totalFromApi ?? '?'}</span> API
-          {meta.droppedByRelevance != null && meta.droppedByRelevance > 0 && (
-            <> → <span className="text-zinc-400 font-mono">{(meta.totalFromApi ?? 0) - meta.droppedByRelevance}</span> passed filter</>
-          )}
-          {meta.resultCount != null && (
-            <> → <span className="text-zinc-400 font-mono">{meta.resultCount}</span> deduped</>
-          )}
-        </div>
-      )}
-      {meta.records && meta.records.length > 0 && (
-        <div className="space-y-1">
-          <span className="text-zinc-600">Records:</span>
-          {meta.records.map((r, i) => (
-            <MemoryContentCard key={i} memory={r} />
-          ))}
-        </div>
-      )}
     </div>
   );
 }
@@ -151,23 +185,39 @@ function ExpandedRetain({ meta }: { meta: RetainMeta }) {
           </div>
         </div>
       )}
+      {meta.importance != null && (
+        <div className="flex items-center gap-2">
+          <span className="text-zinc-600">Importance:</span>
+          <span className="font-mono text-zinc-400">{meta.importance.toFixed(2)}</span>
+        </div>
+      )}
       {meta.signals && meta.signals.length > 0 && (
         <div>
           <span className="text-zinc-600">Signals: </span>
           <span className="text-zinc-400 break-words">{meta.signals.join(', ')}</span>
         </div>
       )}
-      {meta.durationMs != null && (
-        <span className="text-zinc-600">Duration: <span className="text-zinc-400 font-mono">{meta.durationMs}ms</span></span>
-      )}
-      {meta.items && meta.items.length > 0 ? (
-        <div className="space-y-1">
-          <span className="text-zinc-600">Items:</span>
-          {meta.items.map((item, i) => (
-            <MemoryContentCard key={i} memory={item} />
-          ))}
+      {/* Buffered conversation message (context assembler) rather than a scored record. */}
+      {meta.role && (
+        <div className="flex flex-wrap gap-x-3 gap-y-1 text-zinc-500">
+          <span>Role: <span className="text-zinc-400 font-mono">{meta.role}</span></span>
+          {meta.chars != null && <span>Chars: <span className="text-zinc-400 font-mono">{meta.chars}</span></span>}
+          {meta.bufferSize != null && <span>Buffered: <span className="text-zinc-400 font-mono">{meta.bufferSize}</span></span>}
         </div>
-      ) : meta.contentPreview ? (
+      )}
+      {/* Persisted coding run (memory bridge). */}
+      {(meta.requirementsCount != null || meta.verdictsCount != null) && (
+        <div className="flex flex-wrap gap-x-3 gap-y-1 text-zinc-500">
+          {meta.requirementsCount != null && (
+            <span>Requirements: <span className="text-zinc-400 font-mono">{meta.requirementsCount}</span></span>
+          )}
+          {meta.verdictsCount != null && (
+            <span>Verdicts: <span className="text-zinc-400 font-mono">{meta.verdictsCount}</span></span>
+          )}
+          {meta.decision && <span className="text-zinc-400">{meta.decision}</span>}
+        </div>
+      )}
+      {meta.contentPreview ? (
         <div>
           <div className="flex items-center gap-1.5 mb-1">
             <span className="text-zinc-600">Content{meta.contentLength != null ? ` (${meta.contentLength} chars)` : ''}:</span>
@@ -253,6 +303,19 @@ function ExpandedDedup({ meta }: { meta: DedupMeta }) {
   );
 }
 
+/** Flush detail — buffered conversation messages written in one batch. */
+function ExpandedFlush({ meta }: { meta: FlushMeta }) {
+  return (
+    <div className="mt-2 space-y-2 text-xs">
+      <div className="flex flex-wrap gap-x-3 gap-y-1 text-zinc-500">
+        {meta.count != null && (
+          <span>Messages: <span className="text-zinc-400 font-mono">{meta.count}</span></span>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ExpandedGeneric({ meta }: { meta: Record<string, unknown> }) {
   return (
     <div className="mt-2">
@@ -288,6 +351,8 @@ const MemoryEventRow = function MemoryEventRow({ event }: { event: MemoryEvent }
   const retainMeta = event.op === 'retain' ? (meta as RetainMeta) : null;
   const qualityMeta = event.op === 'quality' ? (meta as QualityMeta) : null;
   const dedupMeta = event.op === 'dedup' ? (meta as DedupMeta) : null;
+  const toolMeta = event.op === 'tool' ? (meta as ToolMeta) : null;
+  const flushMeta = event.op === 'flush' ? (meta as FlushMeta) : null;
   const provenanceSessionId = (meta as { sessionId?: unknown }).sessionId;
   const sessionIdStr = typeof provenanceSessionId === 'string' && provenanceSessionId.length > 0
     ? provenanceSessionId
@@ -317,14 +382,22 @@ const MemoryEventRow = function MemoryEventRow({ event }: { event: MemoryEvent }
             {sessionIdStr && (event.op === 'retain' || event.op === 'recall') && (
               <SessionProvenancePill op={event.op} sessionId={sessionIdStr} />
             )}
-            {recallMeta?.topScore != null && <RelevanceBar score={recallMeta.topScore} />}
             {retainMeta?.score != null && <QualityDot score={retainMeta.score} />}
             {qualityMeta?.score != null && <QualityDot score={qualityMeta.score} />}
+            {toolMeta?.outcome != null && toolMeta.outcome !== 'ok' && (
+              <span className={`text-xs font-mono ${
+                toolMeta.outcome === 'error' ? 'text-red-400'
+                  : toolMeta.outcome === 'refused' ? 'text-amber-400'
+                    : 'text-zinc-500'
+              }`}>
+                {toolMeta.outcome.replace('_', ' ')}
+              </span>
+            )}
             {(meta.durationMs as number | undefined) != null && (
               <span className="text-xs text-zinc-600 font-mono">{meta.durationMs as number}ms</span>
             )}
-            {recallMeta?.tokensUsed != null && (
-              <span className="text-xs text-zinc-600 font-mono">{recallMeta.tokensUsed}tok</span>
+            {recallMeta?.recalledTokens != null && (
+              <span className="text-xs text-zinc-600 font-mono">{recallMeta.recalledTokens}tok</span>
             )}
             <span className="text-xs text-zinc-600 ml-auto flex-shrink-0">
               {formatTime(event.timestamp)}
@@ -346,7 +419,9 @@ const MemoryEventRow = function MemoryEventRow({ event }: { event: MemoryEvent }
             {retainMeta && <ExpandedRetain meta={retainMeta} />}
             {qualityMeta && <ExpandedQuality meta={qualityMeta} />}
             {dedupMeta && <ExpandedDedup meta={dedupMeta} />}
-            {!recallMeta && !retainMeta && !qualityMeta && !dedupMeta && (
+            {toolMeta && <ExpandedTool meta={toolMeta} />}
+            {flushMeta && <ExpandedFlush meta={flushMeta} />}
+            {!recallMeta && !retainMeta && !qualityMeta && !dedupMeta && !toolMeta && !flushMeta && (
               <ExpandedGeneric meta={meta} />
             )}
           </div>

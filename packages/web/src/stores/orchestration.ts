@@ -172,41 +172,96 @@ export interface InlineDAG {
 export interface MemoryEvent {
   id: string;
   timestamp: string;
-  op: 'retain' | 'recall' | 'dedup' | 'quality' | 'bootstrap' | 'flush' | 'session_anchor' | 'summary' | 'self_knowledge';
+  op: 'retain' | 'recall' | 'dedup' | 'quality' | 'bootstrap' | 'flush' | 'summary' | 'tool';
   detail: string;
   scope?: string;
   meta?: Record<string, unknown>;
 }
 
-/** Typed read-side accessors for retain meta — cast meta as RetainMeta for safe access */
+/**
+ * Typed read-side accessors for retain meta — cast meta as RetainMeta.
+ *
+ * Retain is emitted from three places and they do not carry the same fields:
+ * the retention engine scores and stores a record, the context assembler
+ * buffers a conversation message, and the coding bridge persists a run. Each
+ * group below says which.
+ */
 export interface RetainMeta {
+  // retention-engine: a scored, stored record
   context?: string;
   score?: number;
+  /** Composite importance (0–1). Emitted alongside `score`, which is quality. */
+  importance?: number;
   signals?: string[];
   contentPreview?: string;
   contentLength?: number;
-  itemCount?: number;
-  items?: Array<{ content: string; context: string; timestamp: string }>;
-  durationMs?: number;
-  result?: { ok: boolean; count?: number };
+  estimatedTokens?: number;
+
+  // context-assembler: a conversation message added to the retain buffer
+  role?: string;
+  chars?: number;
+  bufferSize?: number;
+
+  // memory-bridge: a persisted coding run
+  requirementsCount?: number;
+  verdictsCount?: number;
+  decision?: string;
+
   /** Originating session that produced this retain (provenance). */
   sessionId?: string;
 }
 
-/** Typed read-side accessors for recall meta */
+/**
+ * Typed read-side accessors for recall meta.
+ *
+ * The pre-Redis shape described a remote recall service: `totalFromApi`,
+ * `droppedByRelevance`, `topScore`, `clientScored`, `minRelevance`, and a
+ * `records` ARRAY of scored hits. None of those are emitted any more — recall
+ * is local and lexical, and `records` is now a COUNT. Reading the old fields
+ * yielded `undefined` and rendered nothing, which is why the expanded recall
+ * view was blank.
+ */
 export interface RecallMeta {
-  query?: string;
-  resultCount?: number;
-  totalFromApi?: number;
-  droppedByRelevance?: number;
-  topScore?: number;
+  /** Token budget for this recall. 0 when recall was skipped. */
+  recallTokens?: number;
+  /** Tokens of prior context actually assembled. */
+  recalledTokens?: number;
+  /** Number of records recalled — a count, not the records themselves. */
+  records?: number;
+
+  // Planning and architect recalls (memory-bridge) report differently.
+  totalResults?: number;
+  totalTokensUsed?: number;
   durationMs?: number;
-  clientScored?: boolean;
-  tokensUsed?: number;
-  maxTokens?: number;
-  minRelevance?: number;
-  records?: Array<{ content: string; context: string; timestamp: string; relevance: number }>;
+  scopesQueried?: string[];
+  queryKind?: string;
+
   /** Target session that recalled this context (provenance). */
+  sessionId?: string;
+}
+
+/** Typed read-side accessors for flush meta */
+export interface FlushMeta {
+  /** Buffered messages written in this flush. */
+  count?: number;
+  sessionId?: string;
+}
+
+/**
+ * Typed read-side accessors for memory-tool meta.
+ *
+ * Emitted for memory_search / memory_read / memory_pin — memory the agent
+ * requested itself, as opposed to what the framework did on its behalf.
+ */
+export interface ToolMeta {
+  /** Tool name, e.g. `memory_search`. */
+  tool?: string;
+  /** How the call ended. `refused` means the per-turn call budget was spent. */
+  outcome?: 'ok' | 'no_results' | 'refused' | 'error';
+  durationMs?: number;
+  query?: string;
+  segment?: string;
+  key?: string;
   sessionId?: string;
 }
 

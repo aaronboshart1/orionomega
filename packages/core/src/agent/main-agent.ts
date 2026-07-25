@@ -279,7 +279,7 @@ export interface InterventionResolvedInfo {
 export interface MemoryEvent {
   id: string;
   timestamp: string;
-  op: 'retain' | 'recall' | 'dedup' | 'quality' | 'bootstrap' | 'flush' | 'session_anchor' | 'summary' | 'self_knowledge';
+  op: 'retain' | 'recall' | 'dedup' | 'quality' | 'bootstrap' | 'flush' | 'summary' | 'tool';
   detail: string;
   bank?: string;
   meta?: Record<string, unknown>;
@@ -2320,6 +2320,13 @@ export class MainAgent {
           ? {
               memoryTools: buildMemoryTools(this.memory.store, {
                 defaultScope: `conversation-${sid}`,
+                // Surface agent-initiated memory access in the memory feed.
+                // Without this the feed shows only what the framework does on
+                // the agent's behalf, and the three tools that ARE the
+                // agent-facing memory system leave no trace at all.
+                onEvent: ({ tool, detail, scope, outcome, meta }) => {
+                  this.emitMemoryEvent('tool', detail, scope, { tool, outcome, ...meta }, sid);
+                },
               }),
             }
           : {}),
