@@ -29,7 +29,7 @@ body {
    Animations
    ============================================================ */
 
-@keyframes hindsight-pulse {
+@keyframes memory-pulse {
   0%, 100% {
     opacity: 1;
     transform: scale(1);
@@ -40,8 +40,8 @@ body {
   }
 }
 
-.animate-hindsight-pulse {
-  animation: hindsight-pulse 1s ease-in-out infinite;
+.animate-memory-pulse {
+  animation: memory-pulse 1s ease-in-out infinite;
 }
 
 /* Mode switch toast: fade in, hold, fade out over 2s */

@@ -2,6 +2,13 @@
 
 _June 10, 2026_
 
+> **Historical record.** This is a dated assessment and is preserved as written.
+> Its memory-related findings and recommendations (notably R4, §4.3, and the
+> Hindsight-vs-native-memory boundary) have since been overtaken: the memory
+> system was rebuilt on self-hosted Redis and Hindsight was removed entirely.
+> Read those sections as a snapshot of June 2026, not as current guidance — see
+> [memory-architecture-v2.md](memory-architecture-v2.md) for what actually shipped.
+
 **Goal of this review:** assess how to evolve OrionOmega so that frontier models (Claude **Opus 4.8** and the new **Fable 5** Mythos-class model) can use the **Claude Agent SDK** to orchestrate large numbers of agents that solve problems requiring massive context (large sets of detailed spec/architecture `.md` files) and execute enormous plans **unattended**. Covers architecture, security, UI/UX, engineering best-practices, efficiency, and developer readability, with a prioritized roadmap.
 
 ---

@@ -12,6 +12,8 @@ import { AnthropicClient } from '../anthropic/client.js';
 import { readConfig } from '../config/loader.js';
 import { createLogger } from '../logging/logger.js';
 import { isExternalAction } from '../memory/query-classifier.js';
+import { projectScopeFor } from '../memory/scope-slug.js';
+import type { MemoryStore } from '../memory/store.js';
 import { discoverModels, buildModelGuide, pickModelByTier, type DiscoveredModel } from '../models/model-discovery.js';
 import { inferModelTier } from '../models/model-registry.js';
 import { getPortAvoidanceInstructions } from '../utils/port-restrictions.js';
@@ -33,6 +35,24 @@ export interface PlannerConfig {
    * once, the default cache persists across runs for the process lifetime.
    */
   subDagCache?: SubDagCache;
+  /**
+   * Persistent memory used for the pre-planning recall. The planner does not
+   * own a store — the caller supplies the one it already built. When omitted,
+   * pre-planning recall is skipped and nothing is constructed.
+   */
+  memoryStore?: MemoryStore;
+}
+
+/**
+ * Late-bind the planner's store.
+ *
+ * The planner is constructed before `MemoryBridge.init()` runs, so the store
+ * does not exist yet at that point. Without this setter the config would
+ * capture `undefined` permanently and pre-planning recall would be silently
+ * skipped for the life of the process — working, but inert.
+ */
+export interface PlannerStoreBinding {
+  setMemoryStore(store: MemoryStore): void;
 }
 
 /**
@@ -43,9 +63,23 @@ export interface PlannerConfig {
  * single AGENT node if parsing fails.
  */
 export class Planner {
-  private readonly config: PlannerConfig;
+  /** Shared long-lived memory scope queried during pre-planning recall. */
+  private static readonly MEMORY_SCOPE = 'core';
+  /** Per-scope recall budget for the pre-planning pass. */
+  private static readonly RECALL_MAX_TOKENS = 1024;
+
+  private config: PlannerConfig;
   /** Task #239: shared sub-DAG cache for macro-phase expansions. */
   private readonly subDagCache: SubDagCache;
+
+  /**
+   * Late-bind the memory store. See {@link PlannerStoreBinding} — the planner
+   * is built before MemoryBridge.init() runs, so the store cannot be supplied
+   * at construction.
+   */
+  setMemoryStore(store: MemoryStore): void {
+    this.config = { ...this.config, memoryStore: store };
+  }
 
   constructor(config: PlannerConfig) {
     this.config = config;
@@ -139,33 +173,33 @@ export class Planner {
       return replacement;
     };
 
-    let infraContext: string | undefined = preRecalledContext;
-    if (!infraContext && !isExternalAction(task)) {
+    // Pre-planning recall: pull anything already known about this task so the
+    // planner does not spend nodes rediscovering it. Uses the injected store —
+    // when none is supplied the section is simply absent from the prompt.
+    let priorContext: string | undefined = preRecalledContext;
+    const store = this.config.memoryStore;
+    if (store && !priorContext && !isExternalAction(task)) {
       try {
-        const hindsightUrl = appConfig.hindsight?.url;
-        if (hindsightUrl) {
-          const { HindsightClient } = await import('@orionomega/hindsight');
-          const hsClient = new HindsightClient(hindsightUrl, 'default', appConfig.hindsight?.apiKey);
-          const recallQuery = this.extractRecallQuery(task);
+        const recallQuery = this.extractRecallQuery(task);
+        const scopes = new Set<string>([Planner.MEMORY_SCOPE, projectScopeFor(task)]);
 
-          const recalls = await Promise.allSettled([
-            hsClient.recall('infra', recallQuery, { maxTokens: 1024, budget: 'low' }),
-            hsClient.recall(appConfig.hindsight?.defaultBank ?? 'default', recallQuery, { maxTokens: 1024, budget: 'low' }),
-          ]);
+        const recalls = await Promise.allSettled(
+          [...scopes].map((scope) =>
+            store.recall(scope, recallQuery, { maxTokens: Planner.RECALL_MAX_TOKENS }),
+          ),
+        );
 
-          const parts: string[] = [];
-          for (const r of recalls) {
-            if (r.status === 'fulfilled' && r.value) {
-              const memories = r.value.results ?? [];
-              for (const m of memories) {
-                if (m.content) parts.push(m.content);
-              }
+        const parts: string[] = [];
+        for (const r of recalls) {
+          if (r.status === 'fulfilled' && r.value) {
+            for (const rec of r.value.records ?? []) {
+              if (rec.content) parts.push(rec.content);
             }
           }
-          if (parts.length > 0) {
-            infraContext = parts.join('\n');
-            log.debug(`Pre-planning context: ${parts.length} memories, ${infraContext.length} chars`);
-          }
+        }
+        if (parts.length > 0) {
+          priorContext = parts.join('\n');
+          log.debug(`Pre-planning context: ${parts.length} records, ${priorContext.length} chars`);
         }
       } catch (err) {
         log.debug(`Pre-planning recall failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
@@ -174,14 +208,14 @@ export class Planner {
 
     // C1: Build the prompt with a token-budget guard so we never blow past
     // the planner model's input limit. If the assembled prompt is too large
-    // we trim the lowest-priority sections first (infraContext → memories →
+    // we trim the lowest-priority sections first (priorContext → memories →
     // files); if it's still too large we hard-truncate.
     const systemPrompt = this.buildBoundedPlannerPrompt({
       task,
       context,
       discoveredModels,
       mainModel: appConfig.models.default,
-      infraContext,
+      priorContext,
     });
 
     this.emitPlannerEvent(emit, 'planner_started', {
@@ -657,7 +691,7 @@ export class Planner {
    *
    * If the combined prompt exceeds `MAX_PROMPT_CHARS`, we trim the
    * lowest-priority sections first:
-   *   1. infraContext (largest and least essential — recallable later)
+   *   1. priorContext (largest and least essential — recallable later)
    *   2. memories
    *   3. workspace files
    * If after dropping all three we're still over budget, the prompt is
@@ -669,24 +703,24 @@ export class Planner {
     context?: { memories?: string[]; availableSkills?: string[]; workspaceFiles?: string[] };
     discoveredModels?: DiscoveredModel[];
     mainModel?: string;
-    infraContext?: string;
+    priorContext?: string;
   }): string {
     const { task, discoveredModels, mainModel } = args;
-    let { context, infraContext } = args;
+    let { context, priorContext } = args;
     const budget = Planner.MAX_PROMPT_CHARS;
 
-    let prompt = this.buildPlannerPrompt(task, context, discoveredModels, mainModel, infraContext);
+    let prompt = this.buildPlannerPrompt(task, context, discoveredModels, mainModel, priorContext);
     if (prompt.length <= budget) return prompt;
 
-    // 1) Drop infraContext.
-    if (infraContext) {
-      log.warn('Planner prompt over budget — dropping infra context', {
+    // 1) Drop priorContext.
+    if (priorContext) {
+      log.warn('Planner prompt over budget — dropping recalled context', {
         promptChars: prompt.length,
         budgetChars: budget,
-        infraContextChars: infraContext.length,
+        priorContextChars: priorContext.length,
       });
-      infraContext = undefined;
-      prompt = this.buildPlannerPrompt(task, context, discoveredModels, mainModel, infraContext);
+      priorContext = undefined;
+      prompt = this.buildPlannerPrompt(task, context, discoveredModels, mainModel, priorContext);
       if (prompt.length <= budget) return prompt;
     }
 
@@ -698,7 +732,7 @@ export class Planner {
         memoryCount: context.memories.length,
       });
       context = { ...context, memories: [] };
-      prompt = this.buildPlannerPrompt(task, context, discoveredModels, mainModel, infraContext);
+      prompt = this.buildPlannerPrompt(task, context, discoveredModels, mainModel, priorContext);
       if (prompt.length <= budget) return prompt;
     }
 
@@ -710,7 +744,7 @@ export class Planner {
         fileCount: context.workspaceFiles.length,
       });
       context = { ...context, workspaceFiles: [] };
-      prompt = this.buildPlannerPrompt(task, context, discoveredModels, mainModel, infraContext);
+      prompt = this.buildPlannerPrompt(task, context, discoveredModels, mainModel, priorContext);
       if (prompt.length <= budget) return prompt;
     }
 
@@ -730,7 +764,7 @@ export class Planner {
     context?: object,
     discoveredModels?: DiscoveredModel[],
     mainModel?: string,
-    infraContext?: string,
+    priorContext?: string,
   ): string {
     const ctx = context as
       | {
@@ -773,7 +807,7 @@ export class Planner {
    Always set \`retries\` (0–2) and a \`fallbackNodeId\` when a backup approach exists.
    Pick models from the list below.
 ## Context Efficiency
-Workers auto-receive: upstream outputs, Hindsight memories, infra config. Do NOT create discovery nodes for known info.
+Workers auto-receive: upstream outputs and recalled memories. Do NOT create discovery nodes for known info.
 
 ## Output File Paths (CRITICAL)
 NEVER specify absolute output paths in a worker's \`task\` description.
@@ -805,7 +839,7 @@ CODING_AGENT is preferred for coding tasks (key: codingAgent, not agent). LOOP i
 When a task involves an available skill, add \`"skillIds": ["<skill-name>"]\` inside the \`agent\` config of the AGENT node so its tools are available at runtime.
 
 ## ${discoveredModels?.length ? buildModelGuide(discoveredModels, mainModel ?? this.config.model) : `Available models: Use "${mainModel ?? this.config.model}" for all workers.`}
-${skillsList}${memoriesList}${filesList}${infraContext ? `\n\n## Known Context (from memory — DO NOT create discovery nodes for this)\n${infraContext}` : ''}
+${skillsList}${memoriesList}${filesList}${priorContext ? `\n\n## Known Context (from memory — DO NOT create discovery nodes for this)\n${priorContext}` : ''}
 
 ${getPortAvoidanceInstructions()}
 
@@ -819,8 +853,8 @@ Respond ONLY with the JSON object. No markdown fences, no commentary.`;
 
   /**
    * Extracts a concise recall query from a potentially long task string.
-   * Hindsight performs best with short, focused queries (under 200 chars),
-   * not full multi-paragraph task instructions.
+   * Similarity search performs best with short, focused queries (under 200
+   * chars), not full multi-paragraph task instructions.
    */
   private extractRecallQuery(task: string): string {
     // Take the first sentence or first 200 chars, whichever is shorter

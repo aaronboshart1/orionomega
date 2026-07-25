@@ -1,9 +1,9 @@
 ---
 name: Stale compiled .js in src shadows .ts under vitest
-description: Why brand-new exports read as "not a constructor" / undefined in hindsight (and any tsc rootDir=src package) tests
+description: Why brand-new exports read as "not a constructor" / undefined in core (and any tsc rootDir=src package) tests
 ---
 
-In the monorepo's TS packages (e.g. `packages/hindsight`), vitest resolves
+In the monorepo's TS packages (e.g. `packages/core`), vitest resolves
 `import ... from '../foo.js'` to a real `foo.js` sitting next to `foo.ts` **if one
 exists**, instead of falling through to `foo.ts`. Those `.js` files are gitignored
 build artifacts that can be left behind in `src/` by an earlier/misconfigured

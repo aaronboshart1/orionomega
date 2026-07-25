@@ -3,21 +3,27 @@
  *
  * Verifies:
  *  - A query that exceeds 450 tokens is clamped before being sent to
- *    recallWithTemporalDiversity(), preventing HTTP 400 errors.
+ *    MemoryStore.recall(), preventing HTTP 400 errors.
  *  - Short queries (≤ 450 tokens) are passed through unchanged.
  *  - After truncation, the query token count is ≤ 450.
  *  - The truncated query preserves the beginning of the original.
- *  - For short replies whose augmented form is too long, the raw query
- *    is preferred over a truncated augmented query.
+ *  - For short replies, the query that reaches recall still respects the cap.
  *
  * MAX_QUERY_TOKENS = 450 is an internal constant; tests are written
  * against its observable effect on what reaches the recall API.
+ *
+ * Ported to the §12 rewrite: `conversationBank` → `conversationScope`, and the
+ * `federateBanks` / `adaptiveRecall` / `dynamicSummaryFallback` config keys are
+ * gone. Recall calls are read straight off the store mock — the old
+ * `diversifiedRecallCalls` helper selected calls by `temporalDiversityRatio`,
+ * which the assembler no longer sends (temporal-diversity bucketing was
+ * deleted), and the assembler is now the only caller of `store.recall`.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { ContextAssembler } from '../context-assembler.js';
-import { estimateTokens } from '@orionomega/hindsight';
-import type { HindsightClient, RecalledMemory } from '@orionomega/hindsight';
+import { estimateTokens } from '@orionomega/shared/similarity';
+import type { MemoryStore } from '../store.js';
 import type { ConversationMessage } from '../context-assembler.js';
 
 // MAX_QUERY_TOKENS is the internal cap for recall queries.
@@ -25,19 +31,19 @@ const MAX_QUERY_TOKENS = 450;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function makeMockHs(): HindsightClient & {
-  recallWithTemporalDiversity: ReturnType<typeof vi.fn>;
-} {
+type FakeStore = MemoryStore & { recall: ReturnType<typeof vi.fn> };
+
+/** A MemoryStore test double that records every recall call. */
+function makeStore(): FakeStore {
   return {
-    recallWithTemporalDiversity: vi.fn().mockResolvedValue({
-      results: [] as RecalledMemory[],
-      lowConfidence: false,
-      tokens_used: 0,
-    }),
-    listBanksCached: vi.fn().mockResolvedValue([]),
-    retain: vi.fn().mockResolvedValue({ success: true, bank_id: 'test', items_count: 1 }),
-    isDuplicateContent: vi.fn().mockResolvedValue(false),
-  } as unknown as ReturnType<typeof makeMockHs>;
+    recall: vi.fn().mockResolvedValue({ records: [], lowConfidence: false, tokensUsed: 0 }),
+    retain: vi.fn().mockResolvedValue({ ok: true, count: 1 }),
+    retainOne: vi.fn().mockResolvedValue({ ok: true, count: 1 }),
+    isDuplicate: vi.fn().mockResolvedValue(false),
+    listScopes: vi.fn().mockResolvedValue([]),
+    deleteScope: vi.fn().mockResolvedValue(undefined),
+    health: vi.fn().mockResolvedValue({ healthy: true }),
+  } as unknown as FakeStore;
 }
 
 /** Build a query string of approximately `targetTokens` tokens. */
@@ -47,26 +53,22 @@ function buildLongQuery(targetTokens: number): string {
   return Array.from({ length: words }, (_, i) => `word${i}`).join(' ');
 }
 
-/** Extract the query string passed to the first recall call. */
-function getRecallQuery(hs: ReturnType<typeof makeMockHs>): string {
-  expect(hs.recallWithTemporalDiversity).toHaveBeenCalled();
-  return hs.recallWithTemporalDiversity.mock.calls[0][1] as string;
+/** Extract the query string passed to the first assembler-issued recall call. */
+function getRecallQuery(store: FakeStore): string {
+  const calls = store.recall.mock.calls;
+  expect(calls.length).toBeGreaterThan(0);
+  return calls[0]![1] as string;
 }
 
 // ── Long query is truncated ───────────────────────────────────────────────────
 
 describe('ContextAssembler — query truncation at 450 tokens (M3)', () => {
-  let hs: ReturnType<typeof makeMockHs>;
+  let hs: FakeStore;
   let assembler: ContextAssembler;
 
   beforeEach(() => {
-    hs = makeMockHs();
-    assembler = new ContextAssembler(hs, {
-      conversationBank: 'test-bank',
-      federateBanks: false,
-      adaptiveRecall: false,
-      dynamicSummaryFallback: false,
-    });
+    hs = makeStore();
+    assembler = new ContextAssembler(hs, { conversationScope: 'test-bank' });
   });
 
   it('passes a query of ~600 tokens through recall with ≤ 450 tokens', async () => {
@@ -109,17 +111,12 @@ describe('ContextAssembler — query truncation at 450 tokens (M3)', () => {
 // ── Short query passes through unchanged ─────────────────────────────────────
 
 describe('ContextAssembler — short query passes through (M3)', () => {
-  let hs: ReturnType<typeof makeMockHs>;
+  let hs: FakeStore;
   let assembler: ContextAssembler;
 
   beforeEach(() => {
-    hs = makeMockHs();
-    assembler = new ContextAssembler(hs, {
-      conversationBank: 'test-bank',
-      federateBanks: false,
-      adaptiveRecall: false,
-      dynamicSummaryFallback: false,
-    });
+    hs = makeStore();
+    assembler = new ContextAssembler(hs, { conversationScope: 'test-bank' });
   });
 
   it('a 10-token query does not exceed the limit', async () => {
@@ -129,6 +126,7 @@ describe('ContextAssembler — short query passes through (M3)', () => {
     await assembler.assemble(shortQuery);
 
     const used = getRecallQuery(hs);
+    expect(used).toBe(shortQuery);
     expect(estimateTokens(used)).toBeLessThanOrEqual(MAX_QUERY_TOKENS);
   });
 
@@ -139,6 +137,7 @@ describe('ContextAssembler — short query passes through (M3)', () => {
     await assembler.assemble(medQuery);
 
     const used = getRecallQuery(hs);
+    expect(used).toBe(medQuery);
     expect(estimateTokens(used)).toBeLessThanOrEqual(MAX_QUERY_TOKENS);
   });
 
@@ -157,20 +156,16 @@ describe('ContextAssembler — short query passes through (M3)', () => {
   });
 });
 
-// ── Short reply whose augmented form exceeds limit ───────────────────────────
+// ── Short reply with a large hot window ──────────────────────────────────────
 
-describe('ContextAssembler — short reply prefers raw query when augmented is too long (M3)', () => {
-  it('reverts to raw short query when augmented context exceeds 450 tokens', async () => {
-    const hs = makeMockHs();
-    const assembler = new ContextAssembler(hs, {
-      conversationBank: 'test-bank',
-      federateBanks: false,
-      adaptiveRecall: false,
-      dynamicSummaryFallback: false,
-    });
+describe('ContextAssembler — short reply query respects the cap (M3)', () => {
+  it('keeps the recall query within 450 tokens after a very long prior turn', async () => {
+    const hs = makeStore();
+    const assembler = new ContextAssembler(hs, { conversationScope: 'test-bank' });
 
-    // Push a long assistant message that will be used as augmentation context.
-    const longAssistantContent = buildLongQuery(600); // would push augmented > 450 tokens
+    // Push a long assistant message — under the old assembler this was folded
+    // into the recall query as augmentation context.
+    const longAssistantContent = buildLongQuery(600);
     const assistantMsg: ConversationMessage = {
       role: 'assistant',
       content: longAssistantContent,
@@ -178,7 +173,7 @@ describe('ContextAssembler — short reply prefers raw query when augmented is t
     };
     await assembler.push(assistantMsg);
 
-    // A very short reply (< 8 tokens) triggers augmentation.
+    // A very short reply (< 8 tokens).
     const shortReply = 'yes';
     expect(estimateTokens(shortReply)).toBeLessThan(10);
 
@@ -187,7 +182,7 @@ describe('ContextAssembler — short reply prefers raw query when augmented is t
     const used = getRecallQuery(hs);
 
     // The query sent to recall must be within the 450-token limit —
-    // either the raw short reply or a smartTruncate of the augmented form.
+    // either the raw short reply or a smartTruncate of a longer form.
     expect(estimateTokens(used)).toBeLessThanOrEqual(MAX_QUERY_TOKENS);
   });
 });
@@ -196,13 +191,8 @@ describe('ContextAssembler — short reply prefers raw query when augmented is t
 
 describe('ContextAssembler — query truncation is transparent to callers', () => {
   it('assemble() still returns a result object even when the query is truncated', async () => {
-    const hs = makeMockHs();
-    const assembler = new ContextAssembler(hs, {
-      conversationBank: 'test-bank',
-      federateBanks: false,
-      adaptiveRecall: false,
-      dynamicSummaryFallback: false,
-    });
+    const hs = makeStore();
+    const assembler = new ContextAssembler(hs, { conversationScope: 'test-bank' });
 
     const result = await assembler.assemble(buildLongQuery(800));
 

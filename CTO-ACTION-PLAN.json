@@ -116,7 +116,7 @@
         "install.sh:69",
         "install.sh:364-399"
       ],
-      "current_behavior": "Installation via `curl | bash` from mutable main branch. No checksum, GPG signature, or version pinning. Also pulls Node.js setup script with sudo via curl|bash. Docker images use :latest tag.",
+      "current_behavior": "Installation via `curl | bash` from mutable main branch. No checksum, GPG signature, or version pinning. Also pulls Node.js setup script with sudo via curl|bash. Docker images use :latest tag. PARTIALLY OBSOLETE (2026-07-24, memory v2): the 'pin the Hindsight Docker image' change is moot — the Hindsight container was removed and the installer no longer runs Docker. The installer-integrity items (release pinning, checksum verification, the Node.js curl|bash step) still stand.",
       "changes": [
         {
           "file": "scripts/install.sh",
@@ -228,14 +228,14 @@
     },
 
     "CRIT_SEC_09": {
-      "title": "Restrict Hindsight Port Binding",
+      "title": "[OBSOLETE — Hindsight package removed 2026-07-24] Restrict Hindsight Port Binding",
       "severity": "HIGH",
       "source_reports": ["live_ssh_test"],
       "files": [
         "install.sh:399",
         "packages/core/src/commands/setup.ts"
       ],
-      "current_behavior": "Hindsight Docker container binds port 8888 to 0.0.0.0, exposing the unauthenticated knowledge graph API to all network interfaces.",
+      "current_behavior": "Hindsight Docker container binds port 8888 to 0.0.0.0, exposing the unauthenticated knowledge graph API to all network interfaces. OBSOLETE (2026-07-24, memory v2): no Hindsight container and no port 8888 — the package and its Docker container were removed. Memory is a self-hosted Redis reached over redis://localhost:6379; bind hardening is now a Redis-configuration concern.",
       "changes": [
         {
           "file": "install.sh",
@@ -311,7 +311,7 @@
   },
 
   "2_MEMORY_SYSTEM": {
-    "_summary": "Hindsight memory improvements for token efficiency, recall quality, and unbounded growth prevention. 11 items.",
+    "_summary": "Hindsight memory improvements for token efficiency, recall quality, and unbounded growth prevention. 11 items. NOTE (2026-07-24, memory v2): written against the Hindsight-era memory system. Hindsight was removed and memory is now Redis-backed in packages/core/src/memory; items marked [OBSOLETE] in their title require no work.",
     "_estimated_effort": "2-3 weeks",
 
     "MEM_01": {
@@ -334,13 +334,13 @@
     },
 
     "MEM_02": {
-      "title": "Replace Trigram Similarity with Lightweight Semantic Scoring",
+      "title": "[OBSOLETE — Hindsight package removed 2026-07-24] Replace Trigram Similarity with Lightweight Semantic Scoring",
       "severity": "HIGH",
       "source_reports": ["memory_review"],
       "files": [
         "packages/hindsight/src/similarity.ts:67-86"
       ],
-      "current_behavior": "Client-side relevance scoring uses trigram Jaccard + keyword overlap. This is character-level only — synonym matching fails ('fix' vs 'resolve', 'auth' vs 'authentication'). Paraphrased content scores near zero.",
+      "current_behavior": "Client-side relevance scoring uses trigram Jaccard + keyword overlap. This is character-level only — synonym matching fails ('fix' vs 'resolve', 'auth' vs 'authentication'). Paraphrased content scores near zero. OBSOLETE (2026-07-24, memory v2): packages/hindsight/src/similarity.ts no longer exists. Retrieval is now the in-process lexical MemoryIndex in packages/core/src/memory, scoring identically to computeClientRelevance. Lexical-only scoring is a deliberate v1 decision and the vector channel is explicitly deferred — see docs/memory-architecture-v2.md.",
       "changes": [
         {
           "file": "packages/hindsight/src/similarity.ts",
@@ -353,13 +353,13 @@
     },
 
     "MEM_03": {
-      "title": "Reduce Per-Turn HTTP Request Amplification",
+      "title": "[OBSOLETE — Hindsight package removed 2026-07-24] Reduce Per-Turn HTTP Request Amplification",
       "severity": "HIGH",
       "source_reports": ["memory_review"],
       "files": [
         "packages/hindsight/src/client.ts:335-425"
       ],
-      "current_behavior": "recallWithTemporalDiversity fires 4 parallel HTTP requests per bank (primary + 3 temporal windows). With N banks, each user message triggers 4N HTTP requests. 5 banks = 20 round-trips per message.",
+      "current_behavior": "recallWithTemporalDiversity fires 4 parallel HTTP requests per bank (primary + 3 temporal windows). With N banks, each user message triggers 4N HTTP requests. 5 banks = 20 round-trips per message. OBSOLETE (2026-07-24, memory v2): there is no HTTP memory transport and no temporal-diversity recall. Records are read from Redis and ranked in-process, so per-turn request amplification cannot occur.",
       "changes": [
         {
           "file": "packages/hindsight/src/client.ts",
@@ -379,7 +379,7 @@
         "packages/hindsight/src/client.ts",
         "packages/core/src/memory/retention-engine.ts"
       ],
-      "current_behavior": "No TTL, no expiration, no cleanup. retainOne() only appends. Banks grow unbounded. At 10K+ memories, trigram dedup checks become O(n).",
+      "current_behavior": "No TTL, no expiration, no cleanup. retainOne() only appends. Banks grow unbounded. At 10K+ memories, trigram dedup checks become O(n). PARTIALLY OBSOLETE (2026-07-24, memory v2): the packages/hindsight/src/client.ts change is moot — the package was removed. Expiration and GC now belong to the Redis store and packages/core/src/memory/retention-engine.ts.",
       "changes": [
         {
           "file": "packages/hindsight/src/client.ts",
@@ -426,13 +426,13 @@
     },
 
     "MEM_06": {
-      "title": "Fix Bank Slug Collisions",
+      "title": "[OBSOLETE — Hindsight package removed 2026-07-24] Fix Bank Slug Collisions",
       "severity": "MEDIUM",
       "source_reports": ["memory_review"],
       "files": [
         "packages/hindsight/src/bank-manager.ts:101-110"
       ],
-      "current_behavior": "Bank slugs derived from task descriptions can collide. 'Build landing page for Acme' and 'Update landing page Acme' both generate `project-landing-page-acme`.",
+      "current_behavior": "Bank slugs derived from task descriptions can collide. 'Build landing page for Acme' and 'Update landing page Acme' both generate `project-landing-page-acme`. OBSOLETE (2026-07-24, memory v2): banks were replaced by scopes and packages/hindsight/src/bank-manager.ts was deleted. Slug derivation now lives in packages/core/src/memory/scope-slug.ts.",
       "changes": [
         {
           "file": "packages/hindsight/src/bank-manager.ts",
@@ -464,13 +464,13 @@
     },
 
     "MEM_08": {
-      "title": "Session Anchor Cleanup",
+      "title": "[OBSOLETE — Hindsight package removed 2026-07-24] Session Anchor Cleanup",
       "severity": "MEDIUM",
       "source_reports": ["memory_review"],
       "files": [
         "packages/hindsight/src/session-bootstrap.ts:128-229"
       ],
-      "current_behavior": "Session anchors stored with context 'session_anchor' but only latest recalled. Old anchors accumulate forever.",
+      "current_behavior": "Session anchors stored with context 'session_anchor' but only latest recalled. Old anchors accumulate forever. OBSOLETE (2026-07-24, memory v2): SessionBootstrap and session anchors were removed with the Hindsight package.",
       "changes": [
         {
           "file": "packages/hindsight/src/session-bootstrap.ts",
@@ -509,7 +509,7 @@
         "packages/hindsight/src/client.ts",
         "packages/gateway/src/routes/status.ts"
       ],
-      "current_behavior": "No visibility into memory system health: bank sizes, recall latencies, retention rates, cache hit rates.",
+      "current_behavior": "No visibility into memory system health: bank sizes, recall latencies, retention rates, cache hit rates. PARTIALLY OBSOLETE (2026-07-24, memory v2): the packages/hindsight/src/client.ts change is moot — the package was removed. Metrics would now come from the Redis store; the gateway status route half still stands, and the status surface reports recall health rather than backend connectivity.",
       "changes": [
         {
           "file": "packages/hindsight/src/client.ts",
@@ -1145,7 +1145,7 @@
         "packages/hindsight/package.json",
         "packages/web/package.json"
       ],
-      "current_behavior": "ZERO test files in entire repository. No test runner configured.",
+      "current_behavior": "ZERO test files in entire repository. No test runner configured. PARTIALLY OBSOLETE (2026-07-24, memory v2): packages/hindsight/package.json and its similarity tests no longer exist — the package was removed. The equivalent coverage now belongs to packages/core/src/memory.",
       "changes": [
         {
           "action": "Set up Vitest across all packages",
@@ -1311,7 +1311,7 @@
         "packages/gateway/src/routes/",
         "packages/web/src/components/settings/"
       ],
-      "current_behavior": "CLI has `orionomega doctor` command for system diagnostics. WebUI has no equivalent.",
+      "current_behavior": "CLI has `orionomega doctor` command for system diagnostics. WebUI has no equivalent. NOTE (2026-07-24, memory v2): the diagnostics checks listed here are stale — there is no Docker or Hindsight health check. The memory check is Redis reachability and recall health.",
       "changes": [
         {
           "action": "Add diagnostics endpoint and UI",
@@ -1479,14 +1479,14 @@
     },
 
     "PERF_05": {
-      "title": "Monitor Hindsight Memory Usage",
+      "title": "[OBSOLETE — Hindsight package removed 2026-07-24] Monitor Hindsight Memory Usage",
       "severity": "MEDIUM",
       "source_reports": ["live_ssh_test"],
       "files": [
         "packages/core/src/commands/setup.ts",
         "install.sh"
       ],
-      "current_behavior": "Hindsight Python API consuming ~2GB (26% of 7.7GB RAM). No memory limits configured in Docker.",
+      "current_behavior": "Hindsight Python API consuming ~2GB (26% of 7.7GB RAM). No memory limits configured in Docker. OBSOLETE (2026-07-24, memory v2): there is no Hindsight container to limit. Redis is a normal system service that OrionOmega neither installs nor manages, so its resource limits are set by whoever runs it.",
       "changes": [
         {
           "file": "install.sh",
@@ -1499,13 +1499,13 @@
     },
 
     "PERF_06": {
-      "title": "Connection Pooling for Hindsight HTTP Client",
+      "title": "[OBSOLETE — Hindsight package removed 2026-07-24] Connection Pooling for Hindsight HTTP Client",
       "severity": "LOW",
       "source_reports": ["memory_review"],
       "files": [
         "packages/hindsight/src/client.ts"
       ],
-      "current_behavior": "Each HTTP request to Hindsight creates new connection. No connection pooling or keep-alive.",
+      "current_behavior": "Each HTTP request to Hindsight creates new connection. No connection pooling or keep-alive. OBSOLETE (2026-07-24, memory v2): the Hindsight HTTP client was deleted. Memory speaks to Redis over a pooled ioredis connection, so there is no per-request HTTP handshake to amortise.",
       "changes": [
         {
           "file": "packages/hindsight/src/client.ts",
@@ -1674,7 +1674,7 @@
       "duration": "1 week",
       "items": ["CRIT_SEC_01", "CRIT_SEC_02", "CRIT_SEC_03", "CRIT_SEC_06", "CRIT_SEC_09", "CRIT_SEC_11"],
       "goal": "Eliminate all CRITICAL security blockers",
-      "success_criteria": "All API endpoints require auth. No exec() with unsanitized input. Hindsight bound to localhost. Security headers on web server."
+      "success_criteria": "All API endpoints require auth. No exec() with unsanitized input. Hindsight bound to localhost. Security headers on web server. (2026-07-24, memory v2: the Hindsight criterion is obsolete — the service was removed; the memory backend is a local Redis.)"
     },
     "phase_2_security_hardening": {
       "duration": "1 week",

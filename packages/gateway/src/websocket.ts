@@ -40,7 +40,7 @@ import { URL } from 'node:url';
 import { existsSync, readFileSync, statSync, realpathSync } from 'node:fs';
 import { resolve as resolvePath, normalize } from 'node:path';
 
-import type { ClientConnection, ClientMessage, ServerMessage, GatewayConfig } from './types.js';
+import type { ClientConnection, ClientMessage, ServerMessage, GatewayConfig, MemoryActivity } from './types.js';
 import type { MainAgent } from '@orionomega/core';
 import { createLogger } from '@orionomega/core';
 import { validateToken } from './auth.js';
@@ -92,7 +92,7 @@ export class WebSocketHandler {
   private pingTimer: ReturnType<typeof setInterval> | null = null;
 
   private mainAgent: MainAgent | null = null;
-  private getHindsightStatus: (() => { connected: boolean; busy: boolean }) | null = null;
+  private getMemoryActivity: (() => MemoryActivity) | null = null;
 
   constructor(
     private config: GatewayConfig,
@@ -122,8 +122,8 @@ export class WebSocketHandler {
     log.info(`WebSocket server ready (maxPayload=${maxPayloadMB} MiB)`);
   }
 
-  setHindsightStatusProvider(fn: () => { connected: boolean; busy: boolean }): void {
-    this.getHindsightStatus = fn;
+  setMemoryActivityProvider(fn: () => MemoryActivity): void {
+    this.getMemoryActivity = fn;
   }
 
   /**
@@ -333,7 +333,7 @@ export class WebSocketHandler {
 
     // State rehydration is deferred to the 'init' message handler (handleInit).
     // The client sends 'init' immediately after connecting and receives a full
-    // 'session' response with paginated state, buffered events, and hindsight
+    // 'session' response with paginated state, buffered events, and memory
     // status. Sending state here would be redundant and doubles bandwidth.
 
     ws.on('message', (data) => {
@@ -783,7 +783,7 @@ export class WebSocketHandler {
       return;
     }
 
-    const hindsightStatus = this.getHindsightStatus ? this.getHindsightStatus() : null;
+    const memoryActivity = this.getMemoryActivity ? this.getMemoryActivity() : null;
     const lastSeenSeq = msg.lastSeenSeq ?? 0;
 
     // Delta sync: if client provides lastSeenSeq > 0, send snapshot + missed events
@@ -795,7 +795,7 @@ export class WebSocketHandler {
       const inMemSession = this.sessionManager.getSession(conn.sessionId);
       const enrichedSnapshot = snapshot ? {
         ...snapshot,
-        hindsightStatus: hindsightStatus ?? null,
+        memoryActivity: memoryActivity ?? null,
         orchestrationEvents: inMemSession?.orchestrationEvents ?? [],
         codingSession: inMemSession?.codingSession ?? null,
         activePlan: inMemSession?.activePlan ?? null,
@@ -832,7 +832,7 @@ export class WebSocketHandler {
       // Full sync: no lastSeenSeq or no persistence service
       const snapshot = this.sessionManager.buildSnapshot(
         conn.sessionId,
-        hindsightStatus,
+        memoryActivity,
         SNAPSHOT_MAX_MESSAGES,
       );
 
@@ -866,12 +866,12 @@ export class WebSocketHandler {
       });
     }
 
-    // Also send standalone hindsight status so the connection indicator updates
-    if (hindsightStatus) {
+    // Also send a standalone memory_activity so the status bar hydrates.
+    if (memoryActivity) {
       this.send(conn.ws, {
         id: randomBytes(8).toString('hex'),
-        type: 'hindsight_status',
-        hindsightStatus,
+        type: 'memory_activity',
+        memoryActivity,
       });
     }
   }

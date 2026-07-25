@@ -143,7 +143,7 @@ export async function handleRenameSession(
  *   messages: Message[],
  *   memoryEvents: MemoryEventData[],
  *   activeWorkflows: string[],
- *   hindsightBank: string | null,
+ *   memoryScope: string | null,
  *   clientCount: number,
  *   generatedAt: string   // ISO timestamp of when this snapshot was taken
  * }

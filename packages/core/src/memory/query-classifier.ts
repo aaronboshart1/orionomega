@@ -1,4 +1,4 @@
-import { estimateTokens } from '@orionomega/hindsight';
+import { estimateTokens } from '@orionomega/shared/similarity';
 import { createLogger } from '../logging/logger.js';
 
 const log = createLogger('query-classifier');
@@ -40,7 +40,7 @@ const DECISION_PATTERNS = [
 ];
 
 const META_PATTERNS = [
-  /\b(how (does|do) (you|the system|hindsight|memory|this) work)\b/i,
+  /\b(how (does|do) (you|the system|memory|this) work)\b/i,
   /\b(what (can you|do you) (do|remember|recall|know))\b/i,
   /\b(status|overview|summary|recap|what'?s (going on|happening|the state))\b/i,
   /\b(help|capabilities|features|settings|config)\b/i,
@@ -85,7 +85,7 @@ export function isExternalAction(text: string): boolean {
   return hasStrongExternalIntent(trimmed);
 }
 
-// Token estimation uses the shared estimateTokens from @orionomega/hindsight.
+// Token estimation uses estimateTokens from @orionomega/shared/similarity.
 
 function scorePatterns(text: string, patterns: RegExp[]): number {
   let matches = 0;

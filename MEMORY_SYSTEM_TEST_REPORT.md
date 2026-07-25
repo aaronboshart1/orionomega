@@ -1,5 +1,12 @@
 # Memory System — Comprehensive Test Report
 
+> **STALE — captured 2026-04-04, predates the Redis memory rewrite.** This run
+> exercised the Hindsight-backed memory system, which no longer exists: the
+> `packages/hindsight` package was deleted and memory is now self-hosted Redis
+> (see [`docs/memory-architecture-v2.md`](docs/memory-architecture-v2.md)).
+> The results below are kept as a record of that run, not as a description of
+> current behaviour, and the commands in it will not reproduce.
+
 **Date:** 2026-04-04
 **Executed by:** OrionOmega Orchestration System (Worker: generate-report)
 **Runner command:** `npx tsx tests/run-all-tests.ts`

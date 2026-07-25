@@ -1,41 +1,51 @@
 /**
  * @module memory
- * Memory integration. Generic Hindsight operations (bank management, mental models,
- * session bootstrap) live in @orionomega/hindsight. Orchestration-specific memory
- * features (retention during workflows, compaction flush, session summaries) stay here.
+ * Memory integration: the backend-neutral `MemoryStore` interface, the context
+ * assembler that rebuilds the window each turn, and the orchestration-specific
+ * pieces (retention during workflows, run artifact collection, session
+ * summaries, telemetry).
  */
 
-// Re-export from @orionomega/hindsight (these modules moved there for clean boundaries)
-export { BankManager, MentalModelManager, SessionBootstrap } from '@orionomega/hindsight';
-export type { BootstrapContext } from '@orionomega/hindsight';
+// Memory subsystem exports.
+export type {
+  MemoryStore,
+  MemoryWrite,
+  RecalledRecord,
+  RecallQuery,
+  RecallOutcome,
+  RetainOutcome,
+  ScopeInfo,
+} from './store.js';
+
+// There is no scope manager and no session bootstrap (§16). Scopes are
+// implicit — nothing needs creating — durable facts are captured by explicit
+// pins (memory_pin), and the per-turn orientation block is the Memory Map.
 
 // Retention Engine (stays in core — needs EventBus, WorkerEvent types)
 export type { RetentionConfig, WorkflowOutcome } from './retention-engine.js';
 export { RetentionEngine, scoreMemoryQuality, computeImportance, isMemoryExpired, consolidateMemories } from './retention-engine.js';
 export type { QualityScore } from './retention-engine.js';
 
-// Run Artifact Collector — stores all .md files from completed runs to Hindsight
+// Run Artifact Collector — stores all .md files from completed runs to memory
 export { RunArtifactCollector, collectRunArtifacts } from './run-artifact-collector.js';
 export type { RunArtifactCollectorConfig, CollectionResult } from './run-artifact-collector.js';
 
-// Compaction Flush (stays in core — needs AnthropicClient)
-export type { FlushResult } from './compaction-flush.js';
-export { CompactionFlush } from './compaction-flush.js';
+// CompactionFlush deleted (§12.1): it salvaged context "before compaction
+// discards them", but this system does not compact — its only entry point,
+// MainAgent.flushMemory(), had zero callers repo-wide. memory_pin now serves
+// the durable-facts role, explicitly and on demand.
 
 // Session Summary (stays in core — needs AnthropicClient)
 export { SessionSummarizer } from './session-summary.js';
 
-// Context Assembler — hot window + Hindsight recall for token-aware context
+// Context Assembler — hot window + budgeted recall + Memory Map, per turn
 export { ContextAssembler } from "./context-assembler.js";
-export type { AssembledContext, ContextAssemblerConfig, ConversationMessage, ConfidenceSummary } from "./context-assembler.js";
+export type { AssembledContext, ContextAssemblerConfig, ConversationMessage } from "./context-assembler.js";
 
 // Query Classifier — adaptive recall strategy per query type
-export { classifyQuery, getRecallStrategy } from "./query-classifier.js";
-export type { QueryType, QueryClassification, RecallStrategy } from "./query-classifier.js";
+export { isExternalAction } from "./query-classifier.js";
 
 // Dynamic Summary Generator — on-demand project summaries from recalled memories
-export { DynamicSummaryGenerator } from "./dynamic-summary.js";
-export type { DynamicSummaryOptions, DynamicSummaryResult } from "./dynamic-summary.js";
 
 // Memory Telemetry — token efficiency, latency, dedup tracking
 export {

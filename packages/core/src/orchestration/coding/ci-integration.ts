@@ -12,7 +12,7 @@
  *  2. watchCIStatus()    — poll for run completion (every 30s, up to timeout)
  *  3. extractFailureLogs() — fetch `gh run view --log-failed` output
  *  4. createCIFixSession() — spawn a bug-fix template session with CI logs as context
- *  5. Link fix session to original session via Hindsight
+ *  5. Link fix session to original session via memory
  */
 
 import type { CodingDAGTemplate } from './coding-types.js';

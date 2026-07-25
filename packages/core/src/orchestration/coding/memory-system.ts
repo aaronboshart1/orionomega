@@ -5,7 +5,7 @@
  * Memory levels:
  *  1. Session Memory  — ephemeral, per-coding-session, checkpoint-backed
  *  2. Project Memory  — persistent per project, stored in {workspaceDir}/.orion/
- *  3. Global Memory   — cross-project, stored in Hindsight memory bank
+ *  3. Global Memory   — long-lived, stored in a memory scope
  *
  * Cross-agent context is always passed as typed DAGArtifact values — never as
  * raw conversation text. This prevents context pollution and enables caching.
@@ -239,20 +239,20 @@ export interface ProjectMemory {
   lastUpdated: string;
 }
 
-// ── Level 3: Global Memory (cross-project, via Hindsight) ─────────────────────
+// ── Level 3: Global Memory (long-lived, via the memory store) ─────────────────
 
 /**
- * A single memory entry stored in the Hindsight episodic memory bank.
- * Used for cross-project learning: architecture decisions, failure patterns,
+ * A single record held in the long-lived memory scope.
+ * Used for cross-session learning: architecture decisions, failure patterns,
  * successful recovery strategies, and template effectiveness metrics.
  */
 export interface GlobalMemoryEntry {
-  /** Unique memory ID (assigned by Hindsight). */
+  /** Unique record ID (assigned by the memory store). */
   id: string;
-  /** Hindsight memory bank name (e.g. 'infra', 'coding-sessions'). */
-  bank: string;
+  /** Memory scope name (e.g. 'infra', 'coding-sessions'). */
+  scope: string;
   /**
-   * Prose content of the memory.
+   * Prose content of the record.
    * Max 1,500 characters — truncated before injection into architect context.
    */
   content: string;
@@ -265,27 +265,28 @@ export interface GlobalMemoryEntry {
 }
 
 /**
- * Recall query parameters passed to the Hindsight client.
+ * Recall query parameters used by the coding subsystem.
  * Used in `CodingPlanner.plan()` to fetch prior architecture decisions.
  */
 export interface MemoryRecallQuery {
   /** Free-text query, typically derived from the coding task description. */
   query: string;
-  /** Bank to search (e.g. 'infra' for infrastructure decisions). */
-  bank: string;
-  /** Maximum tokens to include from recalled memories. */
+  /** Scope to search (e.g. 'infra' for infrastructure decisions). */
+  scope: string;
+  /** Maximum tokens to include from recalled records. */
   maxTokens: number;
-  /** Budget hint for the Hindsight client ('low' = haiku, 'high' = opus). */
+  /** Caller-side cost hint. The memory store does not read it — recall is
+   *  lexical and involves no model call. */
   budget: 'low' | 'medium' | 'high';
 }
 
 /**
- * Result of a Hindsight recall operation.
+ * Result of a recall.
  * Entries are truncated to 1,500 chars each and injected into the architect's
  * system prompt under "## Prior Architecture Decisions".
  */
 export interface MemoryRecallResult {
-  bank: string;
+  scope: string;
   query: string;
   entries: GlobalMemoryEntry[];
   /** Total tokens consumed by all recalled entries (after truncation). */
@@ -300,10 +301,10 @@ export type MemoryLevel = 'session' | 'project' | 'global';
 // ── Helper: format recalled memories for architect prompt ─────────────────────
 
 /**
- * Format Hindsight recall results for injection into an architect prompt.
+ * Format recall results for injection into an architect prompt.
  * Each entry is truncated to maxCharsPerEntry and separated by a divider.
  *
- * @param results  Array of recall results (one per Hindsight bank queried).
+ * @param results  Array of recall results (one per scope queried).
  * @param maxCharsPerEntry  Max characters per entry. Default: 1500.
  * @returns Formatted string ready for prompt injection, or empty string if no entries.
  */
@@ -326,7 +327,7 @@ export function formatRecalledMemories(
       entry.content.length > maxCharsPerEntry
         ? entry.content.slice(0, maxCharsPerEntry) + '…'
         : entry.content;
-    lines.push(`### Memory: ${entry.bank} / ${entry.id}`);
+    lines.push(`### Memory: ${entry.scope} / ${entry.id}`);
     if (entry.tags.length > 0) lines.push(`Tags: ${entry.tags.join(', ')}`);
     lines.push(content);
     lines.push('');

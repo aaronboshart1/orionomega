@@ -184,9 +184,9 @@ export interface CodingOrchestratorConfig {
    */
   validationTimeoutSec?: number;
   /**
-   * Optional Hindsight-backed memory bridge. When provided, the architect
-   * step recalls prior decisions before planning, and the end of each run
-   * persists the plan + per-requirement verdicts back to the project bank.
+   * Optional memory bridge. When provided, the architect step recalls prior
+   * decisions before planning, and the end of each run persists the plan +
+   * per-requirement verdicts back to the project scope.
    */
   memoryBridge?: MemoryBridge;
   /**
@@ -545,11 +545,11 @@ export class CodingOrchestrator {
     let implementationPlan = '';
     let priorDecisions: string[] = [];
     let requirements: Requirement[] = [];
-    // Captured planner output for end-of-run Hindsight retention. Stays
+    // Captured planner output for end-of-run memory retention. Stays
     // null when the planner falls back to the prose-only path.
     let capturedPlanOutput: CodingPlannerOutput | null = null;
     await this._runStep(sessionId, executionId, 'plan', 'Design implementation plan', 'architect', progress, async () => {
-      // 3a. Recall prior decisions from Hindsight (best-effort).
+      // 3a. Recall prior decisions from memory (best-effort).
       if (this.cfg.memoryBridge) {
         progress?.onStepProgress('plan', 'Recalling prior architecture decisions…', 10);
         _emitters?.stepProgress({ nodeId: 'plan', message: 'Recalling prior architecture decisions…', percentage: 10 }, sessionId);
@@ -1239,7 +1239,7 @@ export class CodingOrchestrator {
     await this._updateSessionStatus(sessionId, 'completed');
     await this._updateExecutionStatus(executionId, 'completed');
 
-    // Persist the run to Hindsight so a future architect step can recall it.
+    // Persist the run to memory so a future architect step can recall it.
     // Best-effort — the helper itself swallows failures, but defend against
     // a missing memory bridge so this stays a no-op when memory is disabled.
     // We persist the FULL plan structure (template, nodes, budget, file

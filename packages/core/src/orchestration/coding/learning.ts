@@ -4,7 +4,7 @@
  *
  * Three mechanisms:
  *
- * 1. Feedback Signals — user approval/rejection/edit/correction → Hindsight memory
+ * 1. Feedback Signals — user approval/rejection/edit/correction → memory record
  * 2. Session Telemetry — structured metrics per session → drives auto-tuning
  * 3. Convention Learning — after 3+ sessions, auto-generate PROJECT_CONVENTIONS.md
  *
@@ -22,7 +22,7 @@ import type { ProjectConventions, RecentSessionOutcome } from './memory-system.j
 
 /**
  * A single user feedback signal attached to a completed coding session.
- * Stored as a Hindsight memory, tagged with task type and file patterns,
+ * Stored as a memory record, tagged with task type and file patterns,
  * so future matching sessions can inject it as "avoid this" context.
  */
 export interface FeedbackSignal {
@@ -47,7 +47,7 @@ export interface FeedbackSignal {
 // ── CodingSessionTelemetry ────────────────────────────────────────────────────
 
 /**
- * Structured telemetry stored in Hindsight after each coding session completes.
+ * Structured telemetry stored in memory after each coding session completes.
  * Used on future sessions to auto-tune parallelism, model tiers, and budgets.
  */
 export interface CodingSessionTelemetry {
@@ -244,11 +244,11 @@ export async function learnConventions(
   };
 }
 
-// ── Hindsight Storage ─────────────────────────────────────────────────────────
+// ── Memory Storage ────────────────────────────────────────────────────────────
 
 /**
- * Format a FeedbackSignal as a Hindsight memory string.
- * The caller stores this via HindsightClient.store().
+ * Format a FeedbackSignal as a memory record string.
+ * The caller writes this via `MemoryStore.retainOne()`.
  */
 export function formatFeedbackMemory(
   signal: FeedbackSignal,
@@ -279,8 +279,8 @@ export function formatFeedbackMemory(
 }
 
 /**
- * Format a CodingSessionTelemetry record as a Hindsight memory string.
- * The caller stores this via HindsightClient.store() after each session.
+ * Format a CodingSessionTelemetry record as a memory record string.
+ * The caller writes this via `MemoryStore.retainOne()` after each session.
  */
 export function formatTelemetryMemory(telemetry: CodingSessionTelemetry): string {
   const lines: string[] = [

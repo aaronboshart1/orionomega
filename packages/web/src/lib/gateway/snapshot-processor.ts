@@ -653,18 +653,23 @@ export function rehydrateFromSnapshot(
       console.error('[gateway] Failed to rehydrate coding session', err);
     }
 
-    // ── 9. Rehydrate hindsight status ───────────────────────────────────
+    // ── 9. Rehydrate memory activity ────────────────────────────────────
     try {
-      if (snapshot.hindsightStatus) {
-        useConnectionStore.getState().setHindsightStatus(
-          !!snapshot.hindsightStatus.connected,
-          !!snapshot.hindsightStatus.busy,
-        );
+      if (snapshot.memoryActivity) {
+        const activity = snapshot.memoryActivity;
+        useConnectionStore.getState().setMemoryActivity({
+          busy: !!activity.busy,
+          health: activity.health,
+          pct: activity.pct,
+          reason: activity.reason,
+          op: activity.op,
+          count: activity.count,
+        });
       }
       sectionsOk++;
     } catch (err) {
       sectionsFailed++;
-      console.error('[gateway] Failed to rehydrate hindsight status', err);
+      console.error('[gateway] Failed to rehydrate memory activity', err);
     }
 
     // ── 10. Restore persisted client state ─────────────────────────────

@@ -6,6 +6,8 @@
 import { existsSync, accessSync, constants, readdirSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { execSync } from 'node:child_process';
+import { RedisMemoryStore } from '../memory/redis-store.js';
+import { redactUrl, resolveRedisUrl } from '../memory/redis-connection.js';
 import { readConfig, getConfigPath } from '../config/index.js';
 
 const require = createRequire(import.meta.url);
@@ -75,18 +77,20 @@ export async function runDoctor(): Promise<void> {
     bad('Gateway service', 'not running');
   }
 
-  // 3. Hindsight connectivity
-  try {
-    const res = await fetch(`${config.hindsight.url}/health`, {
-      signal: AbortSignal.timeout(3000),
-    });
-    if (res.ok) {
-      ok('Hindsight', config.hindsight.url);
-    } else {
-      warn('Hindsight', `returned ${res.status}`);
+  // 3. Memory (Redis) reachability.
+  // Redis speaks RESP, not HTTP, so there is no health endpoint to fetch().
+  // RedisMemoryStore.health() issues a PING and is contractually non-throwing,
+  // so an unreachable server reports { healthy: false } rather than rejecting.
+  {
+    const redisUrl = resolveRedisUrl(config.memory?.redis);
+    const probe = new RedisMemoryStore({ redis: config.memory?.redis });
+    try {
+      const { healthy } = await probe.health();
+      if (healthy) ok('Memory (Redis)', redactUrl(redisUrl));
+      else warn('Memory (Redis)', `not reachable at ${redactUrl(redisUrl)}`);
+    } finally {
+      await probe.close().catch(() => {});
     }
-  } catch {
-    warn('Hindsight', 'not reachable');
   }
 
   // 4. Anthropic API key present

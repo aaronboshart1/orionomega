@@ -4,6 +4,8 @@
  */
 
 import { existsSync } from 'node:fs';
+import { RedisMemoryStore } from '../memory/redis-store.js';
+import { redactUrl, resolveRedisUrl } from '../memory/redis-connection.js';
 import { readConfig, getConfigPath } from '../config/index.js';
 
 const GREEN = '\x1b[32m';
@@ -45,18 +47,17 @@ export async function runStatus(): Promise<void> {
     bad('Gateway', 'not reachable');
   }
 
-  // Hindsight
-  try {
-    const res = await fetch(`${config.hindsight.url}/v1/default/banks`, {
-      signal: AbortSignal.timeout(3000),
-    });
-    if (res.ok) {
-      ok('Hindsight', config.hindsight.url);
-    } else {
-      bad('Hindsight', `returned ${res.status}`);
+  // Memory (Redis) — a PING, not an HTTP probe. health() never throws.
+  {
+    const redisUrl = resolveRedisUrl(config.memory?.redis);
+    const probe = new RedisMemoryStore({ redis: config.memory?.redis });
+    try {
+      const { healthy } = await probe.health();
+      if (healthy) ok('Memory (Redis)', redactUrl(redisUrl));
+      else bad('Memory (Redis)', `not reachable at ${redactUrl(redisUrl)}`);
+    } finally {
+      await probe.close().catch(() => {});
     }
-  } catch {
-    bad('Hindsight', 'not reachable');
   }
 
   // Config

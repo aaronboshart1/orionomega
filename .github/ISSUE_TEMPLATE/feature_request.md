@@ -23,7 +23,7 @@ Any other approaches you thought about, and why you prefer your proposed solutio
 - [ ] TUI (`packages/tui`)
 - [ ] Web UI (`packages/web`)
 - [ ] Skills SDK (`packages/skills-sdk`)
-- [ ] Hindsight integration (`packages/hindsight`)
+- [ ] Memory (`packages/core/src/memory`, Redis-backed)
 - [ ] New built-in skill (`default-skills/`)
 - [ ] CLI / setup
 - [ ] Documentation

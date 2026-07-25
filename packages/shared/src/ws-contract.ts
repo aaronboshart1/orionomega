@@ -35,10 +35,19 @@ export const modelUsageSchema = z.object({
   costUsd: z.number(),
 });
 
-/** Hindsight (memory) connectivity status. */
-export const hindsightStatusSchema = z.object({
-  connected: z.boolean(),
+/**
+ * Memory activity status. Reports what memory can currently *do* — never
+ * whether a socket is open. `health` is the operator-facing rollup:
+ * `ready` (serving recall), `rebuilding` (index warming, see `pct`),
+ * `degraded` (recall unavailable or lossy, see `reason`).
+ */
+export const memoryActivitySchema = z.object({
   busy: z.boolean(),
+  health: z.enum(['ready', 'rebuilding', 'degraded']),
+  pct: z.number().optional(),
+  reason: z.enum(['redis_unreachable', 'index_cold', 'write_failed']).optional(),
+  op: z.string().optional(),
+  count: z.number().optional(),
 });
 
 /** A single memory event row. */
@@ -47,7 +56,7 @@ export const memoryEventSchema = z.object({
   timestamp: z.string(),
   op: z.string(),
   detail: z.string(),
-  bank: z.string().optional(),
+  scope: z.string().optional(),
   meta: z.record(z.string(), z.unknown()).optional(),
 });
 
@@ -392,7 +401,7 @@ export const sessionSnapshotSchema = z
     pendingConfirmation: dagConfirmSchema.passthrough().nullable().optional(),
     agentMode: z.string().optional(),
     codingSession: z.unknown().optional(),
-    hindsightStatus: hindsightStatusSchema.optional(),
+    memoryActivity: memoryActivitySchema.optional(),
     clientState: z
       .object({
         agentMode: z.string().optional(),
@@ -431,7 +440,7 @@ export const SERVER_MESSAGE_TYPES = [
   'intervention_resolved',
   'pong',
   'file_content',
-  'hindsight_status',
+  'memory_activity',
   'memory_event',
   'memory_history',
   'coding_event',
@@ -471,7 +480,7 @@ export const serverMessageSchema = z
     status: z.unknown().optional(),
     commandResult: commandResultSchema.optional(),
     sessionStatus: sessionStatusSchema.optional(),
-    hindsightStatus: hindsightStatusSchema.optional(),
+    memoryActivity: memoryActivitySchema.optional(),
     memoryEvent: memoryEventSchema.optional(),
     step: stepSchema.optional(),
     error: z.string().optional(),
@@ -507,7 +516,7 @@ export const serverMessageSchema = z
 // ── Derived types ─────────────────────────────────────────────────────────────
 
 export type ModelUsage = z.infer<typeof modelUsageSchema>;
-export type HindsightStatus = z.infer<typeof hindsightStatusSchema>;
+export type MemoryActivity = z.infer<typeof memoryActivitySchema>;
 export type MemoryEvent = z.infer<typeof memoryEventSchema>;
 export type SessionStatusPayload = z.infer<typeof sessionStatusSchema>;
 export type CommandResultPayload = z.infer<typeof commandResultSchema>;

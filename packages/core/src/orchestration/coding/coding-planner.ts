@@ -161,7 +161,7 @@ export class CodingPlanner {
    * @param template - Pre-selected template (from selectTemplate).
    * @param profile - Codebase scan output (may be a stub if scanner hasn't run yet).
    * @param opts - Optional planning context (e.g. prior decisions recalled
-   *   from Hindsight to thread into the architect prompt).
+   *   from memory to thread into the architect prompt).
    * @returns CodingPlannerOutput with nodes, budget, and model assignments.
    */
   plan(

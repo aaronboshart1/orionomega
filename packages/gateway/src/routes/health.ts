@@ -8,13 +8,14 @@
  *
  * The /api/health response includes a structured `system` block describing
  * the state of the memory subsystem, database, and session summariser.
- * Operators can poll this endpoint to detect Hindsight outages, missing
- * migrations, or summariser failures without trawling the logs (Task #123).
+ * Operators can poll this endpoint to detect memory-store degradation,
+ * missing migrations, or summariser failures without trawling the logs
+ * (Task #123).
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { DatabaseStatus, SummarizerStatus } from '@orionomega/core';
-import type { HindsightStatus } from '@orionomega/hindsight';
+import type { MemoryActivity } from '../types.js';
 import type { SessionManager, SessionMetrics } from '../sessions.js';
 import type { ServerSessionStore, StateStoreMetrics } from '../state-store.js';
 
@@ -25,30 +26,28 @@ const VERSION = '0.1.0';
  * called once per `/api/health` request, so the underlying getters must
  * be cheap (single in-memory reads or a one-shot SQL query).
  *
- * Each field returns `null` when the corresponding subsystem is not
- * configured for the running session — for example, Hindsight is null
- * when the user has not provided a memory backend URL.
+ * `database` and `summarizer` return `null` when the corresponding subsystem
+ * is not configured for the running session. `memory` always reports — the
+ * store is a hard dependency, so "not configured" is not a state it has.
  */
 export interface SystemHealthProvider {
-  hindsight: () => HindsightStatus | null;
+  memory: () => MemoryActivity;
   database: () => DatabaseStatus | null;
   summarizer: () => SummarizerStatus | null;
 }
 
 /** Roll up subsystem statuses into a single 'ok' | 'degraded' verdict. */
 function rollupStatus(
-  hindsight: HindsightStatus | null,
+  memory: MemoryActivity | null,
   database: DatabaseStatus | null,
   summarizer: SummarizerStatus | null,
 ): 'ok' | 'degraded' {
   // A null subsystem means "not configured" — that is a healthy state, not
   // a degraded one. Only flip to degraded for active failure signals.
-  // For Hindsight we look at the rolled-up `status` field (which already
-  // accounts for circuit state, suppressed endpoints, and disabled mental
-  // models) rather than reading just the circuit state — otherwise the
-  // top-level health would still report 'ok' while individual subsystems
-  // are clearly degraded.
-  if (hindsight && hindsight.status !== 'up') return 'degraded';
+  // Memory reports what it can currently do: anything short of `ready`
+  // (warming index, unreachable Redis, failed writes) is a degraded system,
+  // because recall is incomplete for as long as it lasts.
+  if (memory && memory.health !== 'ready') return 'degraded';
   if (database && database.status !== 'ok') return 'degraded';
   if (summarizer && summarizer.status !== 'ok') return 'degraded';
   return 'ok';
@@ -80,22 +79,22 @@ export function handleHealth(
   const uptime = Math.floor((Date.now() - startTime) / 1000);
   const memUsage = process.memoryUsage();
 
-  const hindsight = systemHealth?.hindsight() ?? null;
+  const memory = systemHealth?.memory() ?? null;
   const database = systemHealth?.database() ?? null;
   const summarizer = systemHealth?.summarizer() ?? null;
-  const status = rollupStatus(hindsight, database, summarizer);
+  const status = rollupStatus(memory, database, summarizer);
 
   const body = JSON.stringify({
     status,
     version: VERSION,
     uptime,
-    memory: {
+    process: {
       heapUsedMB: Math.round(memUsage.heapUsed / 1024 / 1024),
       heapTotalMB: Math.round(memUsage.heapTotal / 1024 / 1024),
       rssMB: Math.round(memUsage.rss / 1024 / 1024),
     },
     system: {
-      hindsight,
+      memory,
       database,
       summarizer,
     },

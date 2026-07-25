@@ -8,7 +8,7 @@ import { checkAuth } from './auth-utils.js';
 const log = createLogger('routes/config');
 
 const VALID_TOP_LEVEL_KEYS = new Set([
-  'gateway', 'hindsight', 'models', 'orchestration', 'workspace', 'logging', 'skills', 'autonomous', 'agentSdk', 'webui', 'commands', 'codingMode',
+  'gateway', 'memory', 'models', 'orchestration', 'workspace', 'logging', 'skills', 'autonomous', 'agentSdk', 'webui', 'commands', 'codingMode',
 ]);
 
 const VALID_AUTH_MODES = new Set(['api-key', 'none']);
@@ -147,16 +147,45 @@ function validateConfig(config: Record<string, unknown>): string[] {
     }
   }
 
-  const hindsight = config.hindsight as Record<string, unknown> | undefined;
-  if (hindsight) {
-    if (hindsight.url !== undefined && typeof hindsight.url !== 'string') {
-      errors.push('hindsight.url must be a string');
+  const memory = config.memory as Record<string, unknown> | undefined;
+  if (memory) {
+    const redis = memory.redis as Record<string, unknown> | undefined;
+    if (redis !== undefined && (typeof redis !== 'object' || Array.isArray(redis))) {
+      errors.push('memory.redis must be an object');
+    } else if (redis) {
+      if (redis.url !== undefined && typeof redis.url !== 'string') {
+        errors.push('memory.redis.url must be a string');
+      }
+      if (redis.db !== undefined && (typeof redis.db !== 'number' || redis.db < 0)) {
+        errors.push('memory.redis.db must be a non-negative number');
+      }
+      if (redis.keyPrefix !== undefined && typeof redis.keyPrefix !== 'string') {
+        errors.push('memory.redis.keyPrefix must be a string');
+      }
+      if (redis.tls !== undefined && typeof redis.tls !== 'boolean') {
+        errors.push('memory.redis.tls must be a boolean');
+      }
     }
-    if (hindsight.retainOnComplete !== undefined && typeof hindsight.retainOnComplete !== 'boolean') {
-      errors.push('hindsight.retainOnComplete must be a boolean');
+    if (memory.retainOnComplete !== undefined && typeof memory.retainOnComplete !== 'boolean') {
+      errors.push('memory.retainOnComplete must be a boolean');
     }
-    if (hindsight.retainOnError !== undefined && typeof hindsight.retainOnError !== 'boolean') {
-      errors.push('hindsight.retainOnError must be a boolean');
+    if (memory.retainOnError !== undefined && typeof memory.retainOnError !== 'boolean') {
+      errors.push('memory.retainOnError must be a boolean');
+    }
+    if (memory.sessionSummary !== undefined && typeof memory.sessionSummary !== 'boolean') {
+      errors.push('memory.sessionSummary must be a boolean');
+    }
+    if (memory.minRelevance !== undefined && (typeof memory.minRelevance !== 'number' || memory.minRelevance < 0 || memory.minRelevance > 1)) {
+      errors.push('memory.minRelevance must be a number between 0 and 1');
+    }
+    if (memory.deduplicationThreshold !== undefined && (typeof memory.deduplicationThreshold !== 'number' || memory.deduplicationThreshold < 0 || memory.deduplicationThreshold > 1)) {
+      errors.push('memory.deduplicationThreshold must be a number between 0 and 1');
+    }
+    for (const key of ['hotWindowSize', 'recallBudgetTokens', 'maxTurnTokens', 'memoryMapTokens'] as const) {
+      const val = memory[key];
+      if (val !== undefined && (typeof val !== 'number' || val < 1)) {
+        errors.push(`memory.${key} must be a positive number`);
+      }
     }
   }
 

@@ -2,6 +2,15 @@
 
 **OrionOmega v0.1.0 → v0.1.1**
 
+> **Historical record — the memory sections below are superseded.**
+> This guide documents the v0.1.0 → v0.1.1 upgrade as it happened. The memory
+> system has since been rebuilt on self-hosted Redis, so the memory-related
+> sections describe an architecture that no longer exists: there is no external
+> memory server, no banks, and no mental models. That work was a breaking,
+> fresh-install release with no migration path. See
+> [memory-architecture-v2.md](memory-architecture-v2.md) for the current design
+> and [getting-started.md](getting-started.md) for setup.
+
 ---
 
 ## Claude Opus 4.8 Support
@@ -134,10 +143,14 @@ No new environment variables. No removed variables.
 | Variable | Purpose | Changed? |
 |----------|---------|---------|
 | `ANTHROPIC_API_KEY` | Anthropic API key | No |
-| `HINDSIGHT_API_KEY` | Hindsight API key | No |
+| `HINDSIGHT_API_KEY` | Memory server API key | No |
 | `ORIONOMEGA_LOG_LEVEL` | Override log level | No |
 | `ORIONOMEGA_LOG_FORMAT` | Set `json` for structured logs | No |
 | `ORIONOMEGA_CONFIG` | Override config file path | No |
+
+**Since removed:** `HINDSIGHT_API_KEY` no longer exists. The memory v2 work
+replaced the external memory server with self-hosted Redis, which is configured
+under `memory.redis` in `config.yaml` rather than by environment variable.
 
 ---
 

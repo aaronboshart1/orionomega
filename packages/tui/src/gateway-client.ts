@@ -20,12 +20,28 @@ export interface ClientMessage {
   workflowId?: string;
 }
 
+/**
+ * What the memory store can currently do. Never a connectivity flag — the
+ * status bar reports capability, so it never renders "offline".
+ */
+export interface MemoryActivity {
+  busy: boolean;
+  health: 'ready' | 'rebuilding' | 'degraded';
+  /** Rebuild progress 0-100, present while `health === 'rebuilding'`. */
+  pct?: number;
+  reason?: 'redis_unreachable' | 'index_cold' | 'write_failed';
+  /** Current operation label, e.g. `recall` / `retain`. */
+  op?: string;
+  /** Records touched by the current operation. */
+  count?: number;
+}
+
 /** Gateway → Client message envelope. */
 interface ServerMessage {
   id: string;
   workflowId?: string;
   replyTo?: string;
-  type: 'text' | 'thinking' | 'plan' | 'event' | 'status' | 'command_result' | 'session_status' | 'hindsight_status' | 'dag_complete' | 'direct_complete' | 'error' | 'ack' | 'history';
+  type: 'text' | 'thinking' | 'plan' | 'event' | 'status' | 'command_result' | 'session_status' | 'memory_activity' | 'dag_complete' | 'direct_complete' | 'error' | 'ack' | 'history';
   content?: string;
   streaming?: boolean;
   done?: boolean;
@@ -37,7 +53,7 @@ interface ServerMessage {
   commandResult?: { command: string; success: boolean; message: string };
   error?: string;
   sessionStatus?: { model: string; inputTokens: number; outputTokens: number; cacheCreationTokens: number; cacheReadTokens: number; maxContextTokens: number; sessionCostUsd: number };
-  hindsightStatus?: { connected: boolean; busy: boolean };
+  memoryActivity?: MemoryActivity;
   dagComplete?: {
     workflowId: string;
     status: 'complete' | 'error' | 'stopped';
@@ -109,7 +125,7 @@ export interface GatewayClientEvents {
   graphState: [GraphState, string?];
   event: [WorkerEvent, string?];
   sessionStatus: [{ model: string; inputTokens: number; outputTokens: number; cacheCreationTokens: number; cacheReadTokens: number; maxContextTokens: number; sessionCostUsd: number }];
-  hindsightStatus: [{ connected: boolean; busy: boolean }];
+  memoryActivity: [MemoryActivity];
   dagComplete: [NonNullable<ServerMessage['dagComplete']>];
   directComplete: [NonNullable<ServerMessage['directComplete']>];
   history: [Array<{ id: string; role: string; content: string; timestamp: string }>];
@@ -413,9 +429,9 @@ export class GatewayClient extends EventEmitter<GatewayClientEvents> {
         }
         break;
 
-      case 'hindsight_status':
-        if (msg.hindsightStatus) {
-          this.emit('hindsightStatus', msg.hindsightStatus);
+      case 'memory_activity':
+        if (msg.memoryActivity) {
+          this.emit('memoryActivity', msg.memoryActivity);
         }
         break;
 

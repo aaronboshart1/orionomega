@@ -8,7 +8,7 @@
 
 OrionOmega's performance is governed by four primary subsystems:
 
-1. **Memory recall** (Hindsight round-trips, client-side scoring)
+1. **Memory recall** (in-process lexical index, Redis round-trips)
 2. **LLM API calls** (token budgets, model selection)
 3. **Orchestration** (worker concurrency, timeouts, batching)
 4. **Gateway** (WebSocket event throughput, rate limits)
@@ -19,34 +19,48 @@ This guide provides concrete knobs for each subsystem and the trade-offs involve
 
 ## Memory Recall Performance
 
-### Token Budget Alignment
+### Where the time actually goes
 
-**Problem:** The previous default `recallBudgetTokens = 30,000` exceeded the Hindsight `high` tier cap (8,192 tokens) by 3.6×. Every request was silently clamped to 8,192, wasting budget calculation.
+Recall is **not** a network-bound operation. Records are scored by an
+in-process lexical index, so a recall costs CPU and heap, not round trips. Redis
+is on the write path and on the boot-time hydration path.
 
-**Current default (v0.1.1):** `recallBudgetTokens = 8,192` — aligned with the `high` tier cap.
+**Do not tune against guesses — real measured numbers for index build time,
+heap, and query latency across 10 k / 50 k / 100 k record corpora are recorded
+in [memory-architecture-v2.md §8.3](memory-architecture-v2.md#83-measured-result),
+together with the two honest caveats about boot time and heap at 100 k.** Those
+figures are the basis for every recommendation below.
 
-**Tuning the recall budget:**
+Two shapes are worth internalising from that table:
 
-| Scenario | Recommended `recallBudgetTokens` | `recallBudget` tier |
-|----------|----------------------------------|---------------------|
-| Short Q&A, quick lookups | 1,024 | `low` |
-| Standard workflows | 4,096 | `mid` |
-| Deep analysis, complex projects | 8,192 | `high` |
+- **Query latency grows with corpus size but stays far below the LLM call it
+  precedes.** It is not the thing to optimise first.
+- **Boot time and heap are the real costs.** A cold index is a `rebuilding`
+  health state during which recall under-returns, so on large corpora the thing
+  worth attention is hydration, not per-query speed.
 
-```typescript
-const assembler = new ContextAssembler(hs, {
-  recallBudgetTokens: 4096,
-  recallBudget: 'mid',
-});
+---
+
+### Token Budget
+
+`memory.recallBudgetTokens` caps how many tokens of recalled records may enter a
+turn. There are **no budget tiers** — the `low`/`mid`/`high` tier caps are gone,
+along with the bug where a request for 30 000 tokens was silently clamped to
+4 096. The budget you set is the budget honoured, and the assembler clamps
+overflow rather than overshooting.
+
+```yaml
+memory:
+  recallBudgetTokens: 16384   # default
+  maxTurnTokens: 128000       # total input ceiling per turn
 ```
 
-**Lowering the budget reduces:**
-- Hindsight API response time (~50–200ms per recall)
-- Anthropic input token cost (fewer context tokens per turn)
+Recall is skipped entirely when the computed budget falls below ~500 tokens —
+below that the block is not worth its own overhead.
 
-**Lowering the budget reduces recall quality for:**
-- Long-running projects with many memories
-- Tasks requiring cross-session context
+**Lowering the budget reduces** Anthropic input token cost per turn.
+**Lowering the budget costs** recall quality on long-running projects and
+anything needing cross-session context.
 
 ---
 
@@ -54,66 +68,48 @@ const assembler = new ContextAssembler(hs, {
 
 The hot window is always included verbatim (no filtering). Larger windows consume more input tokens unconditionally.
 
-```typescript
-const assembler = new ContextAssembler(hs, {
-  hotWindowSize: 10,  // Default: 20
-});
+```yaml
+memory:
+  hotWindowSize: 10   # default: 20
 ```
 
 **Recommendation:** Keep at 20 for interactive sessions. Reduce to 10 for autonomous mode where messages are more numerous and structured.
 
----
-
-### Adaptive Recall (Query Classification)
-
-`adaptiveRecall: true` (default) classifies each user query into one of several types and selects an optimized recall strategy (different budget splits, temporal diversity, relevance thresholds).
-
-For predictable workloads where all queries are similar in nature, disable this to skip the classification overhead:
-
-```typescript
-const assembler = new ContextAssembler(hs, {
-  adaptiveRecall: false,
-});
-```
-
-Disabling saves ~1–2ms per turn (the classification is fast, but not free).
+Shrinking the window does not lose the messages — they are in Redis, named by
+the Memory Map, and retrievable with `memory_read`. It only changes how much is
+reproduced word-for-word up front.
 
 ---
 
-### Temporal Diversity
+### Memory Map Budget
 
-`temporalDiversityRatio: 0.15` (default) reserves 15% of the recall budget for memories from older time buckets (14 days, 90 days, 365 days ago). This prevents recent context from monopolizing recall.
+`memory.memoryMapTokens` (default 600) bounds the table-of-contents block. This
+is a **fixed tax on every request**, so it is capped hard and is O(1) in session
+length: past the budget, older segments collapse into coarser super-segments
+rather than the list growing.
 
-For real-time workloads where only recent context matters:
-
-```typescript
-const assembler = new ContextAssembler(hs, {
-  temporalDiversityRatio: 0.0,  // Disable temporal diversity
-});
-```
-
-This removes 3 additional Hindsight API calls per recall turn.
+Lowering it saves tokens on every turn but makes the map coarser, which makes
+the agent's `memory_search` / `memory_read` targeting less precise.
 
 ---
 
-### Bank Federation
+### Relevance Threshold
 
-`federateBanks: true` (default) auto-discovers all populated banks and queries them in parallel. This is powerful but costly when many banks exist.
+`memory.minRelevance` (default 0.15) is the score floor for recalled records.
 
-For deployments with many banks and tight latency requirements:
+- **Raise it** to cut recall volume and input cost — at the risk of a
+  `NO_RESULTS` on queries that would have matched weakly but usefully.
+- **Lower it** to surface more — at the risk of noise crowding out the budget.
 
-```typescript
-const assembler = new ContextAssembler(hs, {
-  federateBanks: false,
-  additionalBanks: ['core', 'infra'],  // Explicit list instead
-});
-```
+Because scoring is deterministic and lexical, the effect of a threshold change
+is reproducible: the same query over the same corpus always ranks identically.
 
 ---
 
 ### Deduplication Threshold
 
-The deduplication step uses trigram similarity comparison (O(n²) for n results). For high-volume recall, tune the threshold:
+Deduplication uses trigram similarity comparison (O(n²) in the number of
+results). Tune via `memory.deduplicationThreshold`:
 
 | Threshold | Behavior |
 |-----------|----------|
@@ -121,19 +117,18 @@ The deduplication step uses trigram similarity comparison (O(n²) for n results)
 | `0.85` | Default — removes strongly similar content |
 | `0.70` | Aggressive deduplication (slower, removes more) |
 
-```typescript
-const result = await client.recall('core', query, {
-  deduplicationThreshold: 0.90,
-});
-```
-
 ---
 
-### Banks Cache TTL
+### Agent Tool Call Budget
 
-`HindsightClient` caches the bank list for 60 seconds. If banks are created/deleted frequently (e.g., CI environments with ephemeral project banks), the cache can serve stale data.
+The memory tools are capped per turn: 3 `memory_search`, 2 `memory_read`. These
+are correctness guards, not performance knobs — a zero-result search is a
+*successful* tool call, so without the cap an agent can search, find nothing,
+rephrase, and loop indefinitely while replaying the whole message array each
+round. Each `memory_read` is also capped at 30 000 chars.
 
-The TTL is a compile-time constant (`BANKS_CACHE_TTL_MS = 60_000`). For dynamic environments, call `client.invalidateBanksCache()` after creating or deleting banks.
+Raising these caps directly raises worst-case tokens per turn. Treat them as
+fixed unless you have measured a specific need.
 
 ---
 
@@ -286,7 +281,7 @@ const MAX_REQUESTS_PER_WINDOW = 300;  // Default: 120
 The default `info` level is fine for production. `verbose` and `debug` can generate significant log volume from memory operations:
 
 - `verbose`: Logs every recall/retain operation with metadata (useful for debugging memory issues)
-- `debug`: Logs internal HTTP requests to Hindsight (very noisy)
+- `debug`: Logs individual Redis commands and index activity (very noisy)
 
 ```yaml
 logging:
@@ -301,23 +296,50 @@ tail -f ~/.orionomega/logs/orionomega.log | grep -E "(WARN|ERROR)"
 
 ---
 
-## Hindsight Server Performance
+## Redis Performance
 
-OrionOmega's memory performance is bounded by the Hindsight server. Key Hindsight-side configuration:
+Redis backs memory, and OrionOmega does not provision or manage it. There is no
+memory server to tune — only Redis itself, and the index built on top of it.
 
-### Embedding Backend
+### Eviction policy
 
-Without an embedding backend, Hindsight returns `relevance=0` for all results, forcing OrionOmega to use client-side trigram/keyword scoring. Client-side scoring is adequate but less accurate than embedding similarity.
+If you also run the task queue on Redis (`orchestration.queue.backend: redis`),
+that instance **must** be `maxmemory-policy noeviction` or BullMQ silently loses
+jobs. The policy is instance-wide; picking a different `db` does not isolate it.
 
-For production deployments with >100 memories per bank, configure an embedding backend in Hindsight to enable native vector search. Consult the Hindsight documentation for setup.
+```bash
+redis-cli config get maxmemory-policy    # expect: noeviction
+```
 
-### Bank Size
+The memory store bounds its own size rather than relying on eviction — the hot
+list is trimmed on every append, oversized content is offloaded to separate
+blob keys with their own TTL, and the GC pass deletes expired unpinned records.
+An unbounded conversation store is a bug regardless of eviction policy, which is
+what makes a single shared instance safe.
 
-Hindsight performs full candidate scanning when no embedding index is available. Performance degrades roughly linearly with bank size beyond ~1000 memories. For large deployments:
+If you do hit the conflict, `memory.redis.url` is its own config key — point
+memory at a second instance.
 
-1. Use per-project banks instead of a single `default` bank
-2. Archive old banks periodically (memories older than 90 days contribute less)
-3. Enable the Hindsight embedding backend for indexed search
+### Durability
+
+Durability is AOF `everysec` plus RDB snapshots. `appendfsync always` costs
+throughput on the write path for a guarantee this workload does not need;
+`appendonly no` risks losing the tail of a session on an unclean shutdown.
+
+### Corpus size
+
+The dominant cost of a large corpus is **index build time and heap at boot**,
+not query latency. See
+[memory-architecture-v2.md §8.3](memory-architecture-v2.md#83-measured-result)
+for the measured figures and the two caveats attached to them. For large
+deployments:
+
+1. Keep scopes meaningful — `project-<slug>` rather than one giant scope — so a
+   scope purge is a usable operation
+2. Let the GC pass run, so expired records leave the corpus instead of
+   accumulating
+3. Expect a `rebuilding` health state on startup proportional to corpus size,
+   during which recall under-returns
 
 ---
 
@@ -327,11 +349,11 @@ Hindsight performs full candidate scanning when no embedding index is available.
 
 | Metric | Location | Alert Threshold |
 |--------|----------|----------------|
-| Recall surface rate | Log: `"surfaceRate"` | < 10% (see F13) |
+| Recall effectiveness | Log: `"Memory recall effectiveness checkpoint"` | < 10% |
 | Recall duration | Log: `"durationMs"` | > 500ms |
+| Memory health | `GET /health` → `system.memory.health` | anything other than `ready` |
 | Worker timeout rate | Log: `"Worker timed out"` | > 5% of nodes |
 | Session summary failure | Log: `"failed after retries"` | Any occurrence |
-| Active ops count | `client.activeOps` | > 10 concurrent |
 
 ### Structured Log Queries
 
@@ -339,7 +361,7 @@ For log aggregation systems (Datadog, Splunk, etc.), key JSON fields:
 
 ```
 # Memory performance
-{ "type": "recall", "durationMs": ?, "resultCount": ?, "surfaceRate": ? }
+{ "type": "recall", "durationMs": ?, "resultCount": ?, "effectiveness": ? }
 
 # Worker performance
 { "type": "node_complete", "durationMs": ? }

@@ -7,8 +7,38 @@
  * and memory consolidation for related items.
  */
 
-import { HindsightClient, estimateTokens, compressMemoryContent, isDuplicateInBatch } from '@orionomega/hindsight';
-import type { RetentionPolicy, ImportanceFactors, MemoryItem } from '@orionomega/hindsight';
+import type { MemoryStore } from './store.js';
+import { estimateTokens, compressMemoryContent, isDuplicateInBatch } from '@orionomega/shared/similarity';
+
+/**
+ * TTL/retention policy per memory context category.
+ *
+ * This engine's own config and scoring types — they describe retention policy,
+ * not the storage backend, and are deliberately independent of `MemoryStore`.
+ */
+export interface RetentionPolicy {
+  /** Default TTL in days. 0 = never expires. */
+  defaultTTLDays: number;
+  /** Per-category TTL overrides in days. */
+  categoryTTL?: Record<string, number>;
+  /** Categories that never expire regardless of TTL. */
+  pinnedCategories?: string[];
+}
+
+/** Memory importance factors used for scoring. */
+export interface ImportanceFactors {
+  /** Base quality score from content analysis (0-1). */
+  qualityScore: number;
+  /** Context category weight boost. */
+  contextBoost: number;
+  /** Recency factor — decays over time (0-1). */
+  recencyFactor: number;
+  /** Access frequency — how often this memory is recalled (0-1). */
+  accessFrequency: number;
+  /** Combined importance score (0-1). */
+  composite: number;
+}
+import type { MemoryWrite } from './store.js';
 import type { EventBus } from '../orchestration/event-bus.js';
 import type { WorkerEvent } from '../orchestration/types.js';
 import { createLogger } from '../logging/logger.js';
@@ -342,7 +372,7 @@ const REMEMBER_PATTERNS = [
 
 /**
  * Listens to orchestration events and user messages, automatically retaining
- * noteworthy information to Hindsight. All retention is fire-and-forget —
+ * noteworthy information to memory. All retention is fire-and-forget —
  * failures are logged but never propagated.
  *
  * Enhanced with importance scoring, TTL awareness, token budgets, and
@@ -367,7 +397,7 @@ export class RetentionEngine {
   onAfterRetain?: (bankId: string, context: string) => void;
 
   constructor(
-    private readonly hs: HindsightClient,
+    private readonly hs: MemoryStore,
     private readonly eventBus: EventBus,
     private readonly config: RetentionConfig,
   ) {}
@@ -448,7 +478,7 @@ export class RetentionEngine {
    * Now includes: token budget enforcement, importance scoring,
    * local dedup buffer, and content compression.
    *
-   * @param bankId - Target Hindsight bank.
+   * @param bankId - Target memory scope.
    * @param content - The information to retain.
    * @param context - Category (e.g. 'preference', 'decision', 'lesson').
    */
@@ -503,7 +533,7 @@ export class RetentionEngine {
       }
 
       const dedupThreshold = this.config.deduplicationThreshold ?? 0.85;
-      const isDup = await this.hs.isDuplicateContent(bankId, compressed, dedupThreshold);
+      const isDup = await this.hs.isDuplicate(bankId, compressed, dedupThreshold);
       if (isDup) {
         log.debug('Skipped duplicate memory retention', { bankId, context, length: compressed.length });
         this.onMemoryEvent?.('dedup', `Skipped duplicate memory (${context})`, bankId, {
@@ -590,11 +620,10 @@ export class RetentionEngine {
 
       // Recall prior decisions to detect conflicts before storing
       try {
-        const prior = await this.hs.recall(bank, content, {
-          maxTokens: 1024,
-          types: ['world'],
-        });
-        const conflicts = prior.results.filter((r: MemoryItem & { relevance: number }) =>
+        // Recall has no fact-class filter — the `context === 'decision'` check
+        // below does the narrowing.
+        const prior = await this.hs.recall(bank, content, { maxTokens: 1024 });
+        const conflicts = prior.records.filter((r) =>
           r.context === 'decision' && r.relevance > 0.3
         );
         if (conflicts.length > 0) {
@@ -656,7 +685,7 @@ export class RetentionEngine {
       const findingItems = findings.map((f) => ({ content: f, context: 'lesson', timestamp: now }));
       const consolidatedFindings = consolidateMemories(findingItems);
 
-      const allItems: MemoryItem[] = [];
+      const allItems: MemoryWrite[] = [];
 
       // Summary with provenance metadata
       allItems.push({
@@ -720,11 +749,9 @@ export class RetentionEngine {
         this.retainStats.lastRetainMs = Date.now();
       }
 
-      // Trigger server-side consolidation after bulk retain (non-fatal)
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        await (this.hs as any).consolidate(bankId);
-      } catch { /* non-fatal */ }
+      // There is no server-side consolidation step: `MemoryStore` exposes none,
+      // and Redis-side compaction is handled by
+      // `RedisMemoryStore.collectGarbage()` instead.
 
       // Retain infrastructure changes (separate bank — not batched with main items)
       if (infraChanges && infraChanges.length > 0) {

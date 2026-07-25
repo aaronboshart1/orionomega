@@ -5,7 +5,7 @@
  * This is a thin coordinator that wires together:
  * - conversation.ts — intent classification, conversational LLM responses
  * - orchestration-bridge.ts — plan generation and workflow execution
- * - memory-bridge.ts — Hindsight memory lifecycle
+ * - memory-bridge.ts — memory store lifecycle
  *
  * The MainAgent itself only handles routing (which module handles this message?)
  * and shared state (history, system prompt, callbacks).
@@ -17,9 +17,9 @@ import { AnthropicClient } from '../anthropic/client.js';
 import type { AnthropicMessage, ContentBlock } from '../anthropic/client.js';
 import { buildSystemPrompt, buildRunDirBlock, type PromptContext } from './prompt-builder.js';
 import { ensureSessionClone } from '../orchestration/coding/repo-manager.js';
+import type { MemoryActivity } from '@orionomega/shared/ws-contract';
 import { createLogger } from '../logging/logger.js';
 import { SkillLoader, readSkillConfig, writeSkillConfig } from '@orionomega/skills-sdk';
-import type { OrionOmegaConfig } from '../config/types.js';
 import { CommandFileLoader } from '../commands/command-file-loader.js';
 
 import type {
@@ -38,11 +38,13 @@ import {
   streamConversation,
 } from './conversation.js';
 import { classifyCodeIntent } from '../orchestration/coding/intent-classifier.js';
-import { MemoryBridge } from './memory-bridge.js';
+import { MemoryBridge, type MemoryConfig } from './memory-bridge.js';
 import { OrchestrationBridge } from './orchestration-bridge.js';
 import { stageAttachments, AttachmentStagingError, type StagedAttachment } from './attachment-staging.js';
 import { resolve as _resolvePath } from 'node:path';
 import { ContextAssembler } from '../memory/context-assembler.js';
+import { RedisMemoryStore } from '../memory/redis-store.js';
+import { buildMemoryTools } from '../memory/memory-tools.js';
 import { buildSkillToolset, type SkillRef, type SkillToolEntry } from './skill-tools.js';
 import { existsSync as _existsSync } from 'node:fs';
 import { readdirSync as _readdirSync, statSync as _statSync } from 'node:fs';
@@ -115,7 +117,8 @@ export interface MainAgentConfig {
    */
   defaultSkillsDir?: string;
   commandsDir?: string;
-  hindsight?: OrionOmegaConfig['hindsight'];
+  /** Memory backend settings (`memory:` in config.yaml). Absent = memory off. */
+  memory?: MemoryConfig['memory'];
   autoResume?: boolean;
   /** Path to the source repo for coding mode. */
   codingRepoDir?: string;
@@ -182,11 +185,16 @@ export interface MainAgentCallbacks {
   /** Emitted when a direct (non-DAG) conversation turn completes with per-run stats. */
   onDirectComplete?: (info: DirectCompleteInfo, sessionId?: string) => void;
 
-  /** Hindsight I/O activity state change (connected/busy). */
-  onHindsightActivity?: (status: { connected: boolean; busy: boolean }) => void;
-
   /** Granular memory operation event for live activity feed. */
   onMemoryEvent?: (event: MemoryEvent, sessionId?: string) => void;
+  /**
+   * Recall-health reporter (§13).
+   *
+   * Reports what memory can DO — `ready` / `rebuilding` / `degraded` — not
+   * whether a socket is open. The store is the single authority; nothing polls
+   * health on a timer, so reported state can never clobber real activity.
+   */
+  onMemoryActivity?: (activity: MemoryActivity) => void;
 
   /**
    * Emitted when an Agent SDK tool call is paused awaiting human approval
@@ -327,16 +335,6 @@ export class MainAgent {
   private readonly workflowSessions = new Map<string, string>();
 
   /**
-   * Snapshot of Hindsight client health (circuit breaker state, last error,
-   * consecutive failures). Surfaced via the gateway's `/api/health` so that
-   * operators can see memory-subsystem state without reading logs. Returns
-   * `null` when memory is not configured.
-   */
-  getHindsightStatus() {
-    return this.memory.getHindsightStatus();
-  }
-
-  /**
    * Snapshot of session-summariser health (success/failure counts, last
    * error, last success/failure timestamps). Surfaced via `/api/health`.
    * Returns `null` when memory is not configured.
@@ -390,7 +388,7 @@ export class MainAgent {
 
     // Create the memory bridge
     this.memory = new MemoryBridge(
-      { hindsight: config.hindsight, model: config.model, cheapModel: config.cheapModel },
+      { memory: config.memory, model: config.model, cheapModel: config.cheapModel },
       this.anthropic,
       new EventBus(),
     );
@@ -432,14 +430,14 @@ export class MainAgent {
       ? configPath.replace(/\/[^/]+$/, '')
       : `${process.env.HOME || '/root'}/.orionomega`;
 
-    ctx = new ContextAssembler(this.memory.client, {
+    ctx = new ContextAssembler(this.memory.store, {
       hotWindowSize: 20,
       recallBudgetTokens: 30_000,
       maxTurnTokens: 60_000,
-      conversationBank: this.config.hindsight?.url
+      conversationScope: this.config.memory
         ? `conversation-${sessionId}`
         : undefined,
-      additionalBanks: this.config.hindsight?.url ? ['core'] : [],
+      additionalScopes: this.config.memory ? ['core'] : [],
       persistPath: `${configDir}/sessions/hot-window-${sessionId}.json`,
       sessionId,
     });
@@ -454,21 +452,8 @@ export class MainAgent {
 
     this.contextBySession.set(sessionId, ctx);
 
-    // Best-effort: ensure the per-session conversation bank exists in
-    // Hindsight. Failures are logged at debug — the bank usually exists
-    // (after restarts) and circuit-breaker handles transport problems.
-    if (this.memory.client && this.config.hindsight?.url) {
-      const bank = `conversation-${sessionId}`;
-      this.memory.client.createBank(bank, {
-        name: `OrionOmega session ${sessionId}`,
-      }).catch((err) => {
-        log.debug('Conversation bank create failed (may already exist)', {
-          bank,
-          sessionId,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      });
-    }
+    // No scope creation step: `conversation-<sessionId>` exists as soon as the
+    // assembler writes its first record to it.
 
     return ctx;
   }
@@ -486,8 +471,8 @@ export class MainAgent {
   /**
    * Drop all in-memory per-session state for `sessionId`. Called by the
    * gateway when a session is deleted so the assembler/totals/workflow
-   * mappings don't outlive the session row. Hindsight memories (and the
-   * conversation bank itself) are intentionally NOT touched — they are the
+   * mappings don't outlive the session row. Memory records (and the
+   * conversation scope itself) are intentionally NOT touched — they are the
    * cross-session knowledge graph and survive session deletion.
    */
   clearSessionState(sessionId: string): void {
@@ -505,7 +490,7 @@ export class MainAgent {
     }
     // Best-effort delete of the per-session hot-window file (and its .bak)
     // so a recreated session with the same id doesn't rehydrate stale
-    // conversation context. Hindsight memories are NOT touched — they are
+    // conversation context. Memory records are NOT touched — they are
     // the cross-session knowledge graph and survive session deletion.
     try {
       const configPath = process.env.CONFIG_PATH || '';
@@ -612,7 +597,6 @@ export class MainAgent {
       onDirectComplete: user.onDirectComplete
         ? (info) => user.onDirectComplete!(info, sid(info.runId))
         : undefined,
-      onHindsightActivity: user.onHindsightActivity,
       onMemoryEvent: user.onMemoryEvent
         ? (event) => user.onMemoryEvent!(event, sid())
         : undefined,
@@ -641,35 +625,37 @@ export class MainAgent {
   }
 
   private async _init(): Promise<void> {
-    // 1. Initialise memory — get bootstrap context for system prompt
-    const contextBlock = await this.memory.init();
-    if (contextBlock) {
-      if (this.config.systemPrompt) {
-        this.config.systemPrompt += contextBlock;
-      } else {
-        this.config.systemPrompt = contextBlock;
-      }
-      this.cachedSystemPrompt = null;
-    }
+    // 1. Initialise memory (constructs the store, starts retention).
+    await this.memory.init();
 
-    // 1b. Attach Hindsight client to all existing per-session context assemblers
-    // (now that memory is initialised). New per-session contexts created later
-    // via getContext() pull `this.memory.client` directly.
-    if (this.memory.client) {
+    // 1b. Attach the memory store to all existing per-session context
+    // assemblers (now that memory is initialised). New per-session contexts
+    // created later via getContext() pull `this.memory.store` directly.
+    const initialisedStore = this.memory.store;
+    if (initialisedStore) {
       for (const ctx of this.contextBySession.values()) {
-        ctx.setHindsightClient(this.memory.client);
-      }
-
-      // Wire hindsight I/O activity tracking to gateway callback
-      if (this.userCallbacks.onHindsightActivity) {
-        this.memory.client.onActivity = this.userCallbacks.onHindsightActivity;
+        ctx.setMemoryStore(initialisedStore);
       }
 
       if (this.userCallbacks.onMemoryEvent) {
-        this.memory.onMemoryEvent = (op, detail, bank, meta) => {
-          this.emitMemoryEvent(op, detail, bank, meta);
+        this.memory.onMemoryEvent = (op, detail, scope, meta) => {
+          this.emitMemoryEvent(op, detail, scope, meta);
         };
       }
+
+      // Recall-health reporting (§13). The store is the single authority on
+      // its own status — this replaces the old arrangement where a 15-second
+      // /health poll and the client callback both broadcast, and the poll's
+      // hardcoded `busy: false` clobbered real activity.
+      const activityCb = this.userCallbacks.onMemoryActivity;
+      if (activityCb && initialisedStore instanceof RedisMemoryStore) {
+        initialisedStore.onActivity = (a) => activityCb(a);
+      }
+
+      // Late-bind the store into the planner. It was constructed before memory
+      // initialised, so without this its pre-planning recall stays disabled for
+      // the life of the process.
+      this.orchestration.bindMemoryStore();
     }
 
     // 2. Discover skills (manifests from BOTH user dir + default-skills)
@@ -705,7 +691,7 @@ export class MainAgent {
           const builtins = [
             'help', 'exit', 'quit', 'q', 'restart', 'update', 'skills',
             'gates', 'reset', 'stop', 'workflows', 'status', 'pause',
-            'resume', 'plan', 'workers', 'focus', 'hindsight',
+            'resume', 'plan', 'workers', 'focus', 'memory',
           ];
           for (const n of names) {
             if (builtins.includes(n)) {
@@ -1142,7 +1128,7 @@ export class MainAgent {
     }
 
     if (this.memory.retention) {
-      this.memory.retention.evaluateUserMessage(trimmed, this.memory.projectBank ?? undefined, sid).catch((err) => {
+      this.memory.retention.evaluateUserMessage(trimmed, this.memory.projectScope ?? undefined, sid).catch((err) => {
         log.debug('User message evaluation failed', { error: err instanceof Error ? err.message : String(err) });
       });
     }
@@ -1458,7 +1444,7 @@ export class MainAgent {
             '',
             'TUI-only:',
             '  /focus     — Focus a workflow by ID',
-            '  /hindsight — Memory system status',
+            '  /memory    — Memory store status',
             '  /exit      — Exit the TUI (/quit, /q)',
             ...this.getFileCommandHelpLines(),
           ].join('\n'),
@@ -1551,7 +1537,7 @@ export class MainAgent {
         this.orchestration.clearPendingPlans();
         this.orchestration.stopAll();
         // Wipe only the calling session's hot window + totals — other sessions
-        // remain untouched. Hindsight memories are NOT cleared (cross-session
+        // remain untouched. Memory records are NOT cleared (cross-session
         // knowledge survives /reset). Also drop the per-session
         // conversation output ID so the next turn allocates a fresh
         // `conv-<id>` dir (matches /reset's "fresh conversation" intent).
@@ -1699,13 +1685,7 @@ export class MainAgent {
     }));
   }
 
-  /** Flush memory before compaction. */
-  async flushMemory(sessionId?: string): Promise<void> {
-    const sid = sessionId || this.currentSessionId;
-    await this.memory.flush(this.getContext(sid).getHistory(), sid);
-  }
-
-  /** Summarize the session to Hindsight. */
+  /** Summarize the session and retain it. */
   async summarizeSession(sessionId?: string): Promise<void> {
     const sid = sessionId || this.currentSessionId;
     await this.memory.summarize(this.getContext(sid).getHistory(), sid);
@@ -2197,6 +2177,24 @@ export class MainAgent {
     }
 
     const messages: AnthropicMessage[] = [];
+
+    // The Memory Map goes FIRST and is injected whether or not recall matched
+    // anything (§9). Its job is to announce that context EXISTS beyond the
+    // verbatim window — a memory tool the model never reaches for is dead
+    // weight, and it cannot reach for what it does not know is there. Recall
+    // answers "what is relevant to this turn"; the map answers "what else is
+    // available", which is a different question and must not be conditional on
+    // the first one succeeding.
+    if (assembled.memoryMap) {
+      messages.push({ role: 'user', content: assembled.memoryMap });
+      messages.push({
+        role: 'assistant',
+        content:
+          'Understood. I can see what is in memory beyond the recent messages, ' +
+          'and will use memory_search or memory_read when I need more.',
+      });
+    }
+
     if (assembled.priorContext) {
       messages.push({ role: 'user', content: `[PRIOR CONTEXT]\n${assembled.priorContext}` });
       messages.push({ role: 'assistant', content: 'Understood. I have the prior context.' });
@@ -2289,6 +2287,16 @@ export class MainAgent {
         maxInputTokens: 100_000,
         abortSignal,
         skillTools,
+        // Built fresh per turn: the per-turn call budget lives in the closure,
+        // so a new toolset is what resets it. Reusing one across turns would
+        // let a spent budget leak into the next turn.
+        ...(this.memory.store instanceof RedisMemoryStore
+          ? {
+              memoryTools: buildMemoryTools(this.memory.store, {
+                defaultScope: `conversation-${sid}`,
+              }),
+            }
+          : {}),
         drainSupplementaryContext: () => this.drainSupplementary(effectiveRunId),
       });
       if (!checkDetached()) {
@@ -2478,7 +2486,7 @@ export class MainAgent {
   }
 
   private pushHistory(sessionId: string, entry: HistoryEntry): void {
-    // Fire-and-forget: push to context assembler (retains to Hindsight + hot window)
+    // Fire-and-forget: push to context assembler (retains to memory + hot window)
     this.getContext(sessionId).push({
       role: entry.role as 'user' | 'assistant' | 'system',
       content: entry.content,

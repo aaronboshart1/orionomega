@@ -69,20 +69,64 @@ gateway:
     origins:
       - 'http://localhost:*'
 
-# ─── Hindsight (persistent memory) ───────────────────────────────────────────
-hindsight:
-  # URL of your Hindsight server. Default: http://localhost:8888
-  # See https://github.com/aaronboshart1/hindsight for setup.
-  url: http://localhost:8888
+# ─── Memory (persistent, Redis-backed) ───────────────────────────────────────
+# OrionOmega stores long-term memory in Redis. Redis is a hard dependency —
+# there is no external memory server to run and no API key to configure.
+#   macOS:  brew install redis && brew services start redis
+#   Linux:  sudo apt install redis-server && sudo systemctl enable --now redis-server
+#   Docker: docker run -d --name redis -p 6379:6379 redis:7-alpine
+memory:
+  redis:
+    # Connection URL. Use rediss:// for TLS. Default: redis://localhost:6379
+    url: redis://localhost:6379
 
-  # Memory bank to use for recall and retain. Default: 'default'
-  defaultBank: default
+    # Optional credentials. Prefer embedding them in the URL for remote hosts.
+    # username: default
+    # password: ${REDIS_PASSWORD}
+
+    # Logical database number. Default: 0
+    # db: 0
+
+    # Namespace prefix applied to every key this store writes, so OrionOmega can
+    # safely share a Redis instance. Default: orionomega
+    # keyPrefix: orionomega
+
+    # Connect over TLS. Default: false
+    # tls: false
 
   # Retain memories when a workflow completes successfully. Default: true
   retainOnComplete: true
 
   # Retain memories when a workflow ends with an error. Default: true
   retainOnError: true
+
+  # Write an end-of-session summary record when a session closes. Default: true
+  sessionSummary: true
+
+  # ── Tuning (all optional; the defaults below are what ships) ──
+  # Number of recent messages kept verbatim in the hot window. Default: 20
+  # hotWindowSize: 20
+
+  # Max tokens of recalled records injected per turn. Default: 16384
+  # recallBudgetTokens: 16384
+
+  # Max total input tokens per turn (hot window + recall + system).
+  # Default: 128000
+  # maxTurnTokens: 128000
+
+  # Token budget for the memory-map block (the inventory of known scopes).
+  # Default: 1024
+  # memoryMapTokens: 1024
+
+  # Recalled records scoring below this relevance (0–1) are dropped.
+  # Raise it for terser context, lower it to recall more aggressively.
+  # Default: 0.3
+  # minRelevance: 0.3
+
+  # Similarity threshold (0–1) for storage-time deduplication. A new record
+  # scoring at or above this against an existing one is not written.
+  # Default: 0.85
+  # deduplicationThreshold: 0.85
 
 # ─── Orchestration ───────────────────────────────────────────────────────────
 orchestration:

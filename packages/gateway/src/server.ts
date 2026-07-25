@@ -16,8 +16,7 @@ import { randomBytes } from 'node:crypto';
 import { readConfig, normalizeBindAddresses, assertSecureBind, ensureGatewayAuthSecret, InsecureBindError, MainAgent, CommandFileLoader, createLogger, setGlobalLogLevel, enableFileLogging, discoverModels, clearModelCache, auditApiRequest, setCodingOrchestatorEmitters, getDb, BUILD_INFO as CORE_BUILD_INFO, getStaleBuildStatus, getDatabaseStatus, realpathContainedPath } from '@orionomega/core';
 import type { MainAgentConfig, MainAgentCallbacks, LogLevel, PlannerOutput, StaleBuildStatus } from '@orionomega/core';
 import { BUILD_INFO as GATEWAY_BUILD_INFO } from './generated/build-info.js';
-import { setLogLevel as setHindsightLogLevel } from '@orionomega/hindsight';
-import type { GatewayConfig } from './types.js';
+import type { GatewayConfig, MemoryActivity } from './types.js';
 import { SessionManager, DEFAULT_SESSION_ID } from './sessions.js';
 import { CommandHandler } from './commands.js';
 import { EventStreamer } from './events.js';
@@ -80,7 +79,6 @@ const log = createLogger('gateway');
 // ---------------------------------------------------------------------------
 
 let config: GatewayConfig;
-let hindsightUrl: string;
 
 try {
   const fullConfig = readConfig();
@@ -104,7 +102,6 @@ try {
   }
 
   config = fullConfig.gateway;
-  hindsightUrl = fullConfig.hindsight.url;
 
   const VALID_LOG_LEVELS: ReadonlySet<string> = new Set(['error', 'warn', 'info', 'verbose', 'debug']);
   const rawLogLevel = fullConfig.logging?.level ?? 'info';
@@ -113,7 +110,6 @@ try {
     console.warn(`[gateway] Invalid log level "${rawLogLevel}", falling back to "info"`);
   }
   setGlobalLogLevel(logLevel as LogLevel);
-  setHindsightLogLevel(logLevel as LogLevel);
   process.env.ORIONOMEGA_LOG_LEVEL = logLevel;
   if (fullConfig.logging?.file) {
     enableFileLogging(fullConfig.logging.file);
@@ -134,7 +130,6 @@ try {
     auth: { mode: 'none' },
     cors: { origins: ['http://localhost:*'] },
   };
-  hindsightUrl = 'http://localhost:8888';
   log.warn('Could not load config from @orionomega/core — using defaults');
 }
 
@@ -203,10 +198,7 @@ setCodingOrchestatorEmitters({
   commitCompleted: (p, codingSessionId) => emitCodingCommitCompleted(p, codingSessionId),
   sessionCompleted: (p, codingSessionId) => emitCodingSessionCompleted(p, codingSessionId),
 });
-wsHandler.setHindsightStatusProvider(() => ({
-  connected: lastHindsightConnected ?? false,
-  busy: false,
-}));
+wsHandler.setMemoryActivityProvider(() => lastMemoryActivity);
 
 /** Module-level reference to the MainAgent for shutdown summarization. */
 let mainAgent: MainAgent | null = null;
@@ -303,7 +295,7 @@ async function initMainAgent(): Promise<void> {
       } catch { return undefined; }
     })(),
     commandsDir: freshConfig.commands?.directory,
-    hindsight: freshConfig.hindsight,
+    memory: freshConfig.memory,
     autoResume: freshConfig.orchestration?.autoResume ?? false,
     ...(codingRepoDir ? { codingRepoDir } : {}),
     // `coding.defaultRemote` from config.yaml — used by the code-mode
@@ -767,22 +759,27 @@ async function initMainAgent(): Promise<void> {
         commandResult: result,
       }, sid);
     },
-    onHindsightActivity(status) {
+    onMemoryActivity(activity: MemoryActivity) {
       const evtId = randomBytes(8).toString('hex');
 
-      // Store hindsight status changes (global — not session-scoped)
+      // The memory store is the single authority on its own status — there is
+      // no health poll second-guessing it. Remember the last report so
+      // reconnecting clients and GET /api/status see the same value.
+      lastMemoryActivity = activity;
+
+      // Store memory activity changes (global — not session-scoped)
       stateStore.appendEvent({
         id: evtId,
         sessionId: DEFAULT_SESSION_ID,
-        type: 'hindsight_status',
+        type: 'memory_activity',
         timestamp: new Date().toISOString(),
-        data: { hindsightStatus: status },
+        data: { memoryActivity: activity },
       });
 
       wsHandler.broadcast({
         id: evtId,
-        type: 'hindsight_status',
-        hindsightStatus: status,
+        type: 'memory_activity',
+        memoryActivity: activity,
       });
     },
     onMemoryEvent(event, sessionId) {
@@ -1187,7 +1184,7 @@ async function initMainAgent(): Promise<void> {
     await mainAgent.init();
     wsHandler.setMainAgent(mainAgent);
     // Hook session deletion into MainAgent so per-session context, totals,
-    // and workflow→session mappings are purged. Hindsight is NOT touched.
+    // and workflow→session mappings are purged. Memory is NOT touched.
     sessionManager.onSessionDeleted = (id) => {
       try {
         mainAgent!.clearSessionState(id);
@@ -1224,35 +1221,27 @@ async function initMainAgent(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Periodic Hindsight Health Check
+// Memory Activity
 // ---------------------------------------------------------------------------
 
-let lastHindsightConnected: boolean | null = null;
-
-/** Probe hindsight health with a 2-second timeout. */
-async function checkHindsightHealth(): Promise<boolean> {
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 2000);
-    const resp = await fetch(`${hindsightUrl}/health`, { signal: controller.signal });
-    clearTimeout(timeout);
-    return resp.ok;
-  } catch {
-    return false;
-  }
-}
-
 /**
- * Hindsight health poll timer. Created when heavy startup runs (after the
- * first bind succeeds) so failed-bind retry cycles do not churn it.
+ * Last activity reported by the memory store, and the single source of truth
+ * for the status bar, reconnect snapshots, and GET /api/status.
+ *
+ * Before the store's first report the index has not been built, so the honest
+ * answer is `rebuilding / index_cold` — never a connectivity claim.
  */
-let hindsightHealthTimer: ReturnType<typeof setInterval> | null = null;
+let lastMemoryActivity: MemoryActivity = {
+  busy: false,
+  health: 'rebuilding',
+  reason: 'index_cold',
+};
 
 /**
  * Heavy-subsystem bootstrap. Runs exactly once, after the first HTTP
  * listener reports `listening`. Until that happens we keep the gateway in
  * a quiescent state so EADDRINUSE retry cycles don't repeatedly construct
- * a MainAgent / scheduler / Hindsight client / skill registry that we'd
+ * a MainAgent / scheduler / memory store / skill registry that we'd
  * just throw away on the next restart.
  */
 let heavyStartupRan = false;
@@ -1265,30 +1254,6 @@ function startHeavySubsystems(): void {
   initMainAgent().catch((err) => {
     log.error('Unhandled error during MainAgent init', { error: err instanceof Error ? err.message : String(err) });
   });
-
-  // Poll hindsight health every 15 seconds and broadcast changes.
-  hindsightHealthTimer = setInterval(async () => {
-    const connected = await checkHindsightHealth();
-    if (connected !== lastHindsightConnected) {
-      lastHindsightConnected = connected;
-      wsHandler.broadcast({
-        id: randomBytes(8).toString('hex'),
-        type: 'hindsight_status',
-        hindsightStatus: { connected, busy: false },
-      });
-    }
-  }, 15_000);
-
-  // Run an initial check immediately.
-  (async () => {
-    const connected = await checkHindsightHealth();
-    lastHindsightConnected = connected;
-    wsHandler.broadcast({
-      id: randomBytes(8).toString('hex'),
-      type: 'hindsight_status',
-      hindsightStatus: { connected, busy: false },
-    });
-  })();
 }
 
 // ---------------------------------------------------------------------------
@@ -1402,7 +1367,7 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
       // Each provider returns null when its subsystem isn't wired up yet
       // (e.g. before MainAgent.init() finishes, or when memory is disabled).
       // null is treated as "not configured", not as a failure.
-      hindsight: () => mainAgent?.getHindsightStatus() ?? null,
+      memory: () => lastMemoryActivity,
       // getDatabaseStatus() handles its own errors and returns
       // status: 'down' with lastError for any DB problem (including
       // failure to open the file or a missing schema_migrations table),
@@ -1421,7 +1386,7 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
 
   // --- Status ---
   if (pathname === '/api/status' && method === 'GET') {
-    handleStatus(req, res, sessionManager, startTime, hindsightUrl).catch((err) => {
+    handleStatus(req, res, sessionManager, startTime, lastMemoryActivity).catch((err) => {
       log.error('Status route error', { error: err instanceof Error ? err.message : String(err) });
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Internal server error' }));
@@ -1951,41 +1916,6 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
     return;
   }
 
-  // --- Hindsight Restart ---
-  // Runs `docker restart hindsight`. Localhost-only. Does NOT touch the
-  // gateway process — only the Hindsight container is bounced.
-  if (pathname === '/api/hindsight/restart' && method === 'POST') {
-    const remote = req.socket.remoteAddress ?? '';
-    const isLocal = remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1';
-    if (!isLocal) {
-      res.writeHead(403, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Lifecycle endpoints are restricted to localhost' }));
-      return;
-    }
-    const child = spawnProcess('docker', ['restart', 'hindsight'], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let stderr = '';
-    child.stderr?.on('data', (b: Buffer) => { stderr += b.toString('utf-8'); });
-    child.on('error', (err) => {
-      if (!res.headersSent) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: `Failed to invoke docker: ${err.message}` }));
-      }
-    });
-    child.on('close', (code) => {
-      if (res.headersSent) return;
-      if (code === 0) {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ message: 'Hindsight restarted' }));
-      } else {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: `docker restart hindsight exited ${code}: ${stderr.trim().slice(0, 300)}` }));
-      }
-    });
-    return;
-  }
-
   // --- 404 ---
   log.warn('404 Not Found', { method, rawUrl, pathname });
   res.writeHead(404, { 'Content-Type': 'application/json' });
@@ -2023,7 +1953,7 @@ let shuttingDown = false;
 const BIND_RETRY_BUDGET_MS = resolveBindRetryBudgetMs();
 
 /**
- * Heavy-subsystem bootstrap (MainAgent, scheduler, hindsight health timer,
+ * Heavy-subsystem bootstrap (MainAgent, scheduler,
  * skill discovery, banner logs) is gated behind the first successful bind so
  * EADDRINUSE retry cycles don't churn it. PID file + rate-limit cleanup are
  * also deferred — they shouldn't run if we're going to exit non-zero.
@@ -2112,7 +2042,6 @@ const startListening = async (): Promise<void> => {
   log.info(`Bind addresses: ${bindAddresses.join(', ')}`);
   log.info(`Auth mode: ${config.auth.mode}`);
   log.info(`CORS origins: ${config.cors.origins.join(', ')}`);
-  log.info(`Hindsight: ${hindsightUrl}`);
   log.info(`Bind retry budget: ${Math.round(BIND_RETRY_BUDGET_MS / 1000)}s (override via ORIONOMEGA_BIND_RETRY_MS)`);
 
   // Run all binds in parallel so a slow address doesn't delay a fast one.
@@ -2265,7 +2194,6 @@ async function shutdown(signal: string): Promise<void> {
     for (const ac of bindAbortControllers) {
       try { ac.abort(); } catch { /* best-effort */ }
     }
-    if (hindsightHealthTimer) clearInterval(hindsightHealthTimer);
     stopRateLimitCleanup();
     scheduler?.stop();
     eventStreamer.destroy();

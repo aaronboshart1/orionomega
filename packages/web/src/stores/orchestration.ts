@@ -174,7 +174,7 @@ export interface MemoryEvent {
   timestamp: string;
   op: 'retain' | 'recall' | 'dedup' | 'quality' | 'bootstrap' | 'flush' | 'session_anchor' | 'summary' | 'self_knowledge';
   detail: string;
-  bank?: string;
+  scope?: string;
   meta?: Record<string, unknown>;
 }
 
@@ -188,7 +188,7 @@ export interface RetainMeta {
   itemCount?: number;
   items?: Array<{ content: string; context: string; timestamp: string }>;
   durationMs?: number;
-  result?: { success: boolean; bankId?: string; itemsCount?: number };
+  result?: { ok: boolean; count?: number };
   /** Originating session that produced this retain (provenance). */
   sessionId?: string;
 }
@@ -203,10 +203,9 @@ export interface RecallMeta {
   durationMs?: number;
   clientScored?: boolean;
   tokensUsed?: number;
-  budget?: string;
   maxTokens?: number;
   minRelevance?: number;
-  results?: Array<{ content: string; context: string; timestamp: string; relevance: number }>;
+  records?: Array<{ content: string; context: string; timestamp: string; relevance: number }>;
   /** Target session that recalled this context (provenance). */
   sessionId?: string;
 }
@@ -225,13 +224,13 @@ export interface QualityMeta {
 export interface DedupMeta {
   context?: string;
   contentPreview?: string;
-  bankId?: string;
+  scope?: string;
   similarityThreshold?: number;
 }
 
 export interface MemoryFilterState {
   ops: Set<MemoryEvent['op']> | null;
-  bank: string | null;
+  scope: string | null;
   searchText: string;
 }
 
@@ -354,7 +353,7 @@ export const useOrchestrationStore = create<OrchestrationStore>()((set) => ({
   scrollToDagId: null,
   activitySectionCollapsed: false,
   memoryEvents: [],
-  memoryFilter: { ops: null, bank: null, searchText: '' },
+  memoryFilter: { ops: null, scope: null, searchText: '' },
   activeOrchTab: 'memory',
   graphState: null,
   events: [],
@@ -716,7 +715,7 @@ export const useOrchestrationStore = create<OrchestrationStore>()((set) => ({
       scrollToDagId: null,
       activitySectionCollapsed: false,
       memoryEvents: [],
-      memoryFilter: { ops: null, bank: null, searchText: '' },
+      memoryFilter: { ops: null, scope: null, searchText: '' },
       activeOrchTab: 'memory',
     }),
 
@@ -749,12 +748,12 @@ export function useFilteredMemoryEvents(): MemoryEvent[] {
   return useMemo(() => {
     let filtered = events;
     if (filter.ops) filtered = filtered.filter(e => filter.ops!.has(e.op));
-    if (filter.bank) filtered = filtered.filter(e => e.bank === filter.bank);
+    if (filter.scope) filtered = filtered.filter(e => e.scope === filter.scope);
     if (filter.searchText) {
       const q = filter.searchText.toLowerCase();
       filtered = filtered.filter(e =>
         e.detail.toLowerCase().includes(q) ||
-        (e.bank?.toLowerCase().includes(q) ?? false) ||
+        (e.scope?.toLowerCase().includes(q) ?? false) ||
         JSON.stringify(e.meta ?? {}).toLowerCase().includes(q),
       );
     }

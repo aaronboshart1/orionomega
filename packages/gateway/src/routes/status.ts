@@ -6,7 +6,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
-import type { SystemStatus } from '../types.js';
+import type { MemoryActivity, SystemStatus } from '../types.js';
 import { SessionManager } from '../sessions.js';
 import { BUILD_INFO as CORE_BUILD_INFO, getStaleBuildStatus } from '@orionomega/core';
 import { BUILD_INFO as GATEWAY_BUILD_INFO } from '../generated/build-info.js';
@@ -31,29 +31,18 @@ let staleCache: { computedAt: number; payload: unknown } | null = null;
  * @param res - The HTTP response.
  * @param sessionManager - The session manager instance.
  * @param startTime - Server start timestamp (ms).
- * @param hindsightUrl - Hindsight server URL for connectivity check.
+ * @param memoryActivity - Latest memory store activity reported by the agent.
+ *   Its `health` drives `systemHealth` — the System Health card in the web UI.
  */
 export async function handleStatus(
   _req: IncomingMessage,
   res: ServerResponse,
   sessionManager: SessionManager,
   startTime: number,
-  hindsightUrl: string,
+  memoryActivity: MemoryActivity,
 ): Promise<void> {
   const uptime = Math.floor((Date.now() - startTime) / 1000);
   const sessions = sessionManager.listSessions();
-
-  // Quick hindsight connectivity check
-  let hindsightConnected = false;
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 2000);
-    const resp = await fetch(`${hindsightUrl}/health`, { signal: controller.signal });
-    clearTimeout(timeout);
-    hindsightConnected = resp.ok;
-  } catch {
-    hindsightConnected = false;
-  }
 
   // Collect workflow summaries from active sessions
   const activeWorkflows = sessions.flatMap((s) =>
@@ -67,10 +56,13 @@ export async function handleStatus(
     })),
   );
 
+  // `memory.health` is what drives the operator-facing System Health card:
+  // a store that cannot serve recall is a degraded system, and one still
+  // warming its index is not yet fully healthy either.
   const status: SystemStatus = {
     activeWorkflows,
-    systemHealth: hindsightConnected ? 'ok' : 'degraded',
-    hindsightConnected,
+    systemHealth: memoryActivity.health === 'ready' ? 'ok' : 'degraded',
+    memoryHealth: memoryActivity.health,
     uptime,
   };
 
@@ -133,7 +125,12 @@ export async function handleStatus(
       buildTime: GATEWAY_BUILD_INFO.buildTime,
     },
     sessions: { total: sessions.length, active: sessions.filter((s) => s.clients.size > 0).length },
-    hindsight: { connected: hindsightConnected, url: hindsightUrl },
+    memory: {
+      health: memoryActivity.health,
+      busy: memoryActivity.busy,
+      ...(memoryActivity.pct !== undefined ? { pct: memoryActivity.pct } : {}),
+      ...(memoryActivity.reason ? { reason: memoryActivity.reason } : {}),
+    },
     workflows: { active: activeWorkflows.length, details: activeWorkflows },
     systemHealth: status.systemHealth,
     build: staleBuild,

@@ -126,6 +126,20 @@ interface InterventionRequest {
  */
 export class OrchestrationBridge implements DispatchCoordinator {
   private readonly planner: Planner;
+
+  /**
+   * Bind the memory store into the planner once memory has initialised.
+   *
+   * The planner is constructed in this bridge's constructor, which runs before
+   * MemoryBridge.init(). Passing `memory.store` there would capture null
+   * permanently and silently disable pre-planning recall — present in the code,
+   * inert at runtime. The executor takes the store per dispatch instead, where
+   * it is already resolved.
+   */
+  bindMemoryStore(): void {
+    const store = this.memory.store;
+    if (store) this.planner.setMemoryStore(store);
+  }
   readonly eventBus: EventBus;
   readonly commands: OrchestratorCommands;
 
@@ -938,8 +952,8 @@ ${userTask}`;
 
     switch (action) {
       case 'approve':
-        if (this.memory.banks && pending.task) {
-          await this.memory.ensureProjectBank(pending.task);
+        if (pending.task) {
+          this.memory.ensureProjectScope(pending.task);
         }
         await this.executePlan(pending.plan, pushHistory);
         break;
@@ -947,8 +961,8 @@ ${userTask}`;
       case 'modify': {
         if (!modification) {
           // No modification text — treat as approve
-          if (this.memory.banks && pending.task) {
-            await this.memory.ensureProjectBank(pending.task);
+          if (pending.task) {
+            this.memory.ensureProjectScope(pending.task);
           }
           await this.executePlan(pending.plan, pushHistory);
           break;
@@ -962,9 +976,7 @@ ${userTask}`;
           // and inject the additional context into the task description for workers
           log.verbose('Modification classified as approval-with-context', { modification });
           pending.task = `${pending.task}\n\nAdditional instructions: ${modification}`;
-          if (this.memory.banks && pending.task) {
-            await this.memory.ensureProjectBank(pending.task);
-          }
+          this.memory.ensureProjectScope(pending.task);
           await this.executePlan(pending.plan, pushHistory);
         } else {
           // Genuine modification — re-plan with the changes
@@ -1090,6 +1102,11 @@ ${userTask}`;
     const taskQueue = this.buildTaskQueue(workflowId);
 
     const executorConfig: ExecutorConfig = {
+      // Resolved per dispatch, not at construction: MemoryBridge.init() runs
+      // after this bridge is built, so reading it in the constructor would
+      // capture null forever and silently disable node-level recall and
+      // tool-output retention.
+      ...(this.memory.store ? { memoryStore: this.memory.store } : {}),
       workspaceDir: this.config.workspaceDir,
       checkpointDir: this.config.checkpointDir,
       workerTimeout: this.config.workerTimeout,
@@ -1306,8 +1323,8 @@ ${userTask}`;
     this.callbacks.onWorkflowStart?.(workflowId, workflowName);
     this.commands.addWorkflow(workflowId, executor, workflowName);
 
-    if (this.memory.retention && this.memory.projectBank) {
-      this.memory.retention.registerWorkflowBank(workflowId, this.memory.projectBank);
+    if (this.memory.retention && this.memory.projectScope) {
+      this.memory.retention.registerWorkflowBank(workflowId, this.memory.projectScope);
     }
 
     this.callbacks.onText('Workflow started. I\'ll keep you posted on progress.', false, true, workflowId);
@@ -1447,9 +1464,9 @@ ${userTask}`;
   ): Promise<void> {
     const wf = this.activeWorkflows.get(workflowId);
 
-    if (this.memory.retention && this.memory.projectBank) {
+    if (this.memory.retention && this.memory.projectScope) {
       this.memory.retention.retainWorkflowOutcome({
-        bankId: this.memory.projectBank,
+        bankId: this.memory.projectScope,
         workflowId: result.workflowId,
         taskSummary: result.taskSummary,
         workerCount: result.workerCount,
@@ -1463,19 +1480,19 @@ ${userTask}`;
       }).catch(() => {});
     }
 
-    // ── Collect and store all .md artifacts from the run to Hindsight ──
+    // ── Collect and store all .md artifacts from the run to memory ──
     // This ensures the memory system retains the full detail of every run,
     // not just the summary. When a user replies to a run or asks about past
     // work, the system can recall complete findings, analysis, and reports.
-    if (this.memory.client && this.memory.projectBank) {
+    if (this.memory.store && this.memory.projectScope) {
       const runDir = `${this.config.workspaceDir}/output/${result.workflowId}`;
       // Look up the originating gateway session via the retention engine's
       // workflow→session map so collected artifacts are tagged with
       // `session:<sessionId>` for provenance. Recall stays cross-session.
       const sessionIdForRun = this.memory.retention?.getWorkflowSession(result.workflowId);
       collectRunArtifacts(
-        this.memory.client,
-        this.memory.projectBank,
+        this.memory.store,
+        this.memory.projectScope,
         result.workflowId,
         runDir,
         result.taskSummary,

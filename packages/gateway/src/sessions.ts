@@ -35,6 +35,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { createLogger } from '@orionomega/core';
 import type { PersistenceService } from './persistence.js';
+import type { MemoryActivity } from './types.js';
 
 const log = createLogger('sessions');
 
@@ -104,7 +105,7 @@ export interface MemoryEventData {
   timestamp: string;
   op: string;
   detail: string;
-  bank?: string;
+  scope?: string;
   meta?: Record<string, unknown>;
 }
 
@@ -235,7 +236,7 @@ interface SessionData {
   updatedAt: string;
   messages: Message[];
   activeWorkflows: string[];
-  hindsightBank?: string;
+  memoryScope?: string;
   memoryEvents?: MemoryEventData[];
   agentMode?: 'orchestrate' | 'direct' | 'code';
   /** Completed run summaries for review after completion. */
@@ -303,7 +304,7 @@ export interface Session {
   messages: Message[];
   /** IDs of all currently active workflows for this session. */
   activeWorkflows: Set<string>;
-  hindsightBank?: string;
+  memoryScope?: string;
   memoryEvents: MemoryEventData[];
   /** Completed run summaries for post-hoc review. */
   runHistory: RunSummary[];
@@ -641,7 +642,8 @@ export class SessionManager {
           sessionId,
           op: event.op,
           detail: event.detail,
-          bank: event.bank,
+          // persistence.MemoryEventInput still calls this column `bank`.
+          bank: event.scope,
           meta: event.meta,
         });
       } catch (err) {
@@ -1111,7 +1113,7 @@ export class SessionManager {
    * Optional hook fired after a session is deleted from memory/disk/SQLite.
    * Wired by the gateway to MainAgent.clearSessionState so per-session
    * agent state (context, totals, workflow mappings) is purged too.
-   * Hindsight memories are NEVER touched here — recall stays cross-session.
+   * Persistent memory records are NEVER touched here — recall stays cross-session.
    */
   onSessionDeleted: ((id: string) => void) | null = null;
 
@@ -1124,7 +1126,7 @@ export class SessionManager {
     this.deleteFromDisk(id);
     // SQLite cascade: deletes messages, events, memory_events, workflows,
     // workflow_events, run_history, client_state for this session via FK.
-    // Hindsight is a separate store and is intentionally untouched.
+    // The MemoryStore is a separate store and is intentionally untouched.
     if (this.sqliteEnabled) {
       try {
         this.persistence!.deleteSession(id);
@@ -1180,7 +1182,7 @@ export class SessionManager {
               timestamp: e.timestamp,
               op: me.op ?? '',
               detail: me.detail ?? '',
-              bank: me.bank,
+              scope: me.scope,
               meta: me.meta,
             };
           });
@@ -1220,7 +1222,7 @@ export class SessionManager {
       updatedAt: session.updatedAt,
       messages: session.messages,
       activeWorkflows: [...session.activeWorkflows],
-      hindsightBank: session.hindsightBank ?? null,
+      memoryScope: session.memoryScope ?? null,
       memoryEvents: session.memoryEvents,
       agentMode: session.agentMode ?? null,
       clientCount: session.clients.size,
@@ -1238,13 +1240,13 @@ export class SessionManager {
    * rather than receiving the entire history over WebSocket.
    *
    * @param sessionId - Target session ID.
-   * @param hindsightStatus - Current Hindsight service status.
+   * @param memoryActivity - Current memory store activity/health.
    * @param maxMessages - Maximum messages to include (default: 200).
    *   Older messages are available via GET /api/sessions/:id/activity.
    */
   buildSnapshot(
     sessionId: string,
-    hindsightStatus?: { connected: boolean; busy: boolean } | null,
+    memoryActivity?: MemoryActivity | null,
     maxMessages = 200,
   ): Record<string, unknown> | null {
     // In sqlite mode, build snapshot from DB for pagination hints but normalize
@@ -1284,7 +1286,7 @@ export class SessionManager {
           pendingInterventions: inMemSession?.pendingInterventions ?? {},
           agentMode: inMemSession?.agentMode ?? 'orchestrate',
           activeWorkflows: [...(inMemSession?.activeWorkflows ?? [])],
-          hindsightStatus: hindsightStatus ?? null,
+          memoryActivity: memoryActivity ?? null,
           runHistory: inMemSession?.runHistory ?? [],
           // lastSeq from DB for client sequence tracking (delta sync on next reconnect)
           lastSeq: (dbSnapshot as Record<string, unknown>).latestSeq,
@@ -1331,7 +1333,7 @@ export class SessionManager {
       pendingInterventions: session.pendingInterventions,
       agentMode: session.agentMode ?? 'orchestrate',
       activeWorkflows: [...session.activeWorkflows],
-      hindsightStatus: hindsightStatus ?? null,
+      memoryActivity: memoryActivity ?? null,
       runHistory: session.runHistory,
       // Pagination hints for virtual scrolling of large histories
       pagination: {
@@ -1470,7 +1472,7 @@ export class SessionManager {
       updatedAt: session.updatedAt,
       messages: session.messages,
       activeWorkflows: [...session.activeWorkflows],
-      hindsightBank: session.hindsightBank,
+      memoryScope: session.memoryScope,
       memoryEvents: session.memoryEvents,
       agentMode: session.agentMode,
       runHistory: session.runHistory,
@@ -1572,7 +1574,7 @@ export class SessionManager {
             updatedAt: data.updatedAt,
             messages: data.messages ?? [],
             activeWorkflows: new Set(data.activeWorkflows ?? []),
-            hindsightBank: data.hindsightBank,
+            memoryScope: data.memoryScope,
             memoryEvents: data.memoryEvents ?? [],
             runHistory: data.runHistory ?? [],
             agentMode: data.agentMode,
@@ -1659,7 +1661,8 @@ export class SessionManager {
                 sessionId,
                 op: me.op,
                 detail: me.detail,
-                bank: me.bank,
+                // persistence.MemoryEventInput still calls this column `bank`.
+                bank: me.scope,
                 meta: me.meta,
               });
             } catch {

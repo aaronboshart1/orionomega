@@ -6,6 +6,17 @@
 **Prepared By:** Automated Security Analysis Pipeline
 **Target:** OrionOmega AI Agent Orchestration Platform (all packages)
 
+> **Addendum — 2026-07-24 (memory v2).** This report is a dated record of the
+> codebase as it stood on 2026-03-29 and its findings are preserved verbatim.
+> Since it was written, the memory subsystem was rebuilt on self-hosted Redis:
+> the `packages/hindsight` package, its Docker container (including the `:8888`
+> HTTP endpoint and the `:9999` debug port), and the remote default endpoint
+> were all removed. See [`docs/memory-architecture-v2.md`](docs/memory-architecture-v2.md).
+> Findings that depended on that component (N-01, D-01, D-04, L-1, and the
+> related roadmap entries) are annotated inline as resolved by the removal.
+> Note that the *memory-poisoning* threat class (LLM03, MINJA) is **not**
+> resolved — it now applies to the Redis-backed record store instead.
+
 ---
 
 ## Table of Contents
@@ -46,7 +57,7 @@ The project faces not only traditional web application vulnerabilities but also 
 1. **Default authentication is `none`** — all APIs, WebSocket, and config endpoints are completely open
 2. **Unrestricted shell command execution** — AI-generated commands run with full host access, no sandboxing
 3. **SSRF via `web_fetch`** — no URL validation enables cloud metadata theft and internal network scanning
-4. **Default Hindsight endpoint is a public, unencrypted personal DDNS address** — all conversation data, tool outputs, and memory sent in plaintext without authentication
+4. **Default Hindsight endpoint is a public, unencrypted personal DDNS address** — all conversation data, tool outputs, and memory sent in plaintext without authentication *(resolved 2026-07-24, memory v2: the Hindsight package and its remote endpoint were removed; memory is a local Redis at `redis://localhost:6379`)*
 5. **API keys stored in plaintext** in YAML config, environment variables, and Docker command lines
 6. **Zero security scanning in CI/CD** — no SAST, no dependency audit, no container scanning, tests disabled
 7. **All GitHub Actions pinned to mutable version tags** — vulnerable to supply chain attacks (cf. 2025 `tj-actions` incident)
@@ -63,7 +74,7 @@ The project faces not only traditional web application vulnerabilities but also 
 | **Core Package** | `cli.ts`, `config/loader.ts`, `config/types.ts`, `anthropic/client.ts`, `anthropic/agent-loop.ts`, `anthropic/tools.ts`, `orchestration/agent-sdk-bridge.ts`, `orchestration/executor.ts`, `commands/setup.ts`, `commands/github-device-auth.ts` | Manual static analysis |
 | **Gateway Package** | `auth.ts`, `server.ts`, `websocket.ts`, `sessions.ts`, `types.ts`, `routes/config.ts`, `routes/skills.ts` | Manual static analysis |
 | **Skills SDK** | `executor.ts`, `loader.ts`, `settings.ts`, `skill-config.ts` | Manual static analysis |
-| **Hindsight Client** | `client.ts` | Manual static analysis |
+| **Hindsight Client** | `client.ts` | Manual static analysis *(package removed 2026-07-24)* |
 | **Web UI** | `lib/gateway.ts`, React components | Manual static analysis |
 | **Default Skills** | `github/handlers/*.js`, `web-fetch/handlers/web_fetch.js`, `web-search/handlers/web_search.js` | Manual static analysis |
 | **Infrastructure** | `docker-compose.yml`, all Dockerfiles, `install.sh`, `.replit`, `post-merge.sh`, `nginx.conf`, `.env.example`, `config.yaml`, `ci.yml` | Configuration review |
@@ -175,7 +186,7 @@ NanoClaw's response — Docker container isolation per agent, modular architectu
 | M-7 | 🟡 Medium | Prompt Injection (CWE-74) | `packages/gateway/src/websocket.ts:272-349` | User chat messages pass directly to AI agent without sanitization. `replyToContent` feature allows injecting content attributed to different roles. Web-fetched content creates indirect injection path. | Implement input sanitization; add tool execution guardrails; content safety filtering; validate `replyToRole` against allowlist | P2 — This Quarter |
 | M-8 | 🟡 Medium | Improper Error Handling (CWE-755) | `packages/gateway/src/server.ts:25-32` | `uncaughtException` handler logs full error to stderr then calls `process.exit(1)` without graceful shutdown. May leave sessions in corrupted state and leak internal paths. | Call `shutdown()` instead of `process.exit(1)`; sanitize error before logging | P2 — This Quarter |
 | M-9 | 🟡 Medium | Insecure Deserialization (CWE-502) | `packages/gateway/src/websocket.ts:214-225` | WebSocket messages parsed with `JSON.parse()` and cast directly to `ClientMessage` with minimal validation. `attachments` field allows arbitrary `data` fields with no size/content validation. | Implement Zod schema validation (already a dependency) for all incoming WebSocket messages | P2 — This Quarter |
-| L-1 | 🟢 Low | Missing Authentication (CWE-306) | `packages/hindsight/src/client.ts:526-529` | Hindsight client makes requests without authentication headers. Network-accessible Hindsight server allows any client to read/write memory banks. | Add authentication support (API key, mTLS) to Hindsight client | P3 — Hardening |
+| L-1 | 🟢 Low | Missing Authentication (CWE-306) | `packages/hindsight/src/client.ts:526-529` | Hindsight client makes requests without authentication headers. Network-accessible Hindsight server allows any client to read/write memory banks. | Add authentication support (API key, mTLS) to Hindsight client | P3 — Hardening — **resolved 2026-07-24 (memory v2): the Hindsight client and package were removed** |
 | L-2 | 🟢 Low | Insecure Permissions (CWE-276) | `packages/core/src/config/loader.ts:228` | `writeFileSync()` creates config file with default umask (0644), making it world-readable. File contains API key in plaintext. | Set file permissions to `0600` after writing | P3 — Hardening |
 | L-3 | 🟢 Low | Hardcoded Credential (Informational) | `packages/core/src/commands/github-device-auth.ts:13` | GitHub OAuth App client ID hardcoded. Public value per design, but rotation requires code change. | Make configurable | P3 — Hardening |
 | L-4 | 🟢 Low | Unhandled Exception (CWE-20) | `packages/web/src/lib/gateway.ts:241` | `JSON.parse()` on WebSocket data without try-catch. Non-JSON data crashes React component. | Wrap in try-catch | P3 — Hardening |
@@ -191,18 +202,18 @@ NanoClaw's response — Docker container isolation per agent, modular architectu
 
 | ID | Severity | Category | File/Location | Description | Recommended Fix | Priority |
 |----|----------|----------|---------------|-------------|-----------------|----------|
-| D-01 | 🔴 Critical | Supply Chain — Docker | `docker-compose.yml:74`, `install.sh:214` | Hindsight container uses floating `:latest` tag. `ghcr.io/vectorize-io/hindsight:latest` is mutable — a compromised upstream push silently replaces the running container, and Hindsight receives the raw `ANTHROPIC_API_KEY`. | Pin to `ghcr.io/vectorize-io/hindsight@sha256:<verified-digest>`; use Renovate to track updates | P0 — Immediate |
+| D-01 | 🔴 Critical | Supply Chain — Docker | `docker-compose.yml:74`, `install.sh:214` | Hindsight container uses floating `:latest` tag. `ghcr.io/vectorize-io/hindsight:latest` is mutable — a compromised upstream push silently replaces the running container, and Hindsight receives the raw `ANTHROPIC_API_KEY`. | Pin to `ghcr.io/vectorize-io/hindsight@sha256:<verified-digest>`; use Renovate to track updates | P0 — **resolved 2026-07-24 (memory v2): the Hindsight container was removed; no image to pin** |
 | C-01 | 🔴 Critical | Supply Chain — CI/CD | `ci.yml` (13 action references) | All GitHub Actions pinned to mutable version tags (`@v4`, `@v3`, `@v2`, `@v1`), not SHA digests. Compromised upstream action (cf. 2025 `tj-actions` incident) executes malicious code with `GITHUB_TOKEN` access. `actions/create-release@v1` is deprecated/archived. | Pin all actions to full SHA digests | P0 — Immediate |
-| N-01 | 🔴 Critical | Data Exfiltration | `.env.example:65`, `config.yaml:76` | Default Hindsight endpoint is `http://aaronboshart.ddns.net:8888` — a personal DDNS hostname on a residential IP. All conversation data, tool outputs, and memory sent in plaintext without authentication. | Remove entirely; default to `http://localhost:8888` or require explicit opt-in | P0 — Immediate |
+| N-01 | 🔴 Critical | Data Exfiltration | `.env.example:65`, `config.yaml:76` | Default Hindsight endpoint is `http://aaronboshart.ddns.net:8888` — a personal DDNS hostname on a residential IP. All conversation data, tool outputs, and memory sent in plaintext without authentication. | Remove entirely; default to `http://localhost:8888` or require explicit opt-in | P0 — **resolved 2026-07-24 (memory v2): the remote endpoint and the whole Hindsight transport were removed; memory now defaults to a local `redis://localhost:6379`** |
 | S-01 | 🔴 Critical | Credential Exposure | `config.yaml:13,118,125` | `anthropic.apiKey: sk-ant-...`, `github.apiToken: ghp_...`, `linear.apiKey: lin_...` stored unencrypted with no permission enforcement. | Enforce `chmod 600` at creation; support `${ENV_VAR}` substitution; document Vault/Secrets Manager integration | P0 — Immediate |
 | L-01 | 🔴 Critical | Supply Chain — Install | `install.sh:195` | `curl -fsSL https://get.docker.com \| sh` — DNS poisoning or CDN compromise gives arbitrary code execution with root access. | Use distro package managers (`apt-get install docker.io`) with verified checksums | P0 — Immediate |
 | D-02 | 🟠 High | Supply Chain — Docker | All Dockerfiles | Node.js base images not pinned to digest. Upstream compromise or breaking change injected silently. | Pin all base images to SHA256 digest | P1 — Next Sprint |
 | D-03 | 🟠 High | Supply Chain — Docker | All Dockerfiles | `pnpm` installed without version pinning in Dockerfiles. | Pin `pnpm` to exact version | P1 — Next Sprint |
-| D-04 | 🟠 High | Debug Exposure | `docker-compose.yml:79` | Hindsight debug port 9999 exposed to host network. | Remove debug port mapping in production compose file | P1 — Next Sprint |
+| D-04 | 🟠 High | Debug Exposure | `docker-compose.yml:79` | Hindsight debug port 9999 exposed to host network. | Remove debug port mapping in production compose file | P1 — **resolved 2026-07-24 (memory v2): the Hindsight container, and with it port 9999, no longer exists** |
 | C-02 | 🟠 High | Missing Security Controls | `ci.yml` | Zero security scanning in CI — no SAST, no `npm audit`/Snyk, no Trivy/Grype container scanning. | Add `pnpm audit`, CodeQL/Semgrep SAST, Trivy image scan to CI pipeline | P1 — Next Sprint |
 | C-03 | 🟠 High | Tests Disabled | `ci.yml:91` | Tests explicitly disabled with `if: false`. No automated quality gate on any code merge. | Re-enable tests; add test coverage requirements | P1 — Next Sprint |
 | C-04 | 🟠 High | Excessive Permissions | `ci.yml` (top level) | No `permissions: {}` at workflow top level. All jobs run with default (elevated) GITHUB_TOKEN permissions. | Add `permissions: {}` at workflow level; scope per-job to minimum required | P1 — Next Sprint |
-| N-02 | 🟠 High | Network Exposure | `.env.example`, `config.yaml` | All services bind to `0.0.0.0` by default. Any host on the network can reach gateway, Hindsight, and web UI. | Default bind to `127.0.0.1` for all services | P1 — Next Sprint |
+| N-02 | 🟠 High | Network Exposure | `.env.example`, `config.yaml` | All services bind to `0.0.0.0` by default. Any host on the network can reach gateway, Hindsight, and web UI. | Default bind to `127.0.0.1` for all services | P1 — Next Sprint *(the Hindsight half is moot as of 2026-07-24: the service was removed; Redis binds per its own config)* |
 | N-03 | 🟠 High | Missing TLS | `docker-compose.yml`, `server.mjs` | Gateway WebSocket has no TLS. Nginx TLS config is commented out. All traffic is plaintext. | Enable TLS; provide Let's Encrypt automation or mTLS between services | P1 — Next Sprint |
 | S-02 | 🟠 High | Credential Exposure | `install.sh:236-244` | API key passed on `docker run` command line — visible in `ps aux` output to any user on the host. | Pass secrets via Docker secrets, env file with restricted permissions, or mounted volume | P1 — Next Sprint |
 | SC-01 | 🟠 High | Missing Security Controls | `ci.yml` | No dependency vulnerability scanning in CI pipeline. | Add `pnpm audit --audit-level=high` as CI gate | P1 — Next Sprint |
@@ -354,13 +365,13 @@ To reach enterprise-grade deployment readiness, OrionOmega requires:
 
 | # | Finding IDs | Action | Impact |
 |---|------------|--------|--------|
-| 1 | N-01 | **Remove `http://aaronboshart.ddns.net:8888` from all templates and defaults.** Default Hindsight to `http://localhost:8888` or require explicit configuration. | Stops data exfiltration to third-party endpoint |
+| 1 | N-01 | **Remove `http://aaronboshart.ddns.net:8888` from all templates and defaults.** Default Hindsight to `http://localhost:8888` or require explicit configuration. | Stops data exfiltration to third-party endpoint — **done 2026-07-24 (memory v2): Hindsight removed entirely; memory is local Redis** |
 | 2 | C-2, N-02 | **Change default auth mode to `api-key`; default bind to `127.0.0.1`.** Require explicit opt-out for `none`. Add startup warning if auth=none on non-localhost. | Closes the widest attack surface |
 | 3 | H-3, M-01 | **Restrict default CORS origins to `['http://localhost:*']` only.** Remove `http://*:*` and `https://*` wildcards from all defaults and templates. | Prevents cross-origin attacks from any website |
 | 4 | C-3 | **Implement URL validation/blocklist in `web_fetch`.** Block RFC 1918, link-local, loopback, cloud metadata IPs. Block non-HTTP(S) protocols. Resolve DNS before request. | Prevents SSRF, cloud credential theft, internal network scanning |
 | 5 | H-1, H-2 | **Replace SHA-256 with bcrypt/scrypt for password hashing. Use `timingSafeEqual` for token signatures.** | Prevents credential cracking and timing attacks |
 | 6 | S-01, L-2 | **Set `chmod 600` on config file at creation. Support `${ENV_VAR}` substitution for secrets.** | Prevents credential theft from readable config files |
-| 7 | D-01 | **Pin Hindsight Docker image to SHA256 digest.** | Prevents supply chain attack via mutable tag |
+| 7 | D-01 | **Pin Hindsight Docker image to SHA256 digest.** | Prevents supply chain attack via mutable tag — **moot 2026-07-24 (memory v2): the container was removed** |
 | 8 | C-01 | **Pin all GitHub Actions to full SHA digests.** Replace deprecated `actions/create-release@v1`. | Prevents CI/CD supply chain attacks |
 | 9 | L-01 | **Replace `curl \| sh` with distro package manager install.** | Eliminates arbitrary code execution vector in install script |
 
@@ -378,7 +389,7 @@ To reach enterprise-grade deployment readiness, OrionOmega requires:
 | 15 | C-04 | Add `permissions: {}` to workflow top level; scope per-job | Limits blast radius of compromised CI job |
 | 16 | N-03 | Enable TLS for gateway; provide cert automation | Encrypts all traffic |
 | 17 | D-02, D-03 | Pin Node.js base images and pnpm to exact versions/digests in Dockerfiles | Supply chain hardening |
-| 18 | D-04 | Remove Hindsight debug port 9999 from production compose | Removes debug endpoint exposure |
+| 18 | D-04 | Remove Hindsight debug port 9999 from production compose | Removes debug endpoint exposure — **done 2026-07-24 (memory v2): the container was removed** |
 | 19 | SS-01 | Remove `\|\| pnpm install` fallback from post-merge hook | Preserves lockfile integrity |
 | 20 | L-02 | Add user consent prompt before `sudo` operations in install script | Respects user trust |
 
@@ -405,7 +416,7 @@ To reach enterprise-grade deployment readiness, OrionOmega requires:
 
 | # | Finding IDs | Action | Impact |
 |---|------------|--------|--------|
-| 31 | L-1 | Add authentication to Hindsight client | Protects memory store |
+| 31 | L-1 | Add authentication to Hindsight client | Protects memory store — **moot 2026-07-24 (memory v2): no Hindsight client; secure the Redis instance instead (auth/TLS via `memory.redis`)** |
 | 32 | L-5 | Encrypt session files at rest | Protects conversation history |
 | 33 | L-6 | Set WebSocket `maxPayload` to 10MB | Prevents memory-based DoS |
 | 34 | LI-01 | Enable GitHub branch protection rules | Prevents unauthorized code changes |
@@ -415,7 +426,7 @@ To reach enterprise-grade deployment readiness, OrionOmega requires:
 | 38 | LI-06 | Add Docker image provenance attestation (SLSA) | Verifiable build integrity |
 | 39 | — | Implement structured audit logging for all agent actions | Supports compliance and forensics |
 | 40 | — | Implement human-in-the-loop gates for high-privilege actions | Prevents unintended destructive actions |
-| 41 | — | Implement memory provenance tracking for Hindsight writes | Defends against memory poisoning attacks |
+| 41 | — | Implement memory provenance tracking for Hindsight writes | Defends against memory poisoning attacks — **still open 2026-07-24: applies to Redis record writes now** |
 | 42 | — | Create incident response plan and security runbooks | Enterprise operational readiness |
 
 ---
@@ -546,6 +557,11 @@ To reach enterprise-grade deployment readiness, OrionOmega requires:
 └──────────────────────────────────────────────────────────┘
 ```
 
+*Note (2026-07-24, memory v2): the backend-network memory service is now Redis
+on `:6379`, not Hindsight on `:8888` — the Hindsight package and container were
+removed. The segmentation recommendation itself is unchanged: memory must stay
+on the backend network with no external access.*
+
 ### 9.5 Audit Logging Architecture
 
 Implement structured, immutable audit logging for:
@@ -568,7 +584,7 @@ Implement structured, immutable audit logging for:
 | **Prompt Injection Detection** | Secondary guardrail model inspecting all inputs for injection patterns before reaching the primary agent |
 | **Output Validation** | Validate all agent outputs against expected schemas before execution; flag anomalous tool call patterns |
 | **Human-in-the-Loop Gates** | Require human approval for: destructive file operations, external API calls, code execution in production, configuration changes |
-| **Memory Provenance** | Tag every Hindsight memory write with source agent, task ID, trust level; reject unsigned memories |
+| **Memory Provenance** | Tag every memory record write with source agent, task ID, trust level; reject unsigned records *(as of 2026-07-24 the store is Redis, not Hindsight)* |
 | **Agent Behavior Monitoring** | Track agent decision patterns across sessions; alert on behavioral drift that may indicate compromise |
 | **Tool Scope Enforcement** | Define per-task tool allowlists; agents cannot invoke tools outside their declared scope |
 | **Context Isolation** | Separate context windows for trusted (system prompt) vs. untrusted (user input, fetched content) data |

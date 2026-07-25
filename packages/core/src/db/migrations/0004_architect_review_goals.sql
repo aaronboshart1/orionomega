@@ -1,7 +1,7 @@
 -- Architect review goal-verification columns.
 -- Adds storage for the requirements list extracted by the architect, the
 -- per-requirement verdicts produced by the architect-reviewer, and a
--- counter for how many prior-decision memories were pulled from Hindsight
+-- counter for how many prior-decision records were pulled from memory
 -- during planning. All three columns are nullable so existing rows
 -- continue to load unchanged.
 

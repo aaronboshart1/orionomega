@@ -267,7 +267,7 @@ export function installDependencies(installDir: string): { ok: boolean; error?: 
 export function buildProject(installDir: string): { ok: boolean; error?: string } {
   try {
     // 10 min: matches UPDATE_STEPS build timeout. Full monorepo (core +
-    // gateway + web + tui + skills-sdk + hindsight) build can exceed 5 min on
+    // gateway + web + tui + shared + skills-sdk) build can exceed 5 min on
     // a Kali VM; if this trips, dist/ ends up partially populated and the
     // gateway loads stale code from the previous successful build.
     execCmd('pnpm build 2>&1', installDir, 600_000);

@@ -18,7 +18,7 @@ export interface FeatureImplementationParams {
   cwd: string;
   /**
    * Optional list of relevant prior architecture decisions / coding-run
-   * memories recalled from Hindsight. When non-empty, the architect prompt
+   * records recalled from memory. When non-empty, the architect prompt
    * surfaces them under a "Prior Architecture Decisions" section so the
    * design step doesn't relitigate work that was already settled.
    */

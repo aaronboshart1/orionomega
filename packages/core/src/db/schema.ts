@@ -199,7 +199,7 @@ export const architectReviews = sqliteTable('architect_reviews', {
   goalVerdicts: text('goal_verdicts'),
 
   /**
-   * How many prior-decision memories were recalled from Hindsight and
+   * How many prior-decision records were recalled from memory and
    * injected into the architect's planning context. Useful for
    * observability and for grading whether memory is being effective.
    */

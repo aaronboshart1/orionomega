@@ -38,7 +38,7 @@ The TUI connects to the gateway WebSocket at startup (`ws://127.0.0.1:<port>/ws?
 
 - **ChatLog** — scrollable ring buffer of assistant and user messages, rendered as Markdown
 - **WorkflowPanel** — tree view of running/completed workflows with per-node status and timing
-- **StatusBar** — current model, token counts, session cost, Hindsight connection indicator
+- **StatusBar** — current model, token counts, session cost, memory recall-health indicator (`ready` / `rebuilding` / `degraded`, never a connected/disconnected flag)
 - **CustomEditor** — multi-line input with slash command autocomplete
 
 ---
@@ -63,7 +63,7 @@ All slash commands are sent to the gateway as `{ type: 'command', command: '/sto
 | `/restart` | Restart the gateway service |
 | `/update` | Pull latest, rebuild, and restart |
 | `/focus` | Focus a specific workflow by ID |
-| `/hindsight` | Show Hindsight memory status |
+| `/memory` | Show memory store stats (records, segments, last write, index state) |
 | `/exit` / `/quit` | Exit the TUI |
 
 ---

@@ -662,36 +662,67 @@ function MemoryTab({
 }) {
   return (
     <div className="space-y-2">
-      <SectionTitle>Hindsight Settings</SectionTitle>
+      <SectionTitle>Memory Settings</SectionTitle>
       {showRestartWarning && (
         <div className="flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-400">
           <AlertCircle size={12} className="shrink-0" />
           <span>Restart the gateway for these changes to take effect.</span>
         </div>
       )}
-      <FormField label="Server URL">
+      <FormField label="Redis URL">
         <TextInput
-          value={String(getNestedValue(config, 'hindsight.url') ?? '')}
-          onChange={(v) => onChange('hindsight.url', v)}
-          placeholder="http://localhost:8888"
+          value={String(getNestedValue(config, 'memory.redis.url') ?? '')}
+          onChange={(v) => onChange('memory.redis.url', v)}
+          placeholder="redis://localhost:6379"
         />
       </FormField>
-      <FormField label="Default Bank">
+      <FormField label="Redis Database">
+        <NumberInput
+          value={Number(getNestedValue(config, 'memory.redis.db') ?? 0)}
+          onChange={(v) => onChange('memory.redis.db', v)}
+        />
+      </FormField>
+      <FormField label="Key Prefix">
         <TextInput
-          value={String(getNestedValue(config, 'hindsight.defaultBank') ?? '')}
-          onChange={(v) => onChange('hindsight.defaultBank', v)}
+          value={String(getNestedValue(config, 'memory.redis.keyPrefix') ?? '')}
+          onChange={(v) => onChange('memory.redis.keyPrefix', v)}
+          placeholder="orionomega"
+        />
+      </FormField>
+      <FormField label="TLS">
+        <Toggle
+          checked={Boolean(getNestedValue(config, 'memory.redis.tls'))}
+          onChange={(v) => onChange('memory.redis.tls', v)}
+        />
+      </FormField>
+      <FormField label="Hot Window Size">
+        <NumberInput
+          value={Number(getNestedValue(config, 'memory.hotWindowSize') ?? 20)}
+          onChange={(v) => onChange('memory.hotWindowSize', v)}
+        />
+      </FormField>
+      <FormField label="Recall Budget (tokens)">
+        <NumberInput
+          value={Number(getNestedValue(config, 'memory.recallBudgetTokens') ?? 16384)}
+          onChange={(v) => onChange('memory.recallBudgetTokens', v)}
         />
       </FormField>
       <FormField label="Retain on Complete">
         <Toggle
-          checked={Boolean(getNestedValue(config, 'hindsight.retainOnComplete'))}
-          onChange={(v) => onChange('hindsight.retainOnComplete', v)}
+          checked={Boolean(getNestedValue(config, 'memory.retainOnComplete'))}
+          onChange={(v) => onChange('memory.retainOnComplete', v)}
         />
       </FormField>
       <FormField label="Retain on Error">
         <Toggle
-          checked={Boolean(getNestedValue(config, 'hindsight.retainOnError'))}
-          onChange={(v) => onChange('hindsight.retainOnError', v)}
+          checked={Boolean(getNestedValue(config, 'memory.retainOnError'))}
+          onChange={(v) => onChange('memory.retainOnError', v)}
+        />
+      </FormField>
+      <FormField label="Session Summary">
+        <Toggle
+          checked={Boolean(getNestedValue(config, 'memory.sessionSummary'))}
+          onChange={(v) => onChange('memory.sessionSummary', v)}
         />
       </FormField>
     </div>
@@ -784,9 +815,9 @@ function getTabValidity(config: ConfigData | null): Record<TabId, boolean> {
   const port = Number(getNestedValue(config, 'gateway.port') ?? 0);
   const omegaclawValid = (apiKey.length > 0) && (defaultModel.length > 0) && (port > 0 && port <= 65535);
 
-  const hindsightUrl = String(getNestedValue(config, 'hindsight.url') ?? '');
-  const defaultBank = String(getNestedValue(config, 'hindsight.defaultBank') ?? '');
-  const memoryValid = hindsightUrl.length > 0 && defaultBank.length > 0;
+  // Redis is a hard dependency: a URL is the only thing memory cannot do without.
+  const redisUrl = String(getNestedValue(config, 'memory.redis.url') ?? '');
+  const memoryValid = redisUrl.length > 0;
 
   const skillsDir = String(getNestedValue(config, 'skills.directory') ?? '');
   const skillsValid = skillsDir.length > 0;
@@ -929,9 +960,9 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
       setTimeout(() => setSaveStatus('idle'), 3000);
       const initial = initialConfigRef.current;
       if (initial) {
-        const initialHindsight = JSON.stringify((initial as Record<string, unknown>).hindsight ?? {});
-        const savedHindsight = JSON.stringify((body as Record<string, unknown>).hindsight ?? {});
-        if (initialHindsight !== savedHindsight) {
+        const initialMemory = JSON.stringify((initial as Record<string, unknown>).memory ?? {});
+        const savedMemory = JSON.stringify((body as Record<string, unknown>).memory ?? {});
+        if (initialMemory !== savedMemory) {
           setNeedsRestart(true);
         }
       }

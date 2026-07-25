@@ -54,7 +54,7 @@ export interface CommonTemplateParams {
   validationTimeoutMs?: number;
   /**
    * Optional list of relevant prior architecture decisions / coding-run
-   * memories recalled from Hindsight. Currently consumed by the
+   * records recalled from memory. Currently consumed by the
    * feature-implementation template's architect prompt; other templates
    * accept and ignore it for forward-compat.
    */

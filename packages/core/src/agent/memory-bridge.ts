@@ -1,22 +1,28 @@
 /**
  * @module agent/memory-bridge
- * Hindsight memory integration for the main agent.
+ * Memory lifecycle for the main agent.
  *
- * Handles initialisation, context bootstrap, retention, compaction flush,
- * and session summaries. Separating memory concerns from the main agent
- * keeps both focused and readable.
+ * Owns the {@link MemoryStore} — a {@link RedisMemoryStore} constructed from
+ * `memory.redis` in config — plus the two components built on top of it
+ * (retention, session summaries). The main agent calls `init()`, `summarize()`
+ * and the recall helpers; it never sees the backend.
+ *
+ * See docs/memory-architecture-v2.md §16. There is nothing to create or
+ * register: scopes are implicit — they exist once something is written to
+ * them — and the store's index spans every scope, so cross-scope recall needs
+ * no discovery step.
  */
 
-import { HindsightClient, BankManager, SessionBootstrap, MentalModelManager, SelfKnowledge, LessonsRollup } from '@orionomega/hindsight';
-import type { SessionAnchor } from '@orionomega/hindsight';
 import { AnthropicClient } from '../anthropic/client.js';
 import { EventBus } from '../orchestration/event-bus.js';
 import { RetentionEngine } from '../memory/retention-engine.js';
-import { CompactionFlush } from '../memory/compaction-flush.js';
 import { isExternalAction } from '../memory/query-classifier.js';
 import { SessionSummarizer } from '../memory/session-summary.js';
-import * as memoryTelemetry from '../memory/memory-telemetry.js';
+import { RedisMemoryStore } from '../memory/redis-store.js';
+import { projectScopeFor } from '../memory/scope-slug.js';
+import type { MemoryStore } from '../memory/store.js';
 import type { OrionOmegaConfig } from '../config/types.js';
+import * as memoryTelemetry from '../memory/memory-telemetry.js';
 import type { MemoryEvent } from './main-agent.js';
 import { createLogger } from '../logging/logger.js';
 
@@ -24,77 +30,48 @@ const log = createLogger('memory-bridge');
 
 type MemoryOp = MemoryEvent['op'];
 
-/** Memory subsystem configuration. */
+/**
+ * Memory subsystem configuration.
+ *
+ * `memory` is the `memory:` block from config.yaml. Absent = memory disabled
+ * for this process (no store is constructed and every operation no-ops).
+ */
 export interface MemoryConfig {
-  hindsight?: OrionOmegaConfig['hindsight'];
+  memory?: OrionOmegaConfig['memory'];
   model: string;
   cheapModel?: string;
 }
 
-/** Thresholds and seed content for self-knowledge bootstrap. */
-export interface MemoryBootstrapConfig {
-  apiEndpoint: string;
-  deduplicationThreshold: number;
-  relevanceFloor: number;
-  qualityThreshold: number;
-  budgetTiers: { low: number; mid: number; high: number };
-  architecturalDecisions: string[];
-}
+/** Token budget for the `core` scope during a planning recall. */
+const PLANNING_CORE_TOKENS = 2048;
+/** Token budget for the active project scope during a planning recall. */
+const PLANNING_PROJECT_TOKENS = 3072;
+/** Token budget for the active project scope during an architect recall. */
+const ARCHITECT_PROJECT_TOKENS = 3072;
+/** Token budget for the `core` scope during an architect recall. */
+const ARCHITECT_CORE_TOKENS = 1024;
 
-const DEFAULT_BOOTSTRAP: Omit<MemoryBootstrapConfig, 'apiEndpoint'> = {
-  deduplicationThreshold: 0.85,
-  relevanceFloor: 0.15,
-  qualityThreshold: 0.3,
-  budgetTiers: { low: 1024, mid: 4096, high: 8192 },
-  architecturalDecisions: [
-    'Hindsight stores memories in isolated banks with namespace separation',
-    'Mental models are pre-synthesized context documents refreshed on retention triggers',
-    'Session anchors capture continuity state at session boundaries',
-    'Memory quality scoring filters low-signal content before storage',
-    'Causal chain retrieval formats decision → action → outcome narratives in recall',
-  ],
-};
+/** The always-present cross-project scope. */
+const CORE_SCOPE = 'core';
 
 /**
- * Manages the full Hindsight memory lifecycle for the main agent.
+ * Manages the memory lifecycle for the main agent.
  *
- * Encapsulates 7 memory components (HindsightClient, BankManager, SessionBootstrap,
- * MentalModelManager, RetentionEngine, SessionSummarizer, CompactionFlush) behind
- * a clean interface. The main agent calls init(), flush(), summarize() — no need
- * to know about individual memory components.
+ * Encapsulates the store, the retention engine, and the session summariser
+ * behind a small interface so the agent need not know which of them a given
+ * operation touches.
  */
 export class MemoryBridge {
-  private hindsightClient: HindsightClient | null = null;
-  private bankManager: BankManager | null = null;
-  private sessionBootstrap: SessionBootstrap | null = null;
-  private mentalModelManager: MentalModelManager | null = null;
+  private memoryStore: RedisMemoryStore | null = null;
   private retentionEngine: RetentionEngine | null = null;
   private sessionSummarizer: SessionSummarizer | null = null;
-  private compactionFlush: CompactionFlush | null = null;
-  private selfKnowledge: SelfKnowledge | null = null;
-  private lessonsRollup: LessonsRollup | null = null;
 
-  /**
-   * Interval between cross-project lesson rollups. 6h keeps the core bank
-   * fresh without hammering the Hindsight server. Override via the
-   * `ORIONOMEGA_LESSONS_ROLLUP_MS` env var (min 60s, enforced by LessonsRollup).
-   */
-  private static readonly LESSONS_ROLLUP_INTERVAL_MS = 6 * 60 * 60 * 1000;
-
-  private activeProjectBank: string | null = null;
+  private activeProjectScope: string | null = null;
   private initialised = false;
   /** H4: Promise mutex — prevents concurrent init() calls from racing. */
-  private _initPromise: Promise<string | undefined> | null = null;
+  private _initPromise: Promise<void> | null = null;
 
-  private reflectCache = new Map<string, { result: string; ts: number }>();
-  private static readonly REFLECT_CACHE_TTL_MS = 120_000; // 2 minutes
-
-  /** L1: Maximum cross-project banks queried during planning recall. */
-  private static readonly MAX_CROSS_PROJECT_BANKS = 5;
-  /** L1: Maximum tokens consumed from cross-project federation during planning recall. */
-  private static readonly MAX_CROSS_PROJECT_TOKENS = 4096;
-
-  onMemoryEvent?: (op: MemoryOp, detail: string, bank?: string, meta?: Record<string, unknown>) => void;
+  onMemoryEvent?: (op: MemoryOp, detail: string, scope?: string, meta?: Record<string, unknown>) => void;
 
   constructor(
     private readonly config: MemoryConfig,
@@ -105,26 +82,14 @@ export class MemoryBridge {
   /** Whether the memory subsystem is ready. */
   get isInitialised(): boolean { return this.initialised; }
 
-  /** The currently active project bank (if any). */
-  get projectBank(): string | null { return this.activeProjectBank; }
+  /** The currently active project scope (if any). */
+  get projectScope(): string | null { return this.activeProjectScope; }
 
-  /** The HindsightClient (if initialised). */
-  get client(): HindsightClient | null { return this.hindsightClient; }
+  /** The backend-neutral {@link MemoryStore} (if initialised). */
+  get store(): MemoryStore | null { return this.memoryStore; }
 
   /** The RetentionEngine (if initialised). */
   get retention(): RetentionEngine | null { return this.retentionEngine; }
-
-  /** The BankManager (if initialised). */
-  get banks(): BankManager | null { return this.bankManager; }
-
-  /**
-   * Snapshot of Hindsight client health (circuit state, last error, etc.)
-   * for the gateway's `/api/health` endpoint. Returns `null` when memory
-   * is not configured for this session.
-   */
-  getHindsightStatus() {
-    return this.hindsightClient?.getStatus() ?? null;
-  }
 
   /**
    * Snapshot of session-summariser health for `/api/health`. Returns
@@ -135,14 +100,11 @@ export class MemoryBridge {
   }
 
   /**
-   * Initialise the Hindsight memory subsystem.
-   *
-   * Creates all memory components, bootstraps context, and starts retention.
-   * Returns the bootstrap context block (if any) for injection into the system prompt.
+   * Initialise the memory subsystem: construct the store and start retention.
    * Safe to call multiple times — concurrent calls await the same promise (H4 mutex).
    */
-  init(): Promise<string | undefined> {
-    if (this.initialised) return Promise.resolve(undefined);
+  init(): Promise<void> {
+    if (this.initialised) return Promise.resolve();
     // H4: Return the in-flight promise if init is already running, preventing
     // concurrent callers from racing through setup and double-initialising.
     if (this._initPromise) return this._initPromise;
@@ -151,351 +113,210 @@ export class MemoryBridge {
   }
 
   /** Internal init implementation — called exactly once via the H4 promise mutex. */
-  private async _doInit(): Promise<string | undefined> {
-    const hsCfg = this.config.hindsight;
-    if (!hsCfg?.url) {
-      log.info('Hindsight not configured — memory features disabled');
-      return undefined;
+  private async _doInit(): Promise<void> {
+    const memCfg = this.config.memory;
+    if (!memCfg) {
+      log.info('Memory not configured — memory features disabled');
+      return;
     }
 
     try {
-      this.hindsightClient = new HindsightClient(hsCfg.url, 'default', hsCfg.apiKey);
-      this.bankManager = new BankManager(this.hindsightClient);
-      this.sessionBootstrap = new SessionBootstrap(this.hindsightClient);
-      this.mentalModelManager = new MentalModelManager(this.hindsightClient);
+      // `gc: true` starts the background collector. Without it nothing ever
+      // calls collectGarbage() and expired records accumulate behind the
+      // read-time TTL filter forever.
+      this.memoryStore = new RedisMemoryStore({ redis: memCfg.redis, gc: true });
 
       this.retentionEngine = new RetentionEngine(
-        this.hindsightClient,
+        this.memoryStore,
         this.eventBus,
         {
-          retainOnComplete: hsCfg.retainOnComplete,
-          retainOnError: hsCfg.retainOnError,
-          defaultBank: hsCfg.defaultBank,
+          retainOnComplete: memCfg.retainOnComplete,
+          retainOnError: memCfg.retainOnError,
+          // Event-driven retention with no active project scope lands in core.
+          defaultBank: CORE_SCOPE,
+          deduplicationThreshold: memCfg.deduplicationThreshold,
         },
       );
 
       this.sessionSummarizer = new SessionSummarizer(
-        this.hindsightClient,
+        this.memoryStore,
         this.anthropic,
         this.config.cheapModel || this.config.model,
       );
 
-      this.compactionFlush = new CompactionFlush(
-        this.hindsightClient,
-        this.anthropic,
-        this.config.cheapModel || this.config.model,
-      );
-
-      // Ensure the persistent core bank exists
-      try {
-        const coreExists = await this.hindsightClient.bankExists('core');
-        if (!coreExists) {
-          await this.hindsightClient.createBank('core', {
-            name: 'OrionOmega Core — cross-session persistent memory',
-            retain_mission:
-              `Extract user preferences, communication style, technical expertise level, ` +
-              `cross-project decisions, lessons learned, infrastructure knowledge, and ` +
-              `system configuration details. Focus on information that persists across sessions.`,
-            observations_mission:
-              `Synthesize observations about the user's working patterns, preferred ` +
-              `technologies, recurring decisions, and cross-project architectural themes.`,
-            reflect_mission:
-              `You are OrionOmega's persistent memory. Answer questions about user preferences, ` +
-              `past decisions, project history, and system knowledge using stored facts and observations.`,
-            enable_observations: true,
-            // Disposition: core bank is fact-focused — higher skepticism, moderate literalism, lower empathy
-            skepticism: 4,
-            literalism: 3,
-            empathy: 2,
-          });
-          log.info('Created persistent core bank');
-        }
-      } catch (err) {
-        log.warn('Failed to ensure core bank exists', {
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-
-      // Bootstrap context
-      const ctx = await this.sessionBootstrap.bootstrap(this.activeProjectBank ?? undefined);
-      const contextBlock = this.sessionBootstrap.buildContextBlock(ctx);
-
-      this.selfKnowledge = new SelfKnowledge(this.hindsightClient);
-
-      // F7: Seed mental models on first run. The refresh callback only updates
-      // existing models — if they were never created, every bootstrap attempt
-      // returns 404. Seed them once so subsequent refreshes work.
-      // Fire-and-forget: any failure here is non-fatal. The capability probe
-      // inside the seeder already handles "endpoint not supported" with a
-      // single info log, so this catch only fires on truly unexpected errors
-      // and is intentionally logged at debug to avoid noise.
-      this.seedMentalModelsIfNeeded().catch((err) => {
-        log.debug('Mental model seeding failed', {
-          endpoint: 'seedMentalModelsIfNeeded',
-          error: err instanceof Error ? err.message : String(err),
-        });
-      });
-
-      // Always register callbacks using optional chaining so they work even when
-      // onMemoryEvent is set after init() (e.g. in main-agent._init()).
-      this.retentionEngine.onMemoryEvent = (op, detail, bank, meta) => {
-        this.onMemoryEvent?.(op as MemoryOp, detail, bank, meta);
-      };
-
-      this.hindsightClient.onIO = (event) => {
-        this.onMemoryEvent?.(event.op as MemoryOp, event.detail, event.bank, event.meta);
-      };
-
-      // Trigger mental model refresh after every successful retention.
-      // Skip entirely when the capability probe disabled mental models for
-      // the session — otherwise we'd issue a 404 on every successful retain.
-      this.retentionEngine.onAfterRetain = (bankId: string, context: string) => {
-        if (this.hindsightClient?.mentalModelsAvailable === false) return;
-        this.mentalModelManager?.onRetain(bankId, context).catch((err) => {
-          log.debug('Mental model refresh failed after retention', {
-            bankId,
-            context,
-            endpoint: 'mentalModelManager.onRetain',
-            error: err instanceof Error ? err.message : String(err),
-          });
-        });
+      // Registered with optional chaining so it works even when onMemoryEvent
+      // is assigned after init() (e.g. in main-agent._init()).
+      this.retentionEngine.onMemoryEvent = (op, detail, scope, meta) => {
+        this.onMemoryEvent?.(op as MemoryOp, detail, scope, meta);
       };
 
       this.retentionEngine.start();
 
-      // Cross-project lesson synthesis: periodically promote high-signal lessons
-      // from project-* banks up into the shared `core` bank. Guarded with a
-      // typeof check so test doubles of @orionomega/hindsight that omit
-      // LessonsRollup don't blow up init.
-      if (typeof LessonsRollup === 'function') {
-        try {
-          const envMs = Number(process.env.ORIONOMEGA_LESSONS_ROLLUP_MS);
-          const intervalMs = Number.isFinite(envMs) && envMs > 0
-            ? envMs
-            : MemoryBridge.LESSONS_ROLLUP_INTERVAL_MS;
-          this.lessonsRollup = new LessonsRollup(this.hindsightClient);
-          this.lessonsRollup.start(intervalMs);
-        } catch (err) {
-          log.debug('Lessons rollup init failed', {
-            error: err instanceof Error ? err.message : String(err),
-          });
-        }
-      }
-
       this.initialised = true;
-      log.info('Memory subsystem initialised', { url: hsCfg.url });
-      this.onMemoryEvent?.('bootstrap', 'Memory subsystem initialised', undefined, { url: hsCfg.url });
-
-      this.selfKnowledge.bootstrap({
-        apiEndpoint: hsCfg.url,
-        ...DEFAULT_BOOTSTRAP,
-      }).catch((err) => {
-        log.warn('Self-knowledge bootstrap failed', {
-          error: err instanceof Error ? err.message : String(err),
-        });
-      });
-
-      return contextBlock || undefined;
+      log.info('Memory subsystem initialised');
+      this.onMemoryEvent?.('bootstrap', 'Memory subsystem initialised');
     } catch (err) {
       log.warn('Memory subsystem init failed — continuing without memory', {
         error: err instanceof Error ? err.message : String(err),
       });
-      return undefined;
     }
   }
 
   /**
-   * Ensure a project bank exists for a task.
-   * Sets the active project bank on success.
+   * Derive and activate the project scope for a task.
+   *
+   * There is nothing to create: a scope exists once a record is written to it.
+   * The slug is deterministic, so a follow-up task rejoins the scope its
+   * predecessor wrote to.
    */
-  async ensureProjectBank(task: string): Promise<string | null> {
-    if (!this.bankManager) return null;
-    try {
-      this.activeProjectBank = await this.bankManager.ensureProjectBank(task);
-      this.onMemoryEvent?.('bootstrap', `Project bank ready: ${this.activeProjectBank}`, this.activeProjectBank ?? undefined);
-      return this.activeProjectBank;
-    } catch (err) {
-      log.warn('Failed to ensure project bank', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-      return null;
-    }
+  ensureProjectScope(task: string): string {
+    this.activeProjectScope = projectScopeFor(task);
+    this.onMemoryEvent?.('bootstrap', `Project scope: ${this.activeProjectScope}`, this.activeProjectScope);
+    return this.activeProjectScope;
   }
 
   /**
-   * Recall context from Hindsight for a planning operation.
-   * Queries the core bank and the active project bank.
+   * Recall context for a planning operation from `core` plus the active
+   * project scope.
    *
    * F12: Emits recall metrics for observability.
    */
   async recallForPlanning(task: string): Promise<string[]> {
-    if (!this.hindsightClient) return [];
+    const store = this.memoryStore;
+    if (!store) return [];
 
     if (isExternalAction(task)) {
-      log.debug('Skipping Hindsight recall for external action task');
+      log.debug('Skipping recall for external action task');
       return [];
+    }
+
+    const targets: Array<{ scope: string; maxTokens: number }> = [
+      { scope: CORE_SCOPE, maxTokens: PLANNING_CORE_TOKENS },
+    ];
+    if (this.activeProjectScope) {
+      targets.push({ scope: this.activeProjectScope, maxTokens: PLANNING_PROJECT_TOKENS });
     }
 
     const memories: string[] = [];
     const recallStart = Date.now();
-    let totalResults = 0;
+    let totalRecords = 0;
     let totalTokensUsed = 0;
 
-    const coreRecallStart = Date.now();
-    try {
-      const result = await this.hindsightClient.recall('core', task, {
-        maxTokens: 2048,
-        budget: 'high',
-        types: ['world', 'experience', 'observation'],
-        queryTimestamp: new Date().toISOString(),
-      });
-      memoryTelemetry.recordRecall('core', result.results.length, result.results.length, Date.now() - coreRecallStart, result.tokens_used);
-      totalResults += result.results.length;
-      totalTokensUsed += result.tokens_used;
-      if (result.results.length) {
-        memories.push(result.results.map((m) => m.content).join('\n\n'));
-      }
-    } catch (err) {
-      // Recall is best-effort — failures are surfaced via the circuit
-      // breaker and /api/health, so per-call noise is unhelpful here.
-      log.debug('Core bank recall failed for planning', {
-        endpoint: 'POST /v1/<ns>/banks/core/memories/recall',
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-
-    if (this.activeProjectBank) {
-      const projRecallStart = Date.now();
+    for (const { scope, maxTokens } of targets) {
+      const start = Date.now();
       try {
-        const result = await this.hindsightClient.recall(this.activeProjectBank, task, {
-          maxTokens: 3072,
-          budget: 'high',
-          types: ['world', 'experience', 'observation'],
-          queryTimestamp: new Date().toISOString(),
-        });
-        memoryTelemetry.recordRecall(this.activeProjectBank, result.results.length, result.results.length, Date.now() - projRecallStart, result.tokens_used);
-        totalResults += result.results.length;
-        totalTokensUsed += result.tokens_used;
-        if (result.results.length) {
-          memories.push(result.results.map((m) => m.content).join('\n\n'));
+        const result = await store.recall(scope, task, { maxTokens });
+        memoryTelemetry.recordRecall(
+          scope,
+          result.records.length,
+          result.records.length,
+          Date.now() - start,
+          result.tokensUsed,
+        );
+        totalRecords += result.records.length;
+        totalTokensUsed += result.tokensUsed;
+        if (result.records.length) {
+          memories.push(result.records.map((r) => r.content).join('\n\n'));
         }
       } catch (err) {
-        log.debug('Project bank recall failed for planning', {
-          bank: this.activeProjectBank,
-          endpoint: `POST /v1/<ns>/banks/${this.activeProjectBank}/memories/recall`,
+        // Recall is best-effort — a failure means "no prior context", and the
+        // store surfaces its own health via /api/health, so per-call noise is
+        // unhelpful here.
+        log.debug('Planning recall failed', {
+          scope,
           error: err instanceof Error ? err.message : String(err),
         });
       }
     }
 
-    // Cross-project federation: query other project banks for cross-project learnings.
-    // L1: Cap at MAX_CROSS_PROJECT_BANKS banks and MAX_CROSS_PROJECT_TOKENS total tokens.
-    try {
-      const allBanks = await this.hindsightClient.listBanksCached();
-      let crossBanksQueried = 0;
-      let crossTokensUsed = 0;
-      for (const bank of allBanks) {
-        if (crossBanksQueried >= MemoryBridge.MAX_CROSS_PROJECT_BANKS) break;
-        if (crossTokensUsed >= MemoryBridge.MAX_CROSS_PROJECT_TOKENS) break;
-        if (bank.bank_id === 'core' || bank.bank_id === this.activeProjectBank) continue;
-        if (!bank.bank_id.startsWith('project-')) continue;
-        if ((bank.memory_count ?? 0) === 0) continue;
-        try {
-          const result = await this.hindsightClient.recall(bank.bank_id, task, {
-            maxTokens: 512,
-            budget: 'low',
-            queryTimestamp: new Date().toISOString(),
-          });
-          totalResults += result.results.length;
-          totalTokensUsed += result.tokens_used;
-          crossTokensUsed += result.tokens_used;
-          crossBanksQueried++;
-          if (result.results.length > 0) {
-            const prefixed = result.results.map((m) => `[Cross-project: ${bank.bank_id}] ${m.content}`);
-            memories.push(prefixed.join('\n\n'));
-          }
-        } catch {
-          // Per-bank federation failures are non-fatal; skip silently
-        }
-      }
-    } catch {
-      // Federation list failure is non-fatal
-    }
-
-    // F12: Emit recall metrics for observability
     const recallDurationMs = Date.now() - recallStart;
-    this.onMemoryEvent?.('recall', `Planning recall: ${totalResults} memories in ${recallDurationMs}ms`, undefined, {
-      totalResults,
+    this.onMemoryEvent?.('recall', `Planning recall: ${totalRecords} records in ${recallDurationMs}ms`, undefined, {
+      totalResults: totalRecords,
       totalTokensUsed,
       durationMs: recallDurationMs,
-      banksQueried: this.activeProjectBank ? ['core', this.activeProjectBank] : ['core'],
+      scopesQueried: targets.map((t) => t.scope),
     });
 
     return memories;
   }
 
   /**
-   * F12: Verify consistency between index and storage.
-   * Checks that the core bank exists and is accessible, and that
-   * the banks cache is not serving stale data.
+   * Coding-mode recall: prior architecture decisions, design notes, and
+   * previous coding-run records relevant to the current task, from the active
+   * project scope plus `core`.
+   *
+   * Always returns an array of record contents (possibly empty). Never throws
+   * — failures are logged and treated as "no prior decisions found" so the
+   * architect step can continue.
    */
-  async verifyConsistency(): Promise<{ healthy: boolean; issues: string[] }> {
-    const issues: string[] = [];
+  async recallForArchitect(task: string): Promise<string[]> {
+    const store = this.memoryStore;
+    if (!store) return [];
+    if (isExternalAction(task)) return [];
 
-    if (!this.hindsightClient) {
-      return { healthy: false, issues: ['Hindsight client not initialised'] };
+    // Bias the query toward design/architecture context: the store matches on
+    // content, so we phrase the query with the memory categories we expect to
+    // find (architecture, decision, plan, requirement, verdict).
+    const archQuery =
+      `architecture decisions, design notes, prior coding plans, requirements, ` +
+      `goal verdicts, retain context for: ${task}`;
+
+    const targets: Array<{ scope: string; maxTokens: number }> = [];
+    if (this.activeProjectScope) {
+      targets.push({ scope: this.activeProjectScope, maxTokens: ARCHITECT_PROJECT_TOKENS });
     }
+    // Always also query core for cross-project architectural patterns.
+    targets.push({ scope: CORE_SCOPE, maxTokens: ARCHITECT_CORE_TOKENS });
 
-    // Check health
-    try {
-      const health = await this.hindsightClient.health();
-      if (health.status !== 'ok') {
-        issues.push(`Hindsight health check returned: ${health.status}`);
-      }
-    } catch (err) {
-      issues.push(`Hindsight health check failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
+    const start = Date.now();
+    const memories: string[] = [];
+    let totalRecords = 0;
 
-    // Verify core bank exists
-    try {
-      const coreExists = await this.hindsightClient.bankExists('core');
-      if (!coreExists) {
-        issues.push('Core bank does not exist — index/storage mismatch');
-      }
-    } catch (err) {
-      issues.push(`Core bank check failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
-
-    // Verify active project bank if set
-    if (this.activeProjectBank) {
+    for (const { scope, maxTokens } of targets) {
       try {
-        const projExists = await this.hindsightClient.bankExists(this.activeProjectBank);
-        if (!projExists) {
-          issues.push(`Active project bank "${this.activeProjectBank}" does not exist`);
-          // Invalidate cache to prevent stale references
-          this.hindsightClient.invalidateBanksCache();
+        const result = await store.recall(scope, archQuery, { maxTokens });
+        totalRecords += result.records.length;
+        if (result.records.length) {
+          memories.push(...result.records.map((r) => r.content));
         }
       } catch (err) {
-        issues.push(`Project bank check failed: ${err instanceof Error ? err.message : String(err)}`);
+        log.debug('Architect recall failed', {
+          scope,
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
     }
 
-    // Check core bank stats for pending consolidation backlog
+    const durationMs = Date.now() - start;
+    this.onMemoryEvent?.(
+      'recall',
+      `Architect recall: ${totalRecords} prior decisions in ${durationMs}ms`,
+      this.activeProjectScope ?? CORE_SCOPE,
+      { totalResults: totalRecords, durationMs, queryKind: 'architect' },
+    );
+
+    return memories;
+  }
+
+  /**
+   * F12: Liveness check on the memory backend, surfaced to operators.
+   */
+  async verifyConsistency(): Promise<{ healthy: boolean; issues: string[] }> {
+    const store = this.memoryStore;
+    if (!store) {
+      return { healthy: false, issues: ['Memory store not initialised'] };
+    }
+
+    const issues: string[] = [];
     try {
-      const stats = await this.hindsightClient.getBankStats('core');
-      if (stats.pending_consolidation > 100) {
-        issues.push(`Core bank has ${stats.pending_consolidation} pending consolidations`);
+      const health = await store.health();
+      if (!health.healthy) {
+        issues.push('Memory store reported unhealthy');
       }
     } catch (err) {
-      // getBankStats may not be available on all server versions — non-fatal
-      log.debug('Core bank stats check failed', {
-        endpoint: 'GET /v1/<ns>/banks/core/stats',
-        error: err instanceof Error ? err.message : String(err),
-      });
+      // health() is contractually non-throwing; a throw here is itself the finding.
+      issues.push(`Memory store health check threw: ${err instanceof Error ? err.message : String(err)}`);
     }
-
-    // Force cache refresh to ensure consistency
-    this.hindsightClient.invalidateBanksCache();
 
     const healthy = issues.length === 0;
     if (!healthy) {
@@ -506,23 +327,7 @@ export class MemoryBridge {
   }
 
   /**
-   * Flush conversation context to Hindsight before compaction.
-   */
-  async flush(history: Array<{ role: string; content: string | import('../anthropic/client.js').ContentBlock[] }>, sessionId?: string): Promise<void> {
-    if (!this.compactionFlush) return;
-
-    const bankId = this.activeProjectBank ?? this.config.hindsight?.defaultBank ?? 'core';
-    try {
-      const result = await this.compactionFlush.flush(history, bankId, sessionId);
-      log.info('Memory flushed before compaction', { itemsRetained: result.itemsRetained });
-      this.onMemoryEvent?.('flush', `Flushed ${result.itemsRetained} items to memory`, bankId, { itemsRetained: result.itemsRetained, ...(sessionId ? { sessionId } : {}) });
-    } catch (err) {
-      log.warn('Memory flush failed', { error: err instanceof Error ? err.message : String(err) });
-    }
-  }
-
-  /**
-   * Summarize the current session and retain to Hindsight.
+   * Summarize the current session and retain it.
    *
    * @param sessionId - Originating gateway session id. When set, the
    *   resulting `session_summary` (and `project_update` mirror) are
@@ -536,225 +341,21 @@ export class MemoryBridge {
     if (!this.sessionSummarizer) return;
 
     try {
-      await this.sessionSummarizer.summarize(history, this.activeProjectBank ?? undefined, sessionId);
+      await this.sessionSummarizer.summarize(history, this.activeProjectScope ?? undefined, sessionId);
       log.info('Session summarised', { sessionId });
-      this.onMemoryEvent?.('summary', 'Session summary retained', this.activeProjectBank ?? undefined, sessionId ? { sessionId } : undefined);
+      this.onMemoryEvent?.('summary', 'Session summary retained', this.activeProjectScope ?? undefined, sessionId ? { sessionId } : undefined);
     } catch (err) {
       log.warn('Session summary failed', { error: err instanceof Error ? err.message : String(err) });
     }
   }
 
   /**
-   * Coding-Mode-specific recall: pulls prior architecture decisions, design
-   * notes, and previous coding-run records relevant to the current task from
-   * the active project bank. Falls back to a regular project-bank recall when
-   * the project bank is missing.
-   *
-   * Always returns an array of memory content strings (possibly empty). Never
-   * throws — recall failures are logged and treated as "no prior decisions
-   * found" so the architect step can continue.
-   */
-  async recallForArchitect(task: string): Promise<string[]> {
-    if (!this.hindsightClient) return [];
-    if (isExternalAction(task)) return [];
-
-    // Bias the query toward design/architecture context. The Hindsight server
-    // matches semantically, so we phrase the query with the kinds of memory
-    // categories we expect to find (architecture, decision, plan, requirement,
-    // verdict).
-    const archQuery =
-      `architecture decisions, design notes, prior coding plans, requirements, ` +
-      `goal verdicts, retain context for: ${task}`;
-
-    const start = Date.now();
-    const memories: string[] = [];
-    let totalResults = 0;
-
-    if (this.activeProjectBank) {
-      try {
-        const result = await this.hindsightClient.recall(this.activeProjectBank, archQuery, {
-          maxTokens: 3072,
-          types: ['world', 'experience', 'observation'],
-          queryTimestamp: new Date().toISOString(),
-        });
-        totalResults += result.results.length;
-        if (result.results.length) {
-          memories.push(...result.results.map((m) => m.content));
-        }
-      } catch (err) {
-        log.debug('Architect recall: project bank failed', {
-          bank: this.activeProjectBank,
-          endpoint: `POST /v1/<ns>/banks/${this.activeProjectBank}/memories/recall`,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-    }
-
-    // Always also query core for cross-project architectural patterns.
-    try {
-      const result = await this.hindsightClient.recall('core', archQuery, {
-        maxTokens: 1024,
-        types: ['world', 'experience', 'observation'],
-        queryTimestamp: new Date().toISOString(),
-      });
-      totalResults += result.results.length;
-      if (result.results.length) {
-        memories.push(...result.results.map((m) => m.content));
-      }
-    } catch (err) {
-      log.debug('Architect recall: core bank failed', {
-        endpoint: 'POST /v1/<ns>/banks/core/memories/recall',
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-
-    const durationMs = Date.now() - start;
-    this.onMemoryEvent?.(
-      'recall',
-      `Architect recall: ${totalResults} prior decisions in ${durationMs}ms`,
-      this.activeProjectBank ?? 'core',
-      { totalResults, durationMs, queryKind: 'architect' },
-    );
-
-    return memories;
-  }
-
-  /**
-   * Use Hindsight's reflect API for complex decision-making queries.
-   * Reflect performs autonomous multi-step reasoning over stored memories,
-   * facts, and observations — significantly more powerful than plain recall.
-   *
-   * Results are cached for REFLECT_CACHE_TTL_MS (2 minutes) per bank+question pair
-   * to avoid redundant LLM calls within a session.
-   *
-   * Falls back to null on any error (reflect endpoint not available, etc.).
-   */
-  async reflectForDecision(
-    question: string,
-    bankId?: string,
-  ): Promise<string | null> {
-    if (!this.hindsightClient) return null;
-    if (isExternalAction(question)) return null;
-
-    const target = bankId ?? this.activeProjectBank ?? 'core';
-    const cacheKey = `${target}:${question}`;
-
-    const cached = this.reflectCache.get(cacheKey);
-    if (cached && Date.now() - cached.ts < MemoryBridge.REFLECT_CACHE_TTL_MS) {
-      return cached.result;
-    }
-
-    const start = Date.now();
-
-    try {
-      const result = await this.hindsightClient.reflect(target, question, {
-        budget: 'high',
-        maxTokens: 4096,
-        include: { facts: {} },
-      });
-
-      const durationMs = Date.now() - start;
-      this.onMemoryEvent?.(
-        'recall',
-        `Reflect: ${result.answer.length} chars in ${durationMs}ms`,
-        target,
-        {
-          mode: 'reflect',
-          durationMs,
-          answerLength: result.answer.length,
-          query: question.slice(0, 200),
-        },
-      );
-
-      const answer = result.answer || null;
-      if (answer) {
-        this.reflectCache.set(cacheKey, { result: answer, ts: Date.now() });
-      }
-      return answer;
-    } catch (err) {
-      log.debug('Reflect failed', {
-        bank: target,
-        error: err instanceof Error ? err.message : String(err),
-      });
-      return null;
-    }
-  }
-
-  /**
-   * Set up default directives for a bank if they don't already exist.
-   * Directives are hard rules injected into all prompts for a bank, used to
-   * encode project conventions, style guides, and security rules.
-   *
-   * Fully error-handled — failures are logged at debug and never throw.
-   */
-  async ensureDirectives(
-    bankId: string,
-    directives: Array<{ name: string; content: string; priority?: number }>,
-  ): Promise<void> {
-    if (!this.hindsightClient) return;
-    try {
-      const existing = await this.hindsightClient.listDirectives(bankId);
-      const existingNames = new Set(existing.map((d) => d.name));
-
-      for (const directive of directives) {
-        if (!existingNames.has(directive.name)) {
-          await this.hindsightClient.createDirective(bankId, directive);
-          log.debug('Created directive', { bankId, name: directive.name });
-        }
-      }
-    } catch (err) {
-      log.debug('Directive setup failed', {
-        bankId,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-
-  /**
-   * Delete conversation banks older than maxAgeDays.
-   * Fully error-handled — per-bank failures are logged at warn and never throw.
-   */
-  async cleanupOldBanks(maxAgeDays = 30): Promise<void> {
-    if (!this.hindsightClient) return;
-    try {
-      const banks = await this.hindsightClient.listBanks();
-      const cutoff = new Date();
-      cutoff.setDate(cutoff.getDate() - maxAgeDays);
-
-      for (const bank of banks) {
-        if (bank.bank_id.startsWith('conversation-') && bank.updated_at) {
-          if (new Date(bank.updated_at) < cutoff) {
-            log.info('Deleting old conversation bank', {
-              bankId: bank.bank_id,
-              updatedAt: bank.updated_at,
-              maxAgeDays,
-            });
-            try {
-              await this.hindsightClient.deleteBank(bank.bank_id);
-              log.info('Deleted old conversation bank', { bankId: bank.bank_id });
-            } catch (err) {
-              log.warn('Failed to delete old conversation bank', {
-                bankId: bank.bank_id,
-                error: err instanceof Error ? err.message : String(err),
-              });
-            }
-          }
-        }
-      }
-    } catch (err) {
-      log.debug('Bank cleanup scan failed', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-
-  /**
    * Persist the outcome of a coding run — task, requirements list, and
-   * per-requirement verdicts — to the active project bank so subsequent
+   * per-requirement verdicts — to the active project scope so subsequent
    * architect calls can recall it. No-op when memory is not initialised.
    *
-   * The payload is stored as a single memory item with context
-   * `coding-run` so downstream recall can filter / weight it.
+   * The payload is stored as a single record with context `coding-run` so
+   * downstream recall can filter / weight it.
    */
   async retainCodingRun(payload: {
     task: string;
@@ -763,7 +364,7 @@ export class MemoryBridge {
     decision: string;
     priorDecisionsCount?: number;
     /** Originating gateway/conversation session id; tagged onto the
-     * stored memory as `session:<id>` so deleteSession purges per-session
+     * stored record as `session:<id>` so deleteSession purges per-session
      * data correctly and recall can filter by source session. */
     sessionId?: string;
     /**
@@ -784,11 +385,12 @@ export class MemoryBridge {
       budgetEstimateUsd?: number;
     };
   }): Promise<void> {
-    if (!this.hindsightClient) return;
-    const bankId = this.activeProjectBank ?? this.config.hindsight?.defaultBank ?? 'core';
+    const store = this.memoryStore;
+    if (!store) return;
+    const scope = this.activeProjectScope ?? CORE_SCOPE;
 
     // Format as a markdown-friendly block so future recalls show usefully
-    // when concatenated alongside other memories.
+    // when concatenated alongside other records.
     const lines: string[] = [];
     lines.push('## Coding-mode run');
     lines.push(`Task: ${payload.task.slice(0, 800)}`);
@@ -861,17 +463,17 @@ export class MemoryBridge {
 
     try {
       const sessionTags = payload.sessionId ? [`session:${payload.sessionId}`] : undefined;
-      await this.hindsightClient.retain(bankId, [{
+      await store.retain(scope, [{
         content: lines.join('\n'),
         context: 'coding-run',
         timestamp: new Date().toISOString(),
-        document_id: `coding-run-${Date.now()}`,
+        documentId: `coding-run-${Date.now()}`,
         ...(sessionTags ? { tags: sessionTags } : {}),
       }]);
       this.onMemoryEvent?.(
         'retain',
         `Persisted coding run (${payload.requirements.length} requirement(s), ${payload.verdicts.length} verdict(s))`,
-        bankId,
+        scope,
         {
           requirementsCount: payload.requirements.length,
           verdictsCount: payload.verdicts.length,
@@ -881,78 +483,28 @@ export class MemoryBridge {
       );
     } catch (err) {
       log.warn('Failed to retain coding run', {
-        bank: bankId,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-
-  async storeSessionAnchor(anchor: SessionAnchor): Promise<void> {
-    if (!this.sessionBootstrap) return;
-    try {
-      await this.sessionBootstrap.storeSessionAnchor(anchor);
-      this.onMemoryEvent?.('session_anchor', 'Session anchor stored');
-    } catch (err) {
-      log.warn('Failed to store session anchor', {
+        scope,
         error: err instanceof Error ? err.message : String(err),
       });
     }
   }
 
   /**
-   * F7: Seed mental models if they don't exist yet.
+   * Release the store's connection and background GC loop.
    *
-   * Capability probe: call the list endpoint (`GET .../mental-models`). A 200
-   * response — even an empty list — confirms the server supports mental-model
-   * endpoints. Only a 404 on the list endpoint means the feature is absent.
-   *
-   * The previous probe tried GET-then-refresh on an individual model, which
-   * returned 404 both when a model hadn't been created yet AND when the
-   * endpoint didn't exist — making them indistinguishable. The list endpoint
-   * is unambiguous: 200 = supported, 404 = not supported.
-   *
-   * If the probe succeeds, delegates seeding to
-   * `MentalModelManager.seedSystemModels()`, which calls `createMentalModel`
-   * for new models and `refreshMentalModel` for models that exist but are
-   * empty.
+   * Stops retention first so no write is issued against a closing client.
    */
-  private async seedMentalModelsIfNeeded(): Promise<void> {
-    if (!this.hindsightClient || !this.mentalModelManager) return;
-
-    // Capability probe: list mental models on the core bank.
-    // 200 (empty or not) → mental-model endpoints exist.
-    // 404 → server doesn't implement the feature → disable and bail.
+  async shutdown(): Promise<void> {
+    this.retentionEngine?.stop();
+    const store = this.memoryStore;
+    this.memoryStore = null;
+    this.initialised = false;
+    this._initPromise = null;
+    if (!store) return;
     try {
-      await this.hindsightClient.listMentalModels('core');
-      this.hindsightClient.setMentalModelsAvailable(true);
+      await store.close();
     } catch (err) {
-      const status = (err as { statusCode?: number })?.statusCode ?? 0;
-      this.hindsightClient.setMentalModelsAvailable(false);
-      if (status === 404) {
-        log.info('Hindsight server does not expose mental-model endpoints — skipping seeding for this session', {
-          probedEndpoint: 'GET /v1/<ns>/banks/core/mental-models',
-        });
-        this.onMemoryEvent?.('bootstrap', 'Mental models unavailable on this Hindsight version');
-      } else {
-        log.info('Mental-model capability probe failed — skipping seeding for this session', {
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-      return;
-    }
-
-    // Probe succeeded — seed any missing system models.
-    await this.mentalModelManager.seedSystemModels();
-    this.onMemoryEvent?.('bootstrap', 'Mental model seeding complete');
-  }
-
-  async retainConfigChange(description: string): Promise<void> {
-    if (!this.selfKnowledge) return;
-    try {
-      await this.selfKnowledge.retainConfigChange(description);
-      this.onMemoryEvent?.('self_knowledge', `Config change retained: ${description}`);
-    } catch (err) {
-      log.warn('Failed to retain config change', {
+      log.debug('Memory store close failed', {
         error: err instanceof Error ? err.message : String(err),
       });
     }
