@@ -14,28 +14,29 @@ import type { RunArtifactCollectorConfig } from '../run-artifact-collector.js';
 const RUN_ID = 'test-run-12345678';
 
 interface StoredItem {
-  bankId: string;
+  scope: string;
   content: string;
   context: string;
 }
 
-class MockHindsightClient {
+/** Minimal MemoryStore stand-in — the collector only ever calls retainOne. */
+class MockMemoryStore {
   storedItems: StoredItem[] = [];
   failOnRetain = false;
 
-  async retainOne(bankId: string, content: string, context: string) {
+  async retainOne(scope: string, content: string, context: string) {
     if (this.failOnRetain) throw new Error('Simulated retain failure');
-    this.storedItems.push({ bankId, content, context });
-    return { success: true, bank_id: bankId, items_count: 1 };
+    this.storedItems.push({ scope, content, context });
+    return { ok: true, count: 1 };
   }
 }
 
 let testDir: string;
-let mock: MockHindsightClient;
+let mock: MockMemoryStore;
 
 beforeEach(() => {
   testDir = mkdtempSync(join(tmpdir(), 'run-artifact-collector-test-'));
-  mock = new MockHindsightClient();
+  mock = new MockMemoryStore();
 });
 
 afterEach(() => {
@@ -50,7 +51,7 @@ function createTestFile(relativePath: string, content: string) {
 
 function makeCollector(overrides: Partial<RunArtifactCollectorConfig> = {}) {
   return new RunArtifactCollector({
-    hindsight: mock as unknown as RunArtifactCollectorConfig['hindsight'],
+    store: mock as unknown as RunArtifactCollectorConfig['store'],
     bankId: 'test-bank',
     minContentChars: 20,
     ...overrides,
@@ -72,7 +73,7 @@ describe('RunArtifactCollector — basic collection', () => {
     expect(result.filesSkipped).toBe(0);
     expect(result.errors).toHaveLength(0);
 
-    expect(mock.storedItems.every((i) => i.bankId === 'test-bank')).toBe(true);
+    expect(mock.storedItems.every((i) => i.scope === 'test-bank')).toBe(true);
     expect(artifactsOf()).toHaveLength(3);
 
     const manifests = mock.storedItems.filter((i) => i.context === 'run_manifest');
