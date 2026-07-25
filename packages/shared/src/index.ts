@@ -4,11 +4,14 @@
  *
  * Subpath entry points:
  *   - `@orionomega/shared/logger`      — structured logger + telemetry hook
+ *   - `@orionomega/shared/similarity`  — token estimation, lexical relevance
+ *                                        scoring, dedup, and vector primitives
  *   - `@orionomega/shared/truncate`    — string truncation helper
  *   - `@orionomega/shared/ws-contract` — Zod schemas + derived types for the
  *                                        gateway↔client WebSocket protocol
  */
 
 export * from './logger.js';
+export * from './similarity.js';
 export * from './truncate.js';
 export * from './ws-contract.js';

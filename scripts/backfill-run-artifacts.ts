@@ -1,30 +1,35 @@
 #!/usr/bin/env npx tsx
 /**
  * Backfill script: stores all .md artifacts from existing completed runs
- * into Hindsight memory. Run this once after deploying the run artifact
- * collector feature to ensure all historical run data is available for recall.
+ * into memory. Run this once after deploying the run artifact collector
+ * feature to ensure all historical run data is available for recall.
+ *
+ * Memory is self-hosted Redis (`RedisMemoryStore`). Redis is expected to be
+ * already running at redis://localhost:6379 — this script does not provision
+ * it. Override with REDIS_URL.
  *
  * Usage:
- *   npx tsx scripts/backfill-run-artifacts.ts [--dry-run] [--bank BANK_ID] [--limit N]
+ *   npx tsx scripts/backfill-run-artifacts.ts [--dry-run] [--scope SCOPE_ID] [--limit N]
  *
  * Options:
  *   --dry-run    Scan and report what would be stored without actually storing
- *   --bank ID    Target bank ID (default: 'core')
+ *   --scope ID   Target memory scope (default: 'core')
  *   --limit N    Process at most N runs (default: all)
  *   --run-id ID  Process only a specific run ID
  */
 
 import { readdirSync, readFileSync, existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { HindsightClient } from '../packages/hindsight/src/index.js';
+import { RedisMemoryStore } from '../packages/core/src/memory/redis-store.js';
+import type { MemoryStore } from '../packages/core/src/memory/store.js';
 import { RunArtifactCollector } from '../packages/core/src/memory/run-artifact-collector.js';
 
 // ── Parse CLI args ────────────────────────────────────────────────────
 
 const args = process.argv.slice(2);
 const dryRun = args.includes('--dry-run');
-const bankIdx = args.indexOf('--bank');
-const bankId = bankIdx >= 0 && args[bankIdx + 1] ? args[bankIdx + 1] : 'core';
+const scopeIdx = args.indexOf('--scope');
+const scopeId = scopeIdx >= 0 && args[scopeIdx + 1] ? args[scopeIdx + 1] : 'core';
 const limitIdx = args.indexOf('--limit');
 const limit = limitIdx >= 0 && args[limitIdx + 1] ? parseInt(args[limitIdx + 1], 10) : Infinity;
 const runIdIdx = args.indexOf('--run-id');
@@ -33,7 +38,7 @@ const specificRunId = runIdIdx >= 0 && args[runIdIdx + 1] ? args[runIdIdx + 1] :
 // ── Config ────────────────────────────────────────────────────────────
 
 const WORKSPACE_OUTPUT = process.env.WORKSPACE_OUTPUT ?? '/home/kali/orionomega/workspace/output';
-const HINDSIGHT_URL = process.env.HINDSIGHT_URL ?? 'http://localhost:8888';
+const REDIS_URL = process.env.REDIS_URL ?? 'redis://localhost:6379';
 
 // UUID pattern for run directories
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -43,8 +48,8 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 async function main() {
   console.log('🔄 Run Artifact Backfill');
   console.log(`   Workspace: ${WORKSPACE_OUTPUT}`);
-  console.log(`   Hindsight: ${HINDSIGHT_URL}`);
-  console.log(`   Bank: ${bankId}`);
+  console.log(`   Redis: ${REDIS_URL}`);
+  console.log(`   Scope: ${scopeId}`);
   console.log(`   Dry run: ${dryRun}`);
   if (specificRunId) console.log(`   Specific run: ${specificRunId}`);
   if (limit < Infinity) console.log(`   Limit: ${limit}`);
@@ -81,28 +86,29 @@ async function main() {
     return;
   }
 
-  // Create Hindsight client (or mock for dry run)
-  let client: HindsightClient;
+  // Open the memory store (or a mock for dry run)
+  let store: MemoryStore;
+  let redisStore: RedisMemoryStore | null = null;
   if (dryRun) {
-    // Create a mock client that just counts
-    client = {
-      retainOne: async () => ({ success: true, bank_id: bankId, items_count: 1 }),
-    } as unknown as HindsightClient;
+    // Create a mock store that just counts
+    store = {
+      retainOne: async () => ({ ok: true, count: 1 }),
+    } as unknown as MemoryStore;
   } else {
-    client = new HindsightClient(HINDSIGHT_URL);
-    // Verify connection
-    try {
-      const health = await client.health();
-      console.log(`✅ Hindsight connected (version: ${health.version ?? 'unknown'})\n`);
-    } catch (err) {
-      console.error(`❌ Cannot connect to Hindsight at ${HINDSIGHT_URL}: ${err instanceof Error ? err.message : String(err)}`);
+    redisStore = new RedisMemoryStore({ redis: { url: REDIS_URL } });
+    store = redisStore;
+    // Verify connection — Redis is expected to be running already.
+    const health = await store.health();
+    if (!health.healthy) {
+      console.error(`❌ Cannot connect to Redis at ${REDIS_URL}`);
       process.exit(1);
     }
+    console.log('✅ Redis connected\n');
   }
 
   const collector = new RunArtifactCollector({
-    hindsight: client,
-    bankId,
+    store,
+    bankId: scopeId,
   });
 
   // Process each run
@@ -143,7 +149,7 @@ async function main() {
         console.log(' (no .md files, skipped)');
         runsSkipped++;
       } else {
-        console.log(` ✅ ${result.itemsStored} items, ${result.totalTokens} tokens${result.budgetExhausted ? ' (budget exhausted)' : ''}`);
+        console.log(` ✅ ${result.itemsStored} records, ${result.totalTokens} tokens${result.budgetExhausted ? ' (budget exhausted)' : ''}`);
         totalFiles += result.filesFound;
         totalItems += result.itemsStored;
         totalTokens += result.totalTokens;
@@ -162,10 +168,12 @@ async function main() {
   console.log(`   Runs processed: ${runsProcessed}`);
   console.log(`   Runs skipped: ${runsSkipped}`);
   console.log(`   Files found: ${totalFiles}`);
-  console.log(`   Items stored: ${totalItems}`);
+  console.log(`   Records stored: ${totalItems}`);
   console.log(`   Total tokens: ${totalTokens}`);
   console.log(`   Errors: ${totalErrors}`);
   if (dryRun) console.log('\n   ⚠️  DRY RUN — nothing was actually stored');
+
+  await redisStore?.close();
 }
 
 main().catch((err) => {

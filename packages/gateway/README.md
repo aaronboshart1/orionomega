@@ -52,7 +52,7 @@ Client                          Gateway
   │◄── state_snapshot ─────────────│  4. Send paginated state snapshot
   │◄── history ────────────────────│  5. Send legacy message replay
   │◄── memory_history ─────────────│  6. Send memory event replay
-  │◄── hindsight_status ───────────│  7. Send service status
+  │◄── memory_activity ────────────│  7. Send memory recall health
   │                                │
   │── chat { content, agentMode } ─►│  8. User resumes interaction
 ```
@@ -148,7 +148,7 @@ Clients connect to `ws://<host>:<port>/ws?client=tui` or `ws://<host>:<port>/ws?
 | `coding_event` | Coding mode lifecycle event | Broadcast (tracked) |
 | `status` | System status update | Broadcast |
 | `session_status` | Token and cost counters | Broadcast |
-| `hindsight_status` | Memory service connection state | Broadcast |
+| `memory_activity` | Memory recall health (`ready`/`rebuilding`/`degraded`) and busy flag | Broadcast |
 | `command_result` | Slash command outcome | Broadcast |
 | `error` | Gateway-level error | Single client |
 | `ack` | Message acknowledgement | Single client |
@@ -163,7 +163,7 @@ Clients connect to `ws://<host>:<port>/ws?client=tui` or `ws://<host>:<port>/ws?
 |--------|------|-------------|
 | `GET` | `/api/health` | Liveness check; returns `{ status, version, uptime, memory }` |
 | `GET` | `/api/metrics` | Detailed metrics: session counts, store stats, connection info |
-| `GET` | `/api/status` | Full system status (workers, Hindsight, config) |
+| `GET` | `/api/status` | Full system status (workers, memory health, config) |
 | `GET` | `/api/sessions` | List active sessions |
 | `GET` | `/api/sessions/:id` | Get session message history |
 | `POST` | `/api/sessions` | Create a new session |
@@ -284,4 +284,4 @@ pnpm --filter @orionomega/gateway build
 pnpm --filter @orionomega/gateway dev   # tsx watch
 ```
 
-The gateway depends on `@orionomega/core`, `@orionomega/hindsight`, and `@orionomega/skills-sdk`.
+The gateway depends on `@orionomega/core`, `@orionomega/shared`, and `@orionomega/skills-sdk`.

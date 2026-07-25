@@ -1009,7 +1009,8 @@ export class PersistenceService {
         seq: me.seq,
         op: me.op,
         detail: me.detail,
-        bank: me.bank,
+        // The SQLite column is still named `bank`; the wire field is `scope`.
+        scope: me.bank ?? undefined,
         meta: me.meta ? JSON.parse(me.meta) : undefined,
       }));
 

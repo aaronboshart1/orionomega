@@ -11,14 +11,13 @@
  *  - Small messages that fit within the budget are not evicted.
  *  - Token estimation is based on content length, not message count.
  *
- * Uses estimateTokens from @orionomega/hindsight to measure token totals.
+ * Uses estimateTokens from @orionomega/shared/similarity to measure token totals.
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { vi } from 'vitest';
 import { ContextAssembler } from '../context-assembler.js';
-import { estimateTokens } from '@orionomega/hindsight';
-import type { HindsightClient, RecalledMemory } from '@orionomega/hindsight';
+import { estimateTokens } from '@orionomega/shared/similarity';
+import { makeMockStore } from './helpers/mock-store.js';
 import type { ConversationMessage } from '../context-assembler.js';
 
 // HOT_WINDOW_TOKEN_BUDGET is an internal constant (30 000 tokens).
@@ -27,19 +26,6 @@ import type { ConversationMessage } from '../context-assembler.js';
 const HOT_WINDOW_TOKEN_BUDGET = 30_000;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
-function makeMockHs(): HindsightClient {
-  return {
-    retain: vi.fn().mockResolvedValue({ success: true, bank_id: 'test', items_count: 1 }),
-    recallWithTemporalDiversity: vi.fn().mockResolvedValue({
-      results: [] as RecalledMemory[],
-      lowConfidence: false,
-      tokens_used: 0,
-    }),
-    listBanksCached: vi.fn().mockResolvedValue([]),
-    isDuplicateContent: vi.fn().mockResolvedValue(false),
-  } as unknown as HindsightClient;
-}
 
 /** Create a message with content of approximately `targetTokens` tokens. */
 function makeLargeMsg(targetTokens: number, role: 'user' | 'assistant' = 'user'): ConversationMessage {
@@ -62,7 +48,7 @@ describe('ContextAssembler — token-aware hot window eviction (H2)', () => {
   let assembler: ContextAssembler;
 
   beforeEach(() => {
-    assembler = new ContextAssembler(makeMockHs(), {
+    assembler = new ContextAssembler(makeMockStore(), {
       conversationBank: 'test-bank',
       // Use a small hotWindowSize so count-limit never triggers before token-limit.
       hotWindowSize: 50,
@@ -160,7 +146,7 @@ describe('ContextAssembler — token-aware hot window eviction (H2)', () => {
 
 describe('ContextAssembler — hot window: count-limit still applies', () => {
   it('hot window never exceeds hotWindowSize even when token budget is fine', async () => {
-    const assembler = new ContextAssembler(makeMockHs(), {
+    const assembler = new ContextAssembler(makeMockStore(), {
       conversationBank: 'test-bank',
       hotWindowSize: 5, // small count cap
       federateBanks: false,

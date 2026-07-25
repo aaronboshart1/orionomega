@@ -17,10 +17,31 @@ export interface StaleBuildInfo {
   sourceShortCommit?: string | null;
 }
 
+/**
+ * What the memory store can currently do. Never a connectivity flag — the UI
+ * reports capability, so it never renders "offline".
+ */
+export type MemoryHealth = 'ready' | 'rebuilding' | 'degraded';
+
+export interface MemoryActivity {
+  busy: boolean;
+  health: MemoryHealth;
+  /** Rebuild progress 0-100, present while `health === 'rebuilding'`. */
+  pct?: number;
+  reason?: 'redis_unreachable' | 'index_cold' | 'write_failed';
+  /** Current operation label, e.g. `recall` / `retain`. */
+  op?: string;
+  /** Records touched by the current operation. */
+  count?: number;
+}
+
 interface ConnectionStore {
   gatewayConnected: boolean;
-  hindsightConnected: boolean;
-  hindsightBusy: boolean;
+  /**
+   * Latest memory activity. Before the store's first report the index has not
+   * been built, so the honest default is `rebuilding / index_cold`.
+   */
+  memoryActivity: MemoryActivity;
   /** Tri-state connection status for the UI indicator. */
   connectionStatus: ConnectionStatus;
   /** Current reconnection attempt count (reset on successful connect). */
@@ -38,7 +59,7 @@ interface ConnectionStore {
   /** Stale-build status for the gateway dist/ vs source tree. */
   staleBuild: StaleBuildInfo | null;
   setGatewayConnected: (connected: boolean) => void;
-  setHindsightStatus: (connected: boolean, busy: boolean) => void;
+  setMemoryActivity: (activity: MemoryActivity) => void;
   setConnectionStatus: (status: ConnectionStatus) => void;
   setReconnectAttempt: (attempt: number) => void;
   setSessionId: (id: string) => void;
@@ -54,8 +75,7 @@ interface ConnectionStore {
 
 export const useConnectionStore = create<ConnectionStore>()((set) => ({
   gatewayConnected: false,
-  hindsightConnected: false,
-  hindsightBusy: false,
+  memoryActivity: { busy: false, health: 'rebuilding', reason: 'index_cold' },
   connectionStatus: 'disconnected',
   reconnectAttempt: 0,
   sessionId: null,
@@ -65,8 +85,7 @@ export const useConnectionStore = create<ConnectionStore>()((set) => ({
   hasOlderMessages: false,
   staleBuild: null,
   setGatewayConnected: (gatewayConnected) => set({ gatewayConnected }),
-  setHindsightStatus: (hindsightConnected, hindsightBusy) =>
-    set({ hindsightConnected, hindsightBusy }),
+  setMemoryActivity: (memoryActivity) => set({ memoryActivity }),
   setConnectionStatus: (connectionStatus) => set({ connectionStatus }),
   setReconnectAttempt: (reconnectAttempt) => set({ reconnectAttempt }),
   setSessionId: (sessionId) => set({ sessionId }),

@@ -1,63 +1,53 @@
 /**
- * Unit tests for hot-window / recall deduplication (H5 fix).
+ * Recalled content reaching `priorContext` alongside a populated hot window.
  *
- * Verifies:
- *  - A recalled memory whose content is highly similar (trigramSimilarity > 0.80)
- *    to any message currently in the hot window is filtered out before the
- *    final priorContext is assembled.
- *  - A recalled memory that is dissimilar to all hot window messages is
- *    included in priorContext unchanged.
- *  - With an empty hot window, no filtering occurs.
- *  - The similarity threshold is strictly > 0.80 (a memory at exactly 0.80
- *    should pass through).
+ * This file was originally the H5 suite: it pinned a filter inside
+ * `recallFromBanks` that dropped any recalled item whose `trigramSimilarity`
+ * to a hot-window message exceeded 0.80. That filter went with bank federation
+ * in the §12 rewrite, and deduplication is now the store's job — `RedisMemoryStore`
+ * rejects near-duplicates at WRITE time (`isDuplicate`, `trigramSimilarity >=
+ * threshold`), so the same content never reaches recall in the first place.
  *
- * Uses trigramSimilarity (re-exported by @orionomega/hindsight) to construct
- * controlled test content and verify similarity assumptions.
+ * What survives here is the half of the old suite that was never about the
+ * filter: recalled records reach `priorContext`, and `assemble()` leaves the
+ * hot window alone (retained property 1).
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { ContextAssembler } from '../context-assembler.js';
-import { trigramSimilarity } from '@orionomega/hindsight';
-import type { HindsightClient, RecalledMemory } from '@orionomega/hindsight';
+import { trigramSimilarity } from '@orionomega/shared/similarity';
+import { makeMockStore, record } from './helpers/mock-store.js';
+import type { MockStore } from './helpers/mock-store.js';
 import type { ConversationMessage } from '../context-assembler.js';
-
-// The internal dedup threshold is 0.80 (strict greater-than).
-const DEDUP_THRESHOLD = 0.80;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-/** Recall result with a single memory item. */
-function makeRecallResult(content: string, relevance = 0.85): {
-  results: RecalledMemory[];
-  lowConfidence: boolean;
-  tokens_used: number;
-} {
-  return {
-    results: [{
-      content,
-      context: 'decision',
-      timestamp: new Date().toISOString(), // fresh timestamp — won't be expired
-      relevance,
-    }],
-    lowConfidence: false,
-    tokens_used: 50,
-  };
-}
-
-function makeMockHs(recallContent: string, relevance = 0.85): HindsightClient & {
-  recallWithTemporalDiversity: ReturnType<typeof vi.fn>;
-} {
-  return {
-    recallWithTemporalDiversity: vi.fn().mockResolvedValue(makeRecallResult(recallContent, relevance)),
-    listBanksCached: vi.fn().mockResolvedValue([]),
-    retain: vi.fn().mockResolvedValue({ success: true, bank_id: 'test', items_count: 1 }),
-    isDuplicateContent: vi.fn().mockResolvedValue(false),
-  } as unknown as ReturnType<typeof makeMockHs>;
+/** Store whose recall returns a single record with the given content. */
+function makeStoreWith(recallContent: string, relevance = 0.85): MockStore {
+  return makeMockStore({
+    records: [
+      record({
+        content: recallContent,
+        context: 'decision',
+        timestamp: new Date().toISOString(), // fresh timestamp — won't be expired
+        relevance,
+      }),
+    ],
+  });
 }
 
 function makeMsg(content: string, role: 'user' | 'assistant' = 'user'): ConversationMessage {
   return { role, content, timestamp: new Date().toISOString() };
 }
+
+/** Budget comfortably above MIN_RECALL_TOKENS so recall actually runs. */
+const CONFIG = {
+  conversationScope: 'test-scope',
+  recallBudgetTokens: 16_384,
+  maxTurnTokens: 60_000,
+  systemPromptTokens: 15_000,
+  outputReserveTokens: 4_096,
+};
 
 // Sentence pairs used across tests — keep them in one place for readability.
 const HOT_CONTENT = 'The project uses pnpm workspaces for monorepo package management and TypeScript for type safety';
@@ -69,94 +59,32 @@ const DISSIMILAR_CONTENT = 'REST API endpoints should return JSON with snake_cas
 // ── Similarity assumptions (self-documenting assertions) ────────────────────
 
 describe('trigramSimilarity — test content verification', () => {
+  // Retired with the rewrite (§12): 'identical strings exceed the dedup
+  // threshold' and 'dissimilar strings are below the dedup threshold' both
+  // asserted against DEDUP_THRESHOLD = 0.80 — the assembler's hot-window
+  // recall filter, which was deleted along with recallFromBanks/bank
+  // federation. No such constant exists in the assembler any more; the
+  // store's write-time threshold is its own concern and is covered by
+  // redis-store's tests.
+
   it('identical strings have similarity 1.0', () => {
     expect(trigramSimilarity(IDENTICAL_CONTENT, HOT_CONTENT)).toBe(1.0);
   });
-
-  it('identical strings exceed the dedup threshold', () => {
-    expect(trigramSimilarity(IDENTICAL_CONTENT, HOT_CONTENT)).toBeGreaterThan(DEDUP_THRESHOLD);
-  });
-
-  it('dissimilar strings are below the dedup threshold', () => {
-    expect(trigramSimilarity(DISSIMILAR_CONTENT, HOT_CONTENT)).toBeLessThanOrEqual(DEDUP_THRESHOLD);
-  });
 });
 
-// ── Recalled memory similar to hot window is filtered ────────────────────────
+// ── Recalled content reaches priorContext ────────────────────────────────────
 
-describe('ContextAssembler — hot-window recall dedup: similar content filtered (H5)', () => {
-  it('recalled memory identical to hot window content is absent from priorContext', async () => {
-    const hs = makeMockHs(IDENTICAL_CONTENT);
-    const assembler = new ContextAssembler(hs, {
-      conversationBank: 'test-bank',
-      federateBanks: false,
-      adaptiveRecall: false,
-      dynamicSummaryFallback: false,
-    });
+describe('ContextAssembler — recalled content reaches priorContext', () => {
+  // Retired with the rewrite (§12): 'recalled memory identical to hot window
+  // content is absent from priorContext' and 'only the duplicate is removed —
+  // other memories remain in priorContext' both asserted the H5 hot-window
+  // similarity filter (trigramSimilarity(item, hotMsg) > 0.80 → drop). That
+  // filter lived inside recallFromBanks and was deleted with bank federation;
+  // deduplication now happens at write time in the store.
 
-    // Add the matching text to the hot window.
-    await assembler.push(makeMsg(HOT_CONTENT));
-
-    const ctx = await assembler.assemble('query about memory systems');
-
-    // The recalled memory should have been filtered out.
-    expect(ctx.priorContext).not.toContain(IDENTICAL_CONTENT);
-  });
-
-  it('only the duplicate is removed — other memories remain in priorContext', async () => {
-    const UNIQUE_CONTENT = 'Prefer dependency injection for testability and loose coupling in services';
-
-    // Mock returns two items: one duplicate and one unique.
-    const hs = {
-      recallWithTemporalDiversity: vi.fn().mockResolvedValue({
-        results: [
-          {
-            content: IDENTICAL_CONTENT,
-            context: 'decision',
-            timestamp: new Date().toISOString(),
-            relevance: 0.9,
-          },
-          {
-            content: UNIQUE_CONTENT,
-            context: 'decision',
-            timestamp: new Date().toISOString(),
-            relevance: 0.8,
-          },
-        ] as RecalledMemory[],
-        lowConfidence: false,
-        tokens_used: 100,
-      }),
-      listBanksCached: vi.fn().mockResolvedValue([]),
-      retain: vi.fn().mockResolvedValue({ success: true, bank_id: 'test', items_count: 1 }),
-      isDuplicateContent: vi.fn().mockResolvedValue(false),
-    } as unknown as HindsightClient;
-
-    const assembler = new ContextAssembler(hs, {
-      conversationBank: 'test-bank',
-      federateBanks: false,
-      adaptiveRecall: false,
-      dynamicSummaryFallback: false,
-    });
-
-    await assembler.push(makeMsg(HOT_CONTENT));
-    const ctx = await assembler.assemble('query');
-
-    expect(ctx.priorContext).not.toContain(IDENTICAL_CONTENT);
-    expect(ctx.priorContext).toContain(UNIQUE_CONTENT);
-  });
-});
-
-// ── Dissimilar recalled memory passes through ─────────────────────────────────
-
-describe('ContextAssembler — hot-window recall dedup: dissimilar content passes (H5)', () => {
-  it('recalled memory dissimilar to all hot window entries appears in priorContext', async () => {
-    const hs = makeMockHs(DISSIMILAR_CONTENT);
-    const assembler = new ContextAssembler(hs, {
-      conversationBank: 'test-bank',
-      federateBanks: false,
-      adaptiveRecall: false,
-      dynamicSummaryFallback: false,
-    });
+  it('a recalled record appears in priorContext', async () => {
+    const store = makeStoreWith(DISSIMILAR_CONTENT);
+    const assembler = new ContextAssembler(store, CONFIG);
 
     await assembler.push(makeMsg(HOT_CONTENT));
 
@@ -166,16 +94,10 @@ describe('ContextAssembler — hot-window recall dedup: dissimilar content passe
     expect(ctx.priorContext).toContain(DISSIMILAR_CONTENT);
   });
 
-  it('multiple hot window messages only filter when each reaches the threshold', async () => {
-    const hs = makeMockHs(DISSIMILAR_CONTENT);
-    const assembler = new ContextAssembler(hs, {
-      conversationBank: 'test-bank',
-      federateBanks: false,
-      adaptiveRecall: false,
-      dynamicSummaryFallback: false,
-    });
+  it('a populated hot window does not suppress recalled content', async () => {
+    const store = makeStoreWith(DISSIMILAR_CONTENT);
+    const assembler = new ContextAssembler(store, CONFIG);
 
-    // Push several hot window messages — none similar to DISSIMILAR_CONTENT.
     for (let i = 0; i < 3; i++) {
       await assembler.push(makeMsg(`Hot window message ${i}: ${HOT_CONTENT}`));
     }
@@ -188,15 +110,10 @@ describe('ContextAssembler — hot-window recall dedup: dissimilar content passe
 
 // ── Empty hot window ──────────────────────────────────────────────────────────
 
-describe('ContextAssembler — hot-window recall dedup: empty hot window (H5)', () => {
-  it('all recalled memories are included when the hot window is empty', async () => {
-    const hs = makeMockHs(IDENTICAL_CONTENT);
-    const assembler = new ContextAssembler(hs, {
-      conversationBank: 'test-bank',
-      federateBanks: false,
-      adaptiveRecall: false,
-      dynamicSummaryFallback: false,
-    });
+describe('ContextAssembler — recall with an empty hot window', () => {
+  it('recalled memories are included when the hot window is empty', async () => {
+    const store = makeStoreWith(IDENTICAL_CONTENT);
+    const assembler = new ContextAssembler(store, CONFIG);
 
     // No push() calls — hot window is empty.
     const ctx = await assembler.assemble('query');
@@ -205,17 +122,12 @@ describe('ContextAssembler — hot-window recall dedup: empty hot window (H5)', 
   });
 });
 
-// ── Dedup does not affect the hot window itself ────────────────────────────────
+// ── assemble() does not touch the hot window ──────────────────────────────────
 
-describe('ContextAssembler — hot-window recall dedup: hot window unaffected (H5)', () => {
-  it('filtering recalled memories does not remove messages from the hot window', async () => {
-    const hs = makeMockHs(IDENTICAL_CONTENT);
-    const assembler = new ContextAssembler(hs, {
-      conversationBank: 'test-bank',
-      federateBanks: false,
-      adaptiveRecall: false,
-      dynamicSummaryFallback: false,
-    });
+describe('ContextAssembler — assemble() leaves the hot window intact', () => {
+  it('recall does not remove messages from the hot window', async () => {
+    const store = makeStoreWith(IDENTICAL_CONTENT);
+    const assembler = new ContextAssembler(store, CONFIG);
 
     await assembler.push(makeMsg(HOT_CONTENT));
     await assembler.assemble('query');
@@ -226,14 +138,7 @@ describe('ContextAssembler — hot-window recall dedup: hot window unaffected (H
   });
 });
 
-// ── Boundary: similarity exactly at threshold passes through ──────────────────
-
-describe('ContextAssembler — hot-window recall dedup: threshold boundary (H5)', () => {
-  it('a recalled memory with similarity exactly at 0.80 is NOT filtered (> not >=)', () => {
-    // The filter is: trigramSimilarity(...) > 0.80 — items AT 0.80 pass through.
-    // We verify the threshold sign rather than testing with fabricated 0.80 content
-    // (which is hard to control exactly via trigrams), asserting the inequality direction.
-    expect(0.80 > DEDUP_THRESHOLD).toBe(false); // 0.80 is not > 0.80
-    expect(0.81 > DEDUP_THRESHOLD).toBe(true);  // 0.81 is > 0.80
-  });
-});
+// Retired with the rewrite (§12): 'a recalled memory with similarity exactly
+// at 0.80 is NOT filtered (> not >=)' pinned the inequality direction of the
+// deleted hot-window filter's threshold. There is no assembler-side similarity
+// threshold to have a direction any more.

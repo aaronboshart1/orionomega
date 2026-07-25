@@ -15,8 +15,8 @@ orionomega doctor
 # View live logs
 orionomega logs --follow
 
-# Check memory subsystem
-orionomega status --memory
+# Check the memory subsystem (PINGs Redis, prints the redacted URL)
+orionomega status
 
 # Verbose logging for a single session
 ORIONOMEGA_LOG_LEVEL=verbose orionomega start
@@ -28,104 +28,133 @@ Log file location: `~/.orionomega/logs/orionomega.log` (configurable via `loggin
 
 ## Memory System Issues
 
+### Read the health state first
+
+Memory does not report a connected/disconnected flag. It reports what recall can
+currently **do**, which is what actually matters to you:
+
+| `health` | Meaning | What to do |
+|----------|---------|------------|
+| `ready` | Redis is reachable and the in-process index is fully hydrated | Nothing |
+| `rebuilding` | The index is warming from Redis. Recall will under-return until it finishes | Wait; large corpora take tens of seconds |
+| `degraded` | Redis is unreachable, or a write failed | Fix Redis (below) |
+
+A `reason` accompanies the non-`ready` states: `redis_unreachable`,
+`index_cold`, or `write_failed`. The status bar and the web UI System Health
+card render this; `orionomega status` prints it too.
+
+---
+
 ### Agent has no memory of previous sessions
 
 **Symptoms:** Agent behaves as if each session is a fresh start. No recall of past decisions, user preferences, or project context.
 
-**Root cause (most common):** Hindsight server not running, or `hindsight.url` misconfigured.
+**Root cause (most common):** Redis is not running, or `memory.redis.url` is misconfigured.
 
 **Diagnosis:**
 ```bash
-# Check if Hindsight is running
-curl http://localhost:8888/health
+# Is Redis up?
+redis-cli ping           # expects: PONG
 
-# Check OrionOmega can reach it
-orionomega doctor --check memory
+# Can OrionOmega reach it? (issues a PING, prints the redacted URL)
+orionomega status
+orionomega doctor
 ```
 
 **Fix:**
-1. Start the Hindsight server: `hindsight serve --port 8888`
-2. Verify URL in `~/.orionomega/config.yaml`:
+1. Start Redis. OrionOmega never provisions it — see the
+   [Quick Start prerequisites](getting-started.md#prerequisites) for the command
+   on your platform.
+2. Verify the URL in `~/.orionomega/config.yaml`:
    ```yaml
-   hindsight:
-     url: http://localhost:8888
+   memory:
+     redis:
+       url: redis://localhost:6379
    ```
-3. Restart OrionOmega gateway.
+3. Restart the OrionOmega gateway.
+
+If `redis-cli ping` returns `NOAUTH Authentication required`, Redis is up but
+wants a password — set `memory.redis.password`, or put the credentials in the
+URL (`redis://user:pass@host:6379`).
 
 ---
 
-### Recall returns 0 results despite memories being stored
+### Recall returns 0 results despite records being stored
 
-**Symptoms:** Log shows `"API returned 0 results"` or `"All N results filtered below relevance threshold"`. The TUI memory panel shows no recalls.
+`memory_search` returns an explicit `NO_RESULTS` marker with the corpus size and
+the threshold it used, so the two failure modes are distinguishable:
 
-**These are different problems — read the log carefully:**
+#### Case A: the searched count is 0 or implausibly small
 
-#### Case A: `"API returned 0 results"`
+Nothing is indexed. Two causes:
 
-The Hindsight server found no candidates. Usually means the bank is empty or the query is too short.
+- **The index is still hydrating.** Health is `rebuilding`. Wait for `ready`.
+- **Nothing is being written.** Check `memory.retainOnComplete` is `true` and
+  that workflows are finishing without error. Confirm records exist directly:
+  ```bash
+  redis-cli --scan --pattern 'om:*' | head
+  ```
+  (Substitute your `memory.redis.keyPrefix` if you changed it from `om:`.)
 
-```
-# Verify memories exist
-curl http://localhost:8888/v1/default/banks/core | jq .memory_count
-```
+#### Case B: the corpus is large but nothing cleared the threshold
 
-If `memory_count` is 0, memories are not being stored. Check `retainOnComplete` is `true` and workflow is completing without error.
+Retrieval is **lexical only** — keyword overlap plus character-trigram Jaccard,
+scored exactly as `computeClientRelevance` does. There are no embeddings, so a
+query that shares no vocabulary with the stored text will not match no matter
+how semantically close it is. Rephrase with words that actually appear in the
+material, or lower `memory.minRelevance`.
 
-#### Case B: `"All N results filtered below relevance threshold"`
+#### Case C: you are searching for file contents or command output
 
-The Hindsight server found candidates but the client discarded all of them. Log includes `topScore` — the highest relevance score before filtering.
-
-- If `topScore` is between `0.05` and `0.14`: client-side scoring is active and the threshold is too high. This was the pre-fix behavior. **Upgrade to v0.1.1** which lowers the threshold to `0.15` and uses client-side scoring correctly.
-- If `topScore` is `0.00`: all API results had `relevance=0` and client-side fallback also scored them at 0. The query or content may be too short/generic.
-
-**Verify the threshold configuration:**
-```bash
-grep -r "minRelevance" ~/.orionomega/ 2>/dev/null
-# Should be 0.15 or lower, not 0.3
-```
-
----
-
-### Recall effectiveness below 10%
-
-**Symptoms:** Log warning: `"Recall effectiveness critically low: X% surfaced (N/M)"`
-
-This means fewer than 10% of Hindsight's returned results pass the relevance filter. Causes:
-
-1. **Embedding backend not configured** (pre-fix behavior): API returns `relevance=0`, fallback scorer is used. If you see `"client-scored"` in the recall log, this is expected behavior in v0.1.1 — the threshold is already calibrated for this case.
-
-2. **Threshold set too high by a custom caller:** Check if any code passes `minRelevance > 0.15` in recall options.
-
-3. **Structural prefix contamination:** Content stored with `[user]`, `Task:`, or similar prefixes confuses keyword scoring. **v0.1.1 strips these automatically** in the similarity normalizer.
+**Tool results are stored but not indexed.** They are deliberately kept out of
+the search corpus because they dominate volume and pollute term statistics. They
+are reachable only through `memory_read` — by segment id from the Memory Map, or
+by `{around: seq, radius: n}`.
 
 ---
 
-### Mental model returns 404 on first run
+### The agent keeps searching memory and getting nowhere
 
-**Symptoms:** Log shows `"Failed to seed mental model"` or `"GET .../mental-models/user-profile → 404"`.
+There is a per-turn call budget: 3 `memory_search` and 2 `memory_read` calls.
+Past the cap the tools hard-refuse with a `REFUSED —` message. That is working
+as designed — it exists because a zero-result search is a *successful* tool call,
+so without the cap an agent that finds nothing can rephrase and retry forever.
 
-**This is expected on the very first run.** v0.1.1 seeds mental models automatically via `seedMentalModelsIfNeeded()` — it detects 404 and calls `refreshMentalModel()` to create them.
-
-If seeding itself fails with 404, the `infra` bank may not exist yet. Create it:
-```bash
-curl -X PUT http://localhost:8888/v1/default/banks/infra \
-  -H "Content-Type: application/json" \
-  -d '{"name": "Infrastructure map"}'
-```
+If you are seeing refusals routinely, the corpus probably lacks what is being
+asked for; see Case B above.
 
 ---
 
 ### Session summary not being generated
 
-**Symptoms:** End-of-session summaries missing from core bank. Memory does not accumulate across sessions.
+**Symptoms:** End-of-session summaries missing from the `core` scope. Memory does not accumulate across sessions.
 
-**Check 1: Minimum message count.** Summaries require at least 5 messages. Very short test sessions are skipped by design.
+**Check 1: The feature is enabled.** `memory.sessionSummary` defaults to `true`;
+confirm it has not been turned off.
 
-**Check 2: Debounce window.** Only 1 summary per 5 minutes. If the gateway disconnects and reconnects rapidly (e.g., development restarts), summaries are throttled.
+**Check 2: Minimum message count.** Summaries require at least 5 messages. Very short test sessions are skipped by design.
 
-**Check 3: Retry exhaustion.** If the Hindsight server was unreachable for all 3 retry attempts (500ms, 1000ms, 2000ms), the summary is dropped. Check Hindsight server health and logs.
+**Check 3: Debounce window.** Only 1 summary per 5 minutes. If the gateway disconnects and reconnects rapidly (e.g., development restarts), summaries are throttled.
 
-**Check 4: LLM call failure.** The summarizer uses the `cheap` model. If `models.cheap` is not configured or returns an error, summary generation fails. Check Anthropic API key validity.
+**Check 4: Retry exhaustion.** If the write failed for all 3 retry attempts (500ms, 1000ms, 2000ms), the summary is dropped. Check Redis health.
+
+**Check 5: LLM call failure.** The summarizer uses the `cheap` model. If `models.cheap` is not configured or returns an error, summary generation fails. Check Anthropic API key validity.
+
+---
+
+### Redis is shared with the task queue and jobs are disappearing
+
+BullMQ requires `maxmemory-policy noeviction` or it silently drops jobs, and
+that policy is **instance-wide** — selecting a different `db` does not isolate
+it. If you have set `orchestration.queue.backend: redis` against the same
+instance memory uses, pin the policy:
+
+```bash
+redis-cli config set maxmemory-policy noeviction
+```
+
+Make it permanent in `redis.conf`. Alternatively point `memory.redis.url` at a
+second Redis instance — it is its own config key precisely so you can.
 
 ---
 
@@ -141,6 +170,11 @@ curl -X PUT http://localhost:8888/v1/default/banks/infra \
 ```
 
 If `persistPath` is not set, the hot window lives in memory only and is lost on restart. This is the current default. Set it during ContextAssembler construction.
+
+Note that only the *verbatim* window is lost. The messages themselves were
+already written to Redis, so they remain reachable through recall, the Memory
+Map, and `memory_read` — they just stop being reproduced word-for-word at the
+top of the turn.
 
 ---
 
@@ -364,14 +398,15 @@ Key log patterns to search for:
 
 | Pattern | Meaning | Action |
 |---------|---------|--------|
-| `"Memory subsystem init failed"` | Hindsight unreachable on startup | Check Hindsight service |
-| `"All N results filtered"` | Relevance threshold too high | Verify v0.1.1+ is installed |
-| `"Recall effectiveness critically low"` | <10% of results passing filter | Check scoring configuration |
+| `"Memory subsystem init failed"` | Redis unreachable on startup | `redis-cli ping`; check `memory.redis.url` |
+| `"redis_unreachable"` | Health went `degraded` mid-session | Restart Redis; the store reconnects |
+| `"index_cold"` | Health is `rebuilding` — index still hydrating | Wait; recall improves as it warms |
+| `"write_failed"` | A retain did not land durably | Check Redis disk/memory limits and `maxmemory-policy` |
+| `"NO_RESULTS"` | A `memory_search` matched nothing above threshold | See "Recall returns 0 results" above |
+| `"REFUSED — memory_search limit reached"` | Per-turn tool budget exhausted | Expected guard; see above |
 | `"Worker timed out"` | Worker exceeded timeout | Increase `workerTimeout` |
-| `"Session summary failed after retries"` | Hindsight or LLM unavailable | Check both services |
+| `"Session summary failed after retries"` | Redis or the LLM was unavailable | Check both |
 | `"maxSpawnDepth exceeded"` | Recursive agent spawn blocked | Increase limit or restructure task |
-| `"Memory flush failed"` | Pre-compaction flush error | Check Hindsight health |
-| `"Mental model seeding failed"` | Model creation failed on first run | Check bank exists |
 
 **Enable verbose logging to see full memory pipeline:**
 ```bash

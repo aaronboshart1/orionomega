@@ -7,7 +7,6 @@
 ```bash
 pnpm install
 pnpm --filter @orionomega/shared build
-pnpm --filter @orionomega/hindsight build
 pnpm --filter @orionomega/skills-sdk build
 pnpm --filter @orionomega/core build
 pnpm --filter @orionomega/gateway build
@@ -18,6 +17,7 @@ pnpm --filter @orionomega/gateway start # Gateway on port 8000 (console)
 Environment variables:
 - `ANTHROPIC_API_KEY` — required for AI agent functionality.
 - `CONFIG_PATH` — optional, overrides default `config.yaml` path.
+- `REDIS_URL` — optional, memory backend URL. Defaults to `redis://localhost:6379`; `memory.redis.url` in `config.yaml` takes precedence. Redis is not auto-provisioned — start it yourself.
 - `GOOGLE_WORKSPACE_MCP_BASE_PORT` — optional base port for per-account workspace-mcp listeners (default 9877; account N gets basePort + N).
 - `ORIONOMEGA_BIND_RETRY_MS` — optional budget (ms) for the gateway port-bind retry loop (default 60000).
 - `ORIONOMEGA_ALLOW_INSECURE_BIND=1` — required override to start the gateway with `auth.mode: 'none'` on a non-localhost bind; otherwise startup is refused (Task #231).
@@ -39,8 +39,8 @@ Environment variables:
 ### Packages
 - `/packages/web` — Next.js frontend.
 - `/packages/gateway` — Node.js WebSocket/HTTP backend.
-- `/packages/core` — AI agent orchestration engine.
-- `/packages/hindsight` — Memory and context persistence.
+- `/packages/core` — AI agent orchestration engine; `src/memory` holds the Redis-backed memory store and per-turn context assembly.
+- `/packages/shared` — Shared utilities and the WebSocket protocol contract.
 - `/packages/skills-sdk` — Skills plugin system.
 - `/packages/tui` — Terminal UI.
 
@@ -71,7 +71,7 @@ Environment variables:
 
 ## Product
 
-OrionOmega is an AI agent orchestration platform with a web dashboard, WebSocket/HTTP backend, and a core orchestration engine. It features advanced memory management (Hindsight), a pluggable skills system, and aggressive token/cost optimisations. Users can interact via the web UI or a Terminal UI, define custom commands, and schedule tasks.
+OrionOmega is an AI agent orchestration platform with a web dashboard, WebSocket/HTTP backend, and a core orchestration engine. It features advanced memory management (self-hosted Redis, with context rebuilt each turn within a token budget), a pluggable skills system, and aggressive token/cost optimisations. Users can interact via the web UI or a Terminal UI, define custom commands, and schedule tasks.
 
 ## User preferences
 
@@ -79,7 +79,7 @@ OrionOmega is an AI agent orchestration platform with a web dashboard, WebSocket
 
 ## Gotchas
 
-- **Build order**: packages must be built in dependency order (`shared`, `hindsight`, `skills-sdk`, `core`, `gateway`) before the first run. The canonical explanation of the build-order foot-gun and centralized build-info generation lives in [`docs/architecture-notes.md`](docs/architecture-notes.md#build-order--build-info-canonical).
+- **Build order**: packages must be built in dependency order (`shared`, `skills-sdk`, `core`, `gateway`) before the first run. The canonical explanation of the build-order foot-gun and centralized build-info generation lives in [`docs/architecture-notes.md`](docs/architecture-notes.md#build-order--build-info-canonical).
 - **Configuration path**: on Replit, `config.yaml` is at `.orionomega/config.yaml` for persistence. Use `CONFIG_PATH` to override.
 - **Replit port mapping**: Next.js binds to `0.0.0.0:5000` (webview) and the gateway to `0.0.0.0:8000` (console).
 - **Skill execution security**: skill handlers are validated to run within the skill directory, restricted to `.js`/`.mjs`, and sensitive env vars are filtered.

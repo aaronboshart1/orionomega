@@ -116,7 +116,15 @@ export function compressMemoryContent(content: string): string {
 
 // ── Normalization & Trigrams ───────────────────────────────────────────
 
-function normalize(text: string): string {
+/**
+ * Canonicalise text for lexical comparison.
+ *
+ * EXPORTED FOR INDEX PARITY. The in-process candidate index
+ * (`packages/core/src/memory/memory-index.ts`) must tokenise with exactly the
+ * same rules as the scorer, or its superset guarantee breaks. Any change here
+ * changes recall for every backend — see docs/memory-architecture-v2.md §6.1.
+ */
+export function normalize(text: string): string {
   let t = text.toLowerCase();
   // F1: Strip structural prefixes that pollute keyword matching
   t = t.replace(STRUCTURAL_PREFIX_RE, '');
@@ -128,7 +136,13 @@ function normalize(text: string): string {
   return t.replace(/\s+/g, ' ').trim();
 }
 
-function trigrams(normalized: string): Set<string> {
+/**
+ * Character 3-grams of already-normalised text. Returns an EMPTY set for
+ * inputs shorter than 3 characters — callers relying on trigram overlap must
+ * handle that case separately (see {@link trigramSimilarity}'s equality
+ * short-circuit). Exported for index parity; see {@link normalize}.
+ */
+export function trigrams(normalized: string): Set<string> {
   const set = new Set<string>();
   for (let i = 0; i <= normalized.length - 3; i++) {
     set.add(normalized.slice(i, i + 3));

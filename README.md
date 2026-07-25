@@ -44,7 +44,7 @@ Most AI agent frameworks grow into monoliths — hundreds of plugins, abstractio
 
 - **Auditable by default** — ~23k lines across 6 TypeScript packages; you can read the entire codebase in a focused afternoon
 - **No hidden execution** — the main agent plans, you approve, workers execute. Nothing runs without your sign-off
-- **Persistent memory that works** — [Hindsight](https://github.com/aaronboshart1/hindsight) stores what the agent learns in a temporal knowledge graph, not a flat context window
+- **Persistent memory that works** — records live in self-hosted Redis; context is rebuilt every turn within an explicit token budget, not stuffed into a flat window
 - **True parallelism** — tasks decompose into a DAG; independent workers run simultaneously, not sequentially
 - **Anthropic-native** — built directly on Claude's native `fetch` API, no SDK wrapper overhead
 
@@ -54,7 +54,7 @@ Most AI agent frameworks grow into monoliths — hundreds of plugins, abstractio
 |---|---|---|
 | **Codebase size** | ~6 packages, auditable | Large monorepos, hard to trace |
 | **Execution model** | Plan → Approve → Execute | Often fire-and-forget |
-| **Memory** | Temporal knowledge graph (Hindsight) | Context window stuffing or flat files |
+| **Memory** | Self-hosted Redis + per-turn budgeted assembly | Context window stuffing or flat files |
 | **Parallelism** | DAG-based topological sort | Sequential or minimal concurrency |
 | **Transparency** | Every tool call, event, and trace visible | Varies widely |
 | **Skills/plugins** | Self-contained packages (manifest + handler) | Tightly coupled integrations |
@@ -84,10 +84,19 @@ orionomega ui start # launch the web dashboard at http://localhost:3000
 | **pnpm** | 9+ | Installed automatically by the one-liner if missing |
 | **git** | Any recent | Required to clone the repo |
 | **Anthropic API key** | — | Get one at [console.anthropic.com](https://console.anthropic.com/) |
-| **Docker** (optional) | 20+ | Required only for Hindsight memory server |
-| **Homebrew** (macOS) | Any | Required on macOS for Node.js and Docker install |
+| **Redis** | 7+ | Required for persistent memory. Expected at `redis://localhost:6379`. **Not** installed or managed by OrionOmega |
+| **Homebrew** (macOS) | Any | Required on macOS for the Node.js install |
 
-The installer checks all prerequisites and installs missing ones automatically (Node.js via NodeSource on Linux; via `brew` on macOS).
+The installer checks all prerequisites and installs missing ones automatically (Node.js via NodeSource on Linux; via `brew` on macOS). Redis is the one exception: it is treated as a normal system service, so the installer only checks whether it is reachable and prints install guidance if it is not.
+
+Install Redis with your platform's package manager:
+
+```bash
+brew install redis && brew services start redis                        # macOS
+sudo apt install -y redis-server && sudo systemctl enable --now redis-server   # Debian/Ubuntu/Kali
+sudo dnf install -y redis && sudo systemctl enable --now redis         # Fedora/RHEL
+docker run -d --name redis --restart unless-stopped -p 6379:6379 redis:7-alpine   # any platform
+```
 
 ---
 
@@ -107,12 +116,12 @@ wget -qO- https://raw.githubusercontent.com/aaronboshart1/orionomega/main/script
 **What the installer does:**
 
 1. Detects your OS (Kali, Ubuntu/Debian, macOS, Fedora/RHEL)
-2. Installs missing prerequisites (Node.js 22, pnpm, Docker)
+2. Installs missing prerequisites (Node.js 22, pnpm)
 3. Clones the repo to `~/.orionomega/repo` (or updates it if already present)
 4. Builds all 6 packages with `pnpm build`
 5. Links the `orionomega` CLI to `~/.local/bin` (Linux) or `~/.local/bin` (macOS)
 6. Runs the interactive setup wizard to configure your API key
-7. Starts Hindsight (memory server) via Docker if Docker is available
+7. Checks that Redis is reachable at `redis://localhost:6379` and prints install guidance if it is not (Redis itself is never installed or started for you)
 8. Creates a systemd service (Linux) or launchd plist (macOS) for the gateway
 
 **Non-interactive install** (for CI or scripted environments):
@@ -137,7 +146,7 @@ OrionOmega installs cleanly on Kali Linux 2024.x and 2025.x. The installer corre
 
 - Root user detection skips `sudo` calls (Kali ships as root by default)
 - Uses the same NodeSource + apt path as Ubuntu/Debian
-- Docker CE installs via the official Docker apt repo for Debian
+- Redis is not installed for you — `sudo apt install -y redis-server`
 
 Verified on: Kali 2025.3, x86_64, Node.js 22+
 
@@ -146,8 +155,7 @@ Verified on: Kali 2025.3, x86_64, Node.js 22+
 Tested on Ubuntu 22.04 LTS and 24.04 LTS. The installer:
 
 - Installs Node.js 22 via NodeSource (`setup_22.x`)
-- Installs Docker CE via the official Docker apt repo
-- Creates a systemd service: `orionomega-gateway.service`
+- Creates a systemd service: `orionomega-gateway.service` (ordered after `redis-server.service`)
 
 To start the gateway at boot:
 ```bash
@@ -160,7 +168,6 @@ Tested on macOS 13 (Ventura) and 14 (Sonoma), Intel and Apple Silicon.
 
 - Requires [Homebrew](https://brew.sh/) — the installer will prompt you to install it if missing
 - Installs Node.js via `brew install node@22`
-- Installs Docker via Colima (`brew install colima docker`)
 - Creates a launchd plist at `~/Library/LaunchAgents/com.orionomega.gateway.plist`
 - The plist PATH includes `/opt/homebrew/bin` on Apple Silicon and `/usr/local/bin` on Intel
 
@@ -204,7 +211,7 @@ All config can be provided via environment variables instead of (or in addition 
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `ANTHROPIC_API_KEY` | Yes | Your Anthropic API key |
-| `HINDSIGHT_API_KEY` | No | Auth key for Hindsight, if enabled |
+| `REDIS_URL` | No | Memory backend URL; overrides the built-in default of `redis://localhost:6379` (`memory.redis.url` in `config.yaml` wins over this) |
 | `CONFIG_PATH` | No | Override config file path |
 | `ORIONOMEGA_LOG_LEVEL` | No | `error\|warn\|info\|verbose\|debug` |
 | `ORIONOMEGA_NON_INTERACTIVE` | No | Set to `1` to skip all interactive prompts |
@@ -241,11 +248,19 @@ gateway:
       - 'http://localhost:3000'
       - 'http://localhost:*'
 
-hindsight:
-  url: http://localhost:8888
-  defaultBank: default
+memory:
+  redis:
+    url: redis://localhost:6379   # rediss:// for TLS
+    # db: 0
+    # keyPrefix: orionomega       # namespace, so Redis can be shared
   retainOnComplete: true
   retainOnError: true
+  sessionSummary: true
+  # hotWindowSize: 20             # recent messages kept verbatim
+  # recallBudgetTokens: 16384     # max tokens of recalled records per turn
+  # maxTurnTokens: 128000         # hot window + recall + system
+  # memoryMapTokens: 1024         # budget for the Memory Map block
+  # minRelevance: 0.3
 
 orchestration:
   planFirst: true              # always show plan before executing
@@ -344,9 +359,9 @@ Mode is persisted per-session and restored automatically on reconnect. See [`doc
 
 ```
                               ┌──────────────────┐
-                              │    Hindsight      │
-                              │  (Memory Graph)   │
-                              │  banks · models   │
+                              │      Redis        │
+                              │  (Memory Store)   │
+                              │ scopes · records  │
                               └────────┬─────────┘
                                        │ recall/retain
 ┌─────────┐     ┌──────────┐ ┌────────┴─────────┐
@@ -386,22 +401,22 @@ Mode is persisted per-session and restored automatically on reconnect. See [`doc
 ### Package Map
 
 ```
-skills-sdk  hindsight
-    │           │
-    └─────┬─────┘
-          ▼
-        core
-          │
-     ┌────┼────┐
-     ▼    ▼    ▼
-   tui gateway web
+shared  skills-sdk
+   │        │
+   └───┬────┘
+       ▼
+      core
+       │
+  ┌────┼────┐
+  ▼    ▼    ▼
+tui gateway web
 ```
 
 | Package | Description |
 |---------|-------------|
 | `@orionomega/core` | Orchestration engine, Anthropic client, config, memory, CLI |
 | `@orionomega/gateway` | WebSocket + REST server for TUI and Web UI |
-| `@orionomega/hindsight` | Hindsight temporal knowledge graph HTTP client |
+| `@orionomega/shared` | Cross-package utilities (logger, truncation) and the WebSocket protocol contract |
 | `@orionomega/skills-sdk` | Skill manifest types, loader, validator, executor, scaffolding |
 | `@orionomega/tui` | Terminal UI built with Ink (React for CLI) |
 | `@orionomega/web` | Next.js 15 dashboard with ReactFlow DAG visualization |
@@ -415,7 +430,7 @@ skills-sdk  hindsight
 3. **You review and approve** — nothing executes until you say so (or you can set auto-approve)
 4. **Workers run in parallel** — every tool call, finding, and status update streams to your interface in real-time
 5. **Results are aggregated** — summaries, output files, decisions, and findings delivered to you
-6. **Memory is retained** — Hindsight stores what was learned for the next session
+6. **Memory is retained** — records are written to Redis and recalled into the next session's context
 
 ---
 
@@ -502,19 +517,22 @@ export ANTHROPIC_API_KEY=sk-ant-...
 orionomega config
 ```
 
-### Hindsight not connecting
+### Memory not working / Redis not connecting
 
-Hindsight runs in Docker. Verify:
+Memory is stored in Redis, which OrionOmega expects to already be running at
+`redis://localhost:6379`. It is never installed or started for you. Verify:
 
 ```bash
-docker ps | grep hindsight     # should show running container
-curl http://localhost:8888/health   # should return {"status":"healthy"}
+redis-cli ping                 # should print PONG
+orionomega doctor              # reports recall health
 
-# If not running:
-docker start hindsight
-# Or re-run the installer to set it up:
-orionomega update
+# If Redis is not installed:
+brew install redis && brew services start redis                              # macOS
+sudo apt install -y redis-server && sudo systemctl enable --now redis-server # Debian/Ubuntu/Kali
 ```
+
+Using Redis on another host or port? Set `memory.redis.url` in `config.yaml`
+(or the `REDIS_URL` environment variable).
 
 ### Build fails after `pnpm install`
 
@@ -553,11 +571,10 @@ source ~/.zshrc
 
 ### Permission denied on Linux (non-root install)
 
-The installer does not require root. If you see permission errors on system directories, check that `~/.local/bin` is writable and that Docker is accessible:
+The installer does not require root. If you see permission errors on system directories, check that `~/.local/bin` exists and is writable:
 
 ```bash
-groups | grep docker   # must include 'docker'
-# If not: sudo usermod -aG docker $USER && newgrp docker
+mkdir -p ~/.local/bin && test -w ~/.local/bin && echo writable
 ```
 
 ### Kali Linux: `apt` lock or mirror errors
@@ -592,7 +609,7 @@ For full details on the security model, hardening options, and responsible use, 
 - **Graph-based orchestration** — DAG decomposition with topological sorting and parallel execution
 - **Plan-first UX** — shows worker count, estimated cost, estimated time, and reasoning before any token is spent on execution
 - **Agent Mode Toggle** — switch between full orchestration and direct conversational mode per-session or per-message (Ctrl+M in the Web UI)
-- **Hindsight memory** — persistent knowledge graph with banks and mental models, recalled across sessions
+- **Redis-backed memory** — records organised by scope, with `memory_search` / `memory_read` / `memory_pin` tools and a deterministic Memory Map injected each turn, recalled across sessions
 - **Dual interface** — TUI (Ink/React for CLI) and Web UI (Next.js with ReactFlow DAG visualization)
 - **Full transparency** — see every tool call, thinking trace, finding, and event in real-time
 - **Skills system** — extend worker capabilities with self-contained skill packages (manifest + docs + handler scripts)
@@ -610,7 +627,7 @@ For full details on the security model, hardening options, and responsible use, 
 | Runtime | Node.js 22+, TypeScript 5.7+ |
 | Orchestration | Custom DAG engine (Kahn topological sort) |
 | AI | Anthropic Claude (native `fetch`) |
-| Memory | Hindsight temporal knowledge graph |
+| Memory | Self-hosted Redis (`ioredis`) + in-process lexical index |
 | TUI | Ink (React for CLI) |
 | Web UI | Next.js 15, ReactFlow, Zustand, Tailwind CSS |
 | Gateway | Native Node.js HTTP + `ws` WebSocket |
@@ -625,7 +642,7 @@ orionomega/
 ├── packages/
 │   ├── core/           # Config, orchestration engine, Anthropic client, memory, CLI
 │   ├── gateway/        # WebSocket + REST server for client connections
-│   ├── hindsight/      # Hindsight temporal knowledge graph client
+│   ├── shared/         # Shared utilities and the WebSocket protocol contract
 │   ├── tui/            # Terminal UI (Ink/React)
 │   ├── web/            # Next.js dashboard with ReactFlow
 │   └── skills-sdk/     # Skill manifest, loader, validator, executor, scaffolding
@@ -636,6 +653,7 @@ orionomega/
 │   └── web-search/     # DuckDuckGo search
 ├── docs/
 │   ├── architecture.md    # System architecture deep-dive
+│   ├── memory-architecture-v2.md  # Redis memory system design (authoritative)
 │   ├── getting-started.md # First-time user guide
 │   └── skills-guide.md    # Full skill authoring guide
 ├── scripts/

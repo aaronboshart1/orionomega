@@ -21,6 +21,10 @@
       "types": "./dist/logger.d.ts",
       "default": "./dist/logger.js"
     },
+    "./similarity": {
+      "types": "./dist/similarity.d.ts",
+      "default": "./dist/similarity.js"
+    },
     "./truncate": {
       "types": "./dist/truncate.d.ts",
       "default": "./dist/truncate.js"

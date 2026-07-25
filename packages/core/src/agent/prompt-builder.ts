@@ -140,7 +140,7 @@ export async function buildSystemPrompt(context: PromptContext): Promise<string>
     );
   }
 
-  // Inject runtime host identity — always authoritative over Hindsight memories
+  // Inject runtime host identity — always authoritative over recalled records
   const hostInfo = getHostIdentity();
   if (hostInfo) {
     sections.push(`\n## This Host (runtime — authoritative)\n${hostInfo}`);
@@ -157,7 +157,7 @@ export async function buildSystemPrompt(context: PromptContext): Promise<string>
 
 /**
  * Discover the current host's identity at runtime.
- * This is authoritative — overrides any stale Hindsight memories about "this machine."
+ * This is authoritative — overrides any stale recalled records about "this machine."
  */
 function getHostIdentity(): string | null {
   try {

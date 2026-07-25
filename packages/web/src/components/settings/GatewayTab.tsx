@@ -16,12 +16,22 @@ import {
 interface GatewayStatus {
   gateway: { status: string; version: string; uptime: number };
   sessions: { total: number; active: number };
-  hindsight: { connected: boolean; url: string };
+  memory: { health: 'ready' | 'rebuilding' | 'degraded'; busy: boolean; pct?: number; reason?: string };
   workflows: { active: number };
   systemHealth: string;
 }
 
-type ActionState = 'idle' | 'restarting' | 'starting' | 'polling' | 'restarting-hindsight';
+type ActionState = 'idle' | 'restarting' | 'starting' | 'polling';
+
+/**
+ * Memory reports what it can do, never whether a socket is open — so this
+ * card never renders "Disconnected".
+ */
+const MEMORY_VALUE = {
+  ready: 'Ready',
+  rebuilding: 'Rebuilding',
+  degraded: 'Degraded',
+} as const;
 
 function formatUptime(seconds: number): string {
   const d = Math.floor(seconds / 86400);
@@ -125,26 +135,6 @@ export function GatewayTab() {
     }, 2000);
   }, [fetchStatus]);
 
-  const handleRestartHindsight = async () => {
-    setActionState('restarting-hindsight');
-    setError(null);
-    try {
-      const res = await fetch('/api/gateway/api/hindsight/restart', { method: 'POST', signal: AbortSignal.timeout(20000) });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
-        throw new Error((body as { error?: string }).error || `Hindsight restart failed (${res.status})`);
-      }
-      // Refresh status so the Hindsight stat card reflects the new state.
-      await fetchStatus();
-    } catch (err) {
-      if (mountedRef.current) {
-        setError(err instanceof Error ? err.message : 'Failed to restart hindsight');
-      }
-    } finally {
-      if (mountedRef.current) setActionState('idle');
-    }
-  };
-
   const handleRestart = async () => {
     setActionState('restarting');
     setError(null);
@@ -212,13 +202,6 @@ export function GatewayTab() {
         </div>
       )}
 
-      {actionState === 'restarting-hindsight' && (
-        <div className="flex items-center gap-2 rounded-md border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-xs text-blue-400">
-          <Loader2 size={14} className="animate-spin" />
-          <span>Restarting hindsight…</span>
-        </div>
-      )}
-
       {error && (
         <div className="flex items-center gap-2 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-400">
           <XCircle size={14} />
@@ -245,10 +228,14 @@ export function GatewayTab() {
               value={status.systemHealth === 'ok' ? 'Healthy' : 'Degraded'}
             />
             <StatCard
-              icon={status.hindsight.connected ? Wifi : WifiOff}
-              label="Hindsight"
-              value={status.hindsight.connected ? 'Connected' : 'Disconnected'}
-              sub={status.hindsight.url}
+              icon={status.memory.health === 'ready' ? Wifi : WifiOff}
+              label="Memory"
+              value={MEMORY_VALUE[status.memory.health]}
+              sub={
+                status.memory.health === 'rebuilding' && status.memory.pct !== undefined
+                  ? `${Math.round(status.memory.pct)}% rebuilt`
+                  : status.memory.reason
+              }
             />
             <StatCard
               icon={Server}
@@ -271,15 +258,6 @@ export function GatewayTab() {
             >
               <RotateCw size={12} />
               Restart Gateway
-            </button>
-            <button
-              onClick={handleRestartHindsight}
-              disabled={busy}
-              title="Runs `docker restart hindsight` on the host"
-              className="flex items-center gap-1.5 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs font-medium text-amber-400 transition-colors hover:bg-amber-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <RotateCw size={12} />
-              Restart Hindsight
             </button>
           </div>
         </>
@@ -309,8 +287,7 @@ export function GatewayTab() {
 
       <div className="rounded-md border border-zinc-800 bg-zinc-900/50 px-3 py-2 text-xs text-zinc-500 leading-relaxed">
         The gateway manages agent sessions, WebSocket connections, and API routing.
-        Use the controls above to restart the gateway (runs <span className="text-zinc-400">orionomega gateway restart</span>) or
-        the Hindsight memory container (runs <span className="text-zinc-400">docker restart hindsight</span>).
+        Use the control above to restart the gateway (runs <span className="text-zinc-400">orionomega gateway restart</span>).
         Configuration changes (port, bind address) are available in the <span className="text-zinc-400">OmegaClaw</span> tab.
       </div>
     </div>

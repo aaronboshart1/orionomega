@@ -1,14 +1,14 @@
 /**
  * @module memory/run-artifact-collector
  * Collects all .md files produced during an orchestration run and stores them
- * to Hindsight memory, tagged with the run ID. This ensures the memory system
- * retains the full detail of every run — not just summaries — so that when a
- * user replies to a run or asks about past work, the system can recall the
- * complete findings, analysis, code reviews, and reports.
+ * to memory, tagged with the run ID. This ensures the memory system retains the
+ * full detail of every run — not just summaries — so that when a user replies to
+ * a run or asks about past work, the system can recall the complete findings,
+ * analysis, code reviews, and reports.
  *
  * Design:
  * - Scans the run output directory for .md files (excluding node_modules)
- * - Chunks large files into segments that fit within Hindsight's token budget
+ * - Chunks large files into segments that fit the per-record token budget
  * - Stores each chunk with context='run_artifact' and tags=[runId, nodeLabel]
  * - Stores a manifest index mapping runId → all artifact paths
  * - Skips files that are too small to be meaningful (<50 chars)
@@ -18,19 +18,20 @@
 
 import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { join, relative, basename } from 'node:path';
-import { HindsightClient } from '@orionomega/hindsight';
-import { estimateTokens, smartTruncate, compressMemoryContent } from '@orionomega/hindsight';
+import type { MemoryStore } from './store.js';
+import { estimateTokens, smartTruncate, compressMemoryContent } from '@orionomega/shared/similarity';
 import { createLogger } from '../logging/logger.js';
 
 const log = createLogger('run-artifact-collector');
 
-/** Maximum tokens per single memory chunk. Hindsight handles up to ~8K but we aim for digestible chunks. */
+/** Maximum tokens per single memory chunk — kept well under the assembler's
+ *  per-record budget so recalled chunks stay digestible. */
 const MAX_CHUNK_TOKENS = 2048;
 
 /** Minimum content length (chars) to bother storing. Filters out trivially small files. */
 const MIN_CONTENT_CHARS = 50;
 
-/** Maximum total tokens per run to prevent a single massive run from overwhelming the memory bank. */
+/** Maximum total tokens per run to prevent a single massive run from overwhelming the scope. */
 const MAX_TOTAL_TOKENS_PER_RUN = 100_000;
 
 /** Directories to always skip when scanning for .md files. */
@@ -47,11 +48,11 @@ const SKIP_FILE_PATTERNS = [
 ];
 
 export interface RunArtifactCollectorConfig {
-  /** Hindsight client for storing memories. */
-  hindsight: HindsightClient;
-  /** Target bank ID for storing run artifacts. */
+  /** Memory store. */
+  store: MemoryStore;
+  /** Target scope for storing run artifacts. */
   bankId: string;
-  /** Originating gateway session id — when set, every retained memory is
+  /** Originating gateway session id — when set, every retained record is
    *  tagged `session:<sessionId>` for provenance. Recall is unaffected. */
   sessionId?: string;
   /** Maximum tokens per chunk. Default: 2048. */
@@ -65,7 +66,7 @@ export interface RunArtifactCollectorConfig {
 export interface CollectionResult {
   /** Number of .md files found in the run directory. */
   filesFound: number;
-  /** Number of memory items stored (may be > filesFound due to chunking). */
+  /** Number of records stored (may be > filesFound due to chunking). */
   itemsStored: number;
   /** Number of files skipped (too small, in skip list, etc.). */
   filesSkipped: number;
@@ -78,7 +79,7 @@ export interface CollectionResult {
 }
 
 /**
- * Collects and stores all .md artifacts from a completed run to Hindsight memory.
+ * Collects and stores all .md artifacts from a completed run to memory.
  *
  * Usage:
  * ```ts
@@ -87,7 +88,7 @@ export interface CollectionResult {
  * ```
  */
 export class RunArtifactCollector {
-  private readonly hs: HindsightClient;
+  private readonly store: MemoryStore;
   private readonly bankId: string;
   private readonly sessionId: string | undefined;
   private readonly maxChunkTokens: number;
@@ -95,7 +96,7 @@ export class RunArtifactCollector {
   private readonly minContentChars: number;
 
   constructor(config: RunArtifactCollectorConfig) {
-    this.hs = config.hindsight;
+    this.store = config.store;
     this.bankId = config.bankId;
     this.sessionId = config.sessionId;
     this.maxChunkTokens = config.maxChunkTokens ?? MAX_CHUNK_TOKENS;
@@ -103,14 +104,14 @@ export class RunArtifactCollector {
     this.minContentChars = config.minContentChars ?? MIN_CONTENT_CHARS;
   }
 
-  /** Tags applied to every memory written by this collector. */
+  /** Tags applied to every record written by this collector. */
   private get retentionTags(): string[] | undefined {
     return this.sessionId ? [`session:${this.sessionId}`] : undefined;
   }
 
   /**
    * Scan a run's output directory for all .md files, chunk them, and store
-   * each chunk to Hindsight tagged with the run ID.
+   * each chunk to memory tagged with the run ID.
    *
    * @param runId - The workflow/run ID (e.g. 'fa798483-c4da-433d-ab96-64a7bb6b0f48')
    * @param runDir - Absolute path to the run output directory
@@ -188,9 +189,9 @@ export class RunArtifactCollector {
             break;
           }
 
-          // Store to Hindsight
+          // Store the chunk
           try {
-            await this.hs.retainOne(this.bankId, chunk.content, 'run_artifact', this.retentionTags);
+            await this.store.retainOne(this.bankId, chunk.content, 'run_artifact', this.retentionTags);
             result.itemsStored++;
             result.totalTokens += chunkTokens;
           } catch (err) {
@@ -211,7 +212,7 @@ export class RunArtifactCollector {
     if (result.itemsStored > 0) {
       try {
         const manifest = this.buildManifest(runId, runDir, mdFiles, taskSummary, result);
-        await this.hs.retainOne(this.bankId, manifest, 'run_manifest', this.retentionTags);
+        await this.store.retainOne(this.bankId, manifest, 'run_manifest', this.retentionTags);
         result.itemsStored++;
         result.totalTokens += estimateTokens(manifest);
       } catch (err) {
@@ -480,21 +481,21 @@ export class RunArtifactCollector {
  * Convenience function to collect and store run artifacts.
  * Creates a RunArtifactCollector and runs collection.
  *
- * @param hindsight - Hindsight client
- * @param bankId - Target bank for storage
+ * @param store - Memory store
+ * @param bankId - Target scope for storage
  * @param runId - The workflow/run ID
  * @param runDir - Path to the run output directory
  * @param taskSummary - Brief task description
  * @returns Collection statistics
  */
 export async function collectRunArtifacts(
-  hindsight: HindsightClient,
+  store: MemoryStore,
   bankId: string,
   runId: string,
   runDir: string,
   taskSummary: string,
   sessionId?: string,
 ): Promise<CollectionResult> {
-  const collector = new RunArtifactCollector({ hindsight, bankId, sessionId });
+  const collector = new RunArtifactCollector({ store, bankId, sessionId });
   return collector.collectAndStore(runId, runDir, taskSummary);
 }

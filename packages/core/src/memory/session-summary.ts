@@ -7,7 +7,7 @@
  *      rapid WS disconnect storms from generating excessive summaries.
  */
 
-import { HindsightClient } from '@orionomega/hindsight';
+import type { MemoryStore } from './store.js';
 import { AnthropicClient, type ContentBlock } from '../anthropic/client.js';
 import { createLogger } from '../logging/logger.js';
 import { contentToText } from '../utils/content.js';
@@ -129,7 +129,7 @@ export interface SummarizerStatus {
 }
 
 /**
- * Generates concise session summaries and retains them to Hindsight
+ * Generates concise session summaries and retains them to memory
  * for continuity across sessions.
  */
 export class SessionSummarizer {
@@ -144,7 +144,7 @@ export class SessionSummarizer {
   private _failureCount = 0;
 
   constructor(
-    private readonly hs: HindsightClient,
+    private readonly hs: MemoryStore,
     private readonly anthropic: AnthropicClient,
     private readonly model: string,
   ) {}
@@ -248,7 +248,7 @@ export class SessionSummarizer {
           content: summary,
           context: 'session_summary',
           timestamp: new Date().toISOString(),
-          document_id: sessionId ? `session-summary-${sessionId}` : `session-summary-${Date.now()}`,
+          documentId: sessionId ? `session-summary-${sessionId}` : `session-summary-${Date.now()}`,
           ...(tags ? { tags } : {}),
         }]),
         'Session summary retain (core)',
@@ -263,7 +263,7 @@ export class SessionSummarizer {
               content: summary,
               context: 'project_update',
               timestamp: new Date().toISOString(),
-              document_id: sessionId ? `project-update-${sessionId}` : `project-update-${Date.now()}`,
+              documentId: sessionId ? `project-update-${sessionId}` : `project-update-${Date.now()}`,
               ...(tags ? { tags } : {}),
             }]),
             `Session summary retain (${projectBank})`,

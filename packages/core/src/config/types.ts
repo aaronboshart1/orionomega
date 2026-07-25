@@ -31,31 +31,45 @@ export interface OrionOmegaConfig {
     sessionBudgetCapUsd?: number;
   };
 
-  hindsight: {
-    /** Hindsight server URL. */
-    url: string;
-    /** Default memory bank name. */
-    defaultBank: string;
+  /**
+   * Persistent memory. Backed by the self-hosted Redis `MemoryStore`
+   * (see docs/memory-architecture-v2.md). Redis is a hard dependency:
+   * there is no external memory server and no API key.
+   */
+  memory: {
+    /** Redis connection settings for the memory store. */
+    redis: {
+      /** Connection URL, e.g. `redis://localhost:6379`. */
+      url: string;
+      /** Optional password (or use a `redis://user:pass@host` URL). */
+      password?: string;
+      /** Optional ACL username. */
+      username?: string;
+      /** Redis logical database number. Default: 0. */
+      db?: number;
+      /** Key namespace prefix for every key this store writes. Default: `orionomega`. */
+      keyPrefix?: string;
+      /** Connect over TLS (`rediss://`). Default: false. */
+      tls?: boolean;
+    };
+    /** Number of recent messages to keep verbatim in the hot window. Default: 20. */
+    hotWindowSize?: number;
+    /** Max tokens to spend on recalled records per turn. Default: 16384. */
+    recallBudgetTokens?: number;
+    /** Max total input tokens per turn (hot window + recall + system). Default: 128000. */
+    maxTurnTokens?: number;
+    /** Token budget for the memory map (scope inventory) block. Default: 1024. */
+    memoryMapTokens?: number;
+    /** Drop recalled records scoring below this relevance (0–1). Default: 0.3. */
+    minRelevance?: number;
+    /** Similarity threshold for storage-time deduplication (0–1). Default: 0.85. */
+    deduplicationThreshold?: number;
     /** Retain memories on successful workflow completion. */
     retainOnComplete: boolean;
     /** Retain memories on workflow error. */
     retainOnError: boolean;
-    /** Optional API key for authenticating with the Hindsight server. Falls back to HINDSIGHT_API_KEY env var. */
-    apiKey?: string;
-    /** Number of recent messages to keep verbatim in the hot window. Default: 20. */
-    hotWindowSize?: number;
-    /** Max tokens to request from Hindsight recall per turn. Default: 16384. */
-    recallBudgetTokens?: number;
-    /** Max total input tokens per turn (hot window + recall + system). Default: 128000. */
-    maxTurnTokens?: number;
-    /** Minimum memory quality score to retain (0–1). Default: 0.3. */
-    qualityThreshold?: number;
-    /** Similarity threshold for storage-time deduplication (0–1). Default: 0.85. */
-    deduplicationThreshold?: number;
-    /** Number of consecutive failures before the circuit breaker opens. Default: 5. */
-    circuitBreakerThreshold?: number;
-    /** Milliseconds the circuit breaker stays open before attempting half-open. Default: 60000. */
-    circuitBreakerCooldown?: number;
+    /** Write an end-of-session summary record (§12.1). Default: true. */
+    sessionSummary?: boolean;
   };
 
   models: {

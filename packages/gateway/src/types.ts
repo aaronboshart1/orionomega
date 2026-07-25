@@ -186,6 +186,46 @@ export type CodingEventPayload =
   | { type: 'coding:commit:completed'; payload: CodingCommitCompletedPayload }
   | { type: 'coding:session:completed'; payload: CodingSessionCompletedPayload };
 
+// ── Memory activity ───────────────────────────────────────────────────────────
+
+/**
+ * What the memory store can currently do.
+ *
+ * - `ready`      — recall is serving from a warm index.
+ * - `rebuilding` — index is warming; recall may be incomplete (see `pct`).
+ * - `degraded`   — recall is unavailable or lossy (see `reason`).
+ *
+ * Deliberately not a connectivity flag: the UI never renders "offline".
+ */
+export type MemoryHealth = 'ready' | 'rebuilding' | 'degraded';
+
+/** Reason a memory store is `rebuilding` or `degraded`. */
+export type MemoryDegradedReason = 'redis_unreachable' | 'index_cold' | 'write_failed';
+
+/** Payload of the `memory_activity` server message. */
+export interface MemoryActivity {
+  /** True while the store is performing I/O (spinner in the status bar). */
+  busy: boolean;
+  health: MemoryHealth;
+  /** Rebuild progress, 0-100. Only meaningful when `health === 'rebuilding'`. */
+  pct?: number;
+  reason?: MemoryDegradedReason;
+  /** Current operation label, e.g. `recall` / `retain`. */
+  op?: string;
+  /** Records touched by the current operation. */
+  count?: number;
+}
+
+/** A single row in the live memory activity feed. */
+export interface MemoryEventRow {
+  id: string;
+  timestamp: string;
+  op: string;
+  detail: string;
+  scope?: string;
+  meta?: Record<string, unknown>;
+}
+
 // ── Server Message ────────────────────────────────────────────────────────────
 
 /** Gateway → Client message envelope. */
@@ -200,7 +240,7 @@ export interface ServerMessage {
     | 'intervention_request'
     | 'intervention_resolved'
     | 'pong' | 'file_content'
-    | 'hindsight_status' | 'memory_event' | 'memory_history'
+    | 'memory_activity' | 'memory_event' | 'memory_history'
     | 'coding_event'
     | 'direct_started'
     | 'direct_complete'
@@ -225,13 +265,13 @@ export interface ServerMessage {
   sessionStatus?: { model: string; inputTokens: number; outputTokens: number; cacheCreationTokens?: number; cacheReadTokens?: number; maxContextTokens: number; sessionCostUsd?: number };
   /** Live burn-rate snapshot ($/hr + spend series + cap status) — Task #245. */
   burnRate?: import('@orionomega/core').BurnRateSnapshot;
-  hindsightStatus?: { connected: boolean; busy: boolean };
-  memoryEvent?: { id: string; timestamp: string; op: string; detail: string; bank?: string; meta?: Record<string, unknown> };
+  memoryActivity?: MemoryActivity;
+  memoryEvent?: MemoryEventRow;
   step?: { id: string; name: string; status: 'pending' | 'active' | 'done'; startedAt?: number; completedAt?: number; elapsedMs?: number; detail?: string };
   error?: string;
   path?: string;
   history?: Array<{ id: string; role: string; content: string; timestamp: string; type?: string; metadata?: Record<string, unknown> }>;
-  memoryEvents?: Array<{ id: string; timestamp: string; op: string; detail: string; bank?: string; meta?: Record<string, unknown> }>;
+  memoryEvents?: MemoryEventRow[];
 
   // New DAG lifecycle fields
   dagDispatch?: {
@@ -418,7 +458,8 @@ export interface ServerMessage {
 export interface SystemStatus {
   activeWorkflows: WorkflowSummary[];
   systemHealth: 'ok' | 'degraded' | 'error';
-  hindsightConnected: boolean;
+  /** What the memory store can currently do. Never a connectivity flag. */
+  memoryHealth: MemoryHealth;
   uptime: number;
 }
 

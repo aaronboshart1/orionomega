@@ -6,6 +6,65 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased]
+
+### Summary
+
+The memory system was rebuilt on self-hosted Redis. Hindsight is removed
+entirely — the `packages/hindsight` package, its separate Docker container, the
+HTTP transport, and every server-side feature built on it. Context is still
+rebuilt from memory on every turn within an explicit token budget; that property
+is preserved, the implementation behind it is not. The authoritative design is
+[`docs/memory-architecture-v2.md`](docs/memory-architecture-v2.md).
+
+**This is a BREAKING release. There is no migration path — a fresh install is
+required.** Existing Hindsight data is not read, converted, or aliased.
+
+### Added
+
+- **Redis-backed memory store.** `RedisMemoryStore` implements the
+  backend-neutral `MemoryStore` interface
+  (`packages/core/src/memory/store.ts`). Redis is authoritative; durability is
+  AOF `everysec` plus RDB. Redis is expected at `redis://localhost:6379` and is
+  **not** provisioned or started by OrionOmega.
+- **Agent-facing memory tools.** `memory_search` (ranked lexical search across
+  scopes, with an explicit `no_results` status), `memory_read` (contiguous
+  verbatim span by segment or `seq` radius, hard-capped), and `memory_pin`
+  (durable facts, exempt from TTL).
+- **Memory Map injection.** A deterministic, token-bounded table of contents is
+  injected every turn alongside the verbatim hot window, naming the segments
+  that exist beyond it so the agent knows when to reach for a tool. No LLM in
+  the hot path.
+- **In-process `MemoryIndex`.** Word and character-trigram postings built at
+  boot from Redis; scoring is identical to `computeClientRelevance` — lexical
+  only, no embeddings and no LLM in retrieval.
+
+### Changed
+
+- **BREAKING — config moved from `hindsight:` to `memory:`**, with connection
+  settings under a `memory.redis` sub-block (`url`, `db`, `keyPrefix`, `tls`,
+  credentials). The `hindsight:` block is no longer read.
+- **BREAKING — vocabulary.** Banks are now **scopes** (`core`,
+  `project-<slug>`, `infra`); memory items are now **records**.
+- `ContextAssembler` was rewritten against the budget property: hot window +
+  budgeted recall + Memory Map.
+- Recall now orders strictly by descending relevance.
+- The status surface reports recall health rather than backend connectivity.
+- Build order is now `shared` → `skills-sdk` → `core` → `gateway`.
+- `HINDSIGHT_API_KEY` is gone; the memory backend is configured via
+  `memory.redis.url` or the `REDIS_URL` environment variable.
+
+### Removed
+
+- `packages/hindsight` and the Hindsight Docker container.
+- Banks and bank creation, `BankManager`, `SelfKnowledge`, mental models,
+  `reflect`, and directives.
+- Fact classes (`world` / `experience` / `observation`) as distinct kinds.
+- Cross-project federation, temporal-diversity recall, and budget tiers.
+- `CompactionFlush`, `LessonsRollup`, and `SessionBootstrap`.
+
+---
+
 ## [0.1.1] — 2026-04-04
 
 ### Summary

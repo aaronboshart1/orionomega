@@ -3,19 +3,22 @@
  * End-to-end tests for the client-side recall pipeline:
  * score → threshold-filter → deduplicate, and classification → strategy.
  *
- * Exercises the real scoring and classification functions against realistic
- * memory fixtures, at the production 0.15 relevance floor. Migrated from the
- * unrun root `tests/04-integration.test.ts`.
+ * Exercises the real scoring functions against realistic memory fixtures, at
+ * the production 0.15 relevance floor. Migrated from the unrun root
+ * `tests/04-integration.test.ts`.
+ *
+ * The classification half of this file was retired with the memory v2 rewrite:
+ * `classifyQuery` / `getRecallStrategy` and the per-query-type RecallStrategy
+ * table were deleted along with the rest of the Hindsight-era assembler
+ * accretion (docs/memory-architecture-v2.md §12). `isExternalAction` is the
+ * only part of that classifier that survives, and it is covered by
+ * context-assembler-properties.test.ts.
  */
 
 import { describe, it, expect } from 'vitest';
-import { computeClientRelevance, deduplicateByContent } from '@orionomega/hindsight';
-import { classifyQuery, getRecallStrategy } from '../query-classifier.js';
+import { computeClientRelevance, deduplicateByContent } from '@orionomega/shared/similarity';
 
-/**
- * When the Hindsight API returns all-zero relevance, the client falls back to
- * lexical scoring, whose useful range is capped by this ceiling.
- */
+/** The production relevance floor. Recall is lexical — there is no other channel. */
 const CLIENT_FALLBACK_CEILING = 0.15;
 
 describe('recall pipeline — score, filter, deduplicate', () => {
@@ -62,38 +65,5 @@ describe('recall pipeline — score, filter, deduplicate', () => {
     expect(scored.find((s) => s.content.includes('SQL injection'))!.relevance).toBeGreaterThan(0);
     expect(scored.filter((r) => r.relevance >= CLIENT_FALLBACK_CEILING).some((f) => f.content.includes('SQL')))
       .toBe(true);
-  });
-});
-
-describe('recall pipeline — classification drives strategy', () => {
-  it.each([
-    ['yes', 'task_continuation'],
-    ['we discussed the database migration earlier in great detail', 'historical_reference'],
-    ['search the web for react best practices', 'external_action'],
-  ])('routes "%s" to %s and derives a consistent recall strategy', (text, expectedType) => {
-    const classification = classifyQuery(text);
-    expect(classification.type).toBe(expectedType);
-
-    const strategy = getRecallStrategy(classification);
-    if (expectedType === 'external_action') {
-      expect(strategy.minRelevance).toBe(1.0);
-    } else {
-      expect(strategy.minRelevance).toBeLessThanOrEqual(CLIENT_FALLBACK_CEILING);
-    }
-  });
-
-  it('treats a decision query as decision or historical, with a reachable threshold', () => {
-    const classification = classifyQuery('the decision was to use PostgreSQL instead of Redis for storage');
-    expect(['decision_lookup', 'historical_reference']).toContain(classification.type);
-
-    expect(getRecallStrategy(classification).minRelevance).toBeLessThanOrEqual(CLIENT_FALLBACK_CEILING);
-  });
-
-  it('gives a historical query broad temporal coverage, a high budget, and preferred categories', () => {
-    const strategy = getRecallStrategy(classifyQuery('what did we decide about the auth approach last month'));
-
-    expect(strategy.temporalDiversityRatio).toBeGreaterThan(0.2);
-    expect(strategy.recallBudget).toBe('high');
-    expect(strategy.preferredContextCategories.length).toBeGreaterThan(0);
   });
 });

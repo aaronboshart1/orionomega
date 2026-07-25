@@ -624,7 +624,7 @@ export class WorkerProcess {
     skillIds?: string[];
   }): Promise<string> {
     // If there's an explicit system prompt override, use it — but still
-    // prepend any recalled hindsight context so the recall isn't discarded.
+    // prepend any recalled memory context so the recall isn't discarded.
     if (agentConfig.systemPrompt) {
       const contextSection = this.context
         ? `## Relevant Context\n${this.context}\n\n`

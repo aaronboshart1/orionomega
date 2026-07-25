@@ -97,7 +97,8 @@ src/
 │                     #   WorkerProcess, GraphExecutor, Planner, RecoveryManager
 ├── anthropic/        # Anthropic API client, agent loop, built-in tools
 ├── agent/            # MainAgent, system prompt builder, conversation management
-├── memory/           # Hindsight integration, recall/retain, session bootstrap
+├── memory/           # MemoryStore + RedisMemoryStore, lexical index, context
+│                     #   assembler, Memory Map, agent memory tools, retention
 ├── logging/          # Structured logger with levels, file output, audit events
 ├── models/           # Model discovery and selection
 ├── commands/         # File-based slash command loader

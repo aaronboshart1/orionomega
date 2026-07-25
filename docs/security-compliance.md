@@ -123,17 +123,59 @@ Wildcard origins (`*`) are never appropriate when `auth.mode: api-key` is in use
 
 ## Data Security
 
-### Memory Data (Hindsight)
+### Memory Data (Redis)
 
-Conversation memories, user preferences, decisions, and session summaries are stored in the Hindsight server. These may contain sensitive information.
+**All memory records live in Redis** — conversation turns, user preferences,
+decisions, findings, session summaries, run artifacts, and pinned facts. Redis
+is authoritative: there is no second copy and no write-ahead log. Anyone with
+read access to that Redis instance can read everything the agent remembers.
+
+OrionOmega does not provision Redis. Securing it is your responsibility.
+
+**What is stored, and what is searchable:**
+
+- **Everything is stored. Not everything is indexed.** User and assistant turns
+  and `tool_use` records join the search corpus. `system` records and
+  **`tool_result` records are stored but NOT indexed for search** — the latter
+  are the volume driver and are reachable only by an explicit range read
+  (`memory_read`), never by `memory_search`. This narrows the exposure surface
+  of tool output, but it does not remove it: the content is still in Redis.
+- **Secrets in tool output are redacted before persistence.** `exec` output,
+  environment dumps, and file reads are exactly where credentials land. Matched
+  spans are replaced in place with a visible marker (e.g.
+  `[REDACTED:pem_private_key]`) so the redaction is auditable rather than
+  silent. The record itself is never dropped — `memory_read` promises a
+  *contiguous verbatim span*, and a dropped record is a hole in the middle of
+  one. The pattern set is a deliberately narrowed, high-precision subset
+  (PEM/X.509 private keys, JWTs, explicit `api_key` / `password` /
+  `client_secret` forms, DB connection strings with embedded credentials, and
+  vendor-prefixed tokens). Broad matchers such as bare UUIDs are excluded
+  because they would shred a large fraction of legitimate tool output.
+- Redaction is a mitigation, not a guarantee. Treat the memory store as
+  containing sensitive data regardless.
 
 **Deployment requirements:**
-- Hindsight must run on a trusted network segment (not exposed to the internet)
-- If Hindsight runs on a separate host, the connection between OrionOmega and Hindsight must traverse an encrypted channel (VPN, WireGuard, or mTLS)
-- Back up the Hindsight data store according to your data retention policy
-- Configure `hindsight.url` with HTTPS if the Hindsight server supports it
 
-**Data at rest:** Hindsight's storage backend (typically SQLite or PostgreSQL) should use disk encryption (LUKS, FileVault, or encrypted EBS volumes in cloud deployments).
+- Bind Redis to loopback, or keep it on a trusted network segment. **Never
+  expose it to the internet** — Redis is unauthenticated by default.
+- Set `requirepass` (or an ACL user) and configure it via
+  `memory.redis.password` / `memory.redis.username`, or embed it in
+  `memory.redis.url`. The URL is redacted before it is written to any log.
+- If Redis runs on a separate host, use TLS (`rediss://`, `memory.redis.tls:
+  true`) or tunnel the connection (VPN, WireGuard, stunnel).
+- Set a `keyPrefix` and/or a dedicated `db` when the instance is shared, so
+  memory keys are distinguishable from other tenants of that Redis.
+- Back up the Redis data directory according to your data retention policy.
+  Durability is AOF `everysec` plus RDB snapshots — both land on disk.
+
+**Data at rest:** the RDB snapshot and AOF file are plaintext on disk. Put the
+Redis data directory on an encrypted volume (LUKS, FileVault, or an encrypted
+EBS volume), and apply the same treatment to any backup you take of it.
+
+**Deletion.** Because Redis is authoritative rather than an append-only log,
+records can genuinely be deleted. Purging a scope removes it and everything in
+it; a background GC pass also physically deletes expired, unpinned records
+rather than merely filtering them at read time.
 
 ### Skill Secrets
 
@@ -275,15 +317,27 @@ autonomous:
 
 All AI inference runs through the Anthropic API. Conversation content and workflow context are sent to Anthropic's servers. Review Anthropic's data processing agreement and terms of service for your jurisdiction's data residency requirements.
 
-Memory data stored in Hindsight remains on your infrastructure.
+Memory data stored in Redis remains on your infrastructure.
 
 ### Data Retention
 
-OrionOmega does not implement automatic memory expiration. For GDPR/CCPA compliance or organizational data retention policies:
+Records carry a per-category TTL, applied as a read-time filter and enforced by
+a background GC pass that physically deletes expired, unpinned records. A TTL of
+`0` means *never expires* — several categories (decisions, preferences,
+architecture, lessons, infrastructure, run artifacts) are retained indefinitely
+by design, and pinned records are exempt from expiry entirely.
 
-1. Implement a scheduled job to delete Hindsight memories older than your retention window
-2. On user deletion requests, delete all banks associated with that user's namespace
-3. Workspace artifacts in `workspace.path` should be included in your retention/deletion workflows
+That default is not a retention policy. For GDPR/CCPA compliance or
+organizational data retention requirements:
+
+1. Set explicit retention windows rather than relying on the built-in
+   category TTLs, and verify the GC pass is running
+2. On deletion requests, purge the relevant scopes — this genuinely removes the
+   data, since Redis is authoritative rather than an append-only log
+3. Include Redis backups (RDB/AOF snapshots) in the deletion workflow; deleting
+   from the live instance does not touch a snapshot already on disk
+4. Workspace artifacts in `workspace.path` should be included in your
+   retention/deletion workflows
 
 ### Credential Rotation
 
@@ -292,7 +346,7 @@ OrionOmega does not implement automatic memory expiration. For GDPR/CCPA complia
 | Anthropic API key | `config.yaml` → `models.apiKey` or `${ANTHROPIC_API_KEY}` | Update key in Anthropic console, rotate env var or config, restart gateway |
 | Gateway API key | SHA-256 hash in `config.yaml` | Generate new key, update hash in config, notify all clients, restart gateway |
 | Skill tokens | `config.yaml` → `skills.settings` | Update via `orionomega skill setup <name>`, restart gateway |
-| Hindsight API key | `HINDSIGHT_API_KEY` env var | Rotate on Hindsight server, update env var, restart gateway |
+| Redis password | `config.yaml` → `memory.redis.password` (or embedded in `memory.redis.url`) | Update `requirepass`/ACL on the Redis server, update config, restart gateway |
 
 ---
 
@@ -306,13 +360,14 @@ Complete before any deployment accessible beyond localhost:
 - [ ] TLS termination at reverse proxy for any external-facing deployment
 - [ ] Anthropic API key injected via environment variable (`${ANTHROPIC_API_KEY}`), not hardcoded
 - [ ] Skill secrets configured via `password`-type settings (not env vars in shell profiles)
-- [ ] Hindsight server on trusted network; traffic encrypted if multi-host
+- [ ] Redis bound to loopback or a trusted segment, `requirepass`/ACL set, TLS (`rediss://`) if multi-host
+- [ ] Redis data directory (RDB + AOF) on an encrypted volume
 - [ ] `logging.level: info` (not `verbose` or `debug` in production)
 - [ ] Log directory permissions: `640` or `600`; log forwarding to SIEM configured
 - [ ] `autonomous.humanGates` populated with all destructive action types
 - [ ] `autonomous.maxBudgetUsd` set if autonomous mode is enabled
 - [ ] Workspace directory (`workspace.path`) permissions reviewed
-- [ ] Data retention policy applied to Hindsight storage and workspace artifacts
+- [ ] Data retention policy applied to Redis storage (including backups) and workspace artifacts
 - [ ] Anthropic DPA reviewed for data residency requirements
 - [ ] Credential rotation schedule established (recommend: quarterly)
 
@@ -327,8 +382,10 @@ These are documented limitations that will be addressed in future releases:
 | API key authentication uses SHA-256 without salt | Rainbow table attack on stolen config files | Use a key with ≥ 256 bits entropy; rotate regularly |
 | No built-in TLS | MITM on non-loopback traffic | Mandatory: terminate TLS at reverse proxy |
 | Prompt injection not fully mitigated | External content may influence agent behavior | Use `humanGates` for destructive actions; review plans |
-| Hindsight connection is unauthenticated by default | Any local process can read/write memories | Firewall Hindsight port; bind to loopback |
-| No per-user bank isolation in single-namespace deployments | Multi-tenant data co-mingling | Use separate namespaces per tenant |
+| Redis is unauthenticated by default | Any process that can reach the port reads and writes all memory | Bind to loopback; set `requirepass`/ACL; firewall port 6379 |
+| Memory records at rest are plaintext in RDB/AOF | Data-at-rest exposure via disk or backup theft | Put the Redis data directory and its backups on an encrypted volume |
+| Tool output is stored (unindexed) after pattern-based redaction | A secret in a novel format may survive redaction | Avoid printing credentials in `exec`; purge the scope if one leaks |
+| No multi-tenant isolation | Scopes partition memory, but not by user or tenant | Run a separate instance per tenant, or a separate `memory.redis.db`/`keyPrefix` |
 | Workspace artifacts not encrypted | Data at rest exposure | Use encrypted filesystem for workspace directory |
 
 For security vulnerability reports, contact: security@orionomega.dev (or submit via your enterprise support channel).

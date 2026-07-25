@@ -570,12 +570,17 @@ export function handleServerMessage(msg: ServerMessage, ctx: MessageHandlerConte
       }
       break;
     }
-    case 'hindsight_status': {
-      const hs = msg.hindsightStatus;
-      if (hs) {
-        useConnectionStore
-          .getState()
-          .setHindsightStatus(!!hs.connected, !!hs.busy);
+    case 'memory_activity': {
+      const activity = msg.memoryActivity;
+      if (activity) {
+        useConnectionStore.getState().setMemoryActivity({
+          busy: !!activity.busy,
+          health: activity.health,
+          pct: activity.pct,
+          reason: activity.reason,
+          op: activity.op,
+          count: activity.count,
+        });
       }
       break;
     }

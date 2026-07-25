@@ -18,7 +18,7 @@ import type { ContentBlock } from '../anthropic/client.js';
  * single text string suitable for token estimation, retention, transcripts,
  * and log lines. Image / document blocks are rendered as short
  * `[image: <media_type>]` / `[document: <media_type>]` placeholders so the
- * binary payload never bloats Hindsight or summary requests.
+ * binary payload never bloats retained records or summary requests.
  */
 export function contentToText(content: unknown): string {
   if (typeof content === 'string') return content;

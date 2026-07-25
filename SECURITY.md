@@ -34,7 +34,7 @@ The safety model is:
 
 1. **Plan-first** — the main agent proposes a DAG of tasks; nothing executes until you approve
 2. **Transparent execution** — every tool call, command, and finding streams to your interface in real-time
-3. **Audit trail** — Hindsight retains a temporal log of everything the agent learned and did
+3. **Audit trail** — memory records everything the agent learned and did, in a Redis store you host and can inspect
 4. **You control the credentials** — skills only have access to the auth tokens you explicitly provide
 
 ### What this is NOT

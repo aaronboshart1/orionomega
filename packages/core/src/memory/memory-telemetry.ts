@@ -1,12 +1,12 @@
 /**
  * @module memory/memory-telemetry
- * Lightweight in-process telemetry for the Hindsight memory subsystem.
+ * Lightweight in-process telemetry for the memory subsystem.
  *
  * Tracks recall effectiveness, retain success rates, token efficiency,
  * latency percentiles, and error counts so operators can detect degradation
  * without instrumenting every call site.
  *
- * F13: Recall effectiveness metric — emits per-bank hit/miss ratios.
+ * F13: Recall effectiveness metric — emits per-scope hit/miss ratios.
  */
 
 import { createLogger } from '../logging/logger.js';

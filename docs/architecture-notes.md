@@ -68,6 +68,15 @@ agentSdk:
 
 ## Hindsight hybrid recall, fast dedup, cross-project lessons, and the native-memory boundary (Task #241)
 
+> **Superseded — historical record.** This section describes Task #241 as it was
+> built. The memory system was subsequently rebuilt on self-hosted Redis and
+> Hindsight was removed entirely, taking with it banks, mental models, the
+> hybrid vector channel, and `LessonsRollup`. Retrieval is now lexical-only and
+> spans every scope in one in-process index, which is precisely why the rollup
+> is no longer needed. Only the dedup pre-filter survives, in
+> `@orionomega/shared`. Kept here as a record of what was decided and why; see
+> [memory-architecture-v2.md](memory-architecture-v2.md) for the current design.
+
 **Hybrid lexical+vector recall.** Hindsight servers in the v0.4.x line without an embedding backend return `relevance=0` for every recalled memory. The client already detected this all-zero case and re-scored results with a lexical proxy (`computeClientRelevance`: trigram overlap + keyword Jaccard). Task #241 adds an *optional* vector channel: pass an `EmbeddingProvider` (and optional `vectorWeight`, default 0.5) to `HindsightClientOptions`. In the all-zero fallback path the client batch-embeds `[query, ...contents]`, computes a per-result cosine, and blends it with the lexical score via `combineRelevance` (`lexical*(1-w) + max(0,cos)*w`, clamped to [0,1]; negative cosine is "no signal", not a penalty). Synonym/paraphrase matches that share few literal trigrams now surface. The blend is engaged **only** in the client-side fallback — when the server returns real relevance scores, embeddings are never invoked. Failure handling is defensive: an embedding throw or a batch-size mismatch logs a warning and degrades to lexical-only; the recall never throws because embeddings were unavailable. `localEmbedding` is a deterministic, dependency-free signed-feature-hashed vector (L2-normalised); it is a *lexical* vector — robust to word order/structural noise but **not** semantic (it won't capture synonyms) — provided as a drop-in so the pipeline behaves consistently with or without a real provider wired up. `client.vectorRecallEnabled` reports whether a provider is configured.
 
 **Dedup pre-filter (bloom + size-blocked trigram).** Naive dedup over a large ingest is O(n²) trigram comparisons. The optimisation precomputes a `TrigramProfile` (normalised text + trigram set) per item once, then prunes candidate pairs two ways before doing the expensive set-overlap: (1) an **admissible size-ratio gate** — for a Jaccard-style trigram similarity `s = |A∩B| / |A∪B|`, a hard upper bound is `min(|A|,|B|) / max(|A|,|B|)`, so any pair whose trigram-set sizes differ by more than the threshold allows *cannot* reach it and is skipped without a false negative; (2) a **bloom-gated exact-fingerprint fast path** for exact-content repeats (similarity 1, always ≥ threshold) so huge ingests don't pay an exact-Set memory cost. The critical invariant, enforced by property tests against a brute-force reference on randomised corpora across thresholds: **the pre-filtered output is byte-for-byte identical to the naive O(n²) scan** — this is a speedup, never a behaviour change. `BloomFilter` guarantees no false negatives (an added key always reports present) with a bounded false-positive rate. `DedupIndex` packages the same bloom+blocking as a streaming "is this a near-duplicate of anything seen so far?" structure for `isDuplicateContent`-style hot loops and across-pass dedup.
@@ -283,7 +292,7 @@ The OAuth start/status/callback endpoints accept `accountId` (query for GET, bod
 
 On startup the gateway retries `EADDRINUSE` with exponential backoff (1s → 2s → 4s capped at 5s) inside a configurable total budget — default **60 seconds**, override via `ORIONOMEGA_BIND_RETRY_MS` (e.g. `ORIONOMEGA_BIND_RETRY_MS=120000` for two minutes).
 
-Heavy subsystems (MainAgent, scheduler, hindsight health timer, skill discovery, PID file, rate-limit cleanup, boot-provenance banner) only start after the **first** listener reports `listening`, so a brief overlap with a dying predecessor no longer churns them on every retry. If the budget really is exhausted the process exits once with a single consolidated `Failed to bind to [...] after Ns of retries — exiting` line. SIGTERM mid-retry aborts the loop cleanly via per-address `AbortController`s — no more "All bind addresses failed — exiting" pair after a graceful restart.
+Heavy subsystems (MainAgent, scheduler, skill discovery, PID file, rate-limit cleanup, boot-provenance banner) only start after the **first** listener reports `listening`, so a brief overlap with a dying predecessor no longer churns them on every retry. If the budget really is exhausted the process exits once with a single consolidated `Failed to bind to [...] after Ns of retries — exiting` line. SIGTERM mid-retry aborts the loop cleanly via per-address `AbortController`s — no more "All bind addresses failed — exiting" pair after a graceful restart.
 
 Helper + tests: `packages/gateway/src/bind-retry.ts`, `packages/gateway/src/__tests__/bind-retry.test.ts`.
 
@@ -315,7 +324,7 @@ Security P0. The gateway is **authenticated by default** and one session can no 
 
 ## Foundational baseline
 
-- **Monorepo Structure**: pnpm for efficient dependency management across multiple packages (`web`, `gateway`, `core`, `hindsight`, `skills-sdk`, `tui`).
+- **Monorepo Structure**: pnpm for efficient dependency management across multiple packages (`web`, `gateway`, `core`, `shared`, `skills-sdk`, `tui`).
 - **Persistent Default Session**: All clients automatically join a single, persistent "default" session for continuity across browsers and sessions.
 - **WebSocket Proxying**: Frontend WebSocket traffic is proxied through a Next.js custom server to bypass Replit's direct port access limitations.
 - **Context Optimization**: Aggressive token and cost optimizations including prompt caching, cheap model routing, hot window reduction, and dynamic project summaries.
@@ -341,12 +350,12 @@ Consumers all read through the registry instead of inline `model.includes(...)` 
 workspace topology, but a manual or filtered build must follow it:
 
 ```
-shared → hindsight → skills-sdk → core → gateway   (→ tui, → web)
+shared → skills-sdk → core → gateway   (→ tui, → web)
 ```
 
 `@orionomega/shared` is the lowest layer (it owns the consolidated logger /
-`truncate` utilities and the Zod-derived WebSocket contract); `hindsight` and
-`core` both depend on it. Building out of order yields the classic foot-gun:
+`truncate` utilities, the relevance scorer, and the Zod-derived WebSocket
+contract); `core` depends on it. Building out of order yields the classic foot-gun:
 `tsc` resolves a dependency's *type declarations* from its `dist/`, so a
 not-yet-built dependency surfaces as spurious "cannot find module
 `@orionomega/...`" errors downstream.

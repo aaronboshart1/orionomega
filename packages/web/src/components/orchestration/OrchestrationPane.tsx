@@ -96,7 +96,7 @@ export function OrchestrationPane() {
   const scheduleCount = useSchedulesStore((s) => s.schedules.length);
   const liveSchedules = useSchedulesStore((s) => s.liveTriggers.size);
   const gatewayConnected = useConnectionStore((s) => s.gatewayConnected);
-  const hindsightConnected = useConnectionStore((s) => s.hindsightConnected);
+  const memoryHealth = useConnectionStore((s) => s.memoryActivity.health);
 
   const workflowIds = Object.keys(workflows);
 
@@ -112,7 +112,7 @@ export function OrchestrationPane() {
         {/* Connection status indicator */}
         <div
           className="flex items-center gap-1.5 px-2 py-1 mr-1"
-          title={`Gateway: ${gatewayConnected ? 'Connected' : 'Disconnected'}${hindsightConnected ? ' | Hindsight: Connected' : ''}`}
+          title={`Gateway: ${gatewayConnected ? 'Connected' : 'Disconnected'} | Memory: ${memoryHealth}`}
         >
           {gatewayConnected ? (
             <Wifi size={12} className="text-green-500" />
@@ -120,9 +120,16 @@ export function OrchestrationPane() {
             <WifiOff size={12} className="text-red-400 animate-pulse" />
           )}
           <span className={`h-1.5 w-1.5 rounded-full ${gatewayConnected ? 'bg-green-500' : 'bg-red-500 animate-pulse'}`} />
-          {hindsightConnected && (
-            <span className="h-1.5 w-1.5 rounded-full bg-violet-500" title="Hindsight connected" />
-          )}
+          <span
+            className={`h-1.5 w-1.5 rounded-full ${
+              memoryHealth === 'ready'
+                ? 'bg-violet-500'
+                : memoryHealth === 'rebuilding'
+                  ? 'bg-amber-500'
+                  : 'bg-red-500'
+            }`}
+            title={`Memory: ${memoryHealth}`}
+          />
         </div>
 
         <div className="h-4 w-px bg-zinc-800 mr-1" />

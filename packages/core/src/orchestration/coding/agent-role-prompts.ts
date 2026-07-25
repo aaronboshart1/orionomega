@@ -181,7 +181,8 @@ export const ROLE_TOOL_PERMISSIONS: Readonly<Record<AgentRole, RoleToolPermissio
  *
  * These are the static parts of each role's system prompt. The
  * orchestrator injects dynamic context (task description, file list,
- * project conventions, prior hindsight, etc.) before the static prompt.
+ * project conventions, prior decisions recalled from memory, etc.) before
+ * the static prompt.
  */
 export const AGENT_ROLE_SYSTEM_PROMPTS: Readonly<Record<AgentRole, string>> =
   Object.freeze({
@@ -267,7 +268,7 @@ Your ENTIRE response must be a valid JSON object matching the ArchitectureDesign
 3. Fail safe: prefer conservative approaches when uncertain; flag risks explicitly
 4. Follow existing patterns: the codebase's existing conventions are the blueprint
 
-## Hindsight
+## Prior decisions
 If prior architecture decisions are injected above, respect them. Do not relitigate settled choices
 unless the new task explicitly requires it.
 `,

@@ -15,6 +15,13 @@ Stack: TypeScript monorepo (pnpm, 6 packages), Node.js >=22, Next.js 15
 - Commits made: 35
 - Deferred items: 58 (see AUDIT-DEFERRED.md)
 
+> **Addendum — 2026-07-24 (memory v2).** This audit is a dated record and its
+> findings are left as written. Since it was produced, the memory system was
+> rebuilt on self-hosted Redis and `packages/hindsight` was deleted outright
+> (see [`docs/memory-architecture-v2.md`](docs/memory-architecture-v2.md)).
+> Open items targeting files under `packages/hindsight/` are therefore moot and
+> are annotated inline as **Obsolete** — they need no further work.
+
 ---
 
 ## Changes to Apply (in execution order)
@@ -49,7 +56,7 @@ Extract shared utilities and eliminate copy-paste duplication. Ordered by number
 - [ ] **DUP-01** Extract `readBody()` from `gateway/routes/config.ts:33–48` and `gateway/routes/skills.ts:27–42` into `gateway/src/routes/utils.ts`
 - [ ] **DUP-02** Extract `checkAuth()` from `gateway/routes/config.ts:228–256` and `gateway/routes/skills.ts:44–72` into `gateway/src/routes/auth-utils.ts`
 - [ ] **DUP-03** Extract `validateBindAddress(bind, fieldName)` from `gateway/routes/config.ts:88–110` and `214–221`
-- [ ] **DUP-04** Extract `checkHindsightHealth(): Promise<boolean>` from `gateway/server.ts:463–504` (duplicated between startup IIFE and periodic timer)
+- [ ] **DUP-04** Extract `checkHindsightHealth(): Promise<boolean>` from `gateway/server.ts:463–504` (duplicated between startup IIFE and periodic timer) — **Obsolete (2026-07-24, memory v2):** resolved by the removal of the Hindsight package.
 - [ ] **DUP-05** Extract `storeSessionMessage(sessionId, role, content, type, metadata)` from `gateway/websocket.ts:295–302` and `389–396`
 - [ ] **DUP-06** Extract `sendRateLimitError(res, retryAfter)` from `gateway/rate-limit.ts:61–88` (three functions repeat the same 429 response block)
 - [ ] **DUP-07** Extract `addToSessionArray<T>(array, item, maxSize, session)` from `gateway/sessions.ts:140–153` and `164–170`
@@ -58,9 +65,9 @@ Extract shared utilities and eliminate copy-paste duplication. Ordered by number
 
 #### Hindsight package deduplication
 
-- [ ] **DUP-09** Extract `applyRelevanceFilter(results, minRelevance)` and `applyDeduplication(results, threshold)` as private methods on `hindsight/client.ts` (shared between `recall()` and `recallWithTemporalDiversity()` at lines 238–315, 454–459)
-- [ ] **DUP-10** Extract `emitRecallIO(type, detail, meta)` helper from `hindsight/client.ts:329–372`
-- [ ] **DUP-11** Extract `safeRecall<T>(fn, fallback, context)` from `hindsight/session-bootstrap.ts:145–157` (three methods share identical try/catch pattern)
+- [ ] **DUP-09** Extract `applyRelevanceFilter(results, minRelevance)` and `applyDeduplication(results, threshold)` as private methods on `hindsight/client.ts` (shared between `recall()` and `recallWithTemporalDiversity()` at lines 238–315, 454–459) — **Obsolete (2026-07-24, memory v2):** resolved by the removal of the Hindsight package.
+- [ ] **DUP-10** Extract `emitRecallIO(type, detail, meta)` helper from `hindsight/client.ts:329–372` — **Obsolete (2026-07-24, memory v2):** resolved by the removal of the Hindsight package.
+- [ ] **DUP-11** Extract `safeRecall<T>(fn, fallback, context)` from `hindsight/session-bootstrap.ts:145–157` (three methods share identical try/catch pattern) — **Obsolete (2026-07-24, memory v2):** resolved by the removal of the Hindsight package.
 
 #### Other package deduplication
 
@@ -98,9 +105,9 @@ Fix inconsistent patterns. Ordered by safety (purely additive changes first, beh
 - [ ] **CPX-05** `packages/core/src/agent/memory-bridge.ts:154–171` — Move hardcoded bootstrap thresholds into `MemoryBootstrapConfig` interface; extract `MemoryComponentFactory`
 - [ ] **CPX-07** `packages/core/src/anthropic/tools.ts:81–117` — Extract `formatToolError(e)` and `assembleToolOutput(stdout, stderr, maxLen)` from exec tool handler
 - [ ] **CPX-09** `packages/core/src/memory/context-assembler.ts:656–694` — Extract `MarkerClassifier` with `categorize(line)` method; replace 4 regex conditionals in `buildCausalChain()`
-- [ ] **CPX-21** `packages/hindsight/src/session-bootstrap.ts:203–227` — Extract `filterAnchorResults()` and `sortByTimestamp()` from `recallSessionAnchor()`
-- [ ] **CPX-22** `packages/hindsight/src/mental-models.ts:80–105` — Extract `shouldRefresh(key, lastRefreshAt)` and `refreshModelSafely(model)` from `onRetain()` loop
-- [ ] **CPX-25** `packages/hindsight/src/similarity.ts:51–86` — Extract `computeKeywordScore(query, text)`; add comment documenting weighting formula
+- [ ] **CPX-21** `packages/hindsight/src/session-bootstrap.ts:203–227` — Extract `filterAnchorResults()` and `sortByTimestamp()` from `recallSessionAnchor()` — **Obsolete (2026-07-24, memory v2):** resolved by the removal of the Hindsight package.
+- [ ] **CPX-22** `packages/hindsight/src/mental-models.ts:80–105` — Extract `shouldRefresh(key, lastRefreshAt)` and `refreshModelSafely(model)` from `onRetain()` loop — **Obsolete (2026-07-24, memory v2):** resolved by the removal of the Hindsight package.
+- [ ] **CPX-25** `packages/hindsight/src/similarity.ts:51–86` — Extract `computeKeywordScore(query, text)`; add comment documenting weighting formula — **Obsolete (2026-07-24, memory v2):** resolved by the removal of the Hindsight package.
 - [ ] **CPX-26** `packages/skills-sdk/src/loader.ts:348–394` — Extract `matchByCriteria(manifests, query, strategy)` from `matchSkills()`
 - [ ] **CPX-27** `packages/skills-sdk/src/settings.ts:203–270` — Extract `checkStringConstraints()` and `checkNumberConstraints()` from `checkConstraints()`
 - [ ] **CPX-28** `packages/tui/src/components/chat-log.ts:89–188` — Extract `renderModelUsageTable()`, `renderArtifacts()`, `renderStatusLine()` from `addRunStats()`
@@ -109,7 +116,7 @@ Fix inconsistent patterns. Ordered by safety (purely additive changes first, beh
 
 ### Pass 5: Documentation
 
-- [ ] **DOC-H1** Add `README.md` to each of 6 packages (`core`, `gateway`, `hindsight`, `skills-sdk`, `tui`, `web`) — purpose, key exports, usage example
+- [ ] **DOC-H1** Add `README.md` to each of 6 packages (`core`, `gateway`, `hindsight`, `skills-sdk`, `tui`, `web`) — purpose, key exports, usage example — *(2026-07-24, memory v2: `hindsight` no longer applies — the package was removed; `shared` takes its place in the package list.)*
 - [ ] **DOC-M1** Add `config.example.yaml` at repo root documenting all supported configuration keys
 - [ ] **DOC-L2** Move `docs/mobile-optimization-plan.md` content behind a `[DRAFT]` marker or move to internal planning location
 - [ ] **DOC-L1** Add `CHANGELOG.md` at repo root with initial `0.1.0` entry
@@ -120,7 +127,7 @@ Fix inconsistent patterns. Ordered by safety (purely additive changes first, beh
 - [ ] **DX-L1** Add `.editorconfig` — standardize indent (2 spaces), line endings (LF), trailing whitespace trimming
 - [ ] **DX-M2** Add Husky + lint-staged — run `eslint --fix` + `prettier --write` on pre-commit
 - [ ] **DX-M3** Upgrade ESLint rules from `warn` to `error` for `no-explicit-any`, `ban-ts-comment`, `no-non-null-assertion` in `eslint.config.js:22–36`
-- [ ] **DX-L2** Add `dev` watch scripts to `packages/core`, `packages/hindsight`, `packages/skills-sdk` (currently missing)
+- [ ] **DX-L2** Add `dev` watch scripts to `packages/core`, `packages/hindsight`, `packages/skills-sdk` (currently missing) — *(2026-07-24, memory v2: the `packages/hindsight` half is moot — the package was removed.)*
 
 ---
 
@@ -136,7 +143,7 @@ Items that change runtime behavior, require extensive testing, or involve archit
 - [ ] **SEC-4** `gateway/auth.ts:114–118` — Deprecate legacy SHA-256 password hashes; enforce scrypt/argon2 only
 - [ ] **SEC-5** `gateway/server.ts:129` — Remove `process.env.ANTHROPIC_API_KEY` fallback; require explicit config
 - [ ] **SEC-6** `core/orchestration/executor.ts:23–35` — Replace env var blacklist (`SENSITIVE_ENV_PATTERNS`) with explicit allowlist
-- [ ] **SEC-7** `hindsight/client.ts:65` — Remove `process.env.HINDSIGHT_API_KEY` fallback; require explicit config
+- [ ] **SEC-7** `hindsight/client.ts:65` — Remove `process.env.HINDSIGHT_API_KEY` fallback; require explicit config — **Obsolete (2026-07-24, memory v2):** resolved by the removal of the Hindsight package.
 - [ ] **SEC-8** `gateway/rate-limit.ts:134` — Fix auth cooldown reset-before-threshold logic
 - [ ] **SEC-9** `gateway/websocket.ts` — Add per-connection WebSocket message rate limiting
 - [ ] **SEC-10** `core/commands/gateway.ts:73` — Replace empty `catch {}` with error logging + re-throw
@@ -151,7 +158,7 @@ Items that change runtime behavior, require extensive testing, or involve archit
 
 - [ ] **P-4** `tui/components/layer-group.ts:53,80,88` — Replace `(this as any).children` with properly typed property
 - [ ] **P-6** `tui/components/plan-overlay.ts:59,86` — Replace `nodes.get(nodeId) as any` with typed Map
-- [ ] **P-7** Cross-package — Standardize `tokens_used` vs `tokensUsed` naming; enforce conversion at Hindsight client boundary only
+- [ ] **P-7** Cross-package — Standardize `tokens_used` vs `tokensUsed` naming; enforce conversion at Hindsight client boundary only — **Obsolete (2026-07-24, memory v2):** resolved by the removal of the Hindsight package.
 - [ ] **P-11** `gateway/routes/*.ts` — Add Zod validation to all REST route request bodies (currently unvalidated casts)
 
 ### Major refactors (need test coverage first)
@@ -167,13 +174,13 @@ Items that change runtime behavior, require extensive testing, or involve archit
 - [ ] **DC-04** `core/memory/context-assembler.ts:248–301` — Fix missing braces on `external_action` conditional; verify `emitMemoryEvent` behavior
 - [ ] **DC-05** `gateway/websocket.ts:306–310` — Verify redundant `ack` send can be safely removed (client behavior unknown)
 - [ ] **DC-08** `web/lib/gateway.ts:25–36` — Verify `statusFromToolCall()` is redundant with DAG progress events
-- [ ] **DC-10** `hindsight/client.ts:123–141` — Investigate lighter API for duplicate content check
+- [ ] **DC-10** `hindsight/client.ts:123–141` — Investigate lighter API for duplicate content check — **Obsolete (2026-07-24, memory v2):** resolved by the removal of the Hindsight package.
 - [ ] **DC-11** `gateway/sessions.ts` — Extract `modifySessionCollection()` generic helper (needs testing of session lifecycle)
 - [ ] **DUP-16** `core/memory` + `agent/conversation.ts` — Build unified `PatternMatcher` for `HIGH_SIGNAL_PATTERNS`/`LOW_SIGNAL_PATTERNS`
 - [ ] **DUP-24** `core/orchestration/planner.ts:51–150` — Ensure model discovery delegates to `model-discovery.ts` (needs-testing)
 - [ ] **DUP-23** Cross-package — Shared WebSocket message dispatcher pattern (long-term)
-- [ ] **CPX-23** `hindsight/bank-manager.ts:47–66` — Switch `ensureProjectBank()` to optimistic create + catch 409
-- [ ] **CPX-24** `hindsight/self-knowledge.ts:71–91` — Batch `isDuplicateContent()` checks if API supports it
+- [ ] **CPX-23** `hindsight/bank-manager.ts:47–66` — Switch `ensureProjectBank()` to optimistic create + catch 409 — **Obsolete (2026-07-24, memory v2):** resolved by the removal of the Hindsight package.
+- [ ] **CPX-24** `hindsight/self-knowledge.ts:71–91` — Batch `isDuplicateContent()` checks if API supports it — **Obsolete (2026-07-24, memory v2):** resolved by the removal of the Hindsight package.
 - [ ] **P-8** Cross-package — Consolidate scattered config types and defaults into single config loader
 - [ ] **P-12** `skills-sdk/validator.ts` — Migrate manifest validation from manual checks to Zod schema
 
@@ -189,9 +196,9 @@ Items that change runtime behavior, require extensive testing, or involve archit
 - [ ] **CPX-15** `gateway/routes/config.ts:79–226` — Break `validateConfig()` into per-section validators
 - [ ] **CPX-16** `gateway/websocket.ts:156–189` — Batch 5 sequential welcome messages into single `welcome` message
 - [ ] **CPX-17** `gateway/websocket.ts:219–282` — Extract `parseClientMessage()` + per-type handler functions from `handleMessage()`
-- [ ] **CPX-18** `hindsight/client.ts:163–373` — Break `recall()` into `fixZeroRelevance()`, `filterByRelevance()`, `deduplicateResults()`, `emitRecallIO()`
-- [ ] **CPX-19** `hindsight/client.ts:547–590` — Extract `handleFetchError()`, `handleHttpError()`, `parseResponse()` from `request()`
-- [ ] **CPX-20** `hindsight/session-bootstrap.ts:51–74` — Fix `Promise.all` tuple destructuring with named keys
+- [ ] **CPX-18** `hindsight/client.ts:163–373` — Break `recall()` into `fixZeroRelevance()`, `filterByRelevance()`, `deduplicateResults()`, `emitRecallIO()` — **Obsolete (2026-07-24, memory v2):** resolved by the removal of the Hindsight package.
+- [ ] **CPX-19** `hindsight/client.ts:547–590` — Extract `handleFetchError()`, `handleHttpError()`, `parseResponse()` from `request()` — **Obsolete (2026-07-24, memory v2):** resolved by the removal of the Hindsight package.
+- [ ] **CPX-20** `hindsight/session-bootstrap.ts:51–74` — Fix `Promise.all` tuple destructuring with named keys — **Obsolete (2026-07-24, memory v2):** resolved by the removal of the Hindsight package.
 - [ ] **CPX-29** `tui/components/node-display.ts:228–278` — Replace switch in `rebuild()` with status-keyed lookup table
 - [ ] **CPX-30** `tui/gateway-client.ts:283–432` — Extract 18-case switch in `handleMessage()` to named handler methods
 - [ ] **CPX-31** `tui/index.ts:479–630` — Extract `handlePlanResponse()` and `handleUserMessage()` from `onSubmit` handler

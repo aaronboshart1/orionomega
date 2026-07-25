@@ -4,8 +4,8 @@
  * Sits below the editor as a fixed-height bar.
  *
  * When the agent is thinking, the animated omega spinner replaces the green ●
- * to the left of "OmegaClaw". Similarly, when Hindsight is busy the spinner
- * replaces the ◈ icon to the left of "Hindsight".
+ * to the left of "OmegaClaw". Similarly, when the memory store is busy the
+ * spinner replaces the ◈ icon to the left of "Memory".
  */
 
 import { Text } from '@mariozechner/pi-tui';
@@ -37,23 +37,26 @@ export interface SessionStatus {
   workflowElapsed?: number;
   /** Short labels describing what each active worker is doing. */
   workerSummaries?: string[];
-  /** Whether hindsight is connected. */
-  hindsightConnected?: boolean;
-  /** Whether hindsight I/O is in progress. */
-  hindsightBusy?: boolean;
+  /**
+   * What the memory store can currently do. Never a connectivity flag —
+   * the bar reports capability, not sockets. Defaults to 'ready'.
+   */
+  memoryHealth?: 'ready' | 'rebuilding' | 'degraded';
+  /** Rebuild progress 0-100, shown while `memoryHealth === 'rebuilding'`. */
+  memoryPct?: number;
 }
 
 /**
  * Status bar component that renders a single line with key metrics.
- * Layout: [connection] | [hindsight] | [model] | [cost] | [tasks] | [workers] | [version]
+ * Layout: [connection] | [memory] | [model] | [cost] | [tasks] | [workers] | [version]
  */
 export class StatusBar extends Text {
   private _connected = false;
   private _thinking = false;
-  private _hindsightBusy = false;
+  private _memoryBusy = false;
   private _status: SessionStatus = {};
   private unsubSpinner: (() => void) | null = null;
-  private unsubHindsightSpinner: (() => void) | null = null;
+  private unsubMemorySpinner: (() => void) | null = null;
 
   /** Called when the status bar updates itself (e.g. spinner tick). Wire to tui.requestRender(). */
   onUpdate?: () => void;
@@ -89,19 +92,19 @@ export class StatusBar extends Text {
     this.updateDisplay();
   }
 
-  set hindsightBusy(value: boolean) {
-    if (this._hindsightBusy === value) return;
-    this._hindsightBusy = value;
+  set memoryBusy(value: boolean) {
+    if (this._memoryBusy === value) return;
+    this._memoryBusy = value;
     if (value) {
-      if (!this.unsubHindsightSpinner) {
-        this.unsubHindsightSpinner = omegaSpinner.subscribe(() => {
+      if (!this.unsubMemorySpinner) {
+        this.unsubMemorySpinner = omegaSpinner.subscribe(() => {
           this.updateDisplay();
           this.onUpdate?.();
         });
       }
-    } else if (this.unsubHindsightSpinner) {
-      this.unsubHindsightSpinner();
-      this.unsubHindsightSpinner = null;
+    } else if (this.unsubMemorySpinner) {
+      this.unsubMemorySpinner();
+      this.unsubMemorySpinner = null;
     }
     this.updateDisplay();
   }
@@ -116,9 +119,9 @@ export class StatusBar extends Text {
       this.unsubSpinner();
       this.unsubSpinner = null;
     }
-    if (this.unsubHindsightSpinner) {
-      this.unsubHindsightSpinner();
-      this.unsubHindsightSpinner = null;
+    if (this.unsubMemorySpinner) {
+      this.unsubMemorySpinner();
+      this.unsubMemorySpinner = null;
     }
   }
 
@@ -136,19 +139,26 @@ export class StatusBar extends Text {
       parts.push(chalk.hex(palette.error)(icons.disconnected) + chalk.hex(palette.dim)(' OmegaClaw'));
     }
 
-    // ── Hindsight status ──
-    const hsConnected = this._status.hindsightConnected;
-    if (hsConnected === true) {
-      const icon = this._hindsightBusy
-        ? chalk.hex(palette.accent)(omegaSpinner.current)
-        : chalk.hex(palette.success)(icons.hindsight);
-      parts.push(icon + chalk.hex(palette.dim)(' Hindsight'));
-    } else if (hsConnected === false) {
-      parts.push(
-        chalk.hex(palette.error)(icons.hindsight) +
-        chalk.hex(palette.error)(' OFFLINE')
-      );
+    // ── Memory status ──
+    // Always rendered: there is no connectivity gate, and the bar never says
+    // "offline". The colour and suffix say what memory can currently do.
+    const memoryHealth = this._status.memoryHealth ?? 'ready';
+    const memoryColor = memoryHealth === 'ready'
+      ? palette.success
+      : memoryHealth === 'rebuilding'
+        ? palette.warning
+        : palette.error;
+    const memoryIcon = this._memoryBusy
+      ? chalk.hex(palette.accent)(omegaSpinner.current)
+      : chalk.hex(memoryColor)(icons.memory);
+    let memoryLabel = ' Memory';
+    if (memoryHealth === 'rebuilding') {
+      const pct = this._status.memoryPct;
+      memoryLabel += pct !== undefined ? ` rebuilding ${Math.round(pct)}%` : ' rebuilding';
+    } else if (memoryHealth === 'degraded') {
+      memoryLabel += ' degraded';
     }
+    parts.push(memoryIcon + chalk.hex(memoryHealth === 'ready' ? palette.dim : memoryColor)(memoryLabel));
 
     // ── Model (shown when no workflow is active, to save space) ──
     const totalLayers = this._status.totalLayers ?? 0;

@@ -1,382 +1,289 @@
 /**
- * Unit tests for MemoryBridge methods used in the DAG coding path:
- * recallForPlanning (types, budgets, cross-project federation),
- * reflectForDecision (reflect API call + TTL cache),
- * ensureDirectives (create missing, skip existing).
+ * Unit tests for the MemoryBridge methods used in the DAG coding path:
+ * ensureProjectScope, recallForPlanning, recallForArchitect, retainCodingRun,
+ * verifyConsistency.
+ *
+ * Everything runs against a fake {@link MemoryStore}; no Redis is required.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { MemoryBridge } from '../memory-bridge.js';
 import type { AnthropicClient } from '../../anthropic/client.js';
 import type { EventBus } from '../../orchestration/event-bus.js';
-import type { HindsightClient } from '@orionomega/hindsight';
+import type { MemoryStore, RecallOutcome } from '../../memory/store.js';
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-function makeRecallResult(contents: string[] = ['Memory content']) {
+function makeRecallOutcome(contents: string[] = ['Memory content']): RecallOutcome {
   return {
-    results: contents.map((content) => ({
+    records: contents.map((content) => ({
       content,
       context: 'decision',
       timestamp: '2024-01-01T00:00:00.000Z',
       relevance: 0.8,
     })),
-    tokens_used: 100,
-    totalEstimatedTokens: 100,
+    lowConfidence: false,
+    tokensUsed: 100,
   };
 }
 
-function makeMockHs(): HindsightClient & {
+type FakeStore = MemoryStore & {
   recall: ReturnType<typeof vi.fn>;
-  listBanksCached: ReturnType<typeof vi.fn>;
-  reflect: ReturnType<typeof vi.fn>;
-  listDirectives: ReturnType<typeof vi.fn>;
-  createDirective: ReturnType<typeof vi.fn>;
-} {
+  retain: ReturnType<typeof vi.fn>;
+  health: ReturnType<typeof vi.fn>;
+};
+
+function makeStore(): FakeStore {
   return {
-    recall: vi.fn().mockResolvedValue(makeRecallResult()),
-    listBanksCached: vi.fn().mockResolvedValue([]),
-    reflect: vi.fn().mockResolvedValue({ answer: 'The system uses DAG orchestration', structured_output: null }),
-    listDirectives: vi.fn().mockResolvedValue([]),
-    createDirective: vi.fn().mockResolvedValue({
-      id: 'dir-1', name: 'test', content: 'test rule', priority: 10,
-      is_active: true, tags: [], created_at: '', updated_at: '',
-    }),
-  } as unknown as ReturnType<typeof makeMockHs>;
+    recall: vi.fn().mockResolvedValue(makeRecallOutcome()),
+    retain: vi.fn().mockResolvedValue({ ok: true, count: 1 }),
+    retainOne: vi.fn().mockResolvedValue({ ok: true, count: 1 }),
+    isDuplicate: vi.fn().mockResolvedValue(false),
+    listScopes: vi.fn().mockResolvedValue([]),
+    deleteScope: vi.fn().mockResolvedValue(undefined),
+    health: vi.fn().mockResolvedValue({ healthy: true }),
+  } as unknown as FakeStore;
 }
 
-function makeBridge(hs: HindsightClient, projectBank: string | null = 'project-myrepo') {
+/** Bridge with an injected store, bypassing init() (which needs a real config). */
+function makeBridge(store: MemoryStore | null, projectScope: string | null = 'project-myrepo') {
   const bridge = new MemoryBridge(
     { model: 'claude-test' },
     {} as unknown as AnthropicClient,
     {} as unknown as EventBus,
   );
-  // Inject mock dependencies via private field casts (same pattern as orchestration-bridge tests)
-  (bridge as unknown as { hindsightClient: HindsightClient }).hindsightClient = hs;
-  (bridge as unknown as { activeProjectBank: string | null }).activeProjectBank = projectBank;
+  // Inject via private field casts (same pattern as the orchestration-bridge tests).
+  (bridge as unknown as { memoryStore: MemoryStore | null }).memoryStore = store;
+  (bridge as unknown as { activeProjectScope: string | null }).activeProjectScope = projectScope;
   return bridge;
 }
+
+/** The options object a recall was issued with, for a given scope. */
+function recallOptsFor(store: FakeStore, scope: string): Record<string, unknown> | undefined {
+  const call = store.recall.mock.calls.find((c: unknown[]) => c[0] === scope);
+  return call?.[2] as Record<string, unknown> | undefined;
+}
+
+// ── ensureProjectScope ───────────────────────────────────────────────────────
+
+describe('MemoryBridge.ensureProjectScope()', () => {
+  it('derives a deterministic project- scope from the task', () => {
+    const bridge = makeBridge(makeStore(), null);
+
+    const scope = bridge.ensureProjectScope('Build a Redis backed memory store');
+
+    expect(scope).toBe('project-redis-backed-memory-store');
+    expect(bridge.projectScope).toBe(scope);
+    // Deterministic: the same task rejoins the same scope.
+    expect(bridge.ensureProjectScope('Build a Redis backed memory store')).toBe(scope);
+  });
+});
 
 // ── recallForPlanning ────────────────────────────────────────────────────────
 
 describe('MemoryBridge.recallForPlanning()', () => {
-  it('passes types: [world, experience, observation] to core bank recall', async () => {
-    const hs = makeMockHs();
-    const bridge = makeBridge(hs);
+  it('recalls from core and the active project scope', async () => {
+    const store = makeStore();
+    const bridge = makeBridge(store, 'project-myrepo');
 
     await bridge.recallForPlanning('Implement auth module');
 
-    const coreBankCall = hs.recall.mock.calls.find(
-      (c: unknown[]) => c[0] === 'core',
-    );
-    expect(coreBankCall).toBeDefined();
-    const opts = coreBankCall![2] as Record<string, unknown>;
-    expect(opts.types).toEqual(['world', 'experience', 'observation']);
+    const scopes = store.recall.mock.calls.map((c: unknown[]) => c[0]);
+    expect(scopes).toEqual(['core', 'project-myrepo']);
   });
 
-  it('passes types: [world, experience, observation] to project bank recall', async () => {
-    const hs = makeMockHs();
-    const bridge = makeBridge(hs, 'project-myrepo');
-
-    await bridge.recallForPlanning('Add API endpoint');
-
-    const projectBankCall = hs.recall.mock.calls.find(
-      (c: unknown[]) => c[0] === 'project-myrepo',
-    );
-    expect(projectBankCall).toBeDefined();
-    const opts = projectBankCall![2] as Record<string, unknown>;
-    expect(opts.types).toEqual(['world', 'experience', 'observation']);
-  });
-
-  it('uses budget: high for core bank', async () => {
-    const hs = makeMockHs();
-    const bridge = makeBridge(hs);
+  it('recalls from core alone when no project scope is active', async () => {
+    const store = makeStore();
+    const bridge = makeBridge(store, null);
 
     await bridge.recallForPlanning('task');
 
-    const coreCall = hs.recall.mock.calls.find((c: unknown[]) => c[0] === 'core');
-    const opts = coreCall![2] as Record<string, unknown>;
-    expect(opts.budget).toBe('high');
+    const scopes = store.recall.mock.calls.map((c: unknown[]) => c[0]);
+    expect(scopes).toEqual(['core']);
   });
 
-  it('uses maxTokens: 2048 for core bank', async () => {
-    const hs = makeMockHs();
-    const bridge = makeBridge(hs);
+  it('uses maxTokens 2048 for core and 3072 for the project scope', async () => {
+    const store = makeStore();
+    const bridge = makeBridge(store, 'project-repo');
 
     await bridge.recallForPlanning('task');
 
-    const coreCall = hs.recall.mock.calls.find((c: unknown[]) => c[0] === 'core');
-    const opts = coreCall![2] as Record<string, unknown>;
-    expect(opts.maxTokens).toBe(2048);
+    expect(recallOptsFor(store, 'core')?.maxTokens).toBe(2048);
+    expect(recallOptsFor(store, 'project-repo')?.maxTokens).toBe(3072);
   });
 
-  it('uses maxTokens: 3072 for project bank', async () => {
-    const hs = makeMockHs();
-    const bridge = makeBridge(hs, 'project-repo');
+  it('passes only RecallQuery fields — no budget/types/queryTimestamp', async () => {
+    const store = makeStore();
+    const bridge = makeBridge(store, 'project-repo');
 
     await bridge.recallForPlanning('task');
 
-    const projectCall = hs.recall.mock.calls.find((c: unknown[]) => c[0] === 'project-repo');
-    expect(projectCall).toBeDefined();
-    const opts = projectCall![2] as Record<string, unknown>;
-    expect(opts.maxTokens).toBe(3072);
-  });
-
-  it('returns concatenated memory contents', async () => {
-    const hs = makeMockHs();
-    hs.recall.mockResolvedValue(makeRecallResult(['Core memory A', 'Core memory B']));
-    const bridge = makeBridge(hs, null);
-
-    const memories = await bridge.recallForPlanning('task');
-
-    expect(memories.length).toBeGreaterThan(0);
-    expect(memories.join('\n')).toContain('Core memory A');
-  });
-
-  it('returns empty array when hindsightClient is null', async () => {
-    const bridge = new MemoryBridge(
-      { model: 'test' },
-      {} as unknown as AnthropicClient,
-      {} as unknown as EventBus,
-    );
-    // Leave hindsightClient as null (default)
-
-    const memories = await bridge.recallForPlanning('task');
-
-    expect(memories).toEqual([]);
-  });
-});
-
-describe('MemoryBridge.recallForPlanning() — cross-project federation', () => {
-  it('queries other project banks and prefixes results with [Cross-project: bankId]', async () => {
-    const hs = makeMockHs();
-    hs.listBanksCached.mockResolvedValue([
-      { bank_id: 'core', name: 'Core', created_at: '', memory_count: 5 },
-      { bank_id: 'project-myrepo', name: 'My Repo', created_at: '', memory_count: 10 },
-      { bank_id: 'project-other', name: 'Other Project', created_at: '', memory_count: 3 },
-    ]);
-    // Return different results per bank
-    hs.recall.mockImplementation((bankId: string) => {
-      if (bankId === 'project-other') {
-        return Promise.resolve(makeRecallResult(['Cross-project insight']));
-      }
-      return Promise.resolve(makeRecallResult(['Local memory']));
-    });
-    const bridge = makeBridge(hs, 'project-myrepo');
-
-    const memories = await bridge.recallForPlanning('task');
-
-    const fedResult = memories.find((m) => m.includes('[Cross-project: project-other]'));
-    expect(fedResult).toBeDefined();
-    expect(fedResult).toContain('Cross-project insight');
-  });
-
-  it('skips core and active project bank during federation', async () => {
-    const hs = makeMockHs();
-    hs.listBanksCached.mockResolvedValue([
-      { bank_id: 'core', name: 'Core', created_at: '', memory_count: 5 },
-      { bank_id: 'project-myrepo', name: 'My Repo', created_at: '', memory_count: 10 },
-    ]);
-    const bridge = makeBridge(hs, 'project-myrepo');
-
-    await bridge.recallForPlanning('task');
-
-    // Neither core nor project-myrepo should appear as cross-project
-    const allMemories = await bridge.recallForPlanning('task');
-    for (const m of allMemories) {
-      expect(m).not.toContain('[Cross-project: core]');
-      expect(m).not.toContain('[Cross-project: project-myrepo]');
+    for (const call of store.recall.mock.calls) {
+      const opts = call[2] as Record<string, unknown>;
+      expect(Object.keys(opts).sort()).toEqual(['maxTokens']);
     }
   });
 
-  it('skips banks with zero memory_count during federation', async () => {
-    const hs = makeMockHs();
-    hs.listBanksCached.mockResolvedValue([
-      { bank_id: 'project-empty', name: 'Empty', created_at: '', memory_count: 0 },
-    ]);
-    const bridge = makeBridge(hs, null);
+  it('returns the recalled contents', async () => {
+    const store = makeStore();
+    store.recall.mockResolvedValue(makeRecallOutcome(['Core memory A', 'Core memory B']));
+    const bridge = makeBridge(store, null);
 
-    await bridge.recallForPlanning('task');
+    const memories = await bridge.recallForPlanning('task');
 
-    const fedCalls = hs.recall.mock.calls.filter((c: unknown[]) => c[0] === 'project-empty');
-    expect(fedCalls).toHaveLength(0);
+    expect(memories.join('\n')).toContain('Core memory A');
+    expect(memories.join('\n')).toContain('Core memory B');
+  });
+
+  it('returns an empty array when the store is not initialised', async () => {
+    const bridge = makeBridge(null);
+
+    await expect(bridge.recallForPlanning('task')).resolves.toEqual([]);
+  });
+
+  it('survives a per-scope recall failure', async () => {
+    const store = makeStore();
+    store.recall.mockImplementation((scope: string) =>
+      scope === 'core'
+        ? Promise.reject(new Error('store unavailable'))
+        : Promise.resolve(makeRecallOutcome(['Project memory'])),
+    );
+    const bridge = makeBridge(store, 'project-myrepo');
+
+    const memories = await bridge.recallForPlanning('task');
+
+    expect(memories.join('\n')).toContain('Project memory');
   });
 });
 
-// ── reflectForDecision ───────────────────────────────────────────────────────
+// ── recallForArchitect ───────────────────────────────────────────────────────
 
-describe('MemoryBridge.reflectForDecision()', () => {
-  it('calls hindsightClient.reflect on the active project bank', async () => {
-    const hs = makeMockHs();
-    const bridge = makeBridge(hs, 'project-myrepo');
+describe('MemoryBridge.recallForArchitect()', () => {
+  it('queries the project scope first, then core', async () => {
+    const store = makeStore();
+    const bridge = makeBridge(store, 'project-myrepo');
 
-    await bridge.reflectForDecision('What patterns do we use?');
+    await bridge.recallForArchitect('Add a caching layer');
 
-    expect(hs.reflect).toHaveBeenCalledTimes(1);
-    const [bankId, question] = hs.reflect.mock.calls[0] as [string, string];
-    expect(bankId).toBe('project-myrepo');
-    expect(question).toBe('What patterns do we use?');
+    const scopes = store.recall.mock.calls.map((c: unknown[]) => c[0]);
+    expect(scopes).toEqual(['project-myrepo', 'core']);
+    expect(recallOptsFor(store, 'project-myrepo')?.maxTokens).toBe(3072);
+    expect(recallOptsFor(store, 'core')?.maxTokens).toBe(1024);
   });
 
-  it('falls back to core bank when no project bank is set', async () => {
-    const hs = makeMockHs();
-    const bridge = makeBridge(hs, null);
+  it('biases the query toward architecture context', async () => {
+    const store = makeStore();
+    const bridge = makeBridge(store, null);
 
-    await bridge.reflectForDecision('What patterns?');
+    await bridge.recallForArchitect('Add a caching layer');
 
-    const [bankId] = hs.reflect.mock.calls[0] as [string, string];
-    expect(bankId).toBe('core');
+    const query = store.recall.mock.calls[0][1] as string;
+    expect(query).toContain('architecture decisions');
+    expect(query).toContain('Add a caching layer');
   });
 
-  it('uses an explicit bankId when provided', async () => {
-    const hs = makeMockHs();
-    const bridge = makeBridge(hs, 'project-default');
+  it('returns one entry per recalled record', async () => {
+    const store = makeStore();
+    store.recall.mockResolvedValue(makeRecallOutcome(['Decision A', 'Decision B']));
+    const bridge = makeBridge(store, null);
 
-    await bridge.reflectForDecision('Question?', 'project-custom');
-
-    const [bankId] = hs.reflect.mock.calls[0] as [string, string];
-    expect(bankId).toBe('project-custom');
+    await expect(bridge.recallForArchitect('task')).resolves.toEqual(['Decision A', 'Decision B']);
   });
 
-  it('returns the answer from the reflect response', async () => {
-    const hs = makeMockHs();
-    hs.reflect.mockResolvedValue({ answer: 'Use repository pattern', structured_output: null });
-    const bridge = makeBridge(hs);
+  it('returns an empty array when the store is not initialised', async () => {
+    const bridge = makeBridge(null);
 
-    const result = await bridge.reflectForDecision('What patterns?');
-
-    expect(result).toBe('Use repository pattern');
-  });
-
-  it('returns null on reflect error', async () => {
-    const hs = makeMockHs();
-    hs.reflect.mockRejectedValue(new Error('Server unavailable'));
-    const bridge = makeBridge(hs);
-
-    const result = await bridge.reflectForDecision('What patterns?');
-
-    expect(result).toBeNull();
-  });
-
-  it('returns null when hindsightClient is not initialised', async () => {
-    const bridge = new MemoryBridge(
-      { model: 'test' },
-      {} as unknown as AnthropicClient,
-      {} as unknown as EventBus,
-    );
-
-    const result = await bridge.reflectForDecision('Question?');
-
-    expect(result).toBeNull();
-  });
-
-  it('caches results — second call with same question does not hit the API again', async () => {
-    const hs = makeMockHs();
-    hs.reflect.mockResolvedValue({ answer: 'Cached answer', structured_output: null });
-    const bridge = makeBridge(hs);
-
-    const first = await bridge.reflectForDecision('Same question');
-    const second = await bridge.reflectForDecision('Same question');
-
-    expect(first).toBe('Cached answer');
-    expect(second).toBe('Cached answer');
-    // reflect should only have been called once — the second call hit the cache
-    expect(hs.reflect).toHaveBeenCalledTimes(1);
-  });
-
-  it('cache is keyed by bank+question — different questions bypass cache', async () => {
-    const hs = makeMockHs();
-    hs.reflect
-      .mockResolvedValueOnce({ answer: 'Answer A', structured_output: null })
-      .mockResolvedValueOnce({ answer: 'Answer B', structured_output: null });
-    const bridge = makeBridge(hs);
-
-    const a = await bridge.reflectForDecision('Question A');
-    const b = await bridge.reflectForDecision('Question B');
-
-    expect(a).toBe('Answer A');
-    expect(b).toBe('Answer B');
-    expect(hs.reflect).toHaveBeenCalledTimes(2);
+    await expect(bridge.recallForArchitect('task')).resolves.toEqual([]);
   });
 });
 
-// ── ensureDirectives ─────────────────────────────────────────────────────────
+// ── retainCodingRun ──────────────────────────────────────────────────────────
 
-describe('MemoryBridge.ensureDirectives()', () => {
-  it('creates directive when none exist', async () => {
-    const hs = makeMockHs();
-    hs.listDirectives.mockResolvedValue([]);
-    const bridge = makeBridge(hs);
+describe('MemoryBridge.retainCodingRun()', () => {
+  const payload = {
+    task: 'Implement auth',
+    requirements: [{ id: 'R1', description: 'Login works' }],
+    verdicts: [{ requirementId: 'R1', status: 'pass', evidence: 'tests green', confidence: 0.9 }],
+    decision: 'ship',
+  };
 
-    await bridge.ensureDirectives('project-myrepo', [
-      { name: 'No force push', content: 'Never force-push to main', priority: 10 },
-    ]);
+  it('writes one coding-run record to the active project scope', async () => {
+    const store = makeStore();
+    const bridge = makeBridge(store, 'project-myrepo');
 
-    expect(hs.createDirective).toHaveBeenCalledTimes(1);
-    const [bankId, directive] = hs.createDirective.mock.calls[0] as [string, Record<string, unknown>];
-    expect(bankId).toBe('project-myrepo');
-    expect(directive.name).toBe('No force push');
-    expect(directive.content).toBe('Never force-push to main');
+    await bridge.retainCodingRun(payload);
+
+    expect(store.retain).toHaveBeenCalledTimes(1);
+    const [scope, writes] = store.retain.mock.calls[0] as [string, Array<Record<string, unknown>>];
+    expect(scope).toBe('project-myrepo');
+    expect(writes).toHaveLength(1);
+    expect(writes[0].context).toBe('coding-run');
+    expect(writes[0].documentId).toMatch(/^coding-run-/);
+    expect(writes[0].content).toContain('Implement auth');
+    expect(writes[0].content).toContain('[R1] status=pass');
   });
 
-  it('skips creating directive when one with same name already exists', async () => {
-    const hs = makeMockHs();
-    hs.listDirectives.mockResolvedValue([
-      {
-        id: 'dir-1', name: 'No force push', content: 'existing', priority: 10,
-        is_active: true, tags: [], created_at: '', updated_at: '',
-      },
-    ]);
-    const bridge = makeBridge(hs);
+  it('falls back to core when no project scope is active', async () => {
+    const store = makeStore();
+    const bridge = makeBridge(store, null);
 
-    await bridge.ensureDirectives('project-myrepo', [
-      { name: 'No force push', content: 'Updated content' },
-    ]);
+    await bridge.retainCodingRun(payload);
 
-    expect(hs.createDirective).not.toHaveBeenCalled();
+    expect(store.retain.mock.calls[0][0]).toBe('core');
   });
 
-  it('creates only missing directives when some already exist', async () => {
-    const hs = makeMockHs();
-    hs.listDirectives.mockResolvedValue([
-      {
-        id: 'dir-1', name: 'Existing rule', content: 'existing', priority: 5,
-        is_active: true, tags: [], created_at: '', updated_at: '',
-      },
-    ]);
-    const bridge = makeBridge(hs);
+  it('tags the record with the originating session id', async () => {
+    const store = makeStore();
+    const bridge = makeBridge(store, 'project-myrepo');
 
-    await bridge.ensureDirectives('bank', [
-      { name: 'Existing rule', content: 'old' },
-      { name: 'New rule', content: 'new rule content', priority: 8 },
-    ]);
+    await bridge.retainCodingRun({ ...payload, sessionId: 'sess-7' });
 
-    expect(hs.createDirective).toHaveBeenCalledTimes(1);
-    const [, directive] = hs.createDirective.mock.calls[0] as [string, Record<string, unknown>];
-    expect(directive.name).toBe('New rule');
+    const writes = store.retain.mock.calls[0][1] as Array<Record<string, unknown>>;
+    expect(writes[0].tags).toEqual(['session:sess-7']);
   });
 
-  it('is a no-op when hindsightClient is not initialised', async () => {
-    const bridge = new MemoryBridge(
-      { model: 'test' },
-      {} as unknown as AnthropicClient,
-      {} as unknown as EventBus,
-    );
+  it('is a no-op when the store is not initialised', async () => {
+    const bridge = makeBridge(null);
 
-    // Should not throw
-    await expect(
-      bridge.ensureDirectives('bank', [{ name: 'rule', content: 'content' }]),
-    ).resolves.toBeUndefined();
+    await expect(bridge.retainCodingRun(payload)).resolves.toBeUndefined();
   });
 
-  it('does not throw on listDirectives failure', async () => {
-    const hs = makeMockHs();
-    hs.listDirectives.mockRejectedValue(new Error('Server error'));
-    const bridge = makeBridge(hs);
+  it('does not throw when the retain fails', async () => {
+    const store = makeStore();
+    store.retain.mockRejectedValue(new Error('store unavailable'));
+    const bridge = makeBridge(store, 'project-myrepo');
 
-    // Should swallow the error gracefully
-    await expect(
-      bridge.ensureDirectives('bank', [{ name: 'rule', content: 'content' }]),
-    ).resolves.toBeUndefined();
+    await expect(bridge.retainCodingRun(payload)).resolves.toBeUndefined();
+  });
+});
+
+// ── verifyConsistency ────────────────────────────────────────────────────────
+
+describe('MemoryBridge.verifyConsistency()', () => {
+  it('reports healthy when the store is healthy', async () => {
+    const store = makeStore();
+    const bridge = makeBridge(store);
+
+    await expect(bridge.verifyConsistency()).resolves.toEqual({ healthy: true, issues: [] });
+  });
+
+  it('reports the issue when the store is unhealthy', async () => {
+    const store = makeStore();
+    store.health.mockResolvedValue({ healthy: false });
+    const bridge = makeBridge(store);
+
+    const result = await bridge.verifyConsistency();
+
+    expect(result.healthy).toBe(false);
+    expect(result.issues).toHaveLength(1);
+  });
+
+  it('reports unhealthy when no store is initialised', async () => {
+    const bridge = makeBridge(null);
+
+    const result = await bridge.verifyConsistency();
+
+    expect(result.healthy).toBe(false);
+    expect(result.issues[0]).toContain('not initialised');
   });
 });

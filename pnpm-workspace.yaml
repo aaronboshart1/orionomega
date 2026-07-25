@@ -2,7 +2,6 @@ packages:
   - 'packages/shared'
   - 'packages/core'
   - 'packages/gateway'
-  - 'packages/hindsight'
   - 'packages/skills-sdk'
   - 'packages/tui'
   # Web dashboard is optional — install with: pnpm --filter @orionomega/web install

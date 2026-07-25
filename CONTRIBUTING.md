@@ -16,7 +16,11 @@ Thanks for your interest in contributing. This guide covers everything you need 
 
 ## Development Setup
 
-**Prerequisites:** Node.js 22+, pnpm
+**Prerequisites:** Node.js 22+, pnpm, and a running Redis (the memory backend) at
+`redis://localhost:6379`. Redis is not provisioned for you — install it with your
+package manager (`brew install redis`, `apt install redis-server`) or run
+`docker run -d -p 6379:6379 redis:7-alpine`. Building and linting work without it;
+the memory tests do not.
 
 ```bash
 git clone https://github.com/aaronboshart1/orionomega.git
@@ -49,22 +53,24 @@ OrionOmega is a pnpm workspace monorepo. The packages and their responsibilities
 |---------|---------------|
 | `packages/core` | Orchestration engine, agent, Anthropic client, config, CLI, memory |
 | `packages/gateway` | WebSocket + REST server connecting UIs to core |
-| `packages/hindsight` | HTTP client for the Hindsight temporal knowledge graph |
+| `packages/shared` | Cross-package utilities (logger, truncation) and the WebSocket protocol contract |
 | `packages/skills-sdk` | Skill manifest types, loader, validator, executor, scaffolding |
 | `packages/tui` | Terminal UI built with Ink |
 | `packages/web` | Next.js dashboard with ReactFlow DAG visualization |
 
-**Dependency order** (lowest to highest):
+**Dependency order** (lowest to highest) — build in this order:
+`shared` → `skills-sdk` → `core` → `gateway`.
 
 ```
-skills-sdk  hindsight
-    └─────┬─────┘
-          ▼
-        core
-          │
-     ┌────┼────┐
-     ▼    ▼    ▼
-   tui gateway web
+shared  skills-sdk
+   │        │
+   └───┬────┘
+       ▼
+      core
+       │
+  ┌────┼────┐
+  ▼    ▼    ▼
+tui gateway web
 ```
 
 Read [`docs/architecture.md`](docs/architecture.md) for a deeper system overview before touching the orchestration engine.
@@ -101,7 +107,7 @@ refactor(tui): consolidate panel state management
 chore: bump @anthropic-ai deps to latest
 ```
 
-**Scopes:** `core`, `gateway`, `tui`, `web`, `hindsight`, `skills-sdk`, `skills`, `docs`, `ci`
+**Scopes:** `core`, `gateway`, `tui`, `web`, `shared`, `skills-sdk`, `skills`, `docs`, `ci`
 
 Keep commits focused. One logical change per commit.
 
@@ -129,7 +135,7 @@ The core package is the heart of the system. Key areas:
 - `src/orchestration/executor.ts` — runs the DAG using Kahn's topological sort
 - `src/orchestration/worker.ts` — individual worker agent logic
 - `src/agent/` — the main agent (plans, never executes directly)
-- `src/memory/` — Hindsight integration for recall and retain
+- `src/memory/` — Redis-backed memory: `MemoryStore` interface, `RedisMemoryStore`, the in-process lexical `MemoryIndex`, and the `ContextAssembler` that rebuilds context each turn (see [`docs/memory-architecture-v2.md`](docs/memory-architecture-v2.md))
 - `src/config/` — configuration loading and validation (zod schemas)
 
 When modifying the orchestration engine, consider:

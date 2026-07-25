@@ -32,12 +32,10 @@ REPO_OWNER="aaronboshart1"
 REPO_NAME="orionomega"
 MIN_NODE=22
 PNPM_VERSION="9"
-HINDSIGHT_IMAGE="ghcr.io/vectorize-io/hindsight:latest"
 
 INSTALL_DIR="${ORIONOMEGA_DIR:-$HOME/.orionomega/src}"
 BIN_DIR="$HOME/.orionomega/bin"
 CONFIG_DIR="$HOME/.orionomega"
-DATA_DIR="$HOME/.orionomega/hindsight-data"
 COMMANDS_DIR="$HOME/.orionomega/commands"
 
 # ── TTY detection for interactive prompts (curl | bash safe) ──────────────────
@@ -630,220 +628,99 @@ setup_commands() {
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  7. Docker + Hindsight memory system
-#  Uses get.docker.com for Linux (not the outdated docker.io package).
-#  Uses Colima on macOS (lightweight Docker runtime).
-#  Fixes: BSD grep -E for alternation, BSD sed [[:space:]] for \s.
+#  7. Redis — the memory backend
+#  OrionOmega stores long-term memory in Redis (see docs/memory-architecture-v2.md).
+#  We do NOT install or manage Redis: it is a normal system service and the
+#  operator owns it. We only probe reachability and print actionable guidance.
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# Check if the docker binary is real Docker Engine (not the unrelated npm package)
-is_real_docker() {
-  local docker_path
-  docker_path="$(command -v docker 2>/dev/null)" || return 1
+REDIS_URL_DEFAULT="redis://localhost:6379"
+REDIS_UNREACHABLE=false
 
-  # The npm 'docker' package installs to node_modules paths
-  # Use grep -E (extended regex) for portable alternation — BSD grep does not
-  # support \| in basic regex mode (HIGH-2 fix).
-  if echo "$docker_path" | grep -qE "node_modules|/\.?npm"; then
-    warn "Found '$docker_path' — this is the npm 'docker' package, NOT Docker Engine."
-    printf "    The npm 'docker' package is unrelated to Docker Engine.\n"
-    printf "    Install Docker Engine: https://docs.docker.com/engine/install/\n"
-    return 1
-  fi
-  return 0
-}
+# Probe a host:port with whatever the machine has. Returns 0 if something
+# answers. Prefers redis-cli (proves it is really Redis), then falls back to
+# a bare TCP connect via bash's /dev/tcp or nc.
+redis_reachable() {
+  local host="$1" port="$2"
 
-install_docker_linux() {
-  # Use the official convenience script instead of the outdated docker.io
-  # distribution package (HIGH-4 fix).
-  if confirm_sudo "Install Docker via get.docker.com (official script)"; then
-    if command -v curl &>/dev/null; then
-      curl -fsSL https://get.docker.com | run_privileged sh 2>&1 | tail -5
-    elif command -v wget &>/dev/null; then
-      wget -qO- https://get.docker.com | run_privileged sh 2>&1 | tail -5
-    else
-      fail "curl or wget required to install Docker."
-    fi
-    # Add current user to docker group (skip if root — already has access)
-    if ! $IS_ROOT && [ -n "${USER:-}" ]; then
-      run_privileged usermod -aG docker "$USER" 2>/dev/null || true
-      warn "Added $USER to docker group. You may need to log out and back in."
-    fi
-    # Enable and start via systemd
-    if command -v systemctl &>/dev/null; then
-      run_privileged systemctl enable --now docker 2>/dev/null || true
-    fi
-    hash -r 2>/dev/null || true
-    return 0
-  fi
-  return 1
-}
-
-install_docker_macos() {
-  if ! command -v brew &>/dev/null; then
-    warn "Homebrew not found — cannot auto-install Docker."
-    printf "    Install Homebrew: https://brew.sh\n"
-    printf "    Then re-run this installer.\n"
-    return 1
-  fi
-
-  info "Installing Docker CLI and Colima via Homebrew..."
-  brew install docker colima 2>&1 | tail -3
-
-  start_colima
-}
-
-# Start Colima with an "already running" guard (M3 fix)
-start_colima() {
-  if ! command -v colima &>/dev/null; then
-    return 1
-  fi
-
-  # Check if already running before attempting start
-  if colima status 2>/dev/null | grep -qi 'running'; then
-    info "Colima already running"
-    if docker info &>/dev/null; then
+  if command -v redis-cli &>/dev/null; then
+    if [ "$(redis-cli -h "$host" -p "$port" ping 2>/dev/null | tr -d '\r')" = "PONG" ]; then
       return 0
     fi
+    return 1
   fi
 
-  info "Starting Colima (lightweight Docker runtime)..."
-  colima start --cpu 2 --memory 4 2>&1 | tail -3
-
-  if docker info &>/dev/null; then
-    info "Docker running via Colima"
+  # No redis-cli: a successful TCP connect is the best signal available.
+  if (exec 3<>"/dev/tcp/${host}/${port}") 2>/dev/null; then
+    exec 3<&- 2>/dev/null || true
+    exec 3>&- 2>/dev/null || true
     return 0
   fi
-  warn "Colima started but Docker not responding. Try: colima restart"
+
+  if command -v nc &>/dev/null && nc -z -w 2 "$host" "$port" &>/dev/null; then
+    return 0
+  fi
+
   return 1
 }
 
-setup_docker_and_hindsight() {
-  step "Hindsight (Memory System)..."
-
-  mkdir -p "$DATA_DIR"
-
-  local docker_ready=false
-
-  # Check for real Docker (not npm package)
-  if is_real_docker; then
-    if docker info &>/dev/null; then
-      info "Docker is running"
-      docker_ready=true
-    else
-      # Docker CLI exists but daemon not running
-      if [ "$OS_ID" = "macos" ]; then
-        if command -v colima &>/dev/null; then
-          start_colima && docker info &>/dev/null && docker_ready=true
-        fi
-        if [ "$docker_ready" = false ]; then
-          install_docker_macos && docker info &>/dev/null && docker_ready=true
-        fi
-      else
-        warn "Docker installed but not running."
-        if command -v systemctl &>/dev/null; then
-          if confirm_sudo "Start Docker service"; then
-            run_privileged systemctl start docker 2>/dev/null || true
-            docker info &>/dev/null && docker_ready=true
-          fi
-        fi
-        if [ "$docker_ready" = false ]; then
-          printf "    Start Docker and re-run: orionomega setup\n"
-        fi
-      fi
-    fi
-  else
-    # No real Docker — attempt install
-    if [ "$OS_ID" = "macos" ]; then
-      install_docker_macos && docker info &>/dev/null && docker_ready=true
-    elif is_debian_based; then
-      install_docker_linux && docker info &>/dev/null && docker_ready=true
-    elif [ "$OS_ID" = "fedora" ]; then
-      if confirm_sudo "Install Docker via dnf"; then
-        run_privileged dnf install -y docker 2>&1 | tail -3
-        run_privileged systemctl enable --now docker 2>/dev/null || true
-        docker info &>/dev/null && docker_ready=true
-      fi
-    else
-      warn "Docker not found. Install: https://docs.docker.com/engine/install/"
-    fi
-  fi
-
-  if [ "$docker_ready" = false ]; then
-    warn "Docker not available — Hindsight will not be started."
-    printf "    Install Docker and re-run: orionomega setup\n"
-    return 0
-  fi
-
-  # Pull Hindsight image (idempotent)
-  if docker image inspect "$HINDSIGHT_IMAGE" &>/dev/null; then
-    info "Hindsight image already available"
-  else
-    printf "  Pulling Hindsight image (this may take a few minutes)... "
-    if docker pull "$HINDSIGHT_IMAGE" 2>&1 | tail -1; then
-      info "Hindsight image pulled"
-    else
-      warn "Failed to pull Hindsight image. Pull manually: docker pull $HINDSIGHT_IMAGE"
-    fi
-  fi
-
-  # Attempt to start Hindsight if an API key is available
-  start_hindsight_if_configured
+print_redis_guidance() {
+  printf "    ${BOLD}Install and start Redis, then re-run: orionomega doctor${NC}\n"
+  case "$OS_ID" in
+    macos)
+      printf "      brew install redis && brew services start redis\n"
+      ;;
+    fedora)
+      printf "      sudo dnf install -y redis && sudo systemctl enable --now redis\n"
+      ;;
+    *)
+      printf "      sudo apt install -y redis-server && sudo systemctl enable --now redis-server\n"
+      ;;
+  esac
+  printf "    Or run it in a container:\n"
+  printf "      docker run -d --name redis --restart unless-stopped -p 6379:6379 redis:7-alpine\n"
+  printf "    Using a Redis somewhere else? Set memory.redis.url in %s/config.yaml\n" "$CONFIG_DIR"
 }
 
-start_hindsight_if_configured() {
-  # Already running? Skip.
-  if docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^hindsight$'; then
-    info "Hindsight container already running"
-    return 0
-  fi
+check_redis() {
+  step "Redis (memory backend)..."
 
-  # Image must be available
-  if ! docker image inspect "$HINDSIGHT_IMAGE" &>/dev/null; then
-    return 0
-  fi
-
-  # Resolve API key: env var first, then config file
-  local api_key="${ANTHROPIC_API_KEY:-}"
+  # Honour an already-configured URL so we probe the host the app will use.
+  local url="${REDIS_URL:-}"
   local config_file="$CONFIG_DIR/config.yaml"
-
-  if [ -z "$api_key" ] && [ -f "$config_file" ]; then
-    # POSIX-compatible sed: [[:space:]] instead of \s (HIGH-1 fix for BSD/macOS).
-    api_key=$(sed -n '/^models:/,/^[^ ]/{
-      /^[[:space:]]*apiKey:/{
-        s/.*apiKey:[[:space:]]*//
+  if [ -z "$url" ] && [ -f "$config_file" ]; then
+    url=$(sed -n '/^memory:/,/^[^ ]/{
+      /^[[:space:]]*url:[[:space:]]*rediss\{0,1\}:\/\//{
+        s/.*url:[[:space:]]*//
         s/^["'"'"']//
         s/["'"'"']$//
-        s/^[[:space:]]*//
         s/[[:space:]]*$//
         p
         q
       }
     }' "$config_file" 2>/dev/null) || true
   fi
+  [ -n "$url" ] || url="$REDIS_URL_DEFAULT"
 
-  if [ -n "$api_key" ] && [ "$api_key" != "''" ] && [ "$api_key" != '""' ] && [ ${#api_key} -gt 8 ]; then
-    docker stop hindsight 2>/dev/null || true
-    docker rm hindsight 2>/dev/null || true
-    printf "  Starting Hindsight container... "
-    if docker run -d \
-      --name hindsight \
-      --restart unless-stopped \
-      -p 8888:8888 -p 9999:9999 \
-      -e "HINDSIGHT_API_LLM_API_KEY=${api_key}" \
-      -e "HINDSIGHT_API_LLM_PROVIDER=anthropic" \
-      -e "HINDSIGHT_API_LLM_MODEL=claude-haiku-4-5-20251001" \
-      -v "${DATA_DIR}:/home/hindsight/.pg0" \
-      "$HINDSIGHT_IMAGE" >/dev/null 2>&1; then
-      printf "done\n"
-      info "Hindsight container started"
-      printf "  ${DIM}Hindsight needs 30-60s to initialize on first start.${NC}\n"
-    else
-      warn "Failed to start Hindsight container. Run: orionomega setup"
-    fi
-  else
-    printf "  ${DIM}No API key found yet. The setup wizard will configure Hindsight.${NC}\n"
+  # redis[s]://[user[:pass]@]host[:port][/db] → host, port
+  local hostport host port
+  hostport="${url#*://}"       # strip scheme
+  hostport="${hostport##*@}"   # strip credentials
+  hostport="${hostport%%/*}"   # strip /db and path
+  host="${hostport%%:*}"
+  port="${hostport##*:}"
+  [ "$port" != "$hostport" ] || port="6379"
+  [ -n "$host" ] || host="localhost"
+
+  if redis_reachable "$host" "$port"; then
+    info "Redis is reachable at ${host}:${port}"
+    return 0
   fi
+
+  warn "Redis is NOT reachable at ${host}:${port} — persistent memory will not work."
+  print_redis_guidance
+  REDIS_UNREACHABLE=true
+  return 0
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -896,11 +773,12 @@ gateway:
   port: 8000
   bind: '127.0.0.1'
 
-hindsight:
-  url: http://localhost:8888
-  defaultBank: default
+memory:
+  redis:
+    url: redis://localhost:6379
   retainOnComplete: true
   retainOnError: true
+  sessionSummary: true
 
 orchestration:
   planFirst: true
@@ -968,8 +846,8 @@ setup_systemd_service() {
   cat > "$tmpfile" <<SERVICE
 [Unit]
 Description=OrionOmega Gateway
-After=network.target docker.service
-Wants=docker.service
+After=network.target redis-server.service redis.service
+Wants=redis-server.service
 
 [Service]
 Type=simple
@@ -1076,11 +954,17 @@ print_summary() {
   printf "  ${DIM}OS: %s (%s %s)  Arch: %s${NC}\n" "$OS" "$OS_ID" "$OS_VERSION" "$ARCH"
   printf "\n"
   printf "  ${BOLD}Available commands:${NC}\n"
-  printf "    ${GREEN}orionomega setup${NC}    Configure API keys, Hindsight, workspace\n"
+  printf "    ${GREEN}orionomega setup${NC}    Configure API keys, memory, workspace\n"
   printf "    ${GREEN}orionomega tui${NC}      Launch the terminal UI\n"
   printf "    ${GREEN}orionomega doctor${NC}   Check system health\n"
   printf "    ${GREEN}orionomega status${NC}   Show current configuration\n"
   printf "\n"
+
+  if [ "$REDIS_UNREACHABLE" = true ]; then
+    printf "  ${YELLOW}${SYM_WARN}${NC} ${BOLD}Redis is not running — persistent memory is unavailable.${NC}\n"
+    print_redis_guidance
+    printf "\n"
+  fi
 
   if [ -n "$SKIPPED_STEPS" ]; then
     printf "  ${YELLOW}${SYM_WARN}${NC} ${BOLD}Skipped steps (non-interactive):${NC}\n"
@@ -1126,7 +1010,7 @@ main() {
   build_project
   link_cli
   setup_commands
-  setup_docker_and_hindsight
+  check_redis
   setup_configuration
   setup_service
   verify_installation

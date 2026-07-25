@@ -4,7 +4,7 @@
  * and optional file output.
  *
  * This is the single canonical logger for the OrionOmega monorepo. It is
- * consumed by both `@orionomega/core` and `@orionomega/hindsight` (which
+ * consumed across the workspace (which
  * previously each carried their own copy — DUP-12). Both packages re-export
  * this module so existing import paths keep working.
  *
@@ -20,7 +20,7 @@
  *   warn   — recoverable issue; operation continues but something is wrong
  *   info   — lifecycle milestone; start/stop/config events worth noting
  *   verbose — operational detail for live troubleshooting (tool calls, tokens,
- *             Hindsight access, timing, conversations)
+ *             memory access, timing, conversations)
  *   debug  — full payloads and internal state; only useful when debugging
  */
 

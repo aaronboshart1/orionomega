@@ -27,7 +27,7 @@ export type StateEventType =
   | 'dag_confirm'
   | 'dag_response'
   | 'command_result'
-  | 'hindsight_status'
+  | 'memory_activity'
   | 'memory_event'
   | 'coding_event';
 

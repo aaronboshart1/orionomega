@@ -33,7 +33,8 @@ import type { OrionOmegaAbortReason } from './abort-reason.js';
 import { CheckpointManager } from './checkpoint.js';
 import { createLogger } from '../logging/logger.js';
 import { readConfig } from '../config/loader.js';
-import { HindsightClient } from '@orionomega/hindsight';
+import type { MemoryStore } from '../memory/store.js';
+import { projectScopeFor } from '../memory/scope-slug.js';
 import { isExternalAction } from '../memory/query-classifier.js';
 import { RetryPolicy } from './retry-policy.js';
 import { ArtifactCollector } from './artifact-collector.js';
@@ -86,7 +87,14 @@ export interface ExecutorConfig {
   ) => Promise<string>;
   /** Original task description (for re-planning context). */
   task?: string;
-  /** Callback for memory I/O events (forwarded to HindsightClient.onIO). */
+  /**
+   * Persistent memory backing per-node context injection and TOOL-output
+   * retention. The executor does not own a store — the caller (orchestration
+   * bridge) supplies the one it already built. When omitted, memory recall
+   * and retention are simply skipped: nothing is constructed here.
+   */
+  memoryStore?: MemoryStore;
+  /** Callback for memory I/O events, surfaced to the TUI/web memory panel. */
   onMemoryIO?: (event: { op: 'retain' | 'recall'; bank: string; detail: string; meta?: Record<string, unknown> }) => void;
   /** Default working directory for CODING_AGENT nodes (repo root). */
   codingRepoDir?: string;
@@ -159,6 +167,11 @@ export interface ExecutorConfig {
  * router-based conditional routing, and periodic state checkpointing.
  */
 export class GraphExecutor {
+  /** Shared long-lived memory scope read and written by orchestration runs. */
+  private static readonly MEMORY_SCOPE = 'core';
+  /** Per-scope recall budget when injecting memories into an AGENT node. */
+  private static readonly RECALL_MAX_TOKENS = 4096;
+
   private readonly graph: WorkflowGraph;
   private readonly eventBus: EventBus;
   private readonly config: ExecutorConfig;
@@ -1016,7 +1029,7 @@ export class GraphExecutor {
             }
           }
 
-          // 2. Hindsight memory recall (multi-bank)
+          // 2. Memory recall (core + project scope)
           // Use the original user task for recall — agent node instructions are
           // sub-task decompositions and cause semantic mismatch against memories
           // that were retained against the user's natural-language request.
@@ -1025,13 +1038,7 @@ export class GraphExecutor {
             contextParts.push(`## Relevant Memories\n${recalled}`);
           }
 
-          // 3. Known infrastructure from config
-          const config = readConfig();
-          if (config.hindsight?.url) {
-            contextParts.push(`## Known Infrastructure\n- Hindsight API: ${config.hindsight.url}\n- Default bank: ${config.hindsight.defaultBank ?? 'default'}`);
-          }
-
-          // 4. Task #192: chat attachments staged to disk. Prepend so the
+          // 3. Task #192: chat attachments staged to disk. Prepend so the
           // worker sees absolute paths regardless of upstream/memory size.
           if (stagedAttachmentsBlock) {
             contextParts.unshift(stagedAttachmentsBlock);
@@ -1094,20 +1101,25 @@ export class GraphExecutor {
         try {
           const result = await worker.run();
           // Change 2.7: Retain significant TOOL outputs to memory
-          if (node.type === 'TOOL' && typeof result.output === 'string' && result.output.length > 50) {
+          const memoryStore = this.config.memoryStore;
+          if (
+            memoryStore &&
+            node.type === 'TOOL' &&
+            typeof result.output === 'string' &&
+            result.output.length > 50
+          ) {
             try {
-              const toolCfg = readConfig();
-              if (toolCfg.hindsight?.url) {
-                const bankId = toolCfg.hindsight.defaultBank ?? 'core';
-                const hsClient = new HindsightClient(toolCfg.hindsight.url, bankId, toolCfg.hindsight.apiKey);
-                if (this.config.onMemoryIO) hsClient.onIO = this.config.onMemoryIO;
-                const toolContent = [
-                  `Tool: ${node.label ?? node.id}`,
-                  `Command: ${node.tool?.name ?? 'unknown'}`,
-                  `Output: ${result.output.slice(0, 2000)}`,
-                ].join('\n');
-                await hsClient.retainOne(bankId, toolContent, 'tool_output');
-              }
+              const toolContent = [
+                `Tool: ${node.label ?? node.id}`,
+                `Command: ${node.tool?.name ?? 'unknown'}`,
+                `Output: ${result.output.slice(0, 2000)}`,
+              ].join('\n');
+              await memoryStore.retainOne(GraphExecutor.MEMORY_SCOPE, toolContent, 'tool_output');
+              this.config.onMemoryIO?.({
+                op: 'retain',
+                bank: GraphExecutor.MEMORY_SCOPE,
+                detail: `Retained output of tool node '${node.id}'`,
+              });
             } catch { /* non-fatal */ }
           }
           return result;
@@ -2374,13 +2386,6 @@ export class GraphExecutor {
     });
   }
 
-  /**
-   * Recalls relevant memories from Hindsight across multiple banks.
-   * Returns combined text, or undefined if unavailable or no matches.
-   *
-   * Queries the infra bank (always), default bank, and any project-* bank
-   * that seems relevant to the task keywords.
-   */
   private async compressOutput(label: string, output: string): Promise<string> {
     try {
       const config = readConfig();
@@ -2413,71 +2418,68 @@ export class GraphExecutor {
     }
   }
 
+  /**
+   * Recalls records relevant to `task` from the injected {@link MemoryStore}
+   * and formats them for injection into an AGENT node's context.
+   *
+   * Queries two scopes: `core` (the shared long-lived scope) and the
+   * deterministic `project-<slug>` scope derived from the task — the same
+   * derivation the retention side uses, so a follow-up run rejoins the scope
+   * its predecessor wrote to. The old infra federation and the scope-listing
+   * discovery scan are gone: scope names are derivable, so there is nothing
+   * to enumerate.
+   *
+   * Returns undefined when no store is configured (nothing is constructed
+   * here), when the task is an external action, or when nothing matched.
+   */
   private async recallContext(task: string): Promise<string | undefined> {
+    const store = this.config.memoryStore;
+    if (!store) {
+      // No store supplied: memory injection is simply off for this run.
+      return undefined;
+    }
+
     if (isExternalAction(task)) {
-      log.debug('Skipping Hindsight recall for external action task');
+      log.debug('Skipping memory recall for external action task');
       return undefined;
     }
 
     try {
-      const config = readConfig();
-      const hindsightUrl = config.hindsight?.url;
+      // A Set because projectScopeFor() could in principle collapse onto the
+      // core scope name; recalling the same scope twice would duplicate text.
+      const scopes = new Set<string>([GraphExecutor.MEMORY_SCOPE, projectScopeFor(task)]);
 
-      if (!hindsightUrl) {
-        log.debug('Hindsight URL not configured; skipping memory injection');
-        return undefined;
-      }
-
-      const defaultBank = config.hindsight?.defaultBank ?? 'default';
-      const client = new HindsightClient(hindsightUrl, defaultBank, config.hindsight?.apiKey);
-      if (this.config.onMemoryIO) {
-        client.onIO = this.config.onMemoryIO;
-      }
-
-      // Determine which banks to query
-      const banks = new Set<string>([defaultBank, 'infra']);
-
-      // Discover project banks that might be relevant
-      try {
-        const allBanks = await client.listBanksCached();
-        const taskLower = task.toLowerCase();
-        for (const bank of allBanks) {
-          if (bank.bank_id.startsWith('project-')) {
-            // Check if project name appears in the task
-            const projectName = bank.bank_id.replace('project-', '');
-            if (taskLower.includes(projectName)) {
-              banks.add(bank.bank_id);
-            }
-          }
-        }
-      } catch {
-        // Non-fatal: proceed with default banks
-      }
-
-      // Recall from all banks concurrently
-      const recallPromises = [...banks].map(async (bankId) => {
+      const recallPromises = [...scopes].map(async (scope) => {
         try {
-          const result = await client.recall(bankId, task, { maxTokens: 4096, budget: 'mid', types: ['world', 'experience', 'observation'] });
-          const memories = result?.results ?? [];
-          if (memories.length > 0) {
-            const text = memories.map((m: { content: string }) => m.content).join('\n');
-            return `### Bank: ${bankId}\n${text}`;
-          }
+          const result = await store.recall(scope, task, {
+            maxTokens: GraphExecutor.RECALL_MAX_TOKENS,
+          });
+          const records = result?.records ?? [];
+          if (records.length === 0) return null;
+          this.config.onMemoryIO?.({
+            op: 'recall',
+            bank: scope,
+            detail: `Recalled ${records.length} record(s) (${result.tokensUsed} tokens)`,
+            meta: { lowConfidence: result.lowConfidence },
+          });
+          return `### Scope: ${scope}\n${records.map((r) => r.content).join('\n')}`;
         } catch {
-          // Individual bank failures are non-fatal
+          // Individual scope failures are non-fatal.
+          return null;
         }
-        return null;
       });
 
-      const results = (await Promise.all(recallPromises)).filter(Boolean);
+      const results = (await Promise.all(recallPromises)).filter(
+        (r): r is string => r !== null,
+      );
 
       if (results.length > 0) {
         const combined = results.join('\n\n');
-        log.debug(`Injected context from ${results.length} bank(s) (${combined.length} chars)`);
+        log.debug(`Injected context from ${results.length} scope(s) (${combined.length} chars)`);
         return combined;
       }
     } catch (err) {
-      log.warn(`Hindsight recall failed (proceeding without context): ${err instanceof Error ? err.message : String(err)}`);
+      log.warn(`Memory recall failed (proceeding without context): ${err instanceof Error ? err.message : String(err)}`);
     }
     return undefined;
   }

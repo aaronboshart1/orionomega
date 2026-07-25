@@ -6,10 +6,28 @@
 - **Node.js 22+**
 - **pnpm** (the installer will install it if missing)
 - **An Anthropic API key** — get one at [console.anthropic.com](https://console.anthropic.com/)
+- **Redis** — backs persistent memory. Expected at `redis://localhost:6379`.
 
-Optional:
+OrionOmega does **not** install or manage Redis; it is an ordinary system
+service you run yourself. If it is missing, the installer and `orionomega
+doctor` will tell you and print the command for your platform:
 
-- **Docker** — required for Hindsight (persistent memory system)
+```bash
+# macOS
+brew install redis && brew services start redis
+
+# Debian / Ubuntu
+sudo apt install -y redis-server && sudo systemctl enable --now redis-server
+
+# Fedora
+sudo dnf install -y redis && sudo systemctl enable --now redis
+
+# Any platform, via Docker
+docker run -d --name redis --restart unless-stopped -p 6379:6379 redis:7-alpine
+```
+
+Everything else works without Redis, but the agent will have no memory beyond
+the current turn's hot window.
 
 ---
 
@@ -28,7 +46,7 @@ The installer will:
 3. Clone the repository to `~/.orionomega/src`
 4. Install dependencies and build all packages
 5. Link the `orionomega` CLI to `~/.orionomega/bin` and add it to your PATH
-6. Pull the Hindsight Docker image (if Docker is available)
+6. Check that Redis is reachable, and print install instructions if it is not
 7. Launch the setup wizard automatically
 
 ---
@@ -48,14 +66,31 @@ It walks you through each step with a menu you can navigate back and forth:
 | Anthropic API Key | Yes | Your API key (validated live against the API) |
 | Default Model | Yes | Which Claude model to use (recommends a balanced option) |
 | Gateway Security | Yes | Authentication mode — API key (password-protected) or none |
-| Hindsight Memory | No | Connection to the Hindsight memory system (Docker) |
+| Memory (Redis) | No | Redis connection URL for persistent memory (probed live) |
 | Workspace | Yes | Directory for agent identity files (SOUL.md, USER.md) |
 | Logging | No | Log level and file path |
 | Claude Agent SDK | No | Permissions and token budgets for the Agent SDK |
 | Skills | No | Configure integrations (GitHub, Linear, web search, etc.) |
 | Web UI | No | Port and bind address for the web dashboard |
 
-All settings are saved to `~/.orionomega/config.yaml`.
+All settings are saved to `~/.orionomega/config.yaml`. Memory lives under the
+`memory:` section, with the connection details in `memory.redis`:
+
+```yaml
+memory:
+  redis:
+    url: redis://localhost:6379
+    # password: ...        # optional
+    # db: 0                # optional logical database
+    # keyPrefix: orionomega
+    # tls: false           # true for rediss://
+  retainOnComplete: true
+  retainOnError: true
+  sessionSummary: true
+```
+
+The wizard probes the URL while you are in it — a configured but unreachable
+Redis is shown as a failure, because it means no memory at all.
 
 After saving, the wizard automatically starts the gateway for you.
 
@@ -83,7 +118,7 @@ orionomega ui start -H 0.0.0.0 # Bind to all interfaces
 ### System Health
 
 ```bash
-orionomega status              # Quick health check (gateway, hindsight, config)
+orionomega status              # Quick health check (gateway, memory/Redis, config)
 orionomega doctor              # Full diagnostic scan of the entire environment
 ```
 
@@ -182,7 +217,7 @@ Now you can use `/summarize` followed by your content in the TUI or Web UI. The 
 
 | Command | Description |
 |---------|-------------|
-| `/status` | Show system health, active workflows, Hindsight connection |
+| `/status` | Show system health, active workflows, memory recall health |
 | `/stop` | Stop the current workflow |
 | `/restart` | Restart the current workflow from the last checkpoint |
 | `/reset` | Clear the current conversation |
@@ -250,7 +285,7 @@ Open your browser to `http://localhost:5000`. The web UI provides:
 - **Chat panel** (left) — conversational interface, same as the TUI
   - **Agent Mode Toggle** — ⚡ Direct / ⎇ Orchestrate buttons in the chat toolbar; press **Ctrl+M** to toggle
 - **Orchestration panel** (right) — real-time DAG visualization, worker status, memory feed
-- **Settings** — click the gear icon to configure models, gateway, Hindsight, and skills
+- **Settings** — click the gear icon to configure models, gateway, memory, and skills
 
 The agent mode toggle switches between full orchestration (plan → approve → workers) and direct conversational mode. The chosen mode is saved per-session and restored on reconnect. See [`docs/agent-mode.md`](agent-mode.md) for the full guide.
 
@@ -287,13 +322,15 @@ This will:
 3. Remove `~/.orionomega` (config, logs, source)
 4. Clean up PATH entries from your shell config
 
-To also remove Hindsight's Docker container and data:
+Redis is left alone — OrionOmega did not install it and does not remove it. To
+discard the stored memory as well, drop the keys OrionOmega wrote — they all
+share the configured `memory.redis.keyPrefix` (`om:` by default):
 
 ```bash
-docker stop hindsight && docker rm hindsight
-docker volume rm hindsight_data
-docker rmi hindsight
+redis-cli --scan --pattern 'om:*' | xargs -r redis-cli del
 ```
+
+Then stop or uninstall Redis itself if nothing else on the machine uses it.
 
 ---
 
@@ -303,7 +340,8 @@ docker rmi hindsight
 |---------|-----|
 | `orionomega: command not found` | Run `source ~/.zshrc` (or `~/.bashrc`) or open a new terminal |
 | Gateway won't start | Run `orionomega doctor` to diagnose |
-| Hindsight shows OFFLINE | Check `docker ps` — the container may need restarting |
+| Memory reports `degraded` | Redis is unreachable — check `redis-cli ping` and `memory.redis.url` |
+| Memory reports `rebuilding` | The in-process index is still warming from Redis; recall improves as it finishes |
 | Settings won't load in Web UI | Verify gateway is running: `orionomega gateway status` |
 | Web UI not accessible from LAN | Start with `-H 0.0.0.0`: `orionomega ui start -H 0.0.0.0` |
 | Port already in use | The CLI auto-detects conflicts — it will offer to kill the stale process |

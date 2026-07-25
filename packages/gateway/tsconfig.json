@@ -20,7 +20,6 @@
   "references": [
     { "path": "../shared" },
     { "path": "../core" },
-    { "path": "../hindsight" },
     { "path": "../skills-sdk" }
   ]
 }

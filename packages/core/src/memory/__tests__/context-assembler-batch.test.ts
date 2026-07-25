@@ -2,41 +2,35 @@
  * Unit tests for batched conversation retention (C5 fix).
  *
  * Verifies:
- *  - Messages are buffered rather than immediately sent to Hindsight.
+ *  - Messages are buffered rather than immediately sent to the memory store.
  *  - When the buffer reaches RETAIN_FLUSH_SIZE (3), a single retain()
  *    call is made with all buffered items.
  *  - When fewer than 3 messages are buffered, a timer fires after
  *    RETAIN_FLUSH_INTERVAL_MS (5 000 ms) and flushes the remainder.
- *  - Each retained item carries a document_id.
+ *  - Each retained item carries a documentId.
  *  - retain() is called with { async: true }.
  *  - destroy() flushes any buffered messages before teardown.
  *  - flushRetainBuffer() is a public no-op when the buffer is empty.
  *
- * Mocks the HindsightClient and uses vi.useFakeTimers for timer tests.
+ * Mocks the MemoryStore and uses vi.useFakeTimers for timer tests.
+ *
+ * Ported to the §12 rewrite's API: the config key `conversationBank` is now
+ * `conversationScope`, and `federateBanks` / `adaptiveRecall` /
+ * `dynamicSummaryFallback` were deleted along with the features they gated.
+ * No assertion in this file changed meaning — retain buffering is retained
+ * behaviour (RETAIN_FLUSH_SIZE 3, RETAIN_FLUSH_INTERVAL_MS 5 000,
+ * flushRetainBuffer(), destroy(), `documentId` on each write, `{ async: true }`).
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ContextAssembler } from '../context-assembler.js';
-import type { HindsightClient, RecalledMemory } from '@orionomega/hindsight';
 import type { ConversationMessage } from '../context-assembler.js';
+import { makeMockStore } from './helpers/mock-store.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 function makeMsg(content: string, role: 'user' | 'assistant' = 'user'): ConversationMessage {
   return { role, content, timestamp: new Date().toISOString() };
-}
-
-function makeMockHs(retainMock?: ReturnType<typeof vi.fn>): HindsightClient {
-  return {
-    retain: retainMock ?? vi.fn().mockResolvedValue({ success: true, bank_id: 'test-bank', items_count: 1 }),
-    recallWithTemporalDiversity: vi.fn().mockResolvedValue({
-      results: [] as RecalledMemory[],
-      lowConfidence: false,
-      tokens_used: 0,
-    }),
-    listBanksCached: vi.fn().mockResolvedValue([]),
-    isDuplicateContent: vi.fn().mockResolvedValue(false),
-  } as unknown as HindsightClient;
 }
 
 /** Drain the microtask queue (≈ n Promise.resolve cycles). */
@@ -52,13 +46,10 @@ describe('ContextAssembler — batch retain: 3-message threshold (C5)', () => {
 
   beforeEach(() => {
     vi.useFakeTimers();
-    retainMock = vi.fn().mockResolvedValue({ success: true, bank_id: 'test-bank', items_count: 3 });
-    const hs = makeMockHs(retainMock);
+    retainMock = vi.fn().mockResolvedValue({ ok: true, count: 3 });
+    const hs = makeMockStore({ retain: retainMock });
     assembler = new ContextAssembler(hs, {
-      conversationBank: 'test-bank',
-      federateBanks: false,
-      adaptiveRecall: false,
-      dynamicSummaryFallback: false,
+      conversationScope: 'test-scope',
     });
   });
 
@@ -104,18 +95,18 @@ describe('ContextAssembler — batch retain: 3-message threshold (C5)', () => {
     expect(items).toHaveLength(3);
   });
 
-  it('retain is called on the correct bank', async () => {
+  it('retain is called on the correct scope', async () => {
     await assembler.push(makeMsg('A'));
     await assembler.push(makeMsg('B'));
     await assembler.push(makeMsg('C'));
     await vi.advanceTimersByTimeAsync(0);
     await drainMicrotasks();
 
-    const [bankId] = retainMock.mock.calls[0] as [string, unknown];
-    expect(bankId).toBe('test-bank');
+    const [scope] = retainMock.mock.calls[0] as [string, unknown];
+    expect(scope).toBe('test-scope');
   });
 
-  it('each retained item has a document_id', async () => {
+  it('each retained item has a documentId', async () => {
     await assembler.push(makeMsg('Item A'));
     await assembler.push(makeMsg('Item B'));
     await assembler.push(makeMsg('Item C'));
@@ -124,8 +115,8 @@ describe('ContextAssembler — batch retain: 3-message threshold (C5)', () => {
 
     const [, items] = retainMock.mock.calls[0] as [string, Array<Record<string, unknown>>];
     for (const item of items) {
-      expect(typeof item.document_id).toBe('string');
-      expect((item.document_id as string).length).toBeGreaterThan(0);
+      expect(typeof item.documentId).toBe('string');
+      expect((item.documentId as string).length).toBeGreaterThan(0);
     }
   });
 
@@ -166,13 +157,10 @@ describe('ContextAssembler — batch retain: timer flush after 5 s inactivity (C
 
   beforeEach(() => {
     vi.useFakeTimers();
-    retainMock = vi.fn().mockResolvedValue({ success: true, bank_id: 'test-bank', items_count: 1 });
-    const hs = makeMockHs(retainMock);
+    retainMock = vi.fn().mockResolvedValue({ ok: true, count: 1 });
+    const hs = makeMockStore({ retain: retainMock });
     assembler = new ContextAssembler(hs, {
-      conversationBank: 'test-bank',
-      federateBanks: false,
-      adaptiveRecall: false,
-      dynamicSummaryFallback: false,
+      conversationScope: 'test-scope',
     });
   });
 
@@ -195,13 +183,13 @@ describe('ContextAssembler — batch retain: timer flush after 5 s inactivity (C
     expect(retainMock).toHaveBeenCalledTimes(1);
   });
 
-  it('flushed item via timer still has a document_id', async () => {
+  it('flushed item via timer still has a documentId', async () => {
     await assembler.push(makeMsg('Timer message'));
     await vi.advanceTimersByTimeAsync(5_001);
     await drainMicrotasks();
 
     const [, items] = retainMock.mock.calls[0] as [string, Array<Record<string, unknown>>];
-    expect(items[0].document_id).toBeDefined();
+    expect(items[0].documentId).toBeDefined();
   });
 
   it('two buffered messages flushed together by timer', async () => {
@@ -239,12 +227,9 @@ describe('ContextAssembler — batch retain: timer flush after 5 s inactivity (C
 describe('ContextAssembler.flushRetainBuffer()', () => {
   it('is a no-op when the buffer is empty', async () => {
     const retainMock = vi.fn();
-    const hs = makeMockHs(retainMock);
+    const hs = makeMockStore({ retain: retainMock });
     const assembler = new ContextAssembler(hs, {
-      conversationBank: 'test-bank',
-      federateBanks: false,
-      adaptiveRecall: false,
-      dynamicSummaryFallback: false,
+      conversationScope: 'test-scope',
     });
 
     await assembler.flushRetainBuffer();
@@ -252,13 +237,10 @@ describe('ContextAssembler.flushRetainBuffer()', () => {
   });
 
   it('manually flushes buffered messages and empties the buffer', async () => {
-    const retainMock = vi.fn().mockResolvedValue({ success: true, bank_id: 'test-bank', items_count: 2 });
-    const hs = makeMockHs(retainMock);
+    const retainMock = vi.fn().mockResolvedValue({ ok: true, count: 2 });
+    const hs = makeMockStore({ retain: retainMock });
     const assembler = new ContextAssembler(hs, {
-      conversationBank: 'test-bank',
-      federateBanks: false,
-      adaptiveRecall: false,
-      dynamicSummaryFallback: false,
+      conversationScope: 'test-scope',
     });
 
     await assembler.push(makeMsg('First'));
@@ -279,13 +261,10 @@ describe('ContextAssembler.flushRetainBuffer()', () => {
 
 describe('ContextAssembler.destroy()', () => {
   it('flushes buffered messages when called', async () => {
-    const retainMock = vi.fn().mockResolvedValue({ success: true, bank_id: 'test-bank', items_count: 1 });
-    const hs = makeMockHs(retainMock);
+    const retainMock = vi.fn().mockResolvedValue({ ok: true, count: 1 });
+    const hs = makeMockStore({ retain: retainMock });
     const assembler = new ContextAssembler(hs, {
-      conversationBank: 'test-bank',
-      federateBanks: false,
-      adaptiveRecall: false,
-      dynamicSummaryFallback: false,
+      conversationScope: 'test-scope',
     });
 
     await assembler.push(makeMsg('Unsent message'));
@@ -296,12 +275,9 @@ describe('ContextAssembler.destroy()', () => {
 
   it('is safe to call when buffer is already empty', async () => {
     const retainMock = vi.fn();
-    const hs = makeMockHs(retainMock);
+    const hs = makeMockStore({ retain: retainMock });
     const assembler = new ContextAssembler(hs, {
-      conversationBank: 'test-bank',
-      federateBanks: false,
-      adaptiveRecall: false,
-      dynamicSummaryFallback: false,
+      conversationScope: 'test-scope',
     });
 
     await expect(assembler.destroy()).resolves.toBeUndefined();

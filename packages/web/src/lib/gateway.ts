@@ -361,10 +361,13 @@ function bindListeners(ws: ReconnectingWebSocket): void {
     fetch('/api/gateway/api/status', { signal })
       .then((r) => r.ok ? r.json() : null)
       .then((data) => {
-        if (data?.hindsight && useConnectionStore.getState().gatewayConnected) {
-          useConnectionStore
-            .getState()
-            .setHindsightStatus(!!data.hindsight.connected, !!data.hindsight.busy);
+        if (data?.memory && useConnectionStore.getState().gatewayConnected) {
+          useConnectionStore.getState().setMemoryActivity({
+            busy: !!data.memory.busy,
+            health: data.memory.health,
+            pct: data.memory.pct,
+            reason: data.memory.reason,
+          });
         }
         // Surface stale-build status from the gateway so the header can show
         // a "rebuild required" indicator. We pull the short-commit fields
@@ -418,7 +421,10 @@ function bindListeners(ws: ReconnectingWebSocket): void {
     if (statusFetchController) { statusFetchController.abort(); statusFetchController = null; }
     const connStore = useConnectionStore.getState();
     connStore.setGatewayConnected(false);
-    connStore.setHindsightStatus(false, false);
+    // Deliberately NOT resetting memory activity: losing the gateway socket
+    // says nothing about what the store can do, and the gateway indicator
+    // already shows the disconnect. The last reported activity stands until
+    // the store itself reports something new.
 
     // Track reconnect attempts and set appropriate status
     reconnectAttemptCount++;

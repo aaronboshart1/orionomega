@@ -5,6 +5,13 @@ Branch: `audit/cleanup-2026-03-31`
 
 These items are deferred from the main audit plan because they change runtime behavior, require testing infrastructure that doesn't yet exist, or involve architectural decisions that need team consensus.
 
+> **Addendum — 2026-07-24 (memory v2).** This list is a dated record; the items
+> below are left as written. Since it was produced, the memory system was rebuilt
+> on self-hosted Redis and `packages/hindsight` was deleted outright (see
+> [`docs/memory-architecture-v2.md`](docs/memory-architecture-v2.md)). Items that
+> target files under `packages/hindsight/` are annotated inline as resolved by
+> that removal and need no further work.
+
 ---
 
 ## 1. Security Fixes (all change runtime behavior)
@@ -52,6 +59,7 @@ These must be reviewed and tested carefully. Each item may affect client-facing 
 **Risk:** Same issue as SEC-5 but for Hindsight API key.
 **Fix:** Remove `process.env.HINDSIGHT_API_KEY` fallback; require explicit config.
 **Why deferred:** Changes initialization behavior; could break deployments.
+**Resolved (2026-07-24, memory v2):** moot — the Hindsight package was removed. `HINDSIGHT_API_KEY` is no longer read anywhere; the Redis memory backend is configured through `memory.redis` (or `REDIS_URL`).
 
 ### SEC-8 — Auth cooldown reset logic bug
 **File:** `packages/gateway/src/rate-limit.ts:134`
@@ -97,6 +105,8 @@ All replace silent failures with logged warnings. Could surface errors that were
 | P-11 | `gateway/routes/*.ts` | Multiple | REST bodies cast without Zod validation |
 
 **Why deferred:** Fixing `as any` may reveal type errors that currently compile silently. Naming standardization requires coordinated changes across Hindsight API boundary.
+
+**P-7 resolved (2026-07-24, memory v2):** the Hindsight API boundary no longer exists — the package was removed and memory is Redis-backed in `packages/core/src/memory`. Any residual naming split is now a core-internal question.
 
 ---
 
@@ -156,6 +166,8 @@ Items where the correct fix is unclear without further analysis.
 | P-8 | Cross-package | Can config types be consolidated without breaking package boundaries? |
 | P-12 | `skills-sdk/validator.ts` | Is Zod migration justified given manifest validation complexity? |
 
+**DC-10, CPX-23, CPX-24 resolved (2026-07-24, memory v2):** all three questioned the Hindsight HTTP API. That package was removed; there is no Hindsight API to investigate.
+
 ---
 
 ## 6. Prerequisite: Test Infrastructure
@@ -169,7 +181,7 @@ Many deferred items cannot be safely executed without test coverage. This is the
    - `core/agent/conversation.ts` — streaming, tool execution
    - `gateway/auth.ts` — authentication, rate limiting
    - `gateway/websocket.ts` — message validation
-   - `hindsight/client.ts` — recall, deduplication
+   - `hindsight/client.ts` — recall, deduplication *(2026-07-24, memory v2: superseded — the equivalent surface is now `core/memory/redis-store.ts` and `core/memory/memory-index.ts`)*
 4. **Add GitHub Actions CI** — lint + typecheck + build + test on PRs
 5. **Add JSDoc to public APIs** — executable documentation via tests + hover docs
 

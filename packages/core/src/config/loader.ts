@@ -55,11 +55,13 @@ export function getDefaultConfig(): OrionOmegaConfig {
         origins: ['http://localhost:*'],
       },
     },
-    hindsight: {
-      url: 'http://localhost:8888',
-      defaultBank: 'default',
+    memory: {
+      redis: {
+        url: 'redis://localhost:6379',
+      },
       retainOnComplete: true,
       retainOnError: true,
+      sessionSummary: true,
     },
     models: {
       provider: 'anthropic',

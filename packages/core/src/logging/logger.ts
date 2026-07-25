@@ -3,7 +3,7 @@
  * Thin re-export of the canonical logger from `@orionomega/shared`.
  *
  * The implementation used to live here; it now lives in `@orionomega/shared`
- * so `core` and `hindsight` share one copy (DUP-12). Existing imports of
+ * so every package shares one copy (DUP-12). Existing imports of
  * `../logging/logger.js` continue to work unchanged.
  */
 

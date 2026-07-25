@@ -46,9 +46,9 @@ export function getReservedPorts(config?: OrionOmegaConfig): number[] {
   const gatewayPort = Number(cfg.gateway?.port);
   if (gatewayPort > 0) ports.push(gatewayPort);
 
-  // Hindsight (memory) — port lives inside a URL string
-  const hindsightPort = portFromUrl(cfg.hindsight?.url ?? '');
-  if (hindsightPort !== null && hindsightPort > 0) ports.push(hindsightPort);
+  // Memory (Redis) — port lives inside a URL string
+  const memoryPort = portFromUrl(cfg.memory?.redis?.url ?? '');
+  if (memoryPort !== null && memoryPort > 0) ports.push(memoryPort);
 
   // Web UI
   const webuiPort = Number(cfg.webui?.port);

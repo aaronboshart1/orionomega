@@ -8,6 +8,7 @@
 
 import type { AnthropicClient, AnthropicMessage, AnthropicStreamEvent } from '../anthropic/client.js';
 import { maxOutputTokensForModel } from '../anthropic/client.js';
+import type { MemoryTool } from '../memory/memory-tools.js';
 import { createLogger } from '../logging/logger.js';
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -459,6 +460,12 @@ export async function streamConversation(opts: {
    * the call through SkillExecutor instead of the built-in tool dispatcher.
    */
   skillTools?: SkillToolEntry[];
+  /**
+   * In-process memory tools (§11). Separate from `skillTools` because those are
+   * script-handler shaped (handlerPath / cwd / SkillExecutor) and these are
+   * plain closures over a MemoryStore.
+   */
+  memoryTools?: MemoryTool[];
   onText: (text: string, streaming: boolean, done: boolean) => void;
   onThinking?: (text: string, streaming: boolean, done: boolean) => void;
   onThinkingStep?: (step: { id: string; name: string; status: 'pending' | 'active' | 'done'; startedAt?: number; completedAt?: number; elapsedMs?: number; detail?: string }) => void;
@@ -478,20 +485,33 @@ export async function streamConversation(opts: {
 }): Promise<{ text: string; inputTokens: number; outputTokens: number; cacheCreationTokens: number; cacheReadTokens: number }> {
   const { client, model, systemPrompt, workspaceDir, runDir, onText, onThinking, onThinkingStep, onToolStart, onToolEnd, abortSignal } = opts;
   const skillTools = opts.skillTools ?? [];
+  const memoryTools = opts.memoryTools ?? [];
   const skillToolByName = new Map(skillTools.map((t) => [t.name, t] as const));
-  const combinedTools = skillTools.length === 0
+  const memoryToolByName = new Map(memoryTools.map((t) => [t.name, t] as const));
+  const asToolDef = (t: { name: string; description: string; inputSchema: Record<string, unknown> }) => ({
+    name: t.name,
+    description: t.description,
+    input_schema: t.inputSchema as { type: 'object'; properties?: Record<string, unknown>; required?: string[] },
+  });
+  const combinedTools = skillTools.length === 0 && memoryTools.length === 0
     ? MAIN_AGENT_TOOLS
-    : [
-        ...MAIN_AGENT_TOOLS,
-        ...skillTools.map((t) => ({
-          name: t.name,
-          description: t.description,
-          input_schema: t.inputSchema as { type: 'object'; properties?: Record<string, unknown>; required?: string[] },
-        })),
-      ];
+    : [...MAIN_AGENT_TOOLS, ...memoryTools.map(asToolDef), ...skillTools.map(asToolDef)];
   let messages = [...opts.messages];
 
-  if (opts.maxInputTokens && messages.length > 2) {
+  /**
+   * Trim the oldest messages until the estimated input fits the budget.
+   *
+   * Mutates `messages` in place and is safe to call repeatedly — it recomputes
+   * the estimate each time.
+   *
+   * MUST run inside the round loop, not only before it. Every tool result is
+   * appended to `messages`, so a multi-round turn grows the array without
+   * bound; trimming once at entry only bounds the FIRST request of the turn.
+   * With memory tools able to return tens of KB per call, later rounds could
+   * otherwise blow past the model's input limit.
+   */
+  const trimToBudget = (): void => {
+    if (!opts.maxInputTokens || messages.length <= 2) return;
     let totalEstimate = Math.ceil(systemPrompt.length / 4);
     for (const m of messages) {
       const text = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
@@ -512,7 +532,9 @@ export async function streamConversation(opts: {
         log.warn('Token budget: trimmed oldest message', { remaining: messages.length, estimatedTokens: totalEstimate });
       }
     }
-  }
+  };
+
+  trimToBudget();
   let fullText = '';
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
@@ -562,6 +584,11 @@ export async function streamConversation(opts: {
       onThinking?.('', false, true);
       return { text: fullText, inputTokens: totalInputTokens, outputTokens: totalOutputTokens, cacheCreationTokens: totalCacheCreationTokens, cacheReadTokens: totalCacheReadTokens };
     }
+    // Re-trim every round: the previous round appended assistant output and
+    // tool results, so the array this round is strictly larger than the one
+    // the entry-time trim measured.
+    trimToBudget();
+
     const roundStart = Date.now();
     if (round > 0) {
       onThinkingStep?.({ id: `round-${round + 1}`, name: `LLM round ${round + 1}`, status: 'active', startedAt: roundStart, detail: `Model: ${model}` });
@@ -780,9 +807,12 @@ export async function streamConversation(opts: {
 
       const toolStart = Date.now();
       log.verbose(`Tool call: ${tc.name}`, { input: tc.input });
-      const result = skillEntry
-        ? await executeSkillToolEntry(skillEntry, tc.input)
-        : await executeMainTool(tc.name, tc.input, workspaceDir, runDir);
+      const memoryEntry = memoryToolByName.get(tc.name);
+      const result = memoryEntry
+        ? await memoryEntry.execute(tc.input)
+        : skillEntry
+          ? await executeSkillToolEntry(skillEntry, tc.input)
+          : await executeMainTool(tc.name, tc.input, workspaceDir, runDir);
       const toolDuration = Date.now() - toolStart;
       onThinkingStep?.({ id: toolStepId, name: toolSummary, status: 'done', completedAt: Date.now(), elapsedMs: toolDuration });
       onToolEnd?.({

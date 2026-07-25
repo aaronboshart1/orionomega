@@ -10,7 +10,8 @@ OrionOmega exposes three API surfaces:
 
 1. **Gateway REST API** — HTTP endpoints for sessions, skills, configuration, and health
 2. **Gateway WebSocket API** — Real-time event streaming for all connected clients
-3. **Hindsight Client API** — TypeScript library for direct memory operations
+3. **Memory API** — the `MemoryStore` TypeScript interface, plus the three
+   memory tools the agent itself calls
 
 All REST endpoints are served by the gateway (`packages/gateway`). Default port: `8000`.
 
@@ -79,12 +80,21 @@ Returns gateway and subsystem health status.
   "status": "ok",
   "version": "0.1.1",
   "uptime": 12345,
-  "memory": {
-    "hindsight": "connected",
-    "banks": 3
+  "process": { "heapUsedMB": 180, "heapTotalMB": 260, "rssMB": 410 },
+  "system": {
+    "memory": { "busy": false, "health": "ready" },
+    "database": null,
+    "summarizer": null
   }
 }
 ```
+
+`system.memory.health` is `ready`, `rebuilding`, or `degraded` — recall health,
+not socket state. Anything other than `ready` rolls the top-level `status` up to
+`degraded`. When not `ready` a `reason` is included (`redis_unreachable`,
+`index_cold`, or `write_failed`), and `pct` appears while rebuilding.
+
+The HTTP status is always `200`; read the JSON `status` field.
 
 **Example:**
 
@@ -109,7 +119,7 @@ List all active gateway sessions.
       "id": "sess_abc123",
       "connectedAt": "2026-04-04T10:00:00.000Z",
       "messageCount": 42,
-      "projectBank": "project-my-task"
+      "memoryScope": "project-my-task"
     }
   ]
 }
@@ -128,7 +138,7 @@ Get details for a specific session.
   "id": "sess_abc123",
   "connectedAt": "2026-04-04T10:00:00.000Z",
   "messageCount": 42,
-  "projectBank": "project-my-task",
+  "memoryScope": "project-my-task",
   "agentMode": "orchestrate",
   "lastActivity": "2026-04-04T10:05:00.000Z"
 }
@@ -290,11 +300,14 @@ Returns the current active configuration (secrets redacted).
     "auth": { "mode": "api-key" },
     "cors": { "origins": ["http://localhost:*"] }
   },
-  "hindsight": {
-    "url": "http://localhost:8888",
-    "defaultBank": "default",
+  "memory": {
+    "redis": {
+      "url": "redis://localhost:6379",
+      "password": "[REDACTED]"
+    },
     "retainOnComplete": true,
-    "retainOnError": true
+    "retainOnError": true,
+    "sessionSummary": true
   },
   "models": {
     "provider": "anthropic",
@@ -609,10 +622,10 @@ A memory operation event (retain, recall, dedup, etc.).
 {
   "type": "memory",
   "op": "retain",
-  "bank": "project-auth-refactor",
+  "scope": "project-auth-refactor",
   "detail": "Stored JWT decision [decision]",
   "meta": {
-    "itemCount": 1,
+    "recordCount": 1,
     "durationMs": 45
   },
   "timestamp": "2026-04-04T10:00:10.000Z"
@@ -653,163 +666,243 @@ Top-level workflow error (not recoverable).
 
 ---
 
-## Hindsight Client API (TypeScript)
+## Memory API (TypeScript)
 
-Use the `HindsightClient` directly for custom memory integrations.
+Memory is self-hosted Redis behind a backend-neutral interface. The vocabulary
+is **scope** (a memory partition) and **record** (a stored item). Full design:
+[memory-architecture-v2.md](memory-architecture-v2.md).
 
-### Installation
+### The `MemoryStore` interface
 
-The client is in `packages/hindsight` and published as `@orionomega/hindsight`.
-
-### Basic Usage
+Declared in `packages/core/src/memory/store.ts`. Nothing in it names Redis —
+that is the point of the seam. The only implementation today is
+`RedisMemoryStore`.
 
 ```typescript
-import { HindsightClient } from '@orionomega/hindsight';
+interface MemoryStore {
+  /** Write records to a scope. `async: true` permits fire-and-forget batching. */
+  retain(scope: string, writes: MemoryWrite[], opts?: { async?: boolean }): Promise<RetainOutcome>;
 
-const client = new HindsightClient(
-  'http://localhost:8888',  // Hindsight server URL
-  'my-namespace',           // Bank namespace (default: 'default')
-  process.env.HINDSIGHT_API_KEY  // Optional API key
-);
+  /** Convenience single-record write. */
+  retainOne(scope: string, content: string, context: string, tags?: string[]): Promise<RetainOutcome>;
 
-// Check connectivity
-const health = await client.health();
-console.log(health.status); // 'ok'
+  /** Retrieve records relevant to `query` from a single scope. */
+  recall(scope: string, query: string, opts?: RecallQuery): Promise<RecallOutcome>;
+
+  /** Whether `content` is a near-duplicate of something already in `scope`. */
+  isDuplicate(scope: string, content: string, threshold?: number): Promise<boolean>;
+
+  /** All known scopes with their record counts. */
+  listScopes(): Promise<ScopeInfo[]>;
+
+  /** Remove a scope and everything in it. */
+  deleteScope(scope: string): Promise<void>;
+
+  /** Liveness probe. Never throws — reports `healthy: false` instead. */
+  health(): Promise<{ healthy: boolean }>;
+}
 ```
 
-### Retaining Memories
+Supporting types:
 
 ```typescript
-// Store a single memory
-await client.retainOne('core', 'User prefers TypeScript over JavaScript', 'preference');
+interface MemoryWrite {
+  content: string;
+  /** Memory category — drives TTL and output formatting. */
+  context: string;
+  timestamp?: string;
+  /** Stable idempotency key. Re-writing the same id updates in place. */
+  documentId?: string;
+  tags?: string[];
+  /** Importance in [0,1]. */
+  importance?: number;
+  metadata?: Record<string, string>;
+}
 
-// Store multiple memories in one request
-await client.retain('project-auth', [
-  {
-    content: 'Decided to use JWT with RS256 for stateless auth',
-    context: 'decision',
-    timestamp: new Date().toISOString(),
-  },
-  {
-    content: 'Existing session table in Postgres must be preserved during migration',
-    context: 'infrastructure',
-    timestamp: new Date().toISOString(),
-  },
+interface RecallQuery {
+  maxTokens?: number;
+  /** Drop records scoring below this. */
+  minRelevance?: number;
+}
+
+interface RecalledRecord {
+  content: string;
+  context: string;
+  timestamp: string;
+  /** Match quality in [0,1]. */
+  relevance: number;
+  estimatedTokens?: number;
+}
+
+interface RecallOutcome { records: RecalledRecord[]; lowConfidence: boolean; tokensUsed: number }
+interface RetainOutcome { ok: boolean; count: number }
+interface ScopeInfo { id: string; recordCount: number }
+```
+
+`RecallQuery` is deliberately minimal. There are no budget tiers, no
+temporal-diversity ratio, no fact-class filter — a parameter only some backends
+honour is worse than no parameter.
+
+`RetainOutcome.count` is the number of records **stored**, not writes submitted:
+writes sharing a `documentId` collapse to one record. Test `ok`, not
+`count === writes.length`.
+
+### Usage
+
+```typescript
+import { RedisMemoryStore } from '@orionomega/core/memory/redis-store.js';
+
+const store = new RedisMemoryStore({
+  redis: { url: 'redis://localhost:6379' },
+});
+
+// Write
+await store.retainOne('core', 'User prefers TypeScript over JavaScript', 'preference');
+
+await store.retain('project-auth', [
+  { content: 'Decided to use JWT with RS256 for stateless auth', context: 'decision' },
+  { content: 'Existing session table in Postgres must be preserved', context: 'infrastructure' },
 ]);
-```
 
-### Recalling Memories
-
-```typescript
-// Basic recall
-const result = await client.recall('core', 'authentication preferences');
-for (const memory of result.results) {
-  console.log(`[${memory.relevance.toFixed(2)}] ${memory.content}`);
-}
-
-// Recall with options
-const result = await client.recall('project-auth', 'JWT implementation', {
-  maxTokens: 2048,          // Max tokens to return
-  budget: 'mid',            // 'low' | 'mid' | 'high'
-  minRelevance: 0.15,       // Filter threshold
-  deduplicate: true,        // Remove near-duplicates
-  deduplicationThreshold: 0.85,
+// Read
+const out = await store.recall('project-auth', 'JWT implementation', {
+  maxTokens: 2048,
+  minRelevance: 0.15,
 });
-
-// Recall with temporal diversity (recommended for production)
-const result = await client.recallWithTemporalDiversity('core', 'auth decisions', {
-  maxTokens: 4096,
-  temporalDiversityRatio: 0.15,  // 15% from older time buckets
-});
-
-if (result.lowConfidence) {
-  console.warn('Low-confidence recall — treat results with caution');
+for (const record of out.records) {
+  console.log(`[${record.relevance.toFixed(2)}] ${record.content}`);
 }
+if (out.lowConfidence) console.warn('Weak match set — hedge accordingly.');
 ```
 
-### Bank Management
+### Retrieval is lexical
 
-```typescript
-// Create a bank
-await client.createBank('project-my-feature', {
-  name: 'My Feature Project',
-  skepticism: 3,  // 1–5: how aggressively to filter low-confidence memories
-  literalism: 2,  // 1–5: query interpretation strictness
-  empathy: 1,     // 1–5: emotional context weighting
-});
+Records are scored in process by `MemoryIndex`, which reproduces
+`computeClientRelevance` exactly:
 
-// Check if a bank exists
-const exists = await client.bankExists('project-my-feature');
-
-// List all banks
-const banks = await client.listBanksCached();
-for (const bank of banks) {
-  console.log(`${bank.bank_id}: ${bank.memory_count} memories`);
-}
+```
+keywordScore  = |distinct query words present in content| / |query words|
+trigramScore  = Jaccard(trigrams(normalize(query)), trigrams(normalize(content)))
+relevance     = (keywordScore × 0.6 + trigramScore × 0.4) × lengthPenalty
 ```
 
-### Mental Models
+There are **no embeddings and no LLM anywhere in retrieval**. Scoring is
+deterministic, so the same query against the same corpus always returns the same
+ordering.
 
-```typescript
-// Get a pre-synthesized model
-const model = await client.getMentalModel('core', 'user-profile');
-console.log(model.content);
-console.log(`Sources: ${model.source_count}, refreshed: ${model.last_refreshed}`);
+---
 
-// Trigger a refresh
-await client.refreshMentalModel('core', 'user-profile');
+## Agent Memory Tools
+
+The agent is given three tools alongside `read_file` / `exec` / `write_file`.
+They are rebuilt for every turn, because the per-turn call budget lives in the
+builder's closure and must not leak forward.
+
+### `memory_search`
+
+Ranked snippets across stored memory.
+
+| Arg | Type | Notes |
+|-----|------|-------|
+| `query` | string | Required. |
+| `scope` | string | Defaults to the current conversation scope. |
+| `limit` | number | Max results, 1–50 (default 8). |
+| `minRelevance` | number | Relevance floor 0–1 (default 0.15). |
+
+**Tool results are stored but not indexed.** File contents and command output
+will never appear in search results — they are reachable only via
+`memory_read`. This is stated in the tool description so the agent knows where
+to look instead.
+
+A search matching nothing returns an explicit machine-readable marker rather
+than an empty success string:
+
+```
+NO_RESULTS — searched 4,212 indexed records in scope 'project-x' at relevance >= 0.15;
+nothing matched "…".
+Do not retry the same query. Either broaden the terms once, or use memory_read
+on a segment listed in the MEMORY MAP.
 ```
 
-### Observability Hooks
+Capped at **3 calls per turn**; further calls return `REFUSED —`.
 
-```typescript
-// Track I/O activity
-client.onActivity = ({ connected, busy }) => {
-  statusBar.update({ hindsightConnected: connected, hindsightBusy: busy });
-};
+### `memory_read`
 
-// Log every memory operation
-client.onIO = ({ op, bank, detail, meta }) => {
-  logger.info(`Memory ${op} → ${bank}: ${detail}`, meta);
-};
-```
+A contiguous verbatim span, in order. Addressed either way:
+
+| Arg | Type | Notes |
+|-----|------|-------|
+| `segment` | string | Segment id from the Memory Map, e.g. `seg:core:4`. |
+| `around` | number | Centre `seq` to read around. |
+| `radius` | number | Seq either side of `around` (default 10, max 100). |
+| `scope` | string | Defaults to the current conversation scope. |
+
+Output is capped at 30 000 chars, matching the inline caps `read_file` and
+`exec` already use. Truncation appends an explicit continuation marker
+(`continue with {around: N, radius: 10}`) rather than trailing off. Without the
+cap a single call could pull an arbitrary fraction of the session back into
+context and defeat the dynamic window entirely.
+
+Capped at **2 calls per turn**.
+
+### `memory_pin`
+
+Durable facts that are always loaded and exempt from TTL.
+
+| Arg | Type | Notes |
+|-----|------|-------|
+| `key` | string | Required. Short stable name, e.g. `deploy-target`. |
+| `content` | string | The fact. **Omit to remove the pin.** |
+| `scope` | string | Defaults to the current conversation scope. |
+
+Keyed, so re-pinning the same key revises it instead of accumulating
+duplicates. Pins are injected every turn, so they are meant to be used sparingly.
 
 ---
 
 ## ContextAssembler API (TypeScript)
 
-For applications that need fine-grained context management.
+Rebuilds the turn's context within a token budget: a verbatim hot window, a
+budgeted recall block, and the deterministic Memory Map naming what exists
+beyond the window. There is no compaction and no naive sliding window.
 
 ```typescript
 import { ContextAssembler } from '@orionomega/core/memory';
-import { HindsightClient } from '@orionomega/hindsight';
+import { RedisMemoryStore } from '@orionomega/core/memory/redis-store.js';
 
-const hs = new HindsightClient('http://localhost:8888');
-const assembler = new ContextAssembler(hs, {
+const store = new RedisMemoryStore({ redis: { url: 'redis://localhost:6379' } });
+const assembler = new ContextAssembler(store, {
   hotWindowSize: 20,
-  recallBudgetTokens: 8192,
-  maxTurnTokens: 60000,
-  conversationBank: 'conv-session-001',
+  recallBudgetTokens: 16384,
+  maxTurnTokens: 128000,
+  conversationScope: 'conversation-sess_abc123',
+  additionalScopes: ['core'],
   minRelevance: 0.15,
-  adaptiveRecall: true,
-  dynamicSummaryFallback: true,
+  memoryMapTokens: 600,
   persistPath: '/tmp/hot-window.json',  // Optional: survive restarts
 });
 
-// Add a message (retains to Hindsight asynchronously)
+// Add a message (retained to Redis asynchronously, in batches)
 await assembler.push({
   role: 'user',
   content: 'How should we handle the database migration?',
   timestamp: new Date().toISOString(),
 });
 
-// Assemble context for next API call
+// Assemble context for the next API call
 const ctx = await assembler.assemble('database migration strategy');
-console.log('Query type:', ctx.queryType);
-console.log('Prior context:', ctx.priorContext);
+console.log('Prior context:', ctx.priorContext);   // budgeted recall, or null
+console.log('Memory map:', ctx.memoryMap);         // table of contents, or null
 console.log('Hot messages:', ctx.hotMessages.length);
-console.log('Confidence:', ctx.confidenceSummary);
+console.log('Estimated tokens:', ctx.estimatedTokens);
 ```
+
+The Memory Map is injected **whether or not recall matched anything**. Recall
+answers "what is relevant to this turn"; the map answers "what else exists" —
+and the second must not be conditional on the first.
+
+`store` may be `null`, in which case the assembler degrades to the hot window
+alone.
 
 ---
 
@@ -822,18 +915,20 @@ console.log('Confidence:', ctx.confidenceSummary);
 | `NOT_FOUND` | 404 | Session, skill, or resource does not exist |
 | `CONFLICT` | 409 | Session already exists |
 | `RATE_LIMIT` | 429 | Anthropic API rate limit hit |
-| `GATEWAY_ERROR` | 502 | Upstream service (Anthropic, Hindsight) unreachable |
+| `GATEWAY_ERROR` | 502 | Upstream service (Anthropic, Redis) unreachable |
 | `TIMEOUT` | 504 | Worker or upstream timeout |
 
-`HindsightError` includes a `statusCode` field:
+**Memory does not signal misses with exceptions.** An unknown scope recalls
+empty rather than throwing, and `health()` reports `{ healthy: false }` rather
+than rejecting — so a Redis outage never takes down a request path. Check the
+returned value:
+
 ```typescript
-try {
-  await client.recall('nonexistent-bank', 'query');
-} catch (err) {
-  if (err instanceof HindsightError && err.statusCode === 404) {
-    // Bank does not exist — create it first
-  }
-}
+const out = await store.recall('project-does-not-exist', 'query');
+// out.records === []   — not an error
+
+const { healthy } = await store.health();
+if (!healthy) log.warn('Memory degraded — recall will under-return.');
 ```
 
 ---

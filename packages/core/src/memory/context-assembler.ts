@@ -1,28 +1,57 @@
 /**
  * @module memory/context-assembler
- * Assembles optimally-sized context for each API turn using a hot window
- * (recent messages verbatim) plus Hindsight recall (relevant prior context).
+ * Rebuilds the model's context from memory on every turn, within a token budget.
  *
- * Replaces the old "accumulate history, compact when full" model.
- * Every message is retained to Hindsight immediately; each turn queries
- * for exactly the context that fits within the token budget.
+ * ── THE PROPERTY THIS FILE EXISTS TO PRESERVE ─────────────────────────────
  *
- * Phase 4 additions:
- * - Adaptive context assembly via query classification
- * - Dynamic project summary generation as fallback
- * - Full confidence score propagation with per-section summaries
+ *   Context is rebuilt from memory each turn within an explicit token budget.
+ *   There is no conversation compaction and no naive sliding window.
+ *
+ * That property is about fifteen lines of arithmetic. The previous revision of
+ * this file was ~899 lines, because retrieval machinery accreted around it and
+ * was mistaken for the requirement itself. docs/memory-architecture-v2.md
+ * §12 lists what was deleted rather than ported, and why:
+ *
+ *   scope federation          — auto-discovered every populated scope and issued
+ *                               up to 4 recalls each. Superseded by explicit
+ *                               scopes (§10); the store's index spans them all.
+ *   dynamic-summary fallback  — fired on every cold turn, issued 3 extra recalls
+ *                               per scope, and REPLACED detailed recall instead
+ *                               of augmenting it.
+ *   buildCausalChain          — reordered and rewrote recalled text before the
+ *                               model saw it.
+ *   query classifier + strategy table — 5-way classification driving per-type
+ *                               budget ratios. `isExternalAction` survives; the
+ *                               rest did not earn its ~200 lines.
+ *   confidence summaries      — display-only, pinned byte-for-byte by tests.
+ *   temporal-diversity buckets — a multi-bucket recall mode with no analogue
+ *                               here; recall is lexical and single-pass.
+ *
+ * ── WHAT IS PINNED ────────────────────────────────────────────────────────
+ *
+ *   1. `assemble()` NEVER drops hot-window messages. Only `push()` trims.
+ *   2. Recall is skipped when the computed budget is <= 500 tokens.
+ *   3. `estimatedTokens = systemPromptTokens + recalledTokens + mapTokens + hotTokens`
+ *      — deliberately excludes `outputReserve`, which is headroom, not input.
+ *   4. `isExternalAction(query)` short-circuits recall entirely.
+ *
+ * ── THE BUDGET BUG THIS FIXES ─────────────────────────────────────────────
+ *
+ * Production asked for 30 000 recall tokens and received <= ~8 192, because the
+ * old transport silently clamped to a per-tier cap. Removing that cap without
+ * adding overflow handling would have swung the other way, so recall output is
+ * now explicitly fitted to the budget and re-measured (§6.2).
  */
 
-import { HindsightClient, estimateTokens, smartTruncate, trigramSimilarity } from '@orionomega/hindsight';
+import { estimateTokens, smartTruncate } from '@orionomega/shared/similarity';
 import { createLogger } from '../logging/logger.js';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { classifyQuery, getRecallStrategy } from './query-classifier.js';
-import type { QueryType, RecallStrategy } from './query-classifier.js';
-import { DynamicSummaryGenerator } from './dynamic-summary.js';
+import { isExternalAction } from './query-classifier.js';
 import { isMemoryExpired } from './retention-engine.js';
 import type { ContentBlock } from '../anthropic/client.js';
 import { contentToText } from '../utils/content.js';
+import type { MemoryStore, MemoryWrite, RecalledRecord } from './store.js';
 
 const log = createLogger('context-assembler');
 
@@ -30,224 +59,155 @@ const log = createLogger('context-assembler');
 export interface ConversationMessage {
   role: 'user' | 'assistant' | 'system';
   /**
-   * Either a plain text transcript or an Anthropic multimodal content-block
-   * array (text + image + document blocks for attachments). The hot window,
-   * persistence layer, and retention pipeline all preserve non-string
-   * content; helpers in `utils/content.ts` flatten it to text where needed
-   * (token estimates, transcripts, log lines).
+   * Plain text or an Anthropic multimodal content-block array. The hot window,
+   * persistence and retention layers all preserve non-string content; helpers
+   * in `utils/content.ts` flatten it where text is needed.
    */
   content: string | ContentBlock[];
   timestamp?: string;
 }
 
-/** Per-section confidence breakdown included in assembled context. */
-export interface ConfidenceSummary {
-  high: number;
-  moderate: number;
-  low: number;
-  total: number;
-}
-
 /** Assembled context ready for the API call. */
 export interface AssembledContext {
-  /** Prior context from Hindsight, formatted as a system block. */
+  /** Recalled prior context, formatted as a system block. */
   priorContext: string | null;
-  /** Recent messages (hot window), always included verbatim. */
+  /** The Memory Map — what exists beyond the verbatim window (§9). */
+  memoryMap: string | null;
+  /** Recent messages, always included verbatim. */
   hotMessages: ConversationMessage[];
-  /** Estimated total input tokens for this context. */
+  /** Estimated input tokens for this turn. */
   estimatedTokens: number;
-  /** Classified query type that drove the recall strategy. */
-  queryType?: QueryType;
-  /** Aggregate confidence summary across all recalled memories. */
-  confidenceSummary?: ConfidenceSummary;
 }
 
-/** Configuration for the ContextAssembler. */
 export interface ContextAssemblerConfig {
   hotWindowSize?: number;
-  /** Max tokens to request from Hindsight recall. Default: 30000. */
+  /** Max tokens to spend on recall. Default 16 384. */
   recallBudgetTokens?: number;
-  /** Max total input tokens per turn. Default: 60000. */
+  /** Max total input tokens per turn. Default 128 000. */
   maxTurnTokens?: number;
-  /** System prompt token estimate (subtracted from budget). Default: 4000. */
+  /** System prompt allowance, subtracted from the budget. Default 15 000. */
   systemPromptTokens?: number;
-  /** Reserved tokens for model output. Default: 4096. */
+  /** Reserved for model output. Default 4 096. */
   outputReserveTokens?: number;
-  /** Hindsight bank for this conversation session. */
-  conversationBank?: string;
-  /** Additional banks to query (e.g. project-*, jarvis-core). */
-  additionalBanks?: string[];
+  /** Scope holding this conversation's messages. */
+  conversationScope?: string;
   /**
-   * The gateway session this assembler belongs to. When set, retained
-   * messages are tagged with `session:<id>` and their retention metadata
-   * carries `sessionId` so the live memory feed shows which session
-   * stored each item. Recall remains cross-session.
+   * Additional scopes to recall from, e.g. `['core']`.
+   *
+   * Explicit and small — NOT the deleted federation, which discovered every
+   * populated bank at runtime. One cheap recall per named scope.
    */
+  additionalScopes?: string[];
+  /** Tag retained messages with this session for provenance. */
   sessionId?: string;
-  /** Hindsight recall budget level. Default: 'mid'. */
-  recallBudget?: 'low' | 'mid' | 'high';
-  /** Path to persist hot window to disk. If set, survives gateway restarts. */
+  /** Persist the hot window here so it survives a gateway restart. */
   persistPath?: string;
-  /** Enable cross-bank federation: discover and query all populated banks. Default: true. */
-  federateBanks?: boolean;
-  /** Minimum relevance score for recalled memories. Default: 0.15 (aligned with client-side scoring range). */
+  /** Relevance floor for recalled records. Default 0.15. */
   minRelevance?: number;
-  /** Similarity threshold for storage-time deduplication. Default: 0.85. */
-  storageDeduplicationThreshold?: number;
-  /** Fraction of per-bank recall budget reserved for temporal diversity sampling (0–1). Default: 0.15. */
-  temporalDiversityRatio?: number;
-  /** Enable adaptive query classification for recall strategy. Default: true. */
-  adaptiveRecall?: boolean;
-  /** Enable dynamic summary fallback when detailed recall exceeds budget. Default: true. */
-  dynamicSummaryFallback?: boolean;
+  /** Token ceiling for the Memory Map block. Default 600. */
+  memoryMapTokens?: number;
 }
 
 const DEFAULT_HOT_WINDOW = 20;
-// H1: Raised to match 'high' tier recall (16 384) and Claude's 128 k context window.
 const DEFAULT_RECALL_BUDGET = 16_384;
 const DEFAULT_MAX_TURN_TOKENS = 128_000;
-// C2: 15 000 is a safer default that accounts for long system prompts (tools,
-// mission blocks, etc.) without silently eating into the user context budget.
 const DEFAULT_SYSTEM_PROMPT_TOKENS = 15_000;
 const DEFAULT_OUTPUT_RESERVE = 4_096;
-// H2: Maximum tokens allowed in the hot window before oldest messages are evicted.
+const DEFAULT_MIN_RELEVANCE = 0.15;
+const DEFAULT_MEMORY_MAP_TOKENS = 600;
+/** Hot window token ceiling before oldest messages are evicted. */
 const HOT_WINDOW_TOKEN_BUDGET = 30_000;
-// M3: Maximum tokens for the combined recall query sent to Hindsight.
+/** Recall queries are clamped to this, so a long paste cannot become the query. */
 const MAX_QUERY_TOKENS = 450;
+/** Below this the recall block is not worth its own overhead. */
+const MIN_RECALL_TOKENS = 500;
 
-// Token estimation now uses the shared estimateTokens from @orionomega/hindsight
-// which accounts for content type (code vs. natural language).
-
-function computeConfidenceSummary(
-  items: Array<{ relevance: number }>,
-): ConfidenceSummary {
-  let high = 0;
-  let moderate = 0;
-  let low = 0;
-  for (const item of items) {
-    if (item.relevance >= 0.7) high++;
-    else if (item.relevance >= 0.4) moderate++;
-    else low++;
-  }
-  return { high, moderate, low, total: items.length };
-}
-
-/**
- * Manages conversation context by combining a hot window of recent messages
- * with budget-aware Hindsight recall. Every message is retained to Hindsight
- * on arrival; each turn assembles exactly the right amount of context.
- */
 export class ContextAssembler {
-  /** Small recency buffer (last few messages for conversational coherence). All older context is query-built per turn via Hindsight. */
+  private store: MemoryStore | null;
   private hotWindow: ConversationMessage[] = [];
+  private totalMessageCount = 0;
+
   private readonly hotWindowSize: number;
   private readonly recallBudgetTokens: number;
   private readonly maxTurnTokens: number;
   private readonly systemPromptTokens: number;
   private readonly outputReserve: number;
-  private conversationBank: string | null;
-  private additionalBanks: string[];
-  private readonly recallBudget: 'low' | 'mid' | 'high';
+  private readonly minRelevance: number;
+  private readonly memoryMapTokens: number;
   private readonly persistPath: string | null;
   private readonly sessionId: string | null;
-  private hs: HindsightClient | null;
-  private readonly federateBanks: boolean;
-  private readonly minRelevance: number;
-  private readonly storageDeduplicationThreshold: number;
-  private readonly temporalDiversityRatio: number;
-  private readonly adaptiveRecall: boolean;
-  private readonly dynamicSummaryFallback: boolean;
-  private dynamicSummary: DynamicSummaryGenerator | null = null;
+  private conversationScope: string | null;
+  private additionalScopes: string[];
 
-  /** Track total messages seen (for logging). */
-  private totalMessageCount = 0;
-
-  // C5: Retain buffer — batch messages before flushing to Hindsight
-  private retainBuffer: Array<{
-    content: string;
-    context: string;
-    timestamp: string;
-    document_id: string;
-    tags?: string[];
-  }> = [];
+  private retainBuffer: MemoryWrite[] = [];
   private retainFlushTimer: ReturnType<typeof setTimeout> | null = null;
   private static readonly RETAIN_FLUSH_SIZE = 3;
   private static readonly RETAIN_FLUSH_INTERVAL_MS = 5_000;
 
-  onMemoryEvent?: (op: 'retain' | 'recall' | 'dedup' | 'quality' | 'bootstrap' | 'flush' | 'session_anchor' | 'summary' | 'self_knowledge', detail: string, bank?: string, meta?: Record<string, unknown>) => void;
+  onMemoryEvent?: (
+    op: 'retain' | 'recall' | 'dedup' | 'quality' | 'bootstrap' | 'flush' | 'session_anchor' | 'summary' | 'self_knowledge',
+    detail: string,
+    scope?: string,
+    meta?: Record<string, unknown>,
+  ) => void;
 
-  constructor(hs: HindsightClient | null, config: ContextAssemblerConfig = {}) {
-    this.hs = hs;
+  constructor(store: MemoryStore | null, config: ContextAssemblerConfig = {}) {
+    this.store = store;
     this.hotWindowSize = config.hotWindowSize ?? DEFAULT_HOT_WINDOW;
     this.recallBudgetTokens = config.recallBudgetTokens ?? DEFAULT_RECALL_BUDGET;
     this.maxTurnTokens = config.maxTurnTokens ?? DEFAULT_MAX_TURN_TOKENS;
     this.systemPromptTokens = config.systemPromptTokens ?? DEFAULT_SYSTEM_PROMPT_TOKENS;
     this.outputReserve = config.outputReserveTokens ?? DEFAULT_OUTPUT_RESERVE;
-    this.conversationBank = config.conversationBank ?? null;
-    this.additionalBanks = config.additionalBanks ?? [];
-    this.recallBudget = config.recallBudget ?? 'high';
+    this.minRelevance = config.minRelevance ?? DEFAULT_MIN_RELEVANCE;
+    this.memoryMapTokens = config.memoryMapTokens ?? DEFAULT_MEMORY_MAP_TOKENS;
+    this.conversationScope = config.conversationScope ?? null;
+    this.additionalScopes = config.additionalScopes ?? [];
     this.persistPath = config.persistPath ?? null;
     this.sessionId = config.sessionId ?? null;
-    this.federateBanks = config.federateBanks !== false;
-    this.minRelevance = config.minRelevance ?? 0.15;
-    this.storageDeduplicationThreshold = config.storageDeduplicationThreshold ?? 0.85;
-    this.temporalDiversityRatio = config.temporalDiversityRatio ?? 0.15;
-    this.adaptiveRecall = config.adaptiveRecall !== false;
-    this.dynamicSummaryFallback = config.dynamicSummaryFallback !== false;
 
-    if (hs) {
-      this.dynamicSummary = new DynamicSummaryGenerator(hs);
-    }
-
-    // Restore hot window from disk if available
-    if (this.persistPath) {
-      this.loadFromDisk();
-    }
+    if (this.persistPath) this.loadFromDisk();
 
     log.info('ContextAssembler initialised', {
       hotWindowSize: this.hotWindowSize,
       recallBudgetTokens: this.recallBudgetTokens,
       maxTurnTokens: this.maxTurnTokens,
-      conversationBank: this.conversationBank,
-      persistPath: this.persistPath,
+      conversationScope: this.conversationScope,
+      additionalScopes: this.additionalScopes,
       restoredMessages: this.hotWindow.length,
-      adaptiveRecall: this.adaptiveRecall,
-      dynamicSummaryFallback: this.dynamicSummaryFallback,
     });
   }
 
-  /**
-   * Add a message to the hot window and retain to Hindsight.
-   * Call this for every user message, assistant response, and system event.
-   */
-  async push(message: ConversationMessage): Promise<void> {
-    const msg = { ...message, timestamp: message.timestamp ?? new Date().toISOString() };
+  // ── Public API ──────────────────────────────────────────────────────────
 
-    // Add to hot window ring buffer
+  /** Append a message. Trims the hot window; never blocks on the store. */
+  async push(message: ConversationMessage): Promise<void> {
+    const msg: ConversationMessage = {
+      ...message,
+      timestamp: message.timestamp ?? new Date().toISOString(),
+    };
     this.hotWindow.push(msg);
+
     if (this.hotWindow.length > this.hotWindowSize) {
       this.hotWindow = this.hotWindow.slice(-this.hotWindowSize);
     }
-    // H2: Token-aware eviction — keep hot window within token budget (min 2 messages)
+    // Token-aware eviction, floored at 2 messages so a single huge message
+    // cannot empty the window.
     while (this.hotWindow.length > 2) {
-      const totalTokens = this.hotWindow.reduce(
-        (sum, m) => sum + estimateTokens(contentToText(m.content)), 0,
+      const total = this.hotWindow.reduce(
+        (sum, m) => sum + estimateTokens(contentToText(m.content)),
+        0,
       );
-      if (totalTokens <= HOT_WINDOW_TOKEN_BUDGET) break;
+      if (total <= HOT_WINDOW_TOKEN_BUDGET) break;
       this.hotWindow.shift();
     }
     this.totalMessageCount++;
 
-    // Persist to disk (sync — fast for 20 messages)
     this.saveToDisk();
 
-    if (this.hs && this.conversationBank) {
-      // Fire-and-forget: never block the hot path on Hindsight. Failures
-      // are surfaced via the circuit breaker / health endpoint, so this
-      // catch is logged at debug to keep startup logs clean.
+    if (this.store && this.conversationScope) {
       this.retainMessage(msg).catch((err) => {
-        log.debug('Failed to retain message to Hindsight', {
-          endpoint: `POST /v1/<ns>/banks/${this.conversationBank}/memories`,
+        log.debug('Failed to retain message', {
+          scope: this.conversationScope,
           error: err instanceof Error ? err.message : String(err),
         });
       });
@@ -255,17 +215,15 @@ export class ContextAssembler {
   }
 
   /**
-   * Assemble context for the next API call.
-   * Returns prior context from Hindsight + hot window messages.
+   * Build the context for the next API call.
    *
-   * Uses adaptive query classification to select the optimal recall strategy.
-   *
-   * @param currentQuery - The user's current message (used as recall query).
-   * @returns Assembled context ready for the API call.
+   * Read-only with respect to assembler state — it does not push the query and
+   * it never drops hot-window messages.
    */
   async assemble(currentQuery: string): Promise<AssembledContext> {
     const hotTokens = this.hotWindow.reduce(
-      (sum, m) => sum + estimateTokens(contentToText(m.content)), 0,
+      (sum, m) => sum + estimateTokens(contentToText(m.content)),
+      0,
     );
 
     const availableForRecall = Math.max(
@@ -276,128 +234,64 @@ export class ContextAssembler {
 
     let priorContext: string | null = null;
     let recalledTokens = 0;
-    let queryType: QueryType | undefined;
-    let confidenceSummary: ConfidenceSummary | undefined;
 
-    if (this.hs && recallTokens > 500) {
+    const external = isExternalAction(currentQuery);
+    if (external) {
+      this.onMemoryEvent?.('recall', 'Skipping recall for external action query', undefined, {
+        recallTokens: 0,
+        ...(this.sessionId ? { sessionId: this.sessionId } : {}),
+      });
+    }
+
+    if (this.store && recallTokens > MIN_RECALL_TOKENS && !external) {
       try {
-        const classification = this.adaptiveRecall
-          ? classifyQuery(currentQuery)
-          : { type: 'task_continuation' as QueryType, confidence: 1 };
-
-        queryType = classification.type;
-        const strategy = this.adaptiveRecall
-          ? getRecallStrategy(classification)
-          : undefined;
-
-        if (queryType === 'external_action') {
-          this.onMemoryEvent?.('recall', `Skipping recall for external action query`, undefined, { queryType, recallTokens: 0, ...(this.sessionId ? { sessionId: this.sessionId } : {}) });
-        }
-
-        if (queryType !== 'external_action') {
-
-        this.onMemoryEvent?.('recall', `Assembling context (${queryType}, budget: ${recallTokens} tokens)`, undefined, { queryType, recallTokens, ...(this.sessionId ? { sessionId: this.sessionId } : {}) });
-
-        const isShort = this.isShortReply(currentQuery);
-        let recallQuery = isShort
-          ? this.augmentQueryWithRecentContext(currentQuery)
-          : currentQuery;
-
-        // M3: Clamp query to MAX_QUERY_TOKENS — prefer raw user query over augmented context
-        if (estimateTokens(recallQuery) > MAX_QUERY_TOKENS) {
-          if (isShort && estimateTokens(currentQuery) <= MAX_QUERY_TOKENS) {
-            recallQuery = currentQuery;
-          } else {
-            recallQuery = smartTruncate(recallQuery, MAX_QUERY_TOKENS);
-          }
-        }
-
-        const recallResult = await this.recallFromBanks(
-          recallQuery,
+        this.onMemoryEvent?.('recall', `Assembling context (budget: ${recallTokens} tokens)`, undefined, {
           recallTokens,
-          currentQuery,
-          strategy,
-        );
+          ...(this.sessionId ? { sessionId: this.sessionId } : {}),
+        });
 
-        if (recallResult) {
-          priorContext = recallResult.formatted;
-          recalledTokens = estimateTokens(recallResult.formatted);
-          confidenceSummary = recallResult.confidenceSummary;
-          this.onMemoryEvent?.('recall', `Recalled ${recalledTokens} tokens of prior context`, undefined, { recalledTokens, confidenceSummary, ...(this.sessionId ? { sessionId: this.sessionId } : {}) });
-        }
-
-        const shouldFallbackToSummary =
-          this.dynamicSummaryFallback &&
-          this.dynamicSummary &&
-          (!priorContext || recalledTokens > recallTokens);
-
-        if (shouldFallbackToSummary) {
-          const summaryBudget = Math.min(recallTokens, 4096);
-          const summaryBanks = [
-            ...(this.conversationBank ? [this.conversationBank] : []),
-            ...this.additionalBanks,
-          ];
-          for (const bank of summaryBanks) {
-            const summaryResult = await this.dynamicSummary!.generateProjectSummary(bank, {
-              maxTokens: summaryBudget,
-            });
-            if (summaryResult) {
-              const reason = !priorContext
-                ? 'no detailed recall available'
-                : 'detailed recall exceeded budget, compressed to summary';
-              priorContext = `[PRIOR CONTEXT — dynamic summary (${reason})]\n\n${summaryResult.formatted}`;
-              recalledTokens = estimateTokens(priorContext);
-              confidenceSummary = summaryResult.confidenceSummary;
-              break;
-            }
-          }
-        }
+        const records = await this.recallAcrossScopes(currentQuery, recallTokens);
+        if (records.length > 0) {
+          priorContext = this.formatPriorContext(records, recallTokens);
+          recalledTokens = estimateTokens(priorContext);
+          this.onMemoryEvent?.('recall', `Recalled ${recalledTokens} tokens of prior context`, undefined, {
+            recalledTokens,
+            records: records.length,
+            ...(this.sessionId ? { sessionId: this.sessionId } : {}),
+          });
         }
       } catch (err) {
-        log.warn('Hindsight recall failed, continuing with hot window only', {
+        log.warn('Recall failed, continuing with hot window only', {
           error: err instanceof Error ? err.message : String(err),
         });
       }
     }
 
-    const estimatedTokens = this.systemPromptTokens + recalledTokens + hotTokens;
+    const memoryMap = await this.buildMap();
+    const mapTokens = memoryMap ? estimateTokens(memoryMap) : 0;
+
+    const estimatedTokens = this.systemPromptTokens + recalledTokens + mapTokens + hotTokens;
 
     log.debug('Context assembled', {
       hotMessages: this.hotWindow.length,
       hotTokens,
       recalledTokens,
+      mapTokens,
       totalEstimated: estimatedTokens,
       totalMessagesSeen: this.totalMessageCount,
-      queryType,
-      confidenceSummary,
     });
 
-    return {
-      priorContext,
-      hotMessages: [...this.hotWindow],
-      estimatedTokens,
-      queryType,
-      confidenceSummary,
-    };
+    return { priorContext, memoryMap, hotMessages: [...this.hotWindow], estimatedTokens };
   }
 
-  /**
-   * Get the hot window messages (for direct access, e.g. compaction flush).
-   */
   getHotWindow(): ConversationMessage[] {
     return [...this.hotWindow];
   }
 
-  /**
-   * Get all messages as a simple history array (backward compat).
-   */
   getHistory(): { role: string; content: string | ContentBlock[] }[] {
     return this.hotWindow.map((m) => ({ role: m.role, content: m.content }));
   }
 
-  /**
-   * Clear the hot window (e.g. on /reset).
-   */
   clear(): void {
     this.hotWindow = [];
     this.totalMessageCount = 0;
@@ -405,65 +299,169 @@ export class ContextAssembler {
     log.info('Context assembler cleared');
   }
 
-  /** Total messages processed in this session. */
   get messageCount(): number {
     return this.totalMessageCount;
   }
 
-  /**
-   * Update the Hindsight client reference (e.g. after deferred init).
-   */
-  setHindsightClient(hs: HindsightClient): void {
-    this.hs = hs;
-    this.dynamicSummary = new DynamicSummaryGenerator(hs);
-    log.info('Hindsight client attached to context assembler');
+  setMemoryStore(store: MemoryStore): void {
+    this.store = store;
   }
 
-  /**
-   * Update the conversation bank (e.g. after project bank is resolved).
-   */
-  setConversationBank(bank: string): void {
-    this.conversationBank = bank;
-    log.info('Conversation bank set', { bank });
+  setConversationScope(scope: string): void {
+    this.conversationScope = scope;
   }
 
-  /**
-   * Add an additional recall bank.
-   */
-  addBank(bank: string): void {
-    if (!this.additionalBanks.includes(bank)) {
-      this.additionalBanks.push(bank);
+  addScope(scope: string): void {
+    if (!this.additionalScopes.includes(scope)) this.additionalScopes.push(scope);
+  }
+
+  /** Flush buffered messages. Safe at any time; no-ops when empty. */
+  async flushRetainBuffer(): Promise<void> {
+    if (!this.store || !this.conversationScope || this.retainBuffer.length === 0) return;
+    const items = this.retainBuffer.splice(0);
+    try {
+      await this.store.retain(this.conversationScope, items, { async: true });
+      this.onMemoryEvent?.('flush', `Flushed ${items.length} buffered messages to memory`, this.conversationScope, {
+        count: items.length,
+        ...(this.sessionId ? { sessionId: this.sessionId } : {}),
+      });
+    } catch (err) {
+      log.debug('Retain buffer flush failed', {
+        scope: this.conversationScope,
+        count: items.length,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
-  // ── Private ──────────────────────────────────────────────────
+  /** Flush pending writes and release timers. Call before discarding. */
+  async destroy(): Promise<void> {
+    if (this.retainFlushTimer) {
+      clearTimeout(this.retainFlushTimer);
+      this.retainFlushTimer = null;
+    }
+    await this.flushRetainBuffer();
+  }
+
+  // ── Private ─────────────────────────────────────────────────────────────
 
   /**
-   * Buffer a message for retention to the conversation bank.
-   * C5: Batches up to RETAIN_FLUSH_SIZE messages before calling Hindsight,
-   * eliminating per-message round-trips and the isDuplicateContent hot-path call.
-   * The buffer is auto-flushed after RETAIN_FLUSH_INTERVAL_MS as well.
+   * Recall from the conversation scope plus any explicitly configured extras.
+   *
+   * One cheap call per named scope — not the deleted federation, which
+   * discovered every populated bank at runtime and issued several recalls each.
+   * Results merge by descending relevance so the budget is spent on the best
+   * matches regardless of which scope produced them.
    */
+  private async recallAcrossScopes(query: string, budget: number): Promise<RecalledRecord[]> {
+    const scopes = [
+      ...(this.conversationScope ? [this.conversationScope] : []),
+      ...this.additionalScopes,
+    ];
+    if (scopes.length === 0 || !this.store) return [];
+
+    const recallQuery = estimateTokens(query) > MAX_QUERY_TOKENS
+      ? smartTruncate(query, MAX_QUERY_TOKENS)
+      : query;
+
+    // Ask each scope for the full budget and let the merge decide — asking for
+    // budget/N would starve a scope that legitimately holds everything relevant.
+    const results = await Promise.all(
+      scopes.map((scope) =>
+        this.store!.recall(scope, recallQuery, {
+          maxTokens: budget,
+          minRelevance: this.minRelevance,
+        }).catch((err) => {
+          log.debug('Recall failed for scope', {
+            scope,
+            error: err instanceof Error ? err.message : String(err),
+          });
+          return null;
+        }),
+      ),
+    );
+
+    const merged: RecalledRecord[] = [];
+    for (const r of results) {
+      if (!r) continue;
+      for (const rec of r.records) {
+        // Expiry is advisory and filtered at read time (§15).
+        if (rec.timestamp && isMemoryExpired(rec.context, rec.timestamp)) continue;
+        merged.push(rec);
+      }
+    }
+    merged.sort((a, b) => b.relevance - a.relevance);
+    return merged;
+  }
+
+  /**
+   * Render recalled records, fitted to the budget.
+   *
+   * Fitting is explicit and re-measured. `smartTruncate` cuts on a 3.5
+   * chars/token assumption while `estimateTokens` uses 3.2 for code-like text,
+   * so a single truncation can still measure over budget — recalled context is
+   * routinely code-like (§6.2).
+   */
+  private formatPriorContext(records: RecalledRecord[], maxTokens: number): string {
+    const lines: string[] = ['[PRIOR CONTEXT — recalled from memory]'];
+    let used = estimateTokens(lines[0]!);
+
+    for (const r of records) {
+      const entry =
+        `\n[relevance ${r.relevance.toFixed(2)}${r.context ? ` · ${r.context}` : ''}` +
+        `${r.timestamp ? ` · ${r.timestamp.slice(0, 10)}` : ''}]\n${r.content}`;
+      const cost = r.estimatedTokens ?? estimateTokens(entry);
+      if (used + cost > maxTokens) continue; // smaller later records may still fit
+      lines.push(entry);
+      used += cost;
+    }
+
+    let out = lines.join('\n');
+    // Overflow clamp: re-measure after truncating, since the truncation ratio
+    // and the estimation ratio disagree on code-like text.
+    for (let i = 0; i < 3 && estimateTokens(out) > maxTokens; i++) {
+      out = smartTruncate(out, maxTokens);
+    }
+    return out;
+  }
+
+  /** The Memory Map block, when the store can produce one. */
+  private async buildMap(): Promise<string | null> {
+    if (!this.store || !this.conversationScope) return null;
+    const builder = (this.store as { buildMemoryMap?: (scope: string, o?: unknown) => Promise<string | null> })
+      .buildMemoryMap;
+    if (typeof builder !== 'function') return null;
+    try {
+      return await builder.call(this.store, this.conversationScope, {
+        maxTokens: this.memoryMapTokens,
+      });
+    } catch (err) {
+      log.debug('Memory map unavailable', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
+  }
+
+  /** Buffer a message for retention, flushing on size or a short timer. */
   private async retainMessage(msg: ConversationMessage): Promise<void> {
-    if (!this.hs || !this.conversationBank) return;
+    if (!this.store || !this.conversationScope) return;
 
-    const textContent = contentToText(msg.content);
-    const formattedContent = `[${msg.role}] ${textContent}`;
-
+    const text = contentToText(msg.content);
     const tags: string[] = [];
     if (this.sessionId) tags.push(`session:${this.sessionId}`);
 
     this.retainBuffer.push({
-      content: formattedContent,
+      content: `[${msg.role}] ${text}`,
       context: `conversation_${msg.role}`,
       timestamp: msg.timestamp ?? new Date().toISOString(),
-      document_id: `conv-${this.sessionId ?? 'anon'}-${this.totalMessageCount}`,
+      documentId: `conv-${this.sessionId ?? 'anon'}-${this.totalMessageCount}`,
       ...(tags.length ? { tags } : {}),
     });
 
-    this.onMemoryEvent?.('retain', `Buffered ${msg.role} message (${textContent.length} chars)`, this.conversationBank, {
+    this.onMemoryEvent?.('retain', `Buffered ${msg.role} message (${text.length} chars)`, this.conversationScope, {
       role: msg.role,
-      chars: textContent.length,
+      chars: text.length,
       bufferSize: this.retainBuffer.length,
       ...(this.sessionId ? { sessionId: this.sessionId } : {}),
     });
@@ -486,411 +484,34 @@ export class ContextAssembler {
     }
   }
 
-  /**
-   * Flush buffered messages to Hindsight in a single batch call.
-   * Safe to call at any time; no-ops if buffer is empty.
-   */
-  async flushRetainBuffer(): Promise<void> {
-    if (!this.hs || !this.conversationBank || this.retainBuffer.length === 0) return;
-    const items = this.retainBuffer.splice(0);
-    try {
-      await this.hs.retain(this.conversationBank, items, { async: true });
-      this.onMemoryEvent?.('flush', `Flushed ${items.length} buffered messages to memory`, this.conversationBank, {
-        count: items.length,
-        ...(this.sessionId ? { sessionId: this.sessionId } : {}),
-      });
-    } catch (err) {
-      log.debug('Retain buffer flush failed', {
-        bank: this.conversationBank,
-        count: items.length,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-
-  /**
-   * Flush pending retain buffer and release timers.
-   * Call before discarding the assembler (e.g. on session end).
-   */
-  async destroy(): Promise<void> {
-    if (this.retainFlushTimer) {
-      clearTimeout(this.retainFlushTimer);
-      this.retainFlushTimer = null;
-    }
-    await this.flushRetainBuffer();
-  }
-
-  /**
-   * Detect whether a user message is a short conversational reply
-   * (e.g. "fix all but #7", "yes", "do the second one").
-   * Short replies should bias heavily toward the conversation bank.
-   */
-  private isShortReply(rawQuery: string): boolean {
-    const trimmed = rawQuery.trim();
-    const tokenEstimate = estimateTokens(trimmed);
-
-    const crossSessionPattern = /\b(last (week|month|time|session)|earlier|previous(ly)?|we (decided|discussed|agreed|talked)|yesterday|ago|history|before)\b/i;
-    if (crossSessionPattern.test(trimmed)) return false;
-
-    const directRefPattern = /(?:^|\s)(#\d+|number \d+|\b(first|second|third|fourth|fifth|last|that|those|this|these) (one|option|item|change|suggestion)\b)/i;
-    const shortReplyPattern = /^(yes|no|ok|sure|do it|go ahead|that one|fix|skip|all|fix all|do all|do \w+ but)/i;
-
-    if (tokenEstimate < 15 && (directRefPattern.test(trimmed) || shortReplyPattern.test(trimmed))) return true;
-    if (tokenEstimate < 8) return true;
-    if (tokenEstimate < 50 && (directRefPattern.test(trimmed) || shortReplyPattern.test(trimmed))) return true;
-    return false;
-  }
-
-  /**
-   * Augment the raw user query with context from the most recent
-   * assistant message in the hot window. This gives semantic search
-   * enough signal to match the right conversation memories.
-   */
-  private augmentQueryWithRecentContext(rawQuery: string): string {
-    const MAX_CONTEXT_CHARS = 500;
-
-    const lastAssistant = [...this.hotWindow]
-      .reverse()
-      .find((m) => m.role === 'assistant');
-
-    if (!lastAssistant) return rawQuery;
-
-    const lastText = contentToText(lastAssistant.content);
-    const snippet = lastText.length > MAX_CONTEXT_CHARS
-      ? '…' + lastText.slice(-MAX_CONTEXT_CHARS)
-      : lastText;
-
-    return `${rawQuery}\n\n[Recent assistant context]: ${snippet}`;
-  }
-
-  /**
-   * Discover additional banks from Hindsight for cross-bank federation.
-   */
-  private async discoverFederatedBanks(): Promise<string[]> {
-    if (!this.hs || !this.federateBanks) return [];
-    try {
-      const allBanks = await this.hs.listBanksCached();
-      const knownSet = new Set([
-        ...(this.conversationBank ? [this.conversationBank] : []),
-        ...this.additionalBanks,
-      ]);
-      return allBanks
-        .filter((b) => !knownSet.has(b.bank_id) && (b.memory_count ?? 0) > 0)
-        .map((b) => b.bank_id);
-    } catch (err) {
-      log.debug('Bank federation discovery failed', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-      return [];
-    }
-  }
-
-  /**
-   * Recall relevant context from conversation bank + additional banks.
-   * Results are merged and formatted as a single context block.
-   *
-   * When a RecallStrategy is provided (from query classification), the
-   * strategy overrides default budget splits, temporal diversity, and
-   * relevance thresholds to optimize for the query type.
-   */
-  private async recallFromBanks(
-    query: string,
-    maxTokens: number,
-    rawQuery: string,
-    strategy?: RecallStrategy,
-  ): Promise<{ formatted: string; confidenceSummary: ConfidenceSummary } | null> {
-    if (!this.hs) return null;
-
-    const federatedBanks = await this.discoverFederatedBanks();
-
-    const banks = [
-      ...(this.conversationBank ? [this.conversationBank] : []),
-      ...this.additionalBanks,
-      ...federatedBanks,
-    ];
-
-    if (banks.length === 0) return null;
-
-    const convShareRatio = strategy
-      ? strategy.convBudgetRatio
-      : (this.isShortReply(rawQuery) ? 0.85 : 0.6);
-
-    const effectiveTemporalRatio = strategy
-      ? strategy.temporalDiversityRatio
-      : this.temporalDiversityRatio;
-
-    const effectiveMinRelevance = strategy
-      ? strategy.minRelevance
-      : this.minRelevance;
-
-    const effectiveRecallBudget = strategy
-      ? strategy.recallBudget
-      : this.recallBudget;
-
-    log.debug('Recall budget allocation', {
-      convShareRatio,
-      rawQueryLength: rawQuery.length,
-      totalBanks: banks.length,
-      federatedBanks: federatedBanks.length,
-      strategy: strategy ? 'adaptive' : 'default',
-      temporalDiversityRatio: effectiveTemporalRatio,
-      minRelevance: effectiveMinRelevance,
-      recallBudget: effectiveRecallBudget,
-    });
-
-    const otherBankCount = banks.length - (this.conversationBank ? 1 : 0);
-    const convShare = this.conversationBank
-      ? (otherBankCount > 0 ? Math.floor(maxTokens * convShareRatio) : maxTokens)
-      : 0;
-    const otherShare = otherBankCount > 0
-      ? Math.floor((maxTokens - convShare) / otherBankCount)
-      : 0;
-
-    const recallPromises = banks.map((bank) => {
-      const budget = bank === this.conversationBank ? convShare : otherShare;
-      if (budget < 200) return Promise.resolve(null);
-
-      return this.hs!.recallWithTemporalDiversity(bank, query, {
-        maxTokens: budget,
-        budget: effectiveRecallBudget,
-        minRelevance: effectiveMinRelevance,
-        temporalDiversityRatio: effectiveTemporalRatio,
-        types: ['world', 'experience', 'observation'],
-      })
-        .then((response) => {
-          if (!response.results || response.results.length === 0) return null;
-          // Filter out expired memories based on retention policy
-          const items = response.results
-            .filter((r) => !r.timestamp || !isMemoryExpired(r.context, r.timestamp))
-            .map((r) => ({
-              content: r.content,
-              context: r.context,
-              timestamp: r.timestamp || '',
-              relevance: r.relevance,
-              estimatedTokens: r.estimatedTokens ?? estimateTokens(r.content),
-            }));
-          items.sort((a, b) => {
-            if (!a.timestamp && !b.timestamp) return 0;
-            if (!a.timestamp) return 1;
-            if (!b.timestamp) return -1;
-            return b.timestamp.localeCompare(a.timestamp);
-          });
-          return {
-            bank,
-            items,
-            lowConfidence: response.lowConfidence,
-          };
-        })
-        .catch((err) => {
-          log.debug('Recall failed for bank', {
-            bank,
-            error: err instanceof Error ? err.message : String(err),
-          });
-          return null;
-        });
-    });
-
-    const results = (await Promise.all(recallPromises)).filter(Boolean) as
-      Array<{
-        bank: string;
-        items: Array<{ content: string; context: string; timestamp: string; relevance: number; estimatedTokens: number }>;
-        lowConfidence: boolean;
-      }>;
-
-    if (results.length === 0) return null;
-
-    results.sort((a, b) => {
-      const aIsConv = a.bank === this.conversationBank ? 0 : 1;
-      const bIsConv = b.bank === this.conversationBank ? 0 : 1;
-      return aIsConv - bIsConv;
-    });
-
-    const preferredCategories = strategy?.preferredContextCategories ?? [];
-    const temporalBias = strategy?.temporalBias ?? 'recent';
-
-    for (const r of results) {
-      if (preferredCategories.length > 0) {
-        const prefSet = new Set(preferredCategories);
-        r.items.sort((a, b) => {
-          const aObs = a.context === 'observation' ? 0 : 1;
-          const bObs = b.context === 'observation' ? 0 : 1;
-          if (aObs !== bObs) return aObs - bObs;
-          const aPreferred = prefSet.has(a.context) ? 0 : 1;
-          const bPreferred = prefSet.has(b.context) ? 0 : 1;
-          if (aPreferred !== bPreferred) return aPreferred - bPreferred;
-          return b.relevance - a.relevance;
-        });
-      }
-
-      if (temporalBias === 'broad') {
-        r.items.sort((a, b) => {
-          const aObs = a.context === 'observation' ? 0 : 1;
-          const bObs = b.context === 'observation' ? 0 : 1;
-          if (aObs !== bObs) return aObs - bObs;
-          return b.relevance - a.relevance;
-        });
-      } else if (temporalBias === 'recent') {
-        r.items.sort((a, b) => {
-          const aObs = a.context === 'observation' ? 0 : 1;
-          const bObs = b.context === 'observation' ? 0 : 1;
-          if (aObs !== bObs) return aObs - bObs;
-          if (!a.timestamp && !b.timestamp) return b.relevance - a.relevance;
-          if (!a.timestamp) return 1;
-          if (!b.timestamp) return -1;
-          return b.timestamp.localeCompare(a.timestamp);
-        });
-      }
-    }
-
-    // H5: Filter recalled items that are too similar to hot window content
-    const hotWindowTexts = this.hotWindow.map((m) => contentToText(m.content));
-    if (hotWindowTexts.length > 0) {
-      for (const r of results) {
-        r.items = r.items.filter(
-          (item) => !hotWindowTexts.some((hwText) => trigramSimilarity(item.content, hwText) > 0.80),
-        );
-      }
-    }
-
-    const allItems = results.flatMap((r) => r.items);
-    const confidenceSummary = computeConfidenceSummary(allItems);
-    const allLowConfidence = results.every((r) => r.lowConfidence);
-
-    const sections = results.map((r) => {
-      const header = r.bank === this.conversationBank
-        ? '## Earlier in this conversation'
-        : `## Context from ${r.bank}`;
-
-      const sectionConf = computeConfidenceSummary(r.items);
-      const confLine = `_Confidence: ${sectionConf.high} high, ${sectionConf.moderate} moderate, ${sectionConf.low} low (${sectionConf.total} memories)_`;
-
-      const formattedItems = r.items.map((i) => {
-        const score = i.relevance.toFixed(2);
-        const enriched = this.buildCausalChain(i.content);
-        if (i.context === 'observation') {
-          return `[OBSERVATION, confidence: ${score}] ${enriched}`;
-        }
-        const ctx = i.context ? ` [${i.context}]` : '';
-        return `[confidence: ${score}]${ctx} ${enriched}`;
-      });
-      return `${header}\n${confLine}\n${formattedItems.join('\n\n')}`;
-    });
-
-    const overallConfLine = `**Overall confidence: ${confidenceSummary.high} high, ${confidenceSummary.moderate} moderate, ${confidenceSummary.low} low — ${confidenceSummary.total} memories total**`;
-
-    let output = `[PRIOR CONTEXT — recalled from memory]\n${overallConfLine}\n\n${sections.join('\n\n---\n\n')}`;
-
-    if (allLowConfidence) {
-      output = `⚠ Low-confidence recall — results below confidence threshold; treat with caution.\n\n${output}`;
-    }
-
-    // Smart-truncate the final output if it exceeds the token budget.
-    // This ensures recalled context never blows past the available budget.
-    const outputTokens = estimateTokens(output);
-    if (outputTokens > maxTokens) {
-      log.debug('Recall output exceeds budget, applying smart truncation', {
-        outputTokens, maxTokens,
-      });
-      output = smartTruncate(output, maxTokens);
-    }
-
-    return { formatted: output, confidenceSummary };
-  }
-
-  // ── Causal Chain ────────────────────────────────────────────
-
-  /** Classifies a single line into a causal chain category. */
-  private static readonly MarkerClassifier = {
-    DECISION: /\b(decided|decision|chose|agreed|ruling|went with|settled on)\b/i,
-    ACTION:   /\b(implemented|built|created|deployed|migrated|configured|refactored)\b/i,
-    OUTCOME:  /\b(result|outcome|because|resolved|fixed|caused|led to|broke|improved)\b/i,
-    categorize(line: string): 'decision' | 'action' | 'outcome' | 'other' {
-      if (this.DECISION.test(line)) return 'decision';
-      if (this.OUTCOME.test(line)) return 'outcome';
-      if (this.ACTION.test(line)) return 'action';
-      return 'other';
-    },
-  } as const;
-
-  private buildCausalChain(content: string): string {
-    const lines = content.split('\n').filter(Boolean);
-    if (lines.length < 2) return content;
-
-    const decision: string[] = [];
-    const action: string[] = [];
-    const outcome: string[] = [];
-    const other: string[] = [];
-
-    for (const line of lines) {
-      switch (ContextAssembler.MarkerClassifier.categorize(line)) {
-        case 'decision': decision.push(line); break;
-        case 'outcome':  outcome.push(line);  break;
-        case 'action':   action.push(line);   break;
-        default:         other.push(line);
-      }
-    }
-
-    if (decision.length === 0 && action.length === 0 && outcome.length === 0) {
-      return content;
-    }
-
-    const chain: string[] = [];
-    if (decision.length > 0) chain.push(`Decision: ${decision.join('; ')}`);
-    if (action.length > 0) chain.push(`Action: ${action.join('; ')}`);
-    if (outcome.length > 0) chain.push(`Outcome: ${outcome.join('; ')}`);
-    if (other.length > 0) chain.push(other.join('\n'));
-
-    return chain.join(' → ');
-  }
-
-  // ── Disk Persistence ─────────────────────────────────────────
-
-  /**
-   * Save hot window to disk as JSON. Synchronous — 20 messages is tiny.
-   */
   private saveToDisk(): void {
     if (!this.persistPath) return;
     try {
-      const dir = dirname(this.persistPath);
-      if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-      writeFileSync(this.persistPath, JSON.stringify(this.hotWindow), 'utf-8');
+      mkdirSync(dirname(this.persistPath), { recursive: true });
+      writeFileSync(
+        this.persistPath,
+        JSON.stringify({ hotWindow: this.hotWindow, totalMessageCount: this.totalMessageCount }),
+        'utf-8',
+      );
     } catch (err) {
-      log.warn('Failed to persist hot window to disk', {
+      log.warn('Failed to persist hot window', {
         path: this.persistPath,
         error: err instanceof Error ? err.message : String(err),
       });
     }
   }
 
-  /**
-   * Load hot window from disk. Called once during construction.
-   */
   private loadFromDisk(): void {
     if (!this.persistPath || !existsSync(this.persistPath)) return;
     try {
-      const raw = readFileSync(this.persistPath, 'utf-8');
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) {
-        // Validate and take only the last hotWindowSize messages.
-        // Content may be a plain string OR an Anthropic content-block array
-        // (text + image + document) when the message carried attachments.
-        this.hotWindow = parsed
-          .filter((m: unknown) => {
-            if (typeof m !== 'object' || m === null) return false;
-            const rec = m as Record<string, unknown>;
-            if (!('role' in rec) || typeof rec.role !== 'string') return false;
-            if (!('content' in rec)) return false;
-            return typeof rec.content === 'string' || Array.isArray(rec.content);
-          })
-          .slice(-this.hotWindowSize) as ConversationMessage[];
-        this.totalMessageCount = this.hotWindow.length;
-        log.info('Hot window restored from disk', {
-          path: this.persistPath,
-          messageCount: this.hotWindow.length,
-        });
-      }
+      const raw = JSON.parse(readFileSync(this.persistPath, 'utf-8')) as {
+        hotWindow?: ConversationMessage[];
+        totalMessageCount?: number;
+      };
+      if (Array.isArray(raw.hotWindow)) this.hotWindow = raw.hotWindow;
+      if (typeof raw.totalMessageCount === 'number') this.totalMessageCount = raw.totalMessageCount;
     } catch (err) {
-      log.warn('Failed to load hot window from disk, starting fresh', {
+      log.warn('Failed to restore hot window', {
         path: this.persistPath,
         error: err instanceof Error ? err.message : String(err),
       });

@@ -18,7 +18,6 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { readConfig, CommandFileLoader } from '@orionomega/core';
 import type { PlannerOutput, GraphState } from '@orionomega/core';
-import chalk from 'chalk';
 
 import { GatewayClient } from './gateway-client.js';
 import { ChatLog } from './components/chat-log.js';
@@ -26,7 +25,7 @@ import { CustomEditor } from './components/custom-editor.js';
 import { formatPlan } from './components/plan-overlay.js';
 import { StatusBar } from './components/status-bar.js';
 import { WorkflowPanel } from './components/workflow-panel.js';
-import { editorTheme, theme, palette, icons, box } from './theme.js';
+import { editorTheme, theme } from './theme.js';
 
 /** Available slash commands. */
 const SLASH_COMMANDS: SlashCommand[] = [
@@ -44,7 +43,7 @@ const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/restart', description: 'Restart the gateway service' },
   { name: '/update', description: 'Pull latest, rebuild, and restart' },
   { name: '/focus', description: 'Focus a workflow by ID (or /focus to show all)' },
-  { name: '/hindsight', description: 'Show Hindsight memory status and troubleshooting' },
+  { name: '/memory', description: 'Show memory store stats (records, segments, last write, index state)' },
   { name: '/exit', description: 'Exit the TUI' },
   { name: '/quit', description: 'Exit the TUI' },
 ];
@@ -64,7 +63,7 @@ try {
 } catch {}
 
 /** Client-side commands that don't go to the gateway. */
-const _CLIENT_COMMANDS = new Set(['/exit', '/quit', '/q', '/focus', '/hindsight']);
+const _CLIENT_COMMANDS = new Set(['/exit', '/quit', '/q', '/focus']);
 
 /**
  * Build the default gateway WebSocket URL from config.
@@ -172,11 +171,9 @@ export async function start(): Promise<void> {
   const statusBar = new StatusBar();
   const workflowPanel = new WorkflowPanel();
   workflowPanel.onUpdate = () => throttledRender();
-  const hindsightBanner = new Text('', 1, 0);
 
   const root = new Container();
   root.addChild(header);
-  root.addChild(hindsightBanner);
   root.addChild(chatLog);
   root.addChild(workflowPanel);
   root.addChild(editor);
@@ -208,9 +205,6 @@ export async function start(): Promise<void> {
   };
 
   let wasConnected = false;
-  let hindsightConnected: boolean | null = null;
-  let userMessageCount = 0;
-  let hindsightFirstMessageWarned = false;
 
   client.on('connected', () => {
     statusBar.connected = true;
@@ -435,40 +429,16 @@ export async function start(): Promise<void> {
     throttledRender();
   });
 
-  client.on('hindsightStatus', (status) => {
-    const wasHsConnected = hindsightConnected;
-    hindsightConnected = status.connected;
-
+  client.on('memoryActivity', (activity) => {
+    // The status bar is the only surface for memory state: it always renders
+    // ◈ Memory and colours it by `health`. No banner, no chat warning, and
+    // never the word "offline" — the store reports what it can do, and the
+    // agent keeps working either way.
     statusBar.updateStatus({
-      hindsightConnected: status.connected,
-      hindsightBusy: status.busy,
+      memoryHealth: activity.health,
+      memoryPct: activity.pct,
     });
-    statusBar.hindsightBusy = status.busy;
-
-    if (status.connected) {
-      hindsightBanner.setText('');
-      if (wasHsConnected === false) {
-        chatLog.addSystemSuccess('Hindsight memory reconnected.');
-      }
-    } else {
-      const rule = chalk.hex(palette.warning)(box.horizontal.repeat(68));
-      const warnIcon = chalk.hex(palette.warning)(icons.warning);
-      const warnText = chalk.hex(palette.warning)(
-        "Memory offline \u2014 agent context is limited to recent messages.\n" +
-        "   Run 'orionomega setup' to configure Hindsight."
-      );
-      hindsightBanner.setText(`${rule}\n ${warnIcon}  ${warnText}\n${rule}`);
-      if (wasHsConnected === true) {
-        chatLog.addSystemWarning('Hindsight memory went offline. Context recall is limited.');
-      } else if (wasHsConnected === null) {
-        chatLog.addSystemWarning(
-          "Hindsight memory is offline. The agent can only recall the last few messages. " +
-          "Run 'orionomega setup' to configure it."
-        );
-        hindsightFirstMessageWarned = true;
-      }
-    }
-
+    statusBar.memoryBusy = activity.busy;
     throttledRender();
   });
 
@@ -565,57 +535,10 @@ export async function start(): Promise<void> {
       return;
     }
 
-    // /hindsight — show memory system status and troubleshooting
-    if (normalizedLower === '/hindsight') {
-      const connected = hindsightConnected === true;
-      const unknown = hindsightConnected === null;
-      const statusIcon = unknown
-        ? chalk.hex(palette.warning)(icons.warning)
-        : connected
-          ? chalk.hex(palette.success)(icons.connected)
-          : chalk.hex(palette.error)(icons.disconnected);
-      const statusLabel = unknown
-        ? chalk.hex(palette.warning)('Unknown (waiting for gateway)')
-        : connected
-          ? chalk.hex(palette.success)('Connected')
-          : chalk.hex(palette.error)('Disconnected');
-
-      let hsUrl = 'http://localhost:8888';
-      try {
-        const cfg = readConfig();
-        if (cfg.hindsight?.url) hsUrl = cfg.hindsight.url;
-      } catch {}
-
-      const lines = [
-        chalk.hex(palette.accent).bold('Hindsight Memory System'),
-        '',
-        `  Status:  ${statusIcon} ${statusLabel}`,
-        `  URL:     ${chalk.hex(palette.text)(hsUrl)}`,
-        '',
-      ];
-
-      if (!connected || unknown) {
-        lines.push(
-          chalk.hex(palette.warning)('  Troubleshooting:'),
-          chalk.hex(palette.text)('    1. Run: orionomega setup  (step 4 configures Hindsight)'),
-          chalk.hex(palette.text)('    2. Check Docker: docker ps'),
-          chalk.hex(palette.text)('    3. macOS: colima status'),
-          chalk.hex(palette.text)('    4. Start manually: docker start hindsight'),
-          chalk.hex(palette.text)(`    5. Verify: curl ${hsUrl}/health`),
-          '',
-        );
-      }
-
-      chatLog.addMessage({
-        id: `hindsight-cmd-${Date.now()}`,
-        role: 'system',
-        content: '',
-        timestamp: new Date().toISOString(),
-        raw: lines.join('\n'),
-      });
-      throttledRender();
-      return;
-    }
+    // NOTE: /memory is deliberately NOT a client-side command. Record and
+    // segment counts, the last write, and the index state live with the
+    // store, so the command is routed to the gateway like /status and the
+    // reply arrives as a command_result.
 
     // Also check without slash — some paths strip it
     const bareCmd = normalized.replace(/^\//, '').toLowerCase();
@@ -629,13 +552,6 @@ export async function start(): Promise<void> {
     if (normalized.startsWith('/')) {
       client.sendCommand(normalized.slice(1));
     } else {
-      userMessageCount++;
-      if (userMessageCount === 1 && hindsightConnected === false && !hindsightFirstMessageWarned) {
-        hindsightFirstMessageWarned = true;
-        chatLog.addSystemWarning(
-          'Memory is offline. The agent can only see the last few messages.'
-        );
-      }
       client.sendChat(value);
     }
   };

@@ -38,7 +38,7 @@ interface ConfigSnapshot {
   planner: string;
   authMode: string;
   keyHash: string | undefined;
-  hindsightUrl: string;
+  redisUrl: string;
   workspace: string;
   logLevel: string;
   logFile: string;
@@ -57,7 +57,7 @@ function snapshotConfig(c: OrionOmegaConfig): ConfigSnapshot {
     planner: c.models.planner,
     authMode: c.gateway.auth.mode,
     keyHash: c.gateway.auth.keyHash,
-    hindsightUrl: c.hindsight.url,
+    redisUrl: c.memory.redis.url,
     workspace: c.workspace.path,
     logLevel: c.logging.level,
     logFile: c.logging.file,
@@ -141,10 +141,10 @@ const STEP_INFO: StepInfo[] = [
     configured: (_c) => true,
   },
   {
-    name: 'Hindsight Memory',
-    group: 'optional',
-    summary: (c) => c.hindsight.url || 'not set',
-    configured: (c) => !!c.hindsight.url,
+    name: 'Memory (Redis)',
+    group: 'required',
+    summary: (c) => c.memory.redis.url || 'not set',
+    configured: (c) => !!c.memory.redis.url,
   },
   {
     name: 'Workspace',
@@ -181,80 +181,79 @@ const STEP_INFO: StepInfo[] = [
   },
 ];
 
-async function checkHindsightReachable(url: string): Promise<boolean> {
+/**
+ * Split a `redis[s]://[user[:pass]@]host[:port][/db]` URL into host + port.
+ * Returns null for anything unparseable — an unusable URL must report as
+ * unreachable rather than silently falling back to localhost, which would
+ * green-light a config that cannot possibly work.
+ */
+function parseRedisHostPort(url: string): { host: string; port: number } | null {
+  let u: URL;
   try {
-    const res = await fetch(`${url}/health`, { signal: AbortSignal.timeout(2000) });
-    return res.ok;
+    u = new URL(url);
   } catch {
-    return false;
+    return null;
   }
+  if (u.protocol !== 'redis:' && u.protocol !== 'rediss:') return null;
+  if (!u.hostname) return null;
+  const port = u.port ? Number(u.port) : 6379;
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
+  return { host: u.hostname, port };
 }
 
-async function autoStartHindsight(config: OrionOmegaConfig): Promise<boolean> {
-  if (!config.hindsight.url) return false;
-  if (!config.models.apiKey) return false;
-  if (!(config.hindsight.url.includes('localhost') || config.hindsight.url.includes('127.0.0.1'))) return false;
+/**
+ * Probes a Redis endpoint by opening a socket and issuing an inline `PING`.
+ *
+ * Any RESP reply proves a Redis server is listening — including `-NOAUTH`,
+ * which a password-protected instance returns. We deliberately do not
+ * authenticate here: reachability is the only thing this check claims.
+ */
+async function checkRedisReachable(url: string, timeoutMs = 2000): Promise<boolean> {
+  const target = parseRedisHostPort(url);
+  if (!target) return false;
+  const { host, port } = target;
+  const { connect } = await import('node:net');
 
-  try {
-    execSync('docker info', { stdio: 'pipe', timeout: 5000 });
-  } catch {
-    return false;
+  return new Promise<boolean>((resolve) => {
+    let settled = false;
+    const done = (ok: boolean): void => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(ok);
+    };
+
+    const socket = connect({ host, port });
+    socket.setTimeout(timeoutMs);
+    socket.on('connect', () => socket.write('PING\r\n'));
+    socket.on('data', (buf: Buffer) => {
+      const reply = buf.toString('utf-8');
+      // '+PONG' = open instance; '-' = a Redis error reply (e.g. NOAUTH),
+      // which still proves a Redis server answered.
+      done(reply.startsWith('+PONG') || reply.startsWith('-'));
+    });
+    socket.on('timeout', () => done(false));
+    socket.on('error', () => done(false));
+    socket.on('close', () => done(false));
+  });
+}
+
+/**
+ * Prints platform-appropriate instructions for getting Redis running.
+ * OrionOmega never installs or manages Redis — it is a system service the
+ * operator owns.
+ */
+function printRedisGuidance(url: string): void {
+  println(`  ${DIM}Redis backs OrionOmega's persistent memory. Install and start it:${RESET}`);
+  if (process.platform === 'darwin') {
+    println(`    ${BLUE}brew install redis && brew services start redis${RESET}`);
+  } else {
+    println(`    ${BLUE}sudo apt install -y redis-server && sudo systemctl enable --now redis-server${RESET}`);
+    println(`    ${DIM}(Fedora: sudo dnf install -y redis && sudo systemctl enable --now redis)${RESET}`);
   }
-
-  try {
-    const running = execSync('docker ps --format "{{.Names}}"', { stdio: 'pipe', timeout: 5000 }).toString();
-    if (running.split('\n').some(n => n.trim() === 'hindsight')) return true;
-  } catch {
-    return false;
-  }
-
-  try {
-    execSync('docker image inspect ghcr.io/vectorize-io/hindsight:latest', { stdio: 'pipe', timeout: 5000 });
-  } catch {
-    return false;
-  }
-
-  println(`  ${DIM}Starting Hindsight container...${RESET}`);
-  try {
-    execSync('docker stop hindsight 2>/dev/null; docker rm hindsight 2>/dev/null', { stdio: 'pipe', timeout: 15000 });
-  } catch {}
-
-  const dataDir = join(homedir(), '.orionomega', 'hindsight-data');
-  try { mkdirSync(dataDir, { recursive: true }); } catch {}
-
-  try {
-    const dockerCmd = [
-      'docker run -d',
-      '--name hindsight',
-      '--restart unless-stopped',
-      '-p 8888:8888',
-      `-e "HINDSIGHT_API_LLM_API_KEY=${config.models.apiKey}"`,
-      '-e "HINDSIGHT_API_LLM_PROVIDER=anthropic"',
-      '-e "HINDSIGHT_API_LLM_MODEL=claude-haiku-4-5-20251001"',
-      `-v "${dataDir}:/home/hindsight/.pg0"`,
-      'ghcr.io/vectorize-io/hindsight:latest',
-    ].join(' ');
-    execSync(dockerCmd, { stdio: 'pipe', timeout: 60000 });
-
-    const healthUrl = config.hindsight.url.replace(/\/$/, '') + '/health';
-    print(`  ${DIM}Waiting for Hindsight to initialize...${RESET}`);
-    for (let i = 0; i < 30; i++) {
-      try {
-        const res = await fetch(healthUrl, { signal: AbortSignal.timeout(3000) });
-        if (res.ok) {
-          println('');
-          success('Hindsight started automatically.');
-          return true;
-        }
-      } catch {}
-      await new Promise((r) => setTimeout(r, 2000));
-    }
-    println('');
-    println(`  ${DIM}Hindsight started but still initializing. It should be ready shortly.${RESET}`);
-    return true;
-  } catch {
-    return false;
-  }
+  println(`  ${DIM}Or in a container:${RESET}`);
+  println(`    ${BLUE}docker run -d --name redis --restart unless-stopped -p 6379:6379 redis:7-alpine${RESET}`);
+  println(`  ${DIM}Using a Redis elsewhere? Set memory.redis.url (currently ${url}).${RESET}`);
 }
 
 async function showMenu(config: OrionOmegaConfig): Promise<number> {
@@ -262,16 +261,9 @@ async function showMenu(config: OrionOmegaConfig): Promise<number> {
   println(`${BOLD}${BLUE}  OrionOmega Setup${RESET}`);
   println();
 
-  let hindsightReachable = config.hindsight.url
-    ? await checkHindsightReachable(config.hindsight.url)
+  const redisReachable = config.memory.redis.url
+    ? await checkRedisReachable(config.memory.redis.url)
     : false;
-
-  if (!hindsightReachable && config.hindsight.url && config.models.apiKey) {
-    const started = await autoStartHindsight(config);
-    if (started) {
-      hindsightReachable = await checkHindsightReachable(config.hindsight.url);
-    }
-  }
 
   const requiredDone = STEP_INFO.filter((s) => s.group === 'required' && s.configured(config) && s.summary(config) !== 'not set').length;
   const requiredTotal = STEP_INFO.filter((s) => s.group === 'required').length;
@@ -286,29 +278,30 @@ async function showMenu(config: OrionOmegaConfig): Promise<number> {
 
   println(`  ${BOLD}${CYAN}Required${RESET}`);
   for (const { info, i } of required) {
-    const configured = info.configured(config);
-    const icon = configured && info.summary(config) !== 'not set' ? `${GREEN}✓${RESET}` : `${RED}○${RESET}`;
     const summary = info.summary(config);
-    const summaryColor = summary === 'not set' ? `${RED}${summary}${RESET}` : `${DIM}${summary}${RESET}`;
+    let icon: string;
+    let summaryColor: string;
+    if (info.name === 'Memory (Redis)' && config.memory.redis.url) {
+      // Configured is not enough — an unreachable Redis means no memory at all.
+      icon = redisReachable ? `${GREEN}✓${RESET}` : `${RED}✗${RESET}`;
+      summaryColor = redisReachable
+        ? `${DIM}${summary}${RESET}`
+        : `${RED}${summary} — not running${RESET}`;
+    } else {
+      const configured = info.configured(config);
+      icon = configured && summary !== 'not set' ? `${GREEN}✓${RESET}` : `${RED}○${RESET}`;
+      summaryColor = summary === 'not set' ? `${RED}${summary}${RESET}` : `${DIM}${summary}${RESET}`;
+    }
     println(`    ${BOLD}${i + 1}${RESET}. ${info.name.padEnd(22)}${icon}  ${summaryColor}`);
   }
   println();
 
   println(`  ${BOLD}${CYAN}Optional${RESET}`);
   for (const { info, i } of optional) {
-    let icon: string;
-    let summaryColor: string;
     const summary = info.summary(config);
-    if (info.name === 'Hindsight Memory' && config.hindsight.url) {
-      icon = hindsightReachable ? `${GREEN}✓${RESET}` : `${RED}✗${RESET}`;
-      summaryColor = hindsightReachable
-        ? `${DIM}${summary}${RESET}`
-        : `${RED}${summary} — not running${RESET}`;
-    } else {
-      const configured = info.configured(config);
-      icon = configured && summary !== 'not set' ? `${GREEN}✓${RESET}` : `${DIM}○${RESET}`;
-      summaryColor = summary === 'not set' ? `${RED}${summary}${RESET}` : `${DIM}${summary}${RESET}`;
-    }
+    const configured = info.configured(config);
+    const icon = configured && summary !== 'not set' ? `${GREEN}✓${RESET}` : `${DIM}○${RESET}`;
+    const summaryColor = summary === 'not set' ? `${RED}${summary}${RESET}` : `${DIM}${summary}${RESET}`;
     println(`    ${BOLD}${i + 1}${RESET}. ${info.name.padEnd(22)}${icon}  ${summaryColor}`);
   }
 
@@ -510,184 +503,36 @@ async function stepGatewaySecurity(config: OrionOmegaConfig, stepIdx: number, to
   return nav(stepIdx, totalSteps);
 }
 
-async function stepHindsight(config: OrionOmegaConfig, stepIdx: number, totalSteps: number): Promise<StepAction> {
-  stepHeading(stepIdx, totalSteps, 'Hindsight Memory');
-  showCurrentBox([['Hindsight URL', config.hindsight.url]]);
+const DEFAULT_REDIS_URL = 'redis://localhost:6379';
 
-  if (config.hindsight.url) {
-    const keep = await confirm(`  Keep ${BOLD}${config.hindsight.url}${RESET}?`, true);
-    if (keep) {
-      success(`Keeping Hindsight URL: ${config.hindsight.url}`);
-      return nav(stepIdx, totalSteps);
-    }
+async function stepMemory(config: OrionOmegaConfig, stepIdx: number, totalSteps: number): Promise<StepAction> {
+  stepHeading(stepIdx, totalSteps, 'Memory (Redis)');
+  showCurrentBox([['Redis URL', config.memory.redis.url]]);
+
+  let url = config.memory.redis.url;
+
+  const keep = url ? await confirm(`  Keep ${BOLD}${url}${RESET}?`, true) : false;
+  if (!keep) {
+    const mode = await choose('Redis instance:', [
+      { label: `Local ${DIM}(${DEFAULT_REDIS_URL})${RESET}`, value: 'local' },
+      { label: 'Remote (custom URL)', value: 'remote' },
+    ]);
+    url = mode === 'remote'
+      ? await ask('Redis URL', { default: config.memory.redis.url || DEFAULT_REDIS_URL })
+      : DEFAULT_REDIS_URL;
+    config.memory.redis.url = url;
   }
-
-  const mode = await choose('Hindsight server:', [
-    { label: `Local ${DIM}(localhost:8888)${RESET}`, value: 'local' },
-    { label: 'Remote (custom URL)', value: 'remote' },
-  ]);
-
-  let url = 'http://localhost:8888';
-  if (mode === 'remote') {
-    url = await ask('Hindsight URL', { default: config.hindsight.url || 'http://localhost:8888' });
-  }
-  config.hindsight.url = url;
 
   print('  Testing connection... ');
-  try {
-    const res = await fetch(`${url}/health`, { signal: AbortSignal.timeout(5000) });
-    if (res.ok) {
-      success('Hindsight is reachable!');
-    } else {
-      fail(`Hindsight returned ${res.status}.`);
-      if (url.includes('localhost') || url.includes('127.0.0.1')) {
-        await tryStartHindsightContainer(config);
-      }
-    }
-  } catch {
+  if (await checkRedisReachable(url, 5000)) {
+    success('Redis is reachable!');
+  } else {
     println(`${YELLOW}not reachable${RESET}`);
-    if (url.includes('localhost') || url.includes('127.0.0.1')) {
-      await tryStartHindsightContainer(config);
-    } else {
-      warn('Remote Hindsight is not reachable. Check the URL and try again.');
-    }
+    warn('Redis is not reachable — persistent memory will not work until it is.');
+    printRedisGuidance(url);
   }
 
   return nav(stepIdx, totalSteps);
-}
-
-async function tryStartHindsightContainer(config: OrionOmegaConfig): Promise<void> {
-  try {
-    execSync('docker --version', { stdio: 'pipe', timeout: 5000 });
-  } catch {
-    warn('Docker Engine is not installed or not running.');
-    println(`  ${DIM}Note: 'npm install docker' installs an npm package, NOT Docker Engine.${RESET}`);
-    println(`  ${DIM}Install Docker Engine from: https://docs.docker.com/engine/install/${RESET}`);
-    println(`  ${DIM}Or point to a remote Hindsight instance instead.${RESET}`);
-    return;
-  }
-
-  if (!config.models.apiKey) {
-    warn('No Anthropic API key configured — Hindsight requires one to start.');
-    println(`  ${DIM}Complete step 1 (API Key) first, then revisit this step.${RESET}`);
-    return;
-  }
-
-  const startIt = await confirm('  Start Hindsight Docker container?', true);
-  if (!startIt) return;
-
-  let docker: string | null = null;
-  try {
-    execSync('docker info', { stdio: 'pipe', timeout: 10000 });
-    docker = 'docker';
-  } catch {
-    const platform = process.platform;
-    if (platform === 'darwin') {
-      try {
-        execSync('command -v colima', { stdio: 'pipe', timeout: 3000 });
-        println(`  ${DIM}Starting Colima...${RESET}`);
-        try {
-          execSync('colima start --cpu 2 --memory 4', { stdio: 'pipe', timeout: 120000 });
-          execSync('docker info', { stdio: 'pipe', timeout: 10000 });
-          docker = 'docker';
-          success('Docker is running via Colima');
-        } catch {
-          warn('Could not start Colima. Try manually: colima start');
-        }
-      } catch {
-        try {
-          execSync('command -v brew', { stdio: 'pipe', timeout: 3000 });
-          const installIt = await confirm('  Docker not found. Install Docker CLI + Colima via Homebrew?', true);
-          if (installIt) {
-            println(`  ${DIM}Installing docker and colima (this may take a minute)...${RESET}`);
-            try {
-              execSync('brew install docker colima', { stdio: 'pipe', timeout: 300000 });
-              println(`  ${DIM}Starting Colima...${RESET}`);
-              execSync('colima start --cpu 2 --memory 4', { stdio: 'pipe', timeout: 120000 });
-              execSync('docker info', { stdio: 'pipe', timeout: 10000 });
-              docker = 'docker';
-              success('Docker installed and running via Colima');
-            } catch (err) {
-              warn(`Install failed: ${err instanceof Error ? err.message : String(err)}`);
-            }
-          }
-        } catch {
-          warn('Docker and Homebrew not found. Install Docker Desktop or Homebrew + Colima.');
-        }
-      }
-    } else {
-      try {
-        execSync('sudo docker info', { stdio: 'pipe', timeout: 10000 });
-        docker = 'sudo docker';
-      } catch {
-        warn('Docker Engine not found or not running.');
-        println(`  ${DIM}Note: 'npm install docker' installs an npm package, NOT Docker Engine.${RESET}`);
-        println(`  ${DIM}Install Docker Engine from: https://docs.docker.com/engine/install/${RESET}`);
-      }
-    }
-  }
-
-  if (!docker) return;
-
-  const dataDir = join(homedir(), '.orionomega', 'hindsight-data');
-
-  print('  Stopping existing container... ');
-  try {
-    execSync(`${docker} stop hindsight 2>/dev/null; ${docker} rm hindsight 2>/dev/null`, { stdio: 'pipe', timeout: 15000 });
-  } catch {}
-  println('done');
-
-  try {
-    mkdirSync(dataDir, { recursive: true });
-  } catch {}
-
-  print('  Pulling Hindsight image (this may take a few minutes)... ');
-  try {
-    execSync(`${docker} pull ghcr.io/vectorize-io/hindsight:latest`, { stdio: 'pipe', timeout: 300000 });
-    println('done');
-  } catch {
-    warn('Image pull failed or timed out. Trying to start with cached image...');
-  }
-
-  print('  Starting Hindsight... ');
-  try {
-    const dockerCmd = [
-      `${docker} run -d`,
-      '--name hindsight',
-      '--restart unless-stopped',
-      '-p 8888:8888',
-      `-e "HINDSIGHT_API_LLM_API_KEY=${config.models.apiKey}"`,
-      '-e "HINDSIGHT_API_LLM_PROVIDER=anthropic"',
-      '-e "HINDSIGHT_API_LLM_MODEL=claude-haiku-4-5-20251001"',
-      `-v "${dataDir}:/home/hindsight/.pg0"`,
-      'ghcr.io/vectorize-io/hindsight:latest',
-    ].join(' ');
-    execSync(dockerCmd, { stdio: 'pipe', timeout: 60000 });
-    println('started');
-
-    print('  Waiting for Hindsight to initialize (this can take 30-60s)... ');
-    let ready = false;
-    for (let i = 0; i < 30; i++) {
-      try {
-        const res = await fetch('http://localhost:8888/health', { signal: AbortSignal.timeout(3000) });
-        if (res.ok) {
-          ready = true;
-          break;
-        }
-      } catch {}
-      await new Promise((r) => setTimeout(r, 2000));
-    }
-
-    if (ready) {
-      success('Hindsight is running!');
-    } else {
-      warn('Hindsight started but not yet responding. Check: docker logs hindsight');
-      println(`  ${DIM}It may still be loading embedding models (30-90s on first run).${RESET}`);
-    }
-  } catch (err: unknown) {
-    fail(`Failed to start Hindsight: ${err instanceof Error ? err.message : String(err)}`);
-    println(`  ${DIM}Check: docker logs hindsight${RESET}`);
-  }
 }
 
 async function stepWorkspace(config: OrionOmegaConfig, stepIdx: number, totalSteps: number): Promise<StepAction> {
@@ -799,7 +644,7 @@ async function stepLogging(config: OrionOmegaConfig, stepIdx: number, totalSteps
 
   const levelOptions = [
     { label: `info ${DIM}(default — startup, connections, errors)${RESET}`, value: 'info' },
-    { label: `verbose ${DIM}(conversations, tool calls, Hindsight, tokens)${RESET}`, value: 'verbose' },
+    { label: `verbose ${DIM}(conversations, tool calls, memory, tokens)${RESET}`, value: 'verbose' },
     { label: `debug ${DIM}(everything — full request/response bodies)${RESET}`, value: 'debug' },
     { label: `warn ${DIM}(warnings and errors only)${RESET}`, value: 'warn' },
     { label: `error ${DIM}(errors only)${RESET}`, value: 'error' },
@@ -1398,8 +1243,9 @@ async function showSummary(config: OrionOmegaConfig, initialSnap: ConfigSnapshot
   println();
 
   println(`  ${BOLD}${CYAN}Memory${RESET}`);
-  println(`    Hindsight URL:        ${colorValue(config.hindsight.url)}${changedTag(initialSnap.hindsightUrl, config.hindsight.url)}`);
-  println(`    Default Bank:         ${DIM}${config.hindsight.defaultBank}${RESET}`);
+  println(`    Redis URL:            ${colorValue(config.memory.redis.url)}${changedTag(initialSnap.redisUrl, config.memory.redis.url)}`);
+  println(`    Retain on complete:   ${DIM}${config.memory.retainOnComplete ? 'yes' : 'no'}${RESET}`);
+  println(`    Retain on error:      ${DIM}${config.memory.retainOnError ? 'yes' : 'no'}${RESET}`);
   println();
 
   println(`  ${BOLD}${CYAN}Workspace${RESET}`);
@@ -1498,14 +1344,13 @@ async function finalizeSetup(config: OrionOmegaConfig): Promise<void> {
 
   writeConfig(config);
 
-  if (config.hindsight.url && (config.hindsight.url.includes('localhost') || config.hindsight.url.includes('127.0.0.1'))) {
-    const hsReachable = await checkHindsightReachable(config.hindsight.url);
-    if (!hsReachable) {
-      println();
-      println(`  ${YELLOW}⚠${RESET} Hindsight is configured (${config.hindsight.url}) but not running.`);
-      await tryStartHindsightContainer(config);
+  if (config.memory.redis.url) {
+    if (await checkRedisReachable(config.memory.redis.url)) {
+      success('Redis is running.');
     } else {
-      success('Hindsight is running.');
+      println();
+      println(`  ${YELLOW}⚠${RESET} Redis (${config.memory.redis.url}) is not reachable — persistent memory is unavailable.`);
+      printRedisGuidance(config.memory.redis.url);
     }
   }
 
@@ -1558,7 +1403,7 @@ export async function runSetup(): Promise<void> {
     stepApiKey,
     stepModel,
     stepGatewaySecurity,
-    stepHindsight,
+    stepMemory,
     stepWorkspace,
     stepLogging,
     stepAgentSdk,

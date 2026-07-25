@@ -105,7 +105,6 @@ function ExpandedRecall({ meta }: { meta: RecallMeta }) {
         </div>
       )}
       <div className="flex flex-wrap gap-x-3 gap-y-1 text-zinc-500">
-        {meta.budget && <span>Budget: <span className="text-zinc-400">{meta.budget}</span></span>}
         {meta.maxTokens != null && <span>Max tokens: <span className="text-zinc-400 font-mono">{meta.maxTokens}</span></span>}
         {meta.minRelevance != null && <span>Floor: <span className="text-zinc-400 font-mono">{meta.minRelevance}</span></span>}
         {meta.tokensUsed != null && <span>Used: <span className="text-zinc-400 font-mono">{meta.tokensUsed} tok</span></span>}
@@ -123,10 +122,10 @@ function ExpandedRecall({ meta }: { meta: RecallMeta }) {
           )}
         </div>
       )}
-      {meta.results && meta.results.length > 0 && (
+      {meta.records && meta.records.length > 0 && (
         <div className="space-y-1">
-          <span className="text-zinc-600">Results:</span>
-          {meta.results.map((r, i) => (
+          <span className="text-zinc-600">Records:</span>
+          {meta.records.map((r, i) => (
             <MemoryContentCard key={i} memory={r} />
           ))}
         </div>
@@ -310,9 +309,9 @@ const MemoryEventRow = function MemoryEventRow({ event }: { event: MemoryEvent }
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <span className={`text-xs font-medium ${cfg.color}`}>{cfg.label}</span>
-            {event.bank && (
+            {event.scope && (
               <span className="text-xs text-zinc-500 bg-zinc-800 rounded px-1.5 py-0.5 font-mono">
-                {event.bank}
+                {event.scope}
               </span>
             )}
             {sessionIdStr && (event.op === 'retain' || event.op === 'recall') && (
@@ -368,9 +367,9 @@ function FilterBar({
   setFilter: (f: Partial<MemoryFilterState>) => void;
   filteredCount: number;
 }) {
-  const banks = [...new Set(events.map(e => e.bank).filter(Boolean))] as string[];
+  const scopes = [...new Set(events.map(e => e.scope).filter(Boolean))] as string[];
   const activeOps = filter.ops;
-  const hasActiveFilter = activeOps !== null || filter.bank !== null || filter.searchText !== '';
+  const hasActiveFilter = activeOps !== null || filter.scope !== null || filter.searchText !== '';
 
   const toggleOp = (op: MemoryEvent['op']) => {
     if (!activeOps) {
@@ -409,19 +408,19 @@ function FilterBar({
             </button>
           )}
         </div>
-        {banks.length > 0 && (
+        {scopes.length > 0 && (
           <select
-            value={filter.bank ?? ''}
-            onChange={e => setFilter({ bank: e.target.value || null })}
+            value={filter.scope ?? ''}
+            onChange={e => setFilter({ scope: e.target.value || null })}
             className="bg-zinc-800/60 border border-zinc-700/50 rounded px-2 py-1 text-xs text-zinc-400 outline-none focus:border-violet-500/50"
           >
-            <option value="">All banks</option>
-            {banks.map(b => <option key={b} value={b}>{b}</option>)}
+            <option value="">All scopes</option>
+            {scopes.map(sc => <option key={sc} value={sc}>{sc}</option>)}
           </select>
         )}
         {hasActiveFilter && (
           <button
-            onClick={() => setFilter({ ops: null, bank: null, searchText: '' })}
+            onClick={() => setFilter({ ops: null, scope: null, searchText: '' })}
             className="text-xs text-violet-400 hover:text-violet-300 flex-shrink-0"
           >
             Clear
@@ -513,7 +512,7 @@ export function MemoryFeed() {
         <div className="text-center">
           <p className="text-sm font-medium">Memory Feed</p>
           <p className="text-xs mt-1 text-zinc-600 max-w-[220px]">
-            Real-time Hindsight memory operations will appear here as the agent works.
+            Real-time memory operations will appear here as the agent works.
           </p>
         </div>
       </div>

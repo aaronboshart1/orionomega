@@ -9,16 +9,16 @@ This document describes the internal architecture of OrionOmega — how the pack
 │                         OrionOmega                               │
 │                                                                  │
 │  ┌─────────┐   ┌─────────┐        ┌────────────────────────┐   │
-│  │   TUI   │   │   Web   │        │       Hindsight        │   │
-│  │  (Ink)  │   │(Next.js)│        │  (Temporal KG Server)  │   │
+│  │   TUI   │   │   Web   │        │         Redis          │   │
+│  │  (Ink)  │   │(Next.js)│        │  (self-hosted, RESP)   │   │
 │  └────┬────┘   └────┬────┘        └───────────┬────────────┘   │
 │       │              │                         │                 │
 │       └──────┬───────┘          ┌──────────────┘                │
-│              │ WebSocket        │ HTTP                           │
-│       ┌──────┴───────┐   ┌─────┴──────┐                        │
-│       │   Gateway     │   │  Hindsight │                        │
-│       │  (WS + REST)  │   │   Client   │                        │
-│       └──────┬───────┘   └─────┬──────┘                        │
+│              │ WebSocket        │ RESP                           │
+│       ┌──────┴───────┐   ┌─────┴────────────┐                  │
+│       │   Gateway     │   │ RedisMemoryStore │                  │
+│       │  (WS + REST)  │   │  (MemoryStore)   │                  │
+│       └──────┬───────┘   └─────┬────────────┘                  │
 │              │                  │                                │
 │       ┌──────┴──────────────────┴──────┐                        │
 │       │             Core               │                        │
@@ -43,20 +43,22 @@ This document describes the internal architecture of OrionOmega — how the pack
 ## Package Dependency Graph
 
 ```
-skills-sdk  hindsight
-    │           │
-    └─────┬─────┘
-          ▼
-        core
-          │
-     ┌────┼────┐
-     ▼    ▼    ▼
-   tui gateway web
+shared  skills-sdk
+    │        │
+    └───┬────┘
+        ▼
+      core
+        │
+   ┌────┼────┐
+   ▼    ▼    ▼
+ tui gateway web
 ```
 
-- **`hindsight`** — standalone HTTP client for the Hindsight temporal knowledge graph. No dependencies on other OrionOmega packages.
+- **`shared`** — dependency-free primitives used everywhere: logging, the
+  relevance scorer (`computeClientRelevance`, trigram/keyword similarity),
+  token estimation, and common types.
 - **`skills-sdk`** — skill manifest types, loader, validator, executor, and scaffolding. No dependencies on other packages.
-- **`core`** — the heart of the system. Depends on `hindsight` and `skills-sdk`. Contains config, orchestration engine, Anthropic client, memory subsystem, agent logic, and CLI.
+- **`core`** — the heart of the system. Depends on `shared` and `skills-sdk`. Contains config, orchestration engine, Anthropic client, memory subsystem, agent logic, and CLI.
 - **`gateway`** — WebSocket + REST server. Depends on `core` for types and orchestration access.
 - **`tui`** — Ink-based terminal UI. Depends on `core` for types.
 - **`web`** — Next.js dashboard. Communicates with `gateway` over WebSocket; no direct package dependency.
@@ -222,7 +224,7 @@ All messages are JSON envelopes.
 | Method | Path | Purpose |
 |--------|------|---------|
 | `GET` | `/health` | Health check |
-| `GET` | `/status` | System status (active workflows, Hindsight connectivity) |
+| `GET` | `/status` | System status (active workflows, memory recall health) |
 | `GET` | `/workflows` | List workflows |
 | `GET` | `/workflows/:id` | Get workflow state |
 | `POST` | `/workflows/:id/stop` | Stop a running workflow |
@@ -237,47 +239,90 @@ The gateway manages client sessions — tracking connected clients, their types 
 
 ## Memory System (`packages/core/src/memory/`)
 
-The memory system integrates with Hindsight to give agents persistent, queryable memory across sessions.
+Memory is **self-hosted Redis**, and the property it exists to provide is:
+
+> Context is rebuilt from memory on every turn within an explicit token budget.
+> There is no conversation compaction and no naive sliding window.
+
+Full design: [memory-architecture-v2.md](memory-architecture-v2.md).
 
 ### Components
 
 | File | Purpose |
 |------|---------|
-| `bank-manager.ts` | Creates and manages Hindsight memory banks (e.g., `default`, per-project) |
+| `store.ts` | The backend-neutral `MemoryStore` interface — the seam every other layer talks to |
+| `redis-store.ts` | `RedisMemoryStore`: the only implementation. Records live in Redis (AOF + RDB) |
+| `redis-connection.ts` | Shared connection factory — URL, auth, TLS, db, key prefix, URL redaction |
+| `memory-index.ts` | In-process lexical index. Generates *and scores* candidates |
+| `context-assembler.ts` | Rebuilds the turn: hot window + budgeted recall + Memory Map |
+| `memory-map.ts` | Pure, deterministic renderer for the Memory Map block |
+| `memory-tools.ts` | The three agent tools: `memory_search`, `memory_read`, `memory_pin` |
 | `retention-engine.ts` | Decides what to retain after events — workflow completions, errors, decisions |
-| `mental-models.ts` | Reads and refreshes Hindsight mental models (living summary documents) |
-| `session-bootstrap.ts` | On session start, recalls relevant context from Hindsight to prime the agent |
-| `session-summary.ts` | On session end, writes a summary back to Hindsight |
-| `compaction-flush.ts` | Before context compaction, flushes important information to Hindsight |
+| `session-summary.ts` | On session end, writes a summary record |
+| `scope-slug.ts` | Derives a stable `project-<slug>` scope id from a task |
 
-### Banks
+### Scopes
 
-Memory is organized into **banks** — namespaced collections:
+Memory is partitioned into **scopes** — flat, implicit namespaces. Nothing has
+to be created before it is written to.
 
-- **`default`** — general agent memory
-- Per-project banks — created automatically for project-scoped work
+- **`core`** — cross-session memory: preferences, decisions, session summaries
+- **`project-<slug>`** — task-scoped memory, derived from the task
+- **`conversation-<sid>`** — a gateway session's own message history
+- **`infra`** — infrastructure state
+
+`memory_search` spans every scope by default; `scope` is a narrowing filter, not
+a requirement. This is cheap because the in-process index covers all scopes in
+one structure.
+
+### Retrieval
+
+Ranking is **lexical and deterministic** — keyword overlap plus character-trigram
+Jaccard, scored exactly as `computeClientRelevance`. No embeddings, no LLM in
+the retrieval path. The index computes the score in the same pass that finds the
+document, so nothing is rescored downstream.
+
+Everything is stored; not everything is indexed. User, assistant, and `tool_use`
+records join the search corpus. `system` records do not (boilerplate skews term
+statistics), and `tool_result` records do not (they dominate volume) — those are
+reachable by range read through `memory_read`.
+
+### The Memory Map
+
+Alongside the verbatim hot window, each turn carries a deterministically
+generated table of contents naming what exists *beyond* the window: segment ids
+and their seq ranges, frequent terms, pin count. It has a hard token budget and
+is O(1) in session length. It is injected whether or not recall matched
+anything — recall answers "what is relevant now", the map answers "what else
+exists", and the second is how the agent learns there is more to ask for.
 
 ### Retention Triggers
 
-The retention engine automatically stores memories when:
+The retention engine automatically stores records when:
 
-- A workflow completes successfully (`retainOnComplete`)
-- A workflow fails (`retainOnError`)
+- A workflow completes successfully (`memory.retainOnComplete`)
+- A workflow fails (`memory.retainOnError`)
 - Key decisions are made during execution
 - Notable findings emerge from workers
 
-### Mental Models
+TTL is advisory — expiry is applied as a filter at read time, and a background
+GC pass physically deletes expired, unpinned records. Pinned records are exempt.
 
-Mental models are pre-synthesized context documents maintained by Hindsight. They auto-refresh as new memories are added and provide fast bootstrapping — instead of recalling and synthesizing hundreds of memories, the agent reads a single mental model.
+### Health
+
+Memory reports **recall health**, never socket state: `ready`, `rebuilding`
+(index still hydrating from Redis), or `degraded` (Redis unreachable, or a write
+failed). This is what drives the System Health card and the status bar — the
+user is told what memory can do, not whether a connection is open.
 
 ### Session Lifecycle
 
 ```
 Session Start
-  └─▶ session-bootstrap.ts recalls context from Hindsight
-       └─▶ Agent runs with primed context
+  └─▶ RedisMemoryStore hydrates the in-process index from Redis
+       └─▶ Each turn: ContextAssembler rebuilds hot window + recall + Memory Map
             └─▶ retention-engine.ts stores important events
-                 └─▶ session-summary.ts writes summary on end
+                 └─▶ session-summary.ts writes a summary record on end
 ```
 
 ## Skills System (`packages/skills-sdk/`)
