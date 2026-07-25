@@ -370,11 +370,28 @@ export class MemoryBridge {
     if (!this.sessionSummarizer) return;
 
     try {
-      await this.sessionSummarizer.summarize(history, this.activeProjectScope ?? undefined, sessionId);
+      // summarize() does not throw — it reports skips and failures through its
+      // return value. Emitting on "did not throw" told the memory panel a
+      // summary had been retained for every no-op path (too few messages,
+      // debounce, empty summary, retain failure), which is how a dead memory
+      // backend still looked healthy in the UI.
+      const result = await this.sessionSummarizer.summarize(
+        history,
+        this.activeProjectScope ?? undefined,
+        sessionId,
+      );
+
+      if (!result.retained) {
+        log.debug('Session summary not retained', { sessionId, reason: result.reason });
+        return;
+      }
+
       log.info('Session summarised', { sessionId });
       this.onMemoryEvent?.('summary', 'Session summary retained', this.activeProjectScope ?? undefined, sessionId ? { sessionId } : undefined);
     } catch (err) {
-      log.warn('Session summary failed', { error: err instanceof Error ? err.message : String(err) });
+      // Defensive: summarize() is contractually non-throwing, so reaching this
+      // is itself a defect rather than an expected failure mode.
+      log.warn('Session summary threw unexpectedly', { error: err instanceof Error ? err.message : String(err) });
     }
   }
 
