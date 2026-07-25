@@ -24,9 +24,24 @@ import type { MemoryStore } from '../memory/store.js';
 import type { OrionOmegaConfig } from '../config/types.js';
 import * as memoryTelemetry from '../memory/memory-telemetry.js';
 import type { MemoryEvent } from './main-agent.js';
+import { readConfig } from '../config/loader.js';
 import { createLogger } from '../logging/logger.js';
 
 const log = createLogger('memory-bridge');
+
+/**
+ * Whether node jobs may be executed by a SEPARATE process.
+ *
+ * Read defensively: config is unreadable in some unit harnesses, and an
+ * unreadable config must not prevent memory from initialising.
+ */
+function readQueueBackend(): string | undefined {
+  try {
+    return readConfig().orchestration?.queue?.backend;
+  } catch {
+    return undefined;
+  }
+}
 
 type MemoryOp = MemoryEvent['op'];
 
@@ -125,6 +140,20 @@ export class MemoryBridge {
       // calls collectGarbage() and expired records accumulate behind the
       // read-time TTL filter forever.
       this.memoryStore = new RedisMemoryStore({ redis: memCfg.redis, gc: true });
+
+      // Cross-instance sync, enabled only when the deployment can actually
+      // have more than one process. Redis is shared; each store's derived
+      // index is not, so without this a second process's writes stay invisible
+      // until re-hydration.
+      //
+      // `orchestration.queue.backend: 'redis'` is the signal: that backend
+      // exists precisely so node jobs can be consumed by separate worker
+      // processes. On the in-process default there is only ever one index and
+      // polling would be pure waste.
+      if (readQueueBackend() === 'redis') {
+        this.memoryStore.startSync();
+        log.info('Cross-instance memory sync enabled (redis queue backend detected)');
+      }
 
       this.retentionEngine = new RetentionEngine(
         this.memoryStore,

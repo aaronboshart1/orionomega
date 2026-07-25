@@ -1692,6 +1692,27 @@ export class MainAgent {
   }
 
   /** Get the shared event bus. */
+  /**
+   * Release memory resources held by this agent.
+   *
+   * The bridge owns a Redis connection plus background GC and sync timers.
+   * Those timers are `unref`'d so they never hold the process open on their
+   * own, but an explicit shutdown stops retention BEFORE the client closes,
+   * so no write is issued against a closing connection.
+   *
+   * Safe to call more than once and never throws — a shutdown path that can
+   * fail is worse than one that cannot run.
+   */
+  async shutdown(): Promise<void> {
+    try {
+      await this.memory.shutdown();
+    } catch (err) {
+      log.warn('Memory shutdown failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   getEventBus(): EventBus {
     return this.orchestration.eventBus;
   }
